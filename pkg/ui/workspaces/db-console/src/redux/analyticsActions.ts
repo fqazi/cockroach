@@ -3,9 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { TimeScale } from "@cockroachlabs/cluster-ui";
-
 import { PayloadAction } from "src/interfaces/action";
+import { TimeScale } from "@cockroachlabs/cluster-ui";
 
 export const TRACK_STATEMENTS_SEARCH =
   "cockroachui/analytics/TRACK_STATEMENTS_SEARCH";

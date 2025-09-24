@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execopnode"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
@@ -26,14 +25,13 @@ import (
 type projectSetProcessor struct {
 	execinfra.ProcessorBase
 
-	evalCtx *eval.Context
-	input   execinfra.RowSource
-	spec    *execinfrapb.ProjectSetSpec
+	input execinfra.RowSource
+	spec  *execinfrapb.ProjectSetSpec
 
 	// eh contains the type-checked expression specified in the ROWS FROM
 	// syntax. It can contain many kinds of expressions (anything that is
 	// "function-like" including COALESCE, NULLIF), not just SRFs.
-	eh execexpr.MultiHelper
+	eh execinfrapb.MultiExprHelper
 
 	// funcs contains a valid pointer to a SRF FuncExpr for every entry
 	// in `exprHelpers` that is actually a SRF function application.
@@ -79,8 +77,6 @@ func newProjectSetProcessor(
 ) (*projectSetProcessor, error) {
 	outputTypes := append(input.OutputTypes(), spec.GeneratedColumns...)
 	ps := &projectSetProcessor{
-		// We'll be mutating the eval context, so we always need a copy.
-		evalCtx:   flowCtx.NewEvalCtx(),
 		input:     input,
 		spec:      spec,
 		funcs:     make([]tree.TypedExpr, len(spec.Exprs)),
@@ -88,13 +84,12 @@ func newProjectSetProcessor(
 		gens:      make([]eval.ValueGenerator, len(spec.Exprs)),
 		done:      make([]bool, len(spec.Exprs)),
 	}
-	if err := ps.InitWithEvalCtx(
+	if err := ps.Init(
 		ctx,
 		ps,
 		post,
 		outputTypes,
 		flowCtx,
-		ps.evalCtx,
 		processorID,
 		nil, /* memMonitor */
 		execinfra.ProcStateOpts{
@@ -110,7 +105,7 @@ func newProjectSetProcessor(
 
 	// Initialize exprHelper.
 	semaCtx := ps.FlowCtx.NewSemaContext(ps.FlowCtx.Txn)
-	err := ps.eh.Init(ctx, len(ps.spec.Exprs), ps.input.OutputTypes(), semaCtx, ps.evalCtx)
+	err := ps.eh.Init(ctx, len(ps.spec.Exprs), ps.input.OutputTypes(), semaCtx, ps.EvalCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +154,7 @@ func (ps *projectSetProcessor) nextInputRow() (
 	// Set expression helper row so that we can use it as an
 	// IndexedVarContainer.
 	ps.eh.SetRow(row)
-	ps.evalCtx.IVarContainer = ps.eh.IVarContainer()
+	ps.EvalCtx.IVarContainer = ps.eh.IVarContainer()
 
 	// Initialize a round of SRF generators or scalar values.
 	for i, n := 0, ps.eh.ExprCount(); i < n; i++ {
@@ -177,9 +172,9 @@ func (ps *projectSetProcessor) nextInputRow() (
 			var err error
 			switch t := fn.(type) {
 			case *tree.FuncExpr:
-				gen, err = eval.GetFuncGenerator(ps.Ctx(), ps.evalCtx, t)
+				gen, err = eval.GetFuncGenerator(ps.Ctx(), ps.EvalCtx, t)
 			case *tree.RoutineExpr:
-				gen, err = eval.GetRoutineGenerator(ps.Ctx(), ps.evalCtx, t)
+				gen, err = eval.GetRoutineGenerator(ps.Ctx(), ps.EvalCtx, t)
 				if err == nil && gen == nil && t.MultiColOutput && !t.Generator {
 					// If the routine will return multiple output columns, we expect the
 					// routine to return nulls for each column type instead of no rows, so

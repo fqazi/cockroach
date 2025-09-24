@@ -4,12 +4,8 @@
 // included in the /LICENSE file.
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import long from "long";
-import { SWRConfiguration } from "swr";
-
-import { propsToQueryString, useSwrWithClusterId } from "../util";
-
 import { fetchData } from "./fetchData";
+import { propsToQueryString } from "../util";
 
 const JOBS_PATH = "_admin/v1/jobs";
 
@@ -18,7 +14,6 @@ export type JobsResponse = cockroach.server.serverpb.JobsResponse;
 
 export type JobRequest = cockroach.server.serverpb.JobRequest;
 export type JobResponse = cockroach.server.serverpb.JobResponse;
-
 export type JobResponseWithKey = {
   jobResponse: JobResponse;
   key: string;
@@ -49,19 +44,9 @@ export const getJobs = (
   );
 };
 
-export function useJobDetails(jobId: long, opts: SWRConfiguration = {}) {
-  return useSwrWithClusterId<JobResponse>(
-    { name: "jobDetailsById", jobId },
-    () => getJob({ job_id: jobId }),
-    {
-      revalidateOnFocus: false,
-      revalidateOnReconnect: false,
-      ...opts,
-    },
-  );
-}
-
-export const getJob = (req: JobRequest): Promise<JobResponse> => {
+export const getJob = (
+  req: JobRequest,
+): Promise<cockroach.server.serverpb.JobResponse> => {
   return fetchData(
     cockroach.server.serverpb.JobResponse,
     `${JOBS_PATH}/${req.job_id}`,

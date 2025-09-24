@@ -10,9 +10,8 @@ import {
 } from "@cockroachlabs/cluster-ui";
 import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
-
-import { refreshLiveWorkload } from "src/redux/apiReducers";
 import { AdminUIState } from "src/redux/state";
+import { refreshLiveWorkload } from "src/redux/apiReducers";
 import {
   selectActiveTransaction,
   selectContentionDetailsForTransaction,
@@ -22,8 +21,7 @@ const ActiveTransactionDetailsConnected = withRouter(
   connect<
     ActiveTransactionDetailsStateProps,
     ActiveTransactionDetailsDispatchProps,
-    RouteComponentProps,
-    AdminUIState
+    RouteComponentProps
   >(
     (state: AdminUIState, props: RouteComponentProps) => ({
       transaction: selectActiveTransaction(state, props),

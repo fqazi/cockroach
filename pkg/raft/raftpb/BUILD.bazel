@@ -16,9 +16,7 @@ go_proto_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/raft/raftpb",
     proto = ":raftpb_proto",
     visibility = ["//visibility:public"],
-    deps = [
-        "@com_github_gogo_protobuf//gogoproto",
-    ],
+    deps = ["@com_github_gogo_protobuf//gogoproto"],
 )
 
 go_library(
@@ -26,15 +24,11 @@ go_library(
     srcs = [
         "confchange.go",
         "confstate.go",
-        "raft.go",
     ],
     embed = [":raftpb_go_proto"],
     importpath = "github.com/cockroachdb/cockroach/pkg/raft/raftpb",
     visibility = ["//visibility:public"],
-    deps = [
-        "@com_github_cockroachdb_redact//:redact",
-        "@com_github_gogo_protobuf//proto",
-    ],
+    deps = ["@com_github_gogo_protobuf//proto"],
 )
 
 go_test(

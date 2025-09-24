@@ -281,7 +281,6 @@ func TestVectorizedFlowTempDirectory(t *testing.T) {
 			&flowinfra.FlowBase{
 				FlowCtx: execinfra.FlowCtx{
 					Cfg: &execinfra.ServerConfig{
-						Settings:        st,
 						TempFS:          env,
 						TempStoragePath: tempPath,
 						VecFDSemaphore:  &colexecop.TestingSemaphore{},

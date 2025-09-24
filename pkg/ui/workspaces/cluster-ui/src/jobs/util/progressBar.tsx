@@ -3,15 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import classNames from "classnames/bind";
 import { Line } from "rc-progress";
 import React from "react";
-
 import { Badge } from "src/badge";
 
-import styles from "../jobs.module.scss";
-
 import { jobStatusToBadgeStatus } from "./jobOptions";
+
+import styles from "../jobs.module.scss";
+import classNames from "classnames/bind";
 
 const cx = classNames.bind(styles);
 

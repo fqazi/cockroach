@@ -3,15 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Loading } from "@cockroachlabs/cluster-ui";
-import isNil from "lodash/isNil";
+import _ from "lodash";
 import React from "react";
 import { Helmet } from "react-helmet";
 import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
 
 import { refreshLocations, refreshNodes } from "src/redux/apiReducers";
-import { CachedDataReducerState } from "src/redux/cachedDataReducer";
 import {
   LocalityTier,
   LocalityTree,
@@ -26,8 +24,9 @@ import { selectNodeRequestStatus } from "src/redux/nodes";
 import { AdminUIState } from "src/redux/state";
 import { getNodeLocalityTiers } from "src/util/localities";
 import { findMostSpecificLocation, hasLocation } from "src/util/locations";
+import { Loading } from "@cockroachlabs/cluster-ui";
 import "./localities.styl";
-
+import { CachedDataReducerState } from "src/redux/cachedDataReducer";
 import { BackToAdvanceDebug } from "../util";
 
 function formatCoord(coordinate: number) {
@@ -37,7 +36,7 @@ function formatCoord(coordinate: number) {
 function renderLocation(locations: LocationTree, tiers: LocalityTier[]) {
   const location = findMostSpecificLocation(locations, tiers);
 
-  if (isNil(location)) {
+  if (_.isNil(location)) {
     return "";
   }
 

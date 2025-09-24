@@ -10,7 +10,6 @@ import (
 	"net/http"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/security/password"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
@@ -18,14 +17,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire"
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"google.golang.org/grpc"
-	"storj.io/drpc"
 )
 
 type Server interface {
 	RegisterService(*grpc.Server)
 	RegisterGateway(ctx context.Context, mux *runtime.ServeMux, conn *grpc.ClientConn) error
-
-	RegisterDRPCService(drpc.Mux) error
 
 	// UserLogin verifies an incoming request by a user to create an web
 	// authentication session. It checks the provided credentials against
@@ -69,19 +65,6 @@ type Server interface {
 		ctx context.Context, cookie *serverpb.SessionCookie,
 	) (bool, string, error)
 
-	// VerifyUserSessionDBConsole verifies the passed username against the
-	// system.users table. The returned boolean indicates whether or not the
-	// verification succeeded and if the user session could be retrieved for DB
-	// console login; an error is returned if the validation process could not be
-	// completed.
-	VerifyUserSessionDBConsole(
-		ctx context.Context, userName username.SQLUsername,
-	) (
-		valid bool,
-		pwRetrieveFn func(ctx context.Context) (expired bool, hashedPassword password.PasswordHash, err error),
-		err error,
-	)
-
 	// VerifyPasswordDBConsole verifies the passed username/password
 	// pair against the system.users table. The returned boolean indicates
 	// whether or not the verification succeeded; an error is returned if
@@ -98,7 +81,6 @@ type Server interface {
 	// PostgreSQL.)
 	VerifyPasswordDBConsole(
 		ctx context.Context, userName username.SQLUsername, passwordStr string,
-		pwRetrieveFn func(ctx context.Context) (expired bool, hashedPassword password.PasswordHash, err error),
 	) (valid bool, expired bool, err error)
 
 	// VerifyJWT verifies the JWT for authenticating the request. An optional username may be provided

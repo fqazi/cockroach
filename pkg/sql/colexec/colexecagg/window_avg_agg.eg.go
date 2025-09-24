@@ -63,7 +63,7 @@ func newAvgWindowAggAlloc(
 			return &avgIntervalWindowAggAlloc{aggAllocBase: allocBase}, nil
 		}
 	}
-	return nil, errors.AssertionFailedf("unsupported avg agg type %s", t.Name())
+	return nil, errors.Errorf("unsupported avg agg type %s", t.Name())
 }
 
 type avgInt16WindowAgg struct {
@@ -80,7 +80,7 @@ type avgInt16WindowAgg struct {
 var _ AggregateFunc = &avgInt16WindowAgg{}
 
 func (a *avgInt16WindowAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	oldCurSumSize := a.curSum.Size()
 	vec := vecs[inputIdxs[0]]
@@ -182,9 +182,7 @@ func (a *avgInt16WindowAggAlloc) newAggFunc() AggregateFunc {
 
 // Remove implements the slidingWindowAggregateFunc interface (see
 // window_aggregator_tmpl.go).
-func (a *avgInt16WindowAgg) Remove(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int,
-) {
+func (a *avgInt16WindowAgg) Remove(vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int) {
 	oldCurSumSize := a.curSum.Size()
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Int16(), vec.Nulls()
@@ -252,7 +250,7 @@ type avgInt32WindowAgg struct {
 var _ AggregateFunc = &avgInt32WindowAgg{}
 
 func (a *avgInt32WindowAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	oldCurSumSize := a.curSum.Size()
 	vec := vecs[inputIdxs[0]]
@@ -354,9 +352,7 @@ func (a *avgInt32WindowAggAlloc) newAggFunc() AggregateFunc {
 
 // Remove implements the slidingWindowAggregateFunc interface (see
 // window_aggregator_tmpl.go).
-func (a *avgInt32WindowAgg) Remove(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int,
-) {
+func (a *avgInt32WindowAgg) Remove(vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int) {
 	oldCurSumSize := a.curSum.Size()
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Int32(), vec.Nulls()
@@ -424,7 +420,7 @@ type avgInt64WindowAgg struct {
 var _ AggregateFunc = &avgInt64WindowAgg{}
 
 func (a *avgInt64WindowAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	oldCurSumSize := a.curSum.Size()
 	vec := vecs[inputIdxs[0]]
@@ -526,9 +522,7 @@ func (a *avgInt64WindowAggAlloc) newAggFunc() AggregateFunc {
 
 // Remove implements the slidingWindowAggregateFunc interface (see
 // window_aggregator_tmpl.go).
-func (a *avgInt64WindowAgg) Remove(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int,
-) {
+func (a *avgInt64WindowAgg) Remove(vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int) {
 	oldCurSumSize := a.curSum.Size()
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Int64(), vec.Nulls()
@@ -596,7 +590,7 @@ type avgDecimalWindowAgg struct {
 var _ AggregateFunc = &avgDecimalWindowAgg{}
 
 func (a *avgDecimalWindowAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	oldCurSumSize := a.curSum.Size()
 	vec := vecs[inputIdxs[0]]
@@ -698,9 +692,7 @@ func (a *avgDecimalWindowAggAlloc) newAggFunc() AggregateFunc {
 
 // Remove implements the slidingWindowAggregateFunc interface (see
 // window_aggregator_tmpl.go).
-func (a *avgDecimalWindowAgg) Remove(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int,
-) {
+func (a *avgDecimalWindowAgg) Remove(vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int) {
 	oldCurSumSize := a.curSum.Size()
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Decimal(), vec.Nulls()
@@ -768,7 +760,7 @@ type avgFloat64WindowAgg struct {
 var _ AggregateFunc = &avgFloat64WindowAgg{}
 
 func (a *avgFloat64WindowAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	var oldCurSumSize uintptr
 	vec := vecs[inputIdxs[0]]
@@ -858,9 +850,7 @@ func (a *avgFloat64WindowAggAlloc) newAggFunc() AggregateFunc {
 
 // Remove implements the slidingWindowAggregateFunc interface (see
 // window_aggregator_tmpl.go).
-func (a *avgFloat64WindowAgg) Remove(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int,
-) {
+func (a *avgFloat64WindowAgg) Remove(vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int) {
 	var oldCurSumSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Float64(), vec.Nulls()
@@ -920,7 +910,7 @@ type avgIntervalWindowAgg struct {
 var _ AggregateFunc = &avgIntervalWindowAgg{}
 
 func (a *avgIntervalWindowAgg) Compute(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
+	vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int, sel []int,
 ) {
 	var oldCurSumSize uintptr
 	vec := vecs[inputIdxs[0]]
@@ -1000,9 +990,7 @@ func (a *avgIntervalWindowAggAlloc) newAggFunc() AggregateFunc {
 
 // Remove implements the slidingWindowAggregateFunc interface (see
 // window_aggregator_tmpl.go).
-func (a *avgIntervalWindowAgg) Remove(
-	vecs []*coldata.Vec, inputIdxs []uint32, startIdx, endIdx int,
-) {
+func (a *avgIntervalWindowAgg) Remove(vecs []coldata.Vec, inputIdxs []uint32, startIdx, endIdx int) {
 	var oldCurSumSize uintptr
 	vec := vecs[inputIdxs[0]]
 	col, nulls := vec.Interval(), vec.Nulls()

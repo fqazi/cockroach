@@ -76,7 +76,7 @@ func TestSpillingQueue(t *testing.T) {
 			// spilling to disk queue occurs after some batches were added to
 			// the in-memory buffer.
 			setInMemEnqueuesLimit := rng.Float64() < 0.5
-			log.Dev.Infof(context.Background(), "%sMemoryLimit=%s/DiskQueueCacheMode=%d/AlwaysCompress=%t/NumBatches=%d/InMemEnqueuesLimited=%t",
+			log.Infof(context.Background(), "%sMemoryLimit=%s/DiskQueueCacheMode=%d/AlwaysCompress=%t/NumBatches=%d/InMemEnqueuesLimited=%t",
 				prefix, humanizeutil.IBytes(memoryLimit), diskQueueCacheMode, alwaysCompress, numBatches, setInMemEnqueuesLimit)
 			// Since the spilling queue coalesces tuples to fill-in the batches
 			// up to their capacity, we cannot use the batches we get when
@@ -122,7 +122,7 @@ func TestSpillingQueue(t *testing.T) {
 						DiskQueueCfg:       queueCfg,
 						FDSemaphore:        colexecop.NewTestingSemaphore(2),
 						DiskAcc:            testDiskAcc,
-						DiskQueueMemAcc:    testMemAcc,
+						ConverterMemAcc:    testMemAcc,
 					},
 				)
 			} else {
@@ -134,7 +134,7 @@ func TestSpillingQueue(t *testing.T) {
 						DiskQueueCfg:       queueCfg,
 						FDSemaphore:        colexecop.NewTestingSemaphore(2),
 						DiskAcc:            testDiskAcc,
-						DiskQueueMemAcc:    testMemAcc,
+						ConverterMemAcc:    testMemAcc,
 					},
 				)
 			}
@@ -291,7 +291,7 @@ func TestSpillingQueueDidntSpill(t *testing.T) {
 			DiskQueueCfg:       queueCfg,
 			FDSemaphore:        colexecop.NewTestingSemaphore(2),
 			DiskAcc:            testDiskAcc,
-			DiskQueueMemAcc:    testMemAcc,
+			ConverterMemAcc:    testMemAcc,
 		},
 	)
 
@@ -358,7 +358,7 @@ func TestSpillingQueueMemoryAccounting(t *testing.T) {
 				DiskQueueCfg:       queueCfg,
 				FDSemaphore:        colexecop.NewTestingSemaphore(2),
 				DiskAcc:            testDiskAcc,
-				DiskQueueMemAcc:    testMemAcc,
+				ConverterMemAcc:    testMemAcc,
 			}
 			var q *SpillingQueue
 			if rewindable {
@@ -463,7 +463,7 @@ func TestSpillingQueueMovingTailWhenSpilling(t *testing.T) {
 			DiskQueueCfg:       queueCfg,
 			FDSemaphore:        colexecop.NewTestingSemaphore(2),
 			DiskAcc:            testDiskAcc,
-			DiskQueueMemAcc:    testMemAcc,
+			ConverterMemAcc:    testMemAcc,
 		}
 		q := NewSpillingQueue(newQueueArgs)
 

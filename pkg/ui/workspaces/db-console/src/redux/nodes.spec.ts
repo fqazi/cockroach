@@ -3,13 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { createHashHistory, createMemoryHistory } from "history";
-import merge from "lodash/merge";
+import { createHashHistory } from "history";
 
-import * as protos from "src/js/protos";
 import { MetricConstants, INodeStatus } from "src/util/proto";
+import * as protos from "src/js/protos";
 
-import { nodesReducerObj, livenessReducerObj } from "./apiReducers";
 import {
   nodeDisplayNameByIDSelector,
   selectCommissionedNodeStatuses,
@@ -19,7 +17,8 @@ import {
   numNodesByVersionsTagSelector,
   nodeDisplayNameByIDSelectorWithoutAddress,
 } from "./nodes";
-import { AdminUIState, createAdminUIStore } from "./state";
+import { nodesReducerObj, livenessReducerObj } from "./apiReducers";
+import { createAdminUIStore } from "./state";
 
 function makeNodesState(
   ...addresses: { id: number; address: string; status?: LivenessStatus }[]
@@ -360,29 +359,25 @@ describe("selectCommissionedNodeStatuses", function () {
 
   function makeStateForLiveness(livenessStatuses: {
     [id: string]: LivenessStatus;
-  }): AdminUIState {
-    const store = createAdminUIStore(createMemoryHistory());
-    return merge<AdminUIState, RecursivePartial<AdminUIState>>(
-      store.getState(),
-      {
-        cachedData: {
-          nodes: {
-            data: nodeStatuses,
-            inFlight: false,
-            valid: true,
-            unauthorized: false,
+  }) {
+    return {
+      cachedData: {
+        nodes: {
+          data: nodeStatuses,
+          inFlight: false,
+          valid: true,
+          unauthorized: false,
+        },
+        liveness: {
+          data: {
+            statuses: livenessStatuses,
           },
-          liveness: {
-            data: {
-              statuses: livenessStatuses,
-            },
-            inFlight: false,
-            valid: true,
-            unauthorized: false,
-          },
+          inFlight: false,
+          valid: true,
+          unauthorized: false,
         },
       },
-    );
+    };
   }
 
   it("selects all nodes when liveness status missing", function () {

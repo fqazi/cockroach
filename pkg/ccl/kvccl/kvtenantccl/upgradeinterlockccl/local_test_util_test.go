@@ -78,7 +78,7 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 		stats.AutomaticStatisticsClusterMode.Override(ctx, &s.SV, false)
 		stats.UseStatisticsOnSystemTables.Override(ctx, &s.SV, false)
 		stats.AutomaticStatisticsOnSystemTables.Override(ctx, &s.SV, false)
-		sql.DistSQLClusterExecMode.Override(ctx, &s.SV, sessiondatapb.DistSQLOff)
+		sql.DistSQLClusterExecMode.Override(ctx, &s.SV, int64(sessiondatapb.DistSQLOff))
 	}
 
 	reduceLeaseDurationAndReclaimLoopInterval := func(s *cluster.Settings) {
@@ -136,7 +136,7 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 					DisableAutomaticVersionUpgrade: make(chan struct{}),
 					// Initialize to the minimum supported version
 					// so that we can perform the upgrade below.
-					ClusterVersionOverride: msv,
+					BinaryVersionOverride: msv,
 				},
 			},
 		},
@@ -207,7 +207,7 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 	// will complete the upgrade.
 	go func() {
 		release := func() {
-			log.Dev.Infof(ctx, "upgrade completed, resuming post-upgrade work")
+			log.Infof(ctx, "upgrade completed, resuming post-upgrade work")
 			completedChannel <- struct{}{}
 		}
 		defer release()
@@ -325,7 +325,7 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 	logf("waiting for upgrade to complete")
 	<-completedChannel
 	logf("upgrade completed")
-	log.Dev.Infof(ctx, "continuing after upgrade completed")
+	log.Infof(ctx, "continuing after upgrade completed")
 
 	// Now that we've resumed the upgrade, process any errors. We must do
 	// that after the upgrade completes because any unexpected errors above

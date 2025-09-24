@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig/spanconfigtestutils"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig/spanconfigtestutils/spanconfigtestcluster"
-	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/sqllivenesstestutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
@@ -106,9 +105,6 @@ func TestDataDriven(t *testing.T) {
 				Knobs: base.TestingKnobs{
 					JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(), // speeds up test
 					SpanConfig:       scKnobs,
-					SQLExecutor: &sql.ExecutorTestingKnobs{
-						UseTransactionalDescIDGenerator: true,
-					},
 				},
 			},
 		})
@@ -150,7 +146,7 @@ func TestDataDriven(t *testing.T) {
 				// Run under an explicit transaction -- we rely on having a
 				// single timestamp for the statements (see
 				// tenant.TimestampAfterLastSQLChange) for ordering guarantees.
-				tenant.Exec(fmt.Sprintf("BEGIN; SET LOCAL autocommit_before_ddl = false; %s; COMMIT;", d.Input))
+				tenant.Exec(fmt.Sprintf("BEGIN; %s; COMMIT;", d.Input))
 
 			case "query-sql":
 				rows := tenant.Query(d.Input)

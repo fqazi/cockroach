@@ -203,7 +203,6 @@ func TestIntArrayRoundTrip(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	ctx := context.Background()
 	buf := newWriteBuffer(nilStat)
 	d := tree.NewDArray(types.Int)
 	for i := 0; i < 10; i++ {
@@ -213,14 +212,13 @@ func TestIntArrayRoundTrip(t *testing.T) {
 	}
 
 	defaultConv, defaultLoc := makeTestingConvCfg()
-	buf.writeTextDatum(ctx, d, defaultConv, defaultLoc, nil /* t */)
+	buf.writeTextDatum(context.Background(), d, defaultConv, defaultLoc, nil /* t */)
 
 	b := buf.wrapped.Bytes()
 
 	evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
-	defer evalCtx.Stop(ctx)
-	var da tree.DatumAlloc
-	got, err := pgwirebase.DecodeDatum(ctx, evalCtx, types.IntArray, pgwirebase.FormatText, b[4:], &da)
+	defer evalCtx.Stop(context.Background())
+	got, err := pgwirebase.DecodeDatum(context.Background(), evalCtx, types.IntArray, pgwirebase.FormatText, b[4:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,9 +227,7 @@ func TestIntArrayRoundTrip(t *testing.T) {
 	gotString := tree.MustBeDString(got)
 	gotArray, _, err := tree.ParseDArrayFromString(evalCtx, string(gotString), types.Int)
 	require.NoError(t, err)
-	if cmp, err := gotArray.Compare(ctx, evalCtx, d); err != nil {
-		t.Fatal(err)
-	} else if cmp != 0 {
+	if gotArray.Compare(evalCtx, d) != 0 {
 		t.Fatalf("expected %s, got %s", d, got)
 	}
 }
@@ -279,8 +275,6 @@ func TestByteArrayRoundTrip(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	ctx := context.Background()
-	var da tree.DatumAlloc
 	rng := rand.New(rand.NewSource(timeutil.Now().Unix()))
 	randValues := make(tree.Datums, 0, 11)
 	randValues = append(randValues, tree.NewDBytes(tree.DBytes("\x00abc\\\n")))
@@ -302,22 +296,20 @@ func TestByteArrayRoundTrip(t *testing.T) {
 
 					defaultConv, defaultLoc := makeTestingConvCfg()
 					defaultConv.BytesEncodeFormat = be
-					buf.writeTextDatum(ctx, d, defaultConv, defaultLoc, nil /* t */)
+					buf.writeTextDatum(context.Background(), d, defaultConv, defaultLoc, nil /* t */)
 					b := buf.wrapped.Bytes()
 					t.Logf("encoded: %v (%q)", b, b)
 
 					evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
-					defer evalCtx.Stop(ctx)
-					got, err := pgwirebase.DecodeDatum(ctx, evalCtx, types.Bytes, pgwirebase.FormatText, b[4:], &da)
+					defer evalCtx.Stop(context.Background())
+					got, err := pgwirebase.DecodeDatum(context.Background(), evalCtx, types.Bytes, pgwirebase.FormatText, b[4:])
 					if err != nil {
 						t.Fatal(err)
 					}
 					if _, ok := got.(*tree.DBytes); !ok {
 						t.Fatalf("parse does not return DBytes, got %T", got)
 					}
-					if cmp, err := got.Compare(ctx, evalCtx, d); err != nil {
-						t.Fatal(err)
-					} else if cmp != 0 {
+					if got.Compare(evalCtx, d) != 0 {
 						t.Fatalf("expected %s, got %s", d, got)
 					}
 				})
@@ -504,10 +496,6 @@ func benchmarkWriteColumnarString(b *testing.B, format pgwirebase.FormatCode) {
 	benchmarkWriteColumnar(b, getBatch(types.String), format)
 }
 
-func benchmarkWriteColumnarChar(b *testing.B, format pgwirebase.FormatCode) {
-	benchmarkWriteColumnar(b, getBatch(types.MakeChar(16)), format)
-}
-
 func benchmarkWriteDate(b *testing.B, format pgwirebase.FormatCode) {
 	d, _, err := tree.ParseDDate(nil, "2010-09-28")
 	if err != nil {
@@ -675,13 +663,6 @@ func BenchmarkWriteBinaryColumnarString(b *testing.B) {
 	benchmarkWriteColumnarString(b, pgwirebase.FormatBinary)
 }
 
-func BenchmarkWriteTextColumnarChar(b *testing.B) {
-	benchmarkWriteColumnarChar(b, pgwirebase.FormatText)
-}
-func BenchmarkWriteBinaryColumnarChar(b *testing.B) {
-	benchmarkWriteColumnarChar(b, pgwirebase.FormatBinary)
-}
-
 func BenchmarkWriteTextDate(b *testing.B) {
 	benchmarkWriteDate(b, pgwirebase.FormatText)
 }
@@ -743,7 +724,6 @@ func BenchmarkWriteTextColumnarArray(b *testing.B) {
 }
 
 func BenchmarkDecodeBinaryDecimal(b *testing.B) {
-	ctx := context.Background()
 	wbuf := newWriteBuffer(nilStat)
 
 	expected := new(tree.DDecimal)
@@ -751,7 +731,7 @@ func BenchmarkDecodeBinaryDecimal(b *testing.B) {
 	if err := expected.SetString(s); err != nil {
 		b.Fatalf("could not set %q on decimal", s)
 	}
-	wbuf.writeBinaryDatum(ctx, expected, nil /* sessionLoc */, nil /* t */)
+	wbuf.writeBinaryDatum(context.Background(), expected, nil /* sessionLoc */, nil /* t */)
 
 	rbuf := pgwirebase.MakeReadBuffer()
 	rbuf.Msg = wbuf.wrapped.Bytes()
@@ -765,19 +745,16 @@ func BenchmarkDecodeBinaryDecimal(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	var da tree.DatumAlloc
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
-		defer evalCtx.Stop(ctx)
+		defer evalCtx.Stop(context.Background())
 		b.StartTimer()
-		got, err := pgwirebase.DecodeDatum(ctx, evalCtx, types.Decimal, pgwirebase.FormatBinary, bytes, &da)
+		got, err := pgwirebase.DecodeDatum(context.Background(), evalCtx, types.Decimal, pgwirebase.FormatBinary, bytes)
 		b.StopTimer()
 		if err != nil {
 			b.Fatal(err)
-		} else if cmp, err := got.Compare(ctx, evalCtx, expected); err != nil {
-			b.Fatal(err)
-		} else if cmp != 0 {
+		} else if got.Compare(evalCtx, expected) != 0 {
 			b.Fatalf("expected %s, got %s", expected, got)
 		}
 	}

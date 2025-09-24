@@ -15,7 +15,6 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -30,7 +29,7 @@ const (
 	// doctorStatusVersion is the current "version" of the status checks
 	// performed by `dev doctor``. Increasing it will force doctor to be re-run
 	// before other dev commands can be run.
-	doctorStatusVersion = 12
+	doctorStatusVersion = 10
 
 	noCacheFlag     = "no-cache"
 	interactiveFlag = "interactive"
@@ -96,34 +95,6 @@ func (cfg *doctorConfig) maybePromptForAutofixPermission(question string) {
 	}
 }
 
-type buildConfig struct {
-	name        string
-	description string
-}
-
-// buildConfigs are the available build configs (typically "dev" and
-// "crosslinux"). The first config will always be "dev".
-var buildConfigs []buildConfig = func() []buildConfig {
-	configs := []buildConfig{
-		{name: "dev", description: "uses the host toolchain"},
-	}
-	if runtime.GOOS == "linux" && runtime.GOARCH == "amd64" {
-		configs = append(configs, buildConfig{
-			name:        "crosslinux",
-			description: "uses the cross-compiler that we use in CI",
-		})
-	}
-
-	if runtime.GOOS == "linux" && runtime.GOARCH == "arm64" {
-		configs = append(configs, buildConfig{
-			name:        "crosslinuxarm",
-			description: "uses the cross-compiler that we use in CI",
-		})
-	}
-
-	return configs
-}()
-
 // The list of all checks performed by `dev doctor`.
 var allDoctorChecks = []doctorCheck{
 	{
@@ -143,13 +114,17 @@ var allDoctorChecks = []doctorCheck{
 			if runtime.GOOS != "darwin" {
 				return ""
 			}
-			stdout, err := d.exec.CommandContextSilent(ctx, "/usr/bin/xcode-select", "-p")
+			stdout, err := d.exec.CommandContextSilent(ctx, "/usr/bin/xcodebuild", "-version")
 			if err != nil {
-				log.Println("Failed to run `/usr/bin/xcode-select -p`.")
+				log.Println("Failed to run `/usr/bin/xcodebuild -version`.")
 				stdoutStr := strings.TrimSpace(string(stdout))
 				printStdoutAndErr(stdoutStr, err)
-				return `You must have the XCode command-line tools installed (if not a full installation of XCode) to build with Bazel.
-Please run ` + "`xcode-select --install`."
+				return `You must have a full installation of XCode to build with Bazel.
+A command-line tools instance does not suffice.
+Please perform the following steps:
+  1. Install XCode from the App Store.
+  2. Launch Xcode.app at least once to perform one-time initialization of developer tools.
+  3. Run ` + "`xcode-select -switch /Applications/Xcode.app/`."
 			}
 			return ""
 		},
@@ -204,37 +179,35 @@ Please run ` + "`xcode-select --install`."
 	{
 		name: "devconfig_local",
 		check: func(d *dev, ctx context.Context, cfg doctorConfig) string {
-			for _, bldCfg := range buildConfigs {
-				if d.checkUsingConfig(cfg.workspace, bldCfg.name) {
-					// Already configured.
-					return ""
-				}
+			var alreadyHaveSuggestion bool
+			for _, str := range []string{"dev", "crosslinux"} {
+				alreadyHaveSuggestion = alreadyHaveSuggestion || d.checkUsingConfig(cfg.workspace, str)
+			}
+			if alreadyHaveSuggestion {
+				return ""
 			}
 			ret := fmt.Sprintf(`
 Make sure one of the following lines is in the file %s/.bazelrc.user:
 `, cfg.workspace)
-			for i, bldCfg := range buildConfigs {
-				if i > 0 {
-					ret = ret + "\n             OR       \n"
-				}
-				ret = fmt.Sprintf("%s    build --config=%s  # %s", ret, bldCfg.name, bldCfg.description)
+			if runtime.GOOS == "linux" {
+				ret = ret + "    build --config=dev\n"
+				ret = ret + "             OR       \n"
+				ret = ret + "    build --config=crosslinux\n"
+				ret = ret + "The former will use your host toolchain, while the latter will use the cross-compiler that we use in CI."
+			} else {
+				ret = ret + "    build --config=dev"
 			}
 			return ret
 		},
 		autofix: func(d *dev, ctx context.Context, cfg doctorConfig) error {
-			if len(buildConfigs) > 1 {
+			if runtime.GOOS == "linux" {
 				if !cfg.interactive {
 					return fmt.Errorf("must be running in --interactive mode to autofix")
 				}
-				log.Println("DOCTOR >> I can configure your .bazelrc.user to build in one of the following configurations:")
-				var names []string
-				for _, c := range buildConfigs {
-					names = append(names, c.name)
-					log.Printf("           - %s: %s\n", c.name, c.description)
-				}
-				question := fmt.Sprintf("Which config you want to use (%s)?", strings.Join(names, ","))
-				response := promptInteractiveInput(question, names[0])
-				if !slices.Contains(names, response) {
+				log.Println("DOCTOR >> I can configure your .bazelrc.user to build either in the `dev` configuration or the `crosslinux` configuration.")
+				log.Println("DOCTOR >> The former uses your host toolchain, while the latter downloads and uses our production cross-toolchains.")
+				response := promptInteractiveInput("Which config you want to use (dev,crosslinux)?", "dev")
+				if response != "dev" && response != "crosslinux" {
 					return fmt.Errorf("unrecognized configuration option %s", response)
 				}
 				return d.addLineToBazelRcUser(cfg.workspace, fmt.Sprintf("build --config=%s", response))
@@ -276,15 +249,8 @@ Make sure one of the following lines is in the file %s/.bazelrc.user:
 			if d.checkUsingConfig(cfg.workspace, "dev") {
 				return "In --remote mode, you cannot use the `dev` build configuration."
 			}
-			requiredLines := []string{
-				"build:engflow --jobs=200",
-				"build:engflow --credential_helper=mesolite.cluster.engflow.com=engflow_auth",
-				"build:engflow --remote_execution_priority=-1",
-			}
-			for _, line := range requiredLines {
-				if !d.checkLinePresenceInBazelRcUser(cfg.workspace, line) {
-					return fmt.Sprintf("Make sure the following line is in %s/.bazelrc.user: %s", cfg.workspace, line)
-				}
+			if !d.checkLinePresenceInBazelRcUser(cfg.workspace, "build:engflow --jobs=200") {
+				return fmt.Sprintf("Make sure the following line is in %s/.bazelrc.user: build:engflow --jobs=200", cfg.workspace)
 			}
 			return ""
 		},
@@ -311,19 +277,13 @@ Make sure one of the following lines is in the file %s/.bazelrc.user:
 					return err
 				}
 			}
-			requiredLines := []string{
-				"build:engflow --jobs=200",
-				"build:engflow --credential_helper=mesolite.cluster.engflow.com=engflow_auth",
-				"build:engflow --remote_execution_priority=-1",
-			}
-			for _, line := range requiredLines {
-				if !d.checkLinePresenceInBazelRcUser(cfg.workspace, line) {
-					err := d.addLineToBazelRcUser(cfg.workspace, line)
-					if err != nil {
-						return err
-					}
+			if !d.checkLinePresenceInBazelRcUser(cfg.workspace, "build:engflow --jobs=200") {
+				err := d.addLineToBazelRcUser(cfg.workspace, "build:engflow --jobs=200")
+				if err != nil {
+					return err
 				}
 			}
+
 			return nil
 		},
 		remoteOnly: true,
@@ -331,15 +291,14 @@ Make sure one of the following lines is in the file %s/.bazelrc.user:
 	{
 		name: "nogo_configured",
 		check: func(d *dev, ctx context.Context, cfg doctorConfig) string {
-			configured := d.checkUsingConfig(cfg.workspace, "lintonbuild") ||
-				d.checkUsingConfig(cfg.workspace, "nolintonbuild")
-			if !configured {
-				return "Failed to find `--config=lintonbuild` or `--config=nolintonbuild` in .bazelrc.user." + `
-
+			err := d.exec.CommandContextInheritingStdStreams(ctx, "bazel", "build", "//build/bazelutil:test_nogo_configured")
+			if err != nil {
+				return "Failed to run `bazel build //build/bazelutil:test_nogo_configured. " + `
+This may be because you haven't configured whether to run lints during builds.
 Put EXACTLY ONE of the following lines in your .bazelrc.user:
-    build --config=lintonbuild
+    build --config lintonbuild
         OR
-    build --config=nolintonbuild
+    build --config nolintonbuild
 The former will run lint checks while you build. This will make incremental builds
 slightly slower and introduce a noticeable delay in first-time build setup.`
 			}
@@ -372,16 +331,13 @@ slightly slower and introduce a noticeable delay in first-time build setup.`
 		},
 	},
 	{
-		name: "engflow_auth",
+		name: "engflow_certificates",
 		check: func(d *dev, ctx context.Context, cfg doctorConfig) string {
-			if !d.checkFileExistsUnderHomedir(".config/engflow_auth/tokens/mesolite.cluster.engflow.com") {
-				return "Make sure you've installed engflow_auth (https://github.com/EngFlow/auth), added it to your PATH, and login using `engflow_auth login -store=file https://mesolite.cluster.engflow.com`."
+			if !d.checkLinePresenceInBazelRcUser(cfg.workspace, "build:engflow --tls_client_certificate=") {
+				return fmt.Sprintf("Must specify the --tls_client_certificate to use for EngFlow builds in %s/.bazelrc.user. This is a line of the form: `build:engflow --tls_client_certificate=/path/to/file`.", cfg.workspace)
 			}
-			if d.checkLinePresenceInBazelRcUser(cfg.workspace, "build:engflow --tls_client_certificate=") {
-				return fmt.Sprintf("Please remove the --tls_client_certificate line from %s/.bazelrc.user. It is no longer necessary when using engflow_auth.", cfg.workspace)
-			}
-			if d.checkLinePresenceInBazelRcUser(cfg.workspace, "build:engflow --tls_client_key=") {
-				return fmt.Sprintf("Please remove the --tls_client_key line from %s/.bazelrc.user. It is no longer necessary when using engflow_auth.", cfg.workspace)
+			if !d.checkLinePresenceInBazelRcUser(cfg.workspace, "build:engflow --tls_client_key=") {
+				return fmt.Sprintf("Must specify the --tls_client_key to use for EngFlow builds in %s/.bazelrc.user. This is a line of the form: `build:engflow --tls_client_key=/path/to/file`.", cfg.workspace)
 			}
 			return ""
 		},
@@ -939,19 +895,4 @@ func (d *dev) removeAllPrefixesInFile(filename, prefixToRemove string) error {
 	outStr := out.String()
 	outStr = strings.TrimSpace(outStr) + "\n"
 	return d.os.WriteFile(filename, outStr)
-}
-
-// checkFileExistsUnderHomedir checks whether the given file or path is present
-// under the home directory. If it is, this function returns true. Otherwise,
-// it returns false.
-func (d *dev) checkFileExistsUnderHomedir(expectedFile string) bool {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	exists, err := d.os.Exists(filepath.Join(homeDir, expectedFile))
-	if err != nil {
-		return false
-	}
-	return exists
 }

@@ -6,9 +6,7 @@
 package rangefeed
 
 import (
-	"context"
 	"math/rand"
-	"slices"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -17,8 +15,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/randgen"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc/keyside"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/storageutils"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
@@ -26,6 +24,30 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/stretchr/testify/require"
+)
+
+type kvs = storageutils.KVs
+
+var (
+	pointKV = storageutils.PointKV
+	rangeKV = storageutils.RangeKV
+)
+var (
+	testKey            = roachpb.Key("/db1")
+	testTxnID          = uuid.MakeV4()
+	testIsolationLevel = isolation.Serializable
+	testSpan           = roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("z")}
+	testTs             = hlc.Timestamp{WallTime: 1}
+	testStartKey       = roachpb.Key("a")
+	testEndKey         = roachpb.Key("z")
+	testValue          = []byte("1")
+	testPrevValue      = []byte("1234")
+	testSSTKVs         = kvs{
+		pointKV("a", 1, "1"),
+		pointKV("b", 1, "2"),
+		pointKV("c", 1, "3"),
+		rangeKV("d", "e", 1, ""),
+	}
 )
 
 type testData struct {
@@ -44,34 +66,9 @@ type testData struct {
 	omitInRangefeeds bool
 }
 
-// testSSTKVs returns a set of key-value pairs that can be used for testing.
-// Note that the value output depends on storage.disableSimpleValueEncoding.
-func testSSTKVs() storageutils.KVs {
-	return storageutils.KVs{
-		storageutils.PointKV("a", 1, "1"),
-		storageutils.PointKV("b", 1, "2"),
-		storageutils.PointKV("c", 1, "3"),
-		storageutils.RangeKV("d", "e", 1, ""),
-	}
-}
-
-func generateStaticTestdata(t *testing.T) testData {
-	storage.DisableMetamorphicSimpleValueEncoding(t)
-
-	var (
-		testKey            = roachpb.Key("/db1")
-		testTxnID          = uuid.MakeV4()
-		testIsolationLevel = isolation.Serializable
-		testSpan           = roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("z")}
-		testTs             = hlc.Timestamp{WallTime: 1}
-		testStartKey       = roachpb.Key("a")
-		testEndKey         = roachpb.Key("z")
-		testValue          = []byte("1")
-		testPrevValue      = []byte("1234")
-	)
-
+func generateStaticTestdata() testData {
 	return testData{
-		kvs:              testSSTKVs(),
+		kvs:              testSSTKVs,
 		span:             testSpan,
 		key:              testKey,
 		timestamp:        testTs,
@@ -95,7 +92,8 @@ func generateStaticTestdata(t *testing.T) testData {
 // be careful and account the memory usage of the additional underlying data
 // structure. Otherwise, you can simply update the expected values in this test.
 func TestEventSizeCalculation(t *testing.T) {
-	data := generateStaticTestdata(t)
+	st := cluster.MakeTestingClusterSettings()
+	data := generateStaticTestdata()
 
 	key := data.key
 	timestamp := data.timestamp
@@ -113,16 +111,7 @@ func TestEventSizeCalculation(t *testing.T) {
 	omitInRangefeeds := data.omitInRangefeeds
 
 	span := data.span
-
-	// Fix settings that can affect the size of the sstable.
-	st := cluster.MakeTestingClusterSettings()
-	storage.CompressionAlgorithmStorage.Override(context.Background(), &st.SV, storage.StoreCompressionSnappy)
-	storage.IngestionValueBlocksEnabled.Override(context.Background(), &st.SV, true)
 	sst, _, _ := storageutils.MakeSST(t, st, data.kvs)
-	// The test cares about cap(sst); this can hide bugs where the sst
-	// generation is non-deterministic and results in slightly different
-	// lengths. Clip the slice to its length half the time to detect this.
-	sst = slices.Clip(sst)
 
 	for _, tc := range []struct {
 		name                   string
@@ -140,7 +129,7 @@ func TestEventSizeCalculation(t *testing.T) {
 			expectedCurrMemUsage: int64(241),
 			actualCurrMemUsage: eventOverhead + mvccLogicalOp + mvccWriteValueOp +
 				int64(cap(key)) + int64(cap(value)) + int64(cap(prevValue)),
-			expectedFutureMemUsage: int64(217),
+			expectedFutureMemUsage: int64(209),
 			actualFutureMemUsage: futureEventBaseOverhead + rangefeedValueOverhead +
 				int64(cap(key)) + int64(cap(value)) + int64(cap(prevValue)),
 		},
@@ -152,8 +141,8 @@ func TestEventSizeCalculation(t *testing.T) {
 			expectedCurrMemUsage: int64(202),
 			actualCurrMemUsage: eventOverhead + mvccLogicalOp + mvccDeleteRangeOp +
 				int64(cap(startKey)) + int64(cap(endKey)),
-			expectedFutureMemUsage: int64(170),
-			actualFutureMemUsage: futureEventBaseOverhead + rangefeedDeleteRangeOverhead +
+			expectedFutureMemUsage: int64(202),
+			actualFutureMemUsage: futureEventBaseOverhead + rangefeedValueOverhead +
 				int64(cap(startKey)) + int64(cap(endKey)),
 		},
 		{
@@ -185,7 +174,7 @@ func TestEventSizeCalculation(t *testing.T) {
 			expectedCurrMemUsage: int64(273),
 			actualCurrMemUsage: eventOverhead + mvccLogicalOp + mvccCommitIntentOp +
 				int64(cap(txnID)) + int64(cap(key)) + int64(cap(value)) + int64(cap(prevValue)),
-			expectedFutureMemUsage: int64(217),
+			expectedFutureMemUsage: int64(209),
 			actualFutureMemUsage: futureEventBaseOverhead + rangefeedValueOverhead +
 				int64(cap(key)) + int64(cap(value)) + int64(cap(prevValue)),
 		},
@@ -214,7 +203,7 @@ func TestEventSizeCalculation(t *testing.T) {
 			ev:                     event{ct: ctEvent{Timestamp: data.timestamp}},
 			expectedCurrMemUsage:   int64(80),
 			actualCurrMemUsage:     eventOverhead,
-			expectedFutureMemUsage: int64(168),
+			expectedFutureMemUsage: int64(160),
 			actualFutureMemUsage:   futureEventBaseOverhead + rangefeedCheckpointOverhead,
 		},
 		{
@@ -222,16 +211,16 @@ func TestEventSizeCalculation(t *testing.T) {
 			ev:                     event{initRTS: true},
 			expectedCurrMemUsage:   int64(80),
 			actualCurrMemUsage:     eventOverhead,
-			expectedFutureMemUsage: int64(168),
+			expectedFutureMemUsage: int64(160),
 			actualFutureMemUsage:   futureEventBaseOverhead + rangefeedCheckpointOverhead,
 		},
 		{
 			name:                 "sstEvent event",
 			ev:                   event{sst: &sstEvent{data: sst, span: span, ts: timestamp}},
-			expectedCurrMemUsage: int64(1161),
+			expectedCurrMemUsage: int64(1962),
 			actualCurrMemUsage: eventOverhead + sstEventOverhead +
 				int64(cap(sst)+cap(span.Key)+cap(span.EndKey)),
-			expectedFutureMemUsage: int64(1185),
+			expectedFutureMemUsage: int64(1978),
 			actualFutureMemUsage: futureEventBaseOverhead + rangefeedSSTTableOverhead +
 				int64(cap(sst)+cap(span.Key)+cap(span.EndKey)),
 		},
@@ -245,7 +234,6 @@ func TestEventSizeCalculation(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Helper()
 			mem := MemUsage(tc.ev)
 			require.Equal(t, tc.expectedCurrMemUsage, tc.actualCurrMemUsage)
 			require.Equal(t, tc.expectedFutureMemUsage, tc.actualFutureMemUsage)
@@ -256,6 +244,11 @@ func TestEventSizeCalculation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func generateRandomizedTs(rand *rand.Rand) hlc.Timestamp {
+	// Avoid generating zero timestamp which will equal to an empty event.
+	return hlc.Timestamp{WallTime: int64(rand.Intn(100)) + 1}
 }
 
 func generateRandomizedBytes(rand *rand.Rand) []byte {
@@ -272,6 +265,33 @@ func generateRandomizedBytes(rand *rand.Rand) []byte {
 		panic(err)
 	}
 	return key
+}
+
+func generateStartAndEndKey(rand *rand.Rand) (roachpb.Key, roachpb.Key) {
+	start := rand.Intn(2 << 20)
+	end := start + rand.Intn(2<<20)
+	startDatum := tree.NewDInt(tree.DInt(start))
+	endDatum := tree.NewDInt(tree.DInt(end))
+	const tableID = 42
+
+	startKey, err := keyside.Encode(
+		keys.SystemSQLCodec.TablePrefix(tableID),
+		startDatum,
+		encoding.Ascending,
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	endKey, err := keyside.Encode(
+		keys.SystemSQLCodec.TablePrefix(tableID),
+		endDatum,
+		encoding.Ascending,
+	)
+	if err != nil {
+		panic(err)
+	}
+	return startKey, endKey
 }
 
 func generateRandomizedTxnId(rand *rand.Rand) uuid.UUID {
@@ -298,17 +318,17 @@ func generateRandomTestData(rand *rand.Rand) testData {
 	startKey, endkey := generateStartAndEndKey(rand)
 	return testData{
 		numOfLogicalOps:  rand.Intn(100) + 1, // Avoid 0 (empty event)
-		kvs:              testSSTKVs(),
+		kvs:              testSSTKVs,
 		span:             generateRandomizedSpan(rand).AsRawSpanWithNoLocals(),
 		key:              generateRandomizedBytes(rand),
-		timestamp:        GenerateRandomizedTs(rand, 100 /* maxTime */),
+		timestamp:        generateRandomizedTs(rand),
 		value:            generateRandomizedBytes(rand),
 		startKey:         startKey,
 		endKey:           endkey,
 		txnID:            generateRandomizedTxnId(rand),
 		txnKey:           generateRandomizedBytes(rand),
 		txnIsoLevel:      isolation.Levels()[rand.Intn(len(isolation.Levels()))],
-		txnMinTimestamp:  GenerateRandomizedTs(rand, 100 /* maxTime */),
+		txnMinTimestamp:  generateRandomizedTs(rand),
 		omitInRangefeeds: rand.Intn(2) == 1,
 	}
 }

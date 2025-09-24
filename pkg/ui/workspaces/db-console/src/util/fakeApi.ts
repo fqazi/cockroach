@@ -3,17 +3,21 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { api as clusterUiApi } from "@cockroachlabs/cluster-ui";
-import { SqlTxnResult } from "@cockroachlabs/cluster-ui/dist/types/api";
-import moment from "moment-timezone";
 import * as $protobuf from "protobufjs";
+import { SqlTxnResult } from "@cockroachlabs/cluster-ui/dist/types/api";
 
+import { api as clusterUiApi } from "@cockroachlabs/cluster-ui";
 import { cockroach } from "src/js/protos";
 import { API_PREFIX, STATUS_PREFIX } from "src/util/api";
 import fetchMock from "src/util/fetch-mock";
+import moment from "moment-timezone";
 
-const { SettingsResponse, TableIndexStatsResponse, NodesResponse } =
-  cockroach.server.serverpb;
+const {
+  SettingsResponse,
+  TableStatsResponse,
+  TableIndexStatsResponse,
+  NodesResponse,
+} = cockroach.server.serverpb;
 
 // These test-time functions provide typesafe wrappers around fetchMock,
 // stubbing HTTP responses from the admin API.
@@ -26,7 +30,7 @@ const { SettingsResponse, TableIndexStatsResponse, NodesResponse } =
 //   describe("The thing I'm testing", function() {
 //     it("works like this", function() {
 //       // 1. Set up a fake response from the /databases endpoint.
-//       fakeApi.stuatabases({
+//       fakeApi.stubDatabases({
 //         databases: ["one", "two", "three"],
 //       });
 //
@@ -63,6 +67,20 @@ export function stubNodesUI(
   stubGet(`/nodes_ui`, NodesResponse.encode(response), STATUS_PREFIX);
 }
 
+export function stubTableStats(
+  database: string,
+  table: string,
+  response: cockroach.server.serverpb.ITableStatsResponse,
+) {
+  stubGet(
+    `/databases/${encodeURIComponent(database)}/tables/${encodeURIComponent(
+      table,
+    )}/stats`,
+    TableStatsResponse.encode(response),
+    API_PREFIX,
+  );
+}
+
 export function stubIndexStats(
   database: string,
   table: string,
@@ -82,7 +100,7 @@ function stubGet(path: string, writer: $protobuf.Writer, prefix: string) {
 export function stubSqlApiCall<T>(
   req: clusterUiApi.SqlExecutionRequest,
   mockTxnResults: mockSqlTxnResult<T>[],
-  times = 1,
+  times: number = 1,
 ) {
   const firstError = mockTxnResults.find(mock => mock.error != null)?.error;
   let err: clusterUiApi.SqlExecutionErrorMessage;

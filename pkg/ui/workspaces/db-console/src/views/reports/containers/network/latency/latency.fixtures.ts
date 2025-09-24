@@ -3,11 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import moment from "moment-timezone";
-
 import { ILatencyProps } from ".";
-
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import NodeLivenessStatus = cockroach.kv.kvserver.liveness.livenesspb.NodeLivenessStatus;
 import IPeer = cockroach.server.serverpb.NetworkConnectivityResponse.IPeer;
 import ConnectionStatus = cockroach.server.serverpb.NetworkConnectivityResponse.ConnectionStatus;

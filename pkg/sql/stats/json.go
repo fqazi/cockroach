@@ -23,7 +23,6 @@ import (
 //
 // See TableStatistic for a description of the fields.
 type JSONStatistic struct {
-	ID            uint64   `json:"id,omitempty"`
 	Name          string   `json:"name,omitempty"`
 	CreatedAt     string   `json:"created_at"`
 	Columns       []string `json:"columns"`
@@ -60,10 +59,7 @@ func (js *JSONStatistic) SetHistogram(h *HistogramData) error {
 	if typ == nil {
 		return fmt.Errorf("histogram type is unset")
 	}
-	// Use the fully qualified type name in case this is part of injected stats
-	// done across databases. If it is a user-defined type, we need the type name
-	// resolution to be for the correct database.
-	js.HistogramColumnType = typ.SQLStringFullyQualified()
+	js.HistogramColumnType = typ.SQLString()
 	js.HistogramBuckets = make([]JSONHistoBucket, 0, len(h.Buckets))
 	js.HistogramVersion = h.Version
 	var a tree.DatumAlloc
@@ -85,7 +81,7 @@ func (js *JSONStatistic) SetHistogram(h *HistogramData) error {
 			NumEq:         b.NumEq,
 			NumRange:      b.NumRange,
 			DistinctRange: b.DistinctRange,
-			UpperBound:    tree.AsStringWithFlags(datum, tree.FmtExport|tree.FmtAlwaysQualifyUserDefinedTypeNames),
+			UpperBound:    tree.AsStringWithFlags(datum, tree.FmtExport),
 		})
 	}
 	return nil

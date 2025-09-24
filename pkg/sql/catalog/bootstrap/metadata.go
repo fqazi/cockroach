@@ -43,13 +43,7 @@ type MetadataSchema struct {
 	otherSplitIDs []uint32
 	otherKV       []roachpb.KeyValue
 	ids           catalog.DescriptorIDSet
-
-	// dynamicSystemTableIDOffset offsets the dynamically allocated IDs. So, if
-	// this is set to 500, the ids will be 501, 502, etc.
-	dynamicSystemTableIDOffset uint32
 }
-
-const NoOffset = 0
 
 // MakeMetadataSchema constructs a new MetadataSchema value which constructs
 // the "system" database.
@@ -57,9 +51,8 @@ func MakeMetadataSchema(
 	codec keys.SQLCodec,
 	defaultZoneConfig *zonepb.ZoneConfig,
 	defaultSystemZoneConfig *zonepb.ZoneConfig,
-	dynamicSystemTableIDOffset uint32,
 ) MetadataSchema {
-	ms := MetadataSchema{codec: codec, dynamicSystemTableIDOffset: dynamicSystemTableIDOffset}
+	ms := MetadataSchema{codec: codec}
 	addSystemDatabaseToSchema(&ms, defaultZoneConfig, defaultSystemZoneConfig)
 	return ms
 }
@@ -86,7 +79,7 @@ func (ms *MetadataSchema) AddDescriptor(desc catalog.Descriptor) {
 	switch id := desc.GetID(); id {
 	case descpb.InvalidID:
 		if _, isTable := desc.(catalog.TableDescriptor); !isTable {
-			log.Dev.Fatalf(context.TODO(), "only system tables may have dynamic IDs, got %T for %s",
+			log.Fatalf(context.TODO(), "only system tables may have dynamic IDs, got %T for %s",
 				desc, desc.GetName())
 		}
 		mut := desc.NewBuilder().BuildCreatedMutable().(*tabledesc.Mutable)
@@ -94,7 +87,7 @@ func (ms *MetadataSchema) AddDescriptor(desc catalog.Descriptor) {
 		desc = mut.ImmutableCopy()
 	default:
 		if ms.ids.Contains(id) {
-			log.Dev.Fatalf(context.TODO(), "adding descriptor with duplicate ID: %v", desc)
+			log.Fatalf(context.TODO(), "adding descriptor with duplicate ID: %v", desc)
 		}
 	}
 	ms.descs = append(ms.descs, desc)
@@ -190,7 +183,7 @@ func (ms MetadataSchema) GetInitialValues() ([]roachpb.KeyValue, []roachpb.RKey)
 		// Create descriptor metadata key.
 		descValue := roachpb.Value{}
 		if err := descValue.SetProto(desc.DescriptorProto()); err != nil {
-			log.Dev.Fatalf(context.TODO(), "could not marshal %v", desc)
+			log.Fatalf(context.TODO(), "could not marshal %v", desc)
 		}
 		add(catalogkeys.MakeDescMetadataKey(ms.codec, desc.GetID()), descValue)
 
@@ -328,7 +321,7 @@ func InitialValuesFromString(
 	}
 	// Add back the filtered out tenant end key.
 	if !codec.ForSystemTenant() {
-		splits = append(splits, roachpb.RKey(codec.TenantEndKey()))
+		splits = append(splits, roachpb.RKey(p.PrefixEnd()))
 	}
 	return kvs, splits, nil
 }
@@ -354,7 +347,7 @@ func (ms MetadataSchema) FirstNonSystemDescriptorID() descpb.ID {
 }
 
 func (ms MetadataSchema) allocateID() (nextID descpb.ID) {
-	maxID := descpb.ID(keys.MaxReservedDescID) + descpb.ID(ms.dynamicSystemTableIDOffset)
+	maxID := descpb.ID(keys.MaxReservedDescID)
 	for _, d := range ms.descs {
 		if d.GetID() > maxID {
 			maxID = d.GetID()
@@ -457,22 +450,6 @@ func addSystemDescriptorsToSchema(target *MetadataSchema) {
 	target.AddDescriptor(systemschema.TransactionExecInsightsTable)
 	target.AddDescriptor(systemschema.StatementExecInsightsTable)
 
-	// Tables introduced in 24.3
-	target.AddDescriptor(systemschema.TableMetadata)
-
-	// Tables introduced in 25.1
-	target.AddDescriptor(systemschema.SystemJobProgressTable)
-	target.AddDescriptor(systemschema.SystemJobProgressHistoryTable)
-	target.AddDescriptor(systemschema.SystemJobStatusTable)
-	target.AddDescriptor(systemschema.SystemJobMessageTable)
-	target.AddDescriptor(systemschema.PreparedTransactionsTable)
-
-	// Tables introduced in 25.4
-	target.AddDescriptor(systemschema.InspectErrorsTable)
-	target.AddDescriptor(systemschema.TransactionDiagnosticsRequestsTable)
-	target.AddDescriptor(systemschema.TransactionDiagnosticsTable)
-	target.AddDescriptor(systemschema.StatementHintsTable)
-
 	// Adding a new system table? It should be added here to the metadata schema,
 	// and also created as a migration for older clusters.
 	// If adding a call to AddDescriptor or AddDescriptorForSystemTenant, please
@@ -485,7 +462,7 @@ func addSystemDescriptorsToSchema(target *MetadataSchema) {
 // NumSystemTablesForSystemTenant is the number of system tables defined on
 // the system tenant. This constant is only defined to avoid having to manually
 // update auto stats tests every time a new system table is added.
-const NumSystemTablesForSystemTenant = 66
+const NumSystemTablesForSystemTenant = 56
 
 // addSplitIDs adds a split point for each of the PseudoTableIDs to the supplied
 // MetadataSchema.
@@ -529,12 +506,6 @@ func InitialZoneConfigKVs(
 	metaRangeZoneConf := protoutil.Clone(defaultSystemZoneConfig).(*zonepb.ZoneConfig)
 	livenessZoneConf := protoutil.Clone(defaultSystemZoneConfig).(*zonepb.ZoneConfig)
 
-	// The timeseries zone should inherit everything except for gc.ttlseconds from
-	// the default zone. We create it explicitly here so it's clearly visible
-	// when using SHOW ALL ZONE CONFIGURATIONS.
-	timeseriesZoneConf := zonepb.NewZoneConfig()
-	timeseriesZoneConf.GC = &zonepb.GCPolicy{TTLSeconds: defaultZoneConfig.GC.TTLSeconds}
-
 	// .meta zone config entry with a shorter GC time.
 	metaRangeZoneConf.GC.TTLSeconds = 60 * 60 // 1h
 
@@ -558,7 +529,6 @@ func InitialZoneConfigKVs(
 	add(keys.MetaRangesID, metaRangeZoneConf)
 	add(keys.LivenessRangesID, livenessZoneConf)
 	add(keys.SystemRangesID, systemZoneConf)
-	add(keys.TimeseriesRangesID, timeseriesZoneConf)
 	add(keys.SystemDatabaseID, systemZoneConf)
 	add(keys.ReplicationConstraintStatsTableID, replicationConstraintStatsZoneConf)
 	add(keys.ReplicationStatsTableID, replicationStatsZoneConf)
@@ -633,7 +603,7 @@ func addSystemTenantEntry(target *MetadataSchema) {
 }
 
 func testingMinUserDescID(codec keys.SQLCodec) uint32 {
-	ms := MakeMetadataSchema(codec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef(), NoOffset)
+	ms := MakeMetadataSchema(codec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef())
 	return uint32(ms.FirstNonSystemDescriptorID())
 }
 
@@ -669,7 +639,7 @@ func GetAndHashInitialValuesToString(tenantID uint64) (initialValues string, has
 	if tenantID > 0 {
 		codec = keys.MakeSQLCodec(roachpb.MustMakeTenantID(tenantID))
 	}
-	ms := MakeMetadataSchema(codec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef(), NoOffset)
+	ms := MakeMetadataSchema(codec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef())
 
 	initialValues = InitialValuesToString(ms)
 	h := sha256.Sum256([]byte(initialValues))

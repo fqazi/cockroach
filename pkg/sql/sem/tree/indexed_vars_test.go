@@ -53,9 +53,9 @@ func TestIndexedVars(t *testing.T) {
 
 	// Verify the expression evaluates correctly.
 	ctx := context.Background()
-	semaContext := tree.MakeSemaContext(nil /* resolver */)
+	semaContext := tree.MakeSemaContext()
 	semaContext.IVarContainer = c
-	typedExpr, err := expr.TypeCheck(ctx, &semaContext, types.AnyElement)
+	typedExpr, err := expr.TypeCheck(ctx, &semaContext, types.Any)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,15 +75,13 @@ func TestIndexedVars(t *testing.T) {
 
 	// Verify the expression evaluates correctly.
 	evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
-	defer evalCtx.Stop(ctx)
+	defer evalCtx.Stop(context.Background())
 	evalCtx.IVarContainer = c
 	d, err := eval.Expr(ctx, evalCtx, typedExpr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cmp, err := d.Compare(ctx, evalCtx, tree.NewDInt(3+5*6)); err != nil {
-		t.Fatal(err)
-	} else if cmp != 0 {
+	if d.Compare(evalCtx, tree.NewDInt(3+5*6)) != 0 {
 		t.Errorf("invalid result %s (expected %d)", d, 3+5*6)
 	}
 }

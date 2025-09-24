@@ -39,6 +39,7 @@ var ClosedTimestampPropagationSlack = settings.RegisterDurationSetting(
 		"propagate from a leaseholder to followers. This is taken into account by "+
 		"follower_read_timestamp().",
 	time.Second,
+	settings.NonNegativeDuration,
 )
 
 // getFollowerReadLag returns the (negative) offset duration from hlc.Now()
@@ -80,7 +81,7 @@ func isEnterpriseEnabled(st *cluster.Settings) bool {
 	return utilccl.IsEnterpriseEnabled(st, "follower reads")
 }
 
-func checkFollowerReadsEnabled(ctx context.Context, st *cluster.Settings) bool {
+func checkFollowerReadsEnabled(st *cluster.Settings) bool {
 	if !kvserver.FollowerReadsEnabled.Get(&st.SV) {
 		return false
 	}
@@ -102,7 +103,6 @@ func evalFollowerReadOffset(st *cluster.Settings) (time.Duration, error) {
 // serviceable as a follower read were the request to be sent to a follower
 // replica.
 func closedTimestampLikelySufficient(
-	ctx context.Context,
 	st *cluster.Settings,
 	clock *hlc.Clock,
 	ctPolicy roachpb.RangeClosedTimestampPolicy,
@@ -124,17 +124,15 @@ func closedTimestampLikelySufficient(
 // canSendToFollower implements the logic for checking whether a batch request
 // may be sent to a follower.
 func canSendToFollower(
-	ctx context.Context,
 	st *cluster.Settings,
 	clock *hlc.Clock,
 	ctPolicy roachpb.RangeClosedTimestampPolicy,
 	ba *kvpb.BatchRequest,
 ) bool {
-	result := kvserver.BatchCanBeEvaluatedOnFollower(ctx, ba) &&
-		closedTimestampLikelySufficient(ctx, st, clock, ctPolicy, ba.RequiredFrontier()) &&
+	return kvserver.BatchCanBeEvaluatedOnFollower(ba) &&
+		closedTimestampLikelySufficient(st, clock, ctPolicy, ba.RequiredFrontier()) &&
 		// NOTE: this call can be expensive, so perform it last. See #62447.
-		checkFollowerReadsEnabled(ctx, st)
-	return result
+		checkFollowerReadsEnabled(st)
 }
 
 type followerReadOracle struct {
@@ -163,7 +161,7 @@ func (o *followerReadOracle) ChoosePreferredReplica(
 	queryState replicaoracle.QueryState,
 ) (_ roachpb.ReplicaDescriptor, ignoreMisplannedRanges bool, _ error) {
 	var oracle replicaoracle.Oracle
-	if o.useClosestOracle(ctx, txn, ctPolicy) {
+	if o.useClosestOracle(txn, ctPolicy) {
 		oracle = o.closest
 	} else {
 		oracle = o.binPacking
@@ -172,7 +170,7 @@ func (o *followerReadOracle) ChoosePreferredReplica(
 }
 
 func (o *followerReadOracle) useClosestOracle(
-	ctx context.Context, txn *kv.Txn, ctPolicy roachpb.RangeClosedTimestampPolicy,
+	txn *kv.Txn, ctPolicy roachpb.RangeClosedTimestampPolicy,
 ) bool {
 	// NOTE: this logic is almost identical to canSendToFollower, except that it
 	// operates on a *kv.Txn instead of a kvpb.BatchRequest. As a result, the
@@ -188,9 +186,9 @@ func (o *followerReadOracle) useClosestOracle(
 	// BatchRequests in the DistSender. This would hurt performance, but would
 	// not violate correctness.
 	return txn != nil &&
-		closedTimestampLikelySufficient(ctx, o.st, o.clock, ctPolicy, txn.RequiredFrontier()) &&
+		closedTimestampLikelySufficient(o.st, o.clock, ctPolicy, txn.RequiredFrontier()) &&
 		// NOTE: this call can be expensive, so perform it last. See #62447.
-		checkFollowerReadsEnabled(ctx, o.st)
+		checkFollowerReadsEnabled(o.st)
 }
 
 // followerReadOraclePolicy is a leaseholder choosing policy that detects
@@ -259,7 +257,7 @@ func (r bulkOracle) ChoosePreferredReplica(
 	_ roachpb.RangeClosedTimestampPolicy,
 	qs replicaoracle.QueryState,
 ) (_ roachpb.ReplicaDescriptor, ignoreMisplannedRanges bool, _ error) {
-	if leaseholder != nil && !checkFollowerReadsEnabled(ctx, r.cfg.Settings) {
+	if leaseholder != nil && !checkFollowerReadsEnabled(r.cfg.Settings) {
 		return *leaseholder, false, nil
 	}
 

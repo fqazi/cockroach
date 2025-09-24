@@ -20,7 +20,7 @@ import (
 
 func TestIndexPredicateValidator_Validate(t *testing.T) {
 	ctx := context.Background()
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 
 	// Trick to get the init() for the builtins package to run.
 	_ = builtins.AllBuiltinNames()

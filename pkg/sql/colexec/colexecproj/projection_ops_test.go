@@ -143,7 +143,7 @@ func TestRandomComparisons(t *testing.T) {
 		lVec := b.ColVec(0)
 		rVec := b.ColVec(1)
 		ret := b.ColVec(2)
-		for _, vec := range []*coldata.Vec{lVec, rVec} {
+		for _, vec := range []coldata.Vec{lVec, rVec} {
 			coldatatestutils.RandomVec(
 				coldatatestutils.RandomVecArgs{
 					Rand:             rng,
@@ -162,8 +162,7 @@ func TestRandomComparisons(t *testing.T) {
 		}
 		for _, cmpOpSymbol := range supportedCmpOps {
 			for i := range lDatums {
-				cmp, err := lDatums[i].Compare(ctx, &evalCtx, rDatums[i])
-				require.NoError(t, err)
+				cmp := lDatums[i].Compare(&evalCtx, rDatums[i])
 				var b bool
 				switch cmpOpSymbol {
 				case treecmp.EQ:
@@ -182,7 +181,7 @@ func TestRandomComparisons(t *testing.T) {
 				expected[i] = b
 			}
 			cmpOp := treecmp.MakeComparisonOperator(cmpOpSymbol)
-			input := colexectestutils.NewChunkingBatchSource(testAllocator, typs, []*coldata.Vec{lVec, rVec, ret}, numTuples)
+			input := colexectestutils.NewChunkingBatchSource(testAllocator, typs, []coldata.Vec{lVec, rVec, ret}, numTuples)
 			op, err := colexectestutils.CreateTestProjectingOperator(
 				ctx, flowCtx, input, []*types.T{typ, typ},
 				fmt.Sprintf("@1 %s @2", cmpOp), testMemAcc,

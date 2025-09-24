@@ -56,11 +56,6 @@ const (
 	JSONFetchValPath
 	JSONFetchTextPath
 	TSMatch
-	Distance
-	CosDistance
-	NegInnerProduct
-	FirstContains
-	FirstContainedBy
 
 	NumBinaryOperatorSymbols
 )
@@ -86,11 +81,6 @@ var binaryOpName = [...]string{
 	JSONFetchValPath:  "#>",
 	JSONFetchTextPath: "#>>",
 	TSMatch:           "@@",
-	Distance:          "<->",
-	CosDistance:       "<=>",
-	NegInnerProduct:   "<#>",
-	FirstContains:     "?@>",
-	FirstContainedBy:  "?<@",
 }
 
 // IsPadded returns whether the binary operator needs to be padded.

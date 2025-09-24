@@ -115,9 +115,7 @@ func TestCreateStatementDiagnosticsReportWithViewActivityOptions(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
-		DefaultDRPCOption: base.TestDRPCDisabled,
-	})
+	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
 	defer s.Stopper().Stop(context.Background())
 	db := sqlutils.MakeSQLRunner(sqlDB)
 
@@ -198,7 +196,7 @@ func TestCreateStatementDiagnosticsReportWithViewActivityOptions(t *testing.T) {
 		},
 		"SELECT crdb_internal.request_statement_bundle('SELECT _', 0::FLOAT, 0::INTERVAL, 0::INTERVAL)",
 	)
-	require.Contains(t, err.Error(), "users with VIEWACTIVITYREDACTED privilege can only request redacted statement bundles")
+	require.Contains(t, err.Error(), "VIEWACTIVITYREDACTED privilege cannot request statement bundle")
 }
 
 func TestStatementDiagnosticsCompleted(t *testing.T) {

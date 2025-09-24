@@ -11,7 +11,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/errors"
-	"github.com/spf13/pflag"
 )
 
 // New wraps a delegate vm.Provider to only return its name and
@@ -28,14 +27,6 @@ type provider struct {
 	unimplemented string
 }
 
-// ConfigureProviderFlags implements vm.Provider.
-func (p *provider) ConfigureProviderFlags(*pflag.FlagSet, vm.MultipleProjectsOption) {
-}
-
-func (p *provider) ConfigureClusterCleanupFlags(*pflag.FlagSet) {
-
-}
-
 func (p *provider) SupportsSpotVMs() bool {
 	return false
 }
@@ -47,12 +38,6 @@ func (p *provider) GetPreemptedSpotVMs(
 }
 
 func (p *provider) GetHostErrorVMs(
-	l *logger.Logger, vms vm.List, since time.Time,
-) ([]string, error) {
-	return nil, nil
-}
-
-func (p *provider) GetLiveMigrationVMs(
 	l *logger.Logger, vms vm.List, since time.Time,
 ) ([]string, error) {
 	return nil, nil
@@ -129,18 +114,12 @@ func (p *provider) RemoveLabels(l *logger.Logger, vms vm.List, labels []string) 
 // Create implements vm.Provider and returns Unimplemented.
 func (p *provider) Create(
 	l *logger.Logger, names []string, opts vm.CreateOpts, providerOpts vm.ProviderOpts,
-) (vm.List, error) {
-	return nil, errors.Newf("%s", p.unimplemented)
+) error {
+	return errors.Newf("%s", p.unimplemented)
 }
 
 // Grow implements vm.Provider and returns Unimplemented.
-func (p *provider) Grow(
-	l *logger.Logger, vms vm.List, clusterName string, names []string,
-) (vm.List, error) {
-	return nil, errors.Newf("%s", p.unimplemented)
-}
-
-func (p *provider) Shrink(*logger.Logger, vm.List, string) error {
+func (p *provider) Grow(l *logger.Logger, vms vm.List, clusterName string, names []string) error {
 	return errors.Newf("%s", p.unimplemented)
 }
 

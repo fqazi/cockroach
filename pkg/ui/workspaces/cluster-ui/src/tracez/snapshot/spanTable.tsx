@@ -2,25 +2,23 @@
 //
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import { Nodes, Caution, Plus, Minus } from "@cockroachlabs/icons";
-import classNames from "classnames/bind";
-import Long from "long";
 import moment from "moment-timezone";
 import React, { useState } from "react";
-import { Link } from "react-router-dom";
-
+import { Nodes, Caution, Plus, Minus } from "@cockroachlabs/icons";
 import { Span, Snapshot } from "src/api/tracezApi";
-import { Dropdown } from "src/dropdown";
 import { EmptyTable } from "src/empty";
-import { CircleFilled } from "src/icon";
 import { ColumnDescriptor, SortSetting, SortedTable } from "src/sortedtable";
-import { TimestampToMoment } from "src/util";
 
 import styles from "../snapshot.module.scss";
-
-import RecordingMode = cockroach.util.tracing.tracingpb.RecordingMode;
+import classNames from "classnames/bind";
+import { TimestampToMoment } from "src/util";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import ISpanTag = cockroach.server.serverpb.ISpanTag;
+import RecordingMode = cockroach.util.tracing.tracingpb.RecordingMode;
+import { CircleFilled } from "src/icon";
+import { Dropdown } from "src/dropdown";
+import { Link } from "react-router-dom";
+import Long from "long";
 const cx = classNames.bind(styles);
 
 class SpanSortedTable extends SortedTable<Span> {}

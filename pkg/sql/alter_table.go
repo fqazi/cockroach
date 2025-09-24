@@ -10,6 +10,7 @@ import (
 	"context"
 	gojson "encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -18,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/auditlogging/auditevents"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
@@ -28,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/resolver"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemaexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
-	"github.com/cockroachdb/cockroach/pkg/sql/paramparse"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
@@ -36,11 +35,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/semenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
@@ -54,7 +51,6 @@ import (
 )
 
 type alterTableNode struct {
-	zeroInputPlanNode
 	n         *tree.AlterTable
 	prefix    catalog.ResolvedObjectPrefix
 	tableDesc *tabledesc.Mutable
@@ -105,7 +101,7 @@ func (p *planner) AlterTable(ctx context.Context, n *tree.AlterTable) (planNode,
 
 	// Disallow schema changes if this table's schema is locked, unless it is to
 	// set/reset the "schema_locked" storage parameter.
-	if err = p.checkSchemaChangeIsAllowed(ctx, tableDesc, n); err != nil {
+	if err = checkTableSchemaUnlocked(tableDesc); err != nil && !isSetOrResetSchemaLocked(n) {
 		return nil, err
 	}
 
@@ -279,7 +275,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 					n.tableDesc,
 					tableName,
 					columns,
-					idxtype.FORWARD,
+					false, /* isInverted */
 					false, /* isNewTable */
 					params.p.SemaCtx(),
 					params.ExecCfg().Settings.Version.ActiveVersion(params.ctx),
@@ -301,6 +297,11 @@ func (n *alterTableNode) startExec(params runParams) error {
 					}
 				}
 
+				activeVersion := params.ExecCfg().Settings.Version.ActiveVersion(params.ctx)
+				if !activeVersion.IsActive(clusterversion.V23_2) &&
+					d.Invisibility.Value > 0.0 && d.Invisibility.Value < 1.0 {
+					return unimplemented.New("partially visible indexes", "partially visible indexes are not yet supported")
+				}
 				idx := descpb.IndexDescriptor{
 					Name:             string(d.Name),
 					Unique:           true,
@@ -391,29 +392,17 @@ func (n *alterTableNode) startExec(params runParams) error {
 				}
 
 			case *tree.ForeignKeyConstraintTableDef:
-				// There are two cases that we want to reject FKs related to
-				// ON UPDATE/DELETE clauses:
-				// - a FK ON UPDATE action and there is already an ON UPDATE
-				//   expression for the column
-				// - a FK over a computed column, and we have a ON UPDATE or ON DELETE
-				//   that modifies the FK column value in some manner. We block these
-				//   because the column value cannot change since it is computed. We do
-				//   allow ON DELETE CASCADE though since that removes the entire row.
-				hasUpdateAction := d.Actions.HasUpdateAction()
-				if hasUpdateAction || d.Actions.HasDisallowedActionForComputedFKCol() {
+				// We want to reject uses of FK ON UPDATE actions where there is already
+				// an ON UPDATE expression for the column.
+				if d.Actions.Update != tree.NoAction && d.Actions.Update != tree.Restrict {
 					for _, fromCol := range d.FromCols {
 						for _, toCheck := range n.tableDesc.Columns {
-							if fromCol != toCheck.ColName() {
-								continue
-							}
-							if hasUpdateAction && toCheck.HasOnUpdate() {
+							if fromCol == toCheck.ColName() && toCheck.HasOnUpdate() {
 								return pgerror.Newf(
 									pgcode.InvalidTableDefinition,
 									"cannot specify a foreign key update action and an ON UPDATE"+
 										" expression on the same column",
 								)
-							} else if toCheck.IsComputed() {
-								return sqlerrors.NewInvalidActionOnComputedFKColumnError(hasUpdateAction)
 							}
 						}
 					}
@@ -464,7 +453,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 				for _, updated := range affected {
 					// Disallow schema change if the FK references a table whose schema is
 					// locked.
-					if err := params.p.checkSchemaChangeIsAllowed(params.ctx, updated, n.n); err != nil {
+					if err := checkTableSchemaUnlocked(updated); err != nil {
 						return err
 					}
 					if err := params.p.writeSchemaChange(
@@ -589,8 +578,8 @@ func (n *alterTableNode) startExec(params runParams) error {
 			}
 			if ck := c.AsCheck(); ck != nil {
 				if err := validateCheckInTxn(
-					params.ctx, params.p.InternalSQLTxn(), params.p.EvalContext(),
-					&params.p.semaCtx, params.p.SessionData(), n.tableDesc, ck,
+					params.ctx, params.p.InternalSQLTxn(), &params.p.semaCtx,
+					params.p.SessionData(), n.tableDesc, ck,
 				); err != nil {
 					return err
 				}
@@ -641,7 +630,11 @@ func (n *alterTableNode) startExec(params runParams) error {
 			if columnName == catpb.TTLDefaultExpirationColumnName &&
 				tableDesc.HasRowLevelTTL() &&
 				tableDesc.GetRowLevelTTL().HasDurationExpr() {
-				return sqlerrors.NewAlterDependsOnDurationExprError("alter", "column", columnName, tn.Object())
+				return pgerror.Newf(
+					pgcode.InvalidTableDefinition,
+					`cannot alter column %s while ttl_expire_after is set`,
+					columnName,
+				)
 			}
 			// Apply mutations to copy of column descriptor.
 			if err := applyColumnMutation(params.ctx, tableDesc, col, t, params, n.n.Cmds, tn); err != nil {
@@ -733,7 +726,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 			}
 
 		case *tree.AlterTableSetStorageParams:
-			setter := tablestorageparam.NewSetter(n.tableDesc, false /* isNewObject */)
+			setter := tablestorageparam.NewSetter(n.tableDesc)
 			if err := storageparam.Set(
 				params.ctx,
 				params.p.SemaCtx(),
@@ -744,25 +737,13 @@ func (n *alterTableNode) startExec(params runParams) error {
 				return err
 			}
 
-			// The RBR using constraint storage parameter must be handled specially
-			// in order to resolve and validate the referenced constraint, and set the
-			// reference to it on the table descriptor. The reset path doesn't need
-			// special handling, since it simply removes the constraint reference.
 			var err error
-			descriptorChanged, err = handleRBRUsingConstraintStorageParamChange(
-				params, n.tableDesc, t.StorageParams,
-			)
-			if err != nil {
-				return err
-			}
-
-			descriptorChangedByTTL, err := handleTTLStorageParamChange(
+			descriptorChanged, err = handleTTLStorageParamChange(
 				params,
 				tn,
 				setter.TableDesc,
 				setter.UpdatedRowLevelTTL,
 			)
-			descriptorChanged = descriptorChanged || descriptorChangedByTTL
 			if err != nil {
 				return err
 			}
@@ -775,7 +756,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 			}
 
 		case *tree.AlterTableResetStorageParams:
-			setter := tablestorageparam.NewSetter(n.tableDesc, false /* isNewObject */)
+			setter := tablestorageparam.NewSetter(n.tableDesc)
 			if err := storageparam.Reset(
 				params.ctx,
 				params.EvalContext(),
@@ -804,7 +785,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 				tableDesc.GetRowLevelTTL().HasDurationExpr() {
 				return pgerror.Newf(
 					pgcode.InvalidTableDefinition,
-					`cannot alter column %s while ttl_expire_after is set`,
+					`cannot rename column %s while ttl_expire_after is set`,
 					columnName,
 				)
 			}
@@ -853,7 +834,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 
 			depViewRenameError := func(objType string, refTableID descpb.ID) error {
 				return params.p.dependentError(params.ctx,
-					objType, tree.ErrString(&t.NewName), n.tableDesc.ParentID, refTableID, n.tableDesc.ID, "rename",
+					objType, tree.ErrString(&t.NewName), n.tableDesc.ParentID, refTableID, "rename",
 				)
 			}
 
@@ -864,9 +845,6 @@ func (n *alterTableNode) startExec(params runParams) error {
 				return err
 			}
 			descriptorChanged = true
-		case *tree.AlterTableSetRLSMode:
-			return pgerror.New(pgcode.FeatureNotSupported,
-				"ALTER TABLE ... ROW LEVEL SECURITY is only implemented in the declarative schema changer")
 		default:
 			return errors.AssertionFailedf("unsupported alter command: %T", cmd)
 		}
@@ -986,7 +964,7 @@ func applyColumnMutation(
 			}
 			return pgerror.Newf(
 				pgcode.Syntax,
-				"computed column %q cannot also have a DEFAULT or ON UPDATE expression",
+				"computed column %q cannot also have a DEFAULT expression",
 				col.GetName())
 		}
 		if err := updateNonComputedColExpr(
@@ -1005,12 +983,6 @@ func applyColumnMutation(
 		}
 
 	case *tree.AlterTableSetOnUpdate:
-		if col.IsComputed() {
-			return pgerror.Newf(
-				pgcode.Syntax,
-				"computed column %q cannot also have a DEFAULT or ON UPDATE expression",
-				col.GetName())
-		}
 		// We want to reject uses of ON UPDATE where there is also a foreign key ON
 		// UPDATE.
 		for _, fk := range tableDesc.OutboundFKs {
@@ -1020,9 +992,10 @@ func applyColumnMutation(
 					fk.OnUpdate != semenumpb.ForeignKeyAction_RESTRICT {
 					return pgerror.Newf(
 						pgcode.InvalidColumnDefinition,
-						"column cannot specify both ON UPDATE expression and a foreign"+
-							" key ON UPDATE action for column %q",
+						"column %s(%d) cannot have both an ON UPDATE expression and a foreign"+
+							" key ON UPDATE action",
 						col.GetName(),
+						col.GetID(),
 					)
 				}
 			}
@@ -1078,11 +1051,7 @@ func applyColumnMutation(
 			return pgerror.Newf(pgcode.InvalidTableDefinition,
 				`column "%s" is in a primary index`, col.GetName())
 		}
-		// Ensure that we are not dropping not-null on a generated column.
-		if col.GetGeneratedAsIdentityType() != catpb.GeneratedAsIdentityType_NOT_IDENTITY_COLUMN {
-			return pgerror.Newf(pgcode.Syntax,
-				`column "%s" of relation "%s" is an identity column`, col.GetName(), tn.ObjectName)
-		}
+
 		// See if there's already a mutation to add/drop a not null constraint.
 		for i := range tableDesc.Mutations {
 			if constraint := tableDesc.Mutations[i].GetConstraint(); constraint != nil &&
@@ -1275,11 +1244,8 @@ func applyColumnMutation(
 
 		opts := seqDesc.GetSequenceOpts()
 		optsNode := tree.SequenceOptions{}
-		if opts.SessionCacheSize > 1 {
-			optsNode = append(optsNode, tree.SequenceOption{Name: tree.SeqOptCacheSession, IntVal: &opts.SessionCacheSize})
-		}
-		if opts.NodeCacheSize > 1 {
-			optsNode = append(optsNode, tree.SequenceOption{Name: tree.SeqOptCacheNode, IntVal: &opts.NodeCacheSize})
+		if opts.CacheSize > 1 {
+			optsNode = append(optsNode, tree.SequenceOption{Name: tree.SeqOptCache, IntVal: &opts.CacheSize})
 		}
 		optsNode = append(optsNode, tree.SequenceOption{Name: tree.SeqOptMinValue, IntVal: &opts.MinValue})
 		optsNode = append(optsNode, tree.SequenceOption{Name: tree.SeqOptMaxValue, IntVal: &opts.MaxValue})
@@ -1323,11 +1289,6 @@ func applyColumnMutation(
 		if err := params.p.canRemoveAllColumnOwnedSequences(params.ctx, tableDesc, col, tree.DropDefault); err != nil {
 			return err
 		}
-		// Drop the identity flag first, so that it is treated like a normal column.
-		// Otherwise, we will run into the assertion saying that uses sequences should
-		// exist.
-		col.ColumnDesc().GeneratedAsIdentityType = catpb.GeneratedAsIdentityType_NOT_IDENTITY_COLUMN
-
 		// Drop the identity sequence and remove it from the column OwnsSequenceIds and DefaultExpr.
 		// Use tree.DropCascade behavior to remove dependencies on the column.
 		if err := params.p.dropSequencesOwnedByCol(params.ctx, col, true /* queueJob */, tree.DropCascade); err != nil {
@@ -1335,6 +1296,7 @@ func applyColumnMutation(
 		}
 
 		// Remove column identity descriptors
+		col.ColumnDesc().GeneratedAsIdentityType = catpb.GeneratedAsIdentityType_NOT_IDENTITY_COLUMN
 		col.ColumnDesc().GeneratedAsIdentitySequenceOption = nil
 
 	}
@@ -1355,8 +1317,7 @@ func labeledRowValues(cols []catalog.Column, values tree.Datums) string {
 		if i != 0 {
 			s.WriteString(`, `)
 		}
-		colName := cols[i].ColName()
-		s.WriteString(colName.String())
+		s.WriteString(cols[i].GetName())
 		s.WriteString(`=`)
 		s.WriteString(values[i].String())
 	}
@@ -1376,10 +1337,6 @@ func updateNonComputedColExpr(
 	exprField **string,
 	op tree.SchemaExprContext,
 ) error {
-	if col.IsGeneratedAsIdentity() {
-		return sqlerrors.NewSyntaxErrorf("column %q is an identity column", col.GetName())
-	}
-
 	// If a DEFAULT or ON UPDATE expression starts using a sequence and is then
 	// modified to not use that sequence, we need to drop the dependency from
 	// the sequence to the column. The way this is done is by wiping all
@@ -1389,6 +1346,10 @@ func updateNonComputedColExpr(
 		if err := params.p.removeSequenceDependencies(params.ctx, tab, col); err != nil {
 			return err
 		}
+	}
+
+	if col.IsGeneratedAsIdentity() {
+		return sqlerrors.NewSyntaxErrorf("column %q is an identity column", col.GetName())
 	}
 
 	if newExpr == nil {
@@ -1560,8 +1521,7 @@ func injectTableStats(
 		}
 	}
 
-	// First, delete all statistics for the table. (We use the current transaction
-	// so that this will rollback on any error.)
+	// First, delete all statistics for the table.
 	if _ /* rows */, err := params.p.InternalSQLTxn().Exec(
 		params.ctx,
 		"delete-stats",
@@ -1579,22 +1539,6 @@ StatsLoop:
 		if err != nil {
 			return err
 		}
-
-		// Check that the type matches.
-		// TODO(49698): When we support multi-column histograms this check will need
-		// adjustment.
-		if len(s.Columns) == 1 {
-			col := catalog.FindColumnByName(desc, s.Columns[0])
-			// Ignore dropped columns (they are handled below).
-			if col != nil {
-				if err := h.TypeCheck(
-					col.GetType(), desc.GetName(), s.Columns[0], stats.TSFromString(s.CreatedAt),
-				); err != nil {
-					return pgerror.WithCandidateCode(err, pgcode.DatatypeMismatch)
-				}
-			}
-		}
-
 		// histogram will be passed to the INSERT statement; we want it to be a
 		// nil interface{} if we don't generate a histogram.
 		var histogram interface{}
@@ -1660,45 +1604,11 @@ func insertJSONStatistic(
 		fullStatisticIDValue = s.FullStatisticID
 	}
 
-	if s.ID != 0 {
-		_ /* rows */, err := txn.Exec(
-			ctx,
-			"insert-stats",
-			txn.KV(),
-			`INSERT INTO system.table_statistics (
-					"statisticID",
-					"tableID",
-					"name",
-					"columnIDs",
-					"createdAt",
-					"rowCount",
-					"distinctCount",
-					"nullCount",
-					"avgSize",
-					histogram,
-					"partialPredicate",
-					"fullStatisticID"
-				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-			s.ID,
-			tableID,
-			name,
-			columnIDs,
-			s.CreatedAt,
-			s.RowCount,
-			s.DistinctCount,
-			s.NullCount,
-			s.AvgSize,
-			histogram,
-			predicateValue,
-			fullStatisticIDValue,
-		)
-		return err
-	} else {
-		_ /* rows */, err := txn.Exec(
-			ctx,
-			"insert-stats",
-			txn.KV(),
-			`INSERT INTO system.table_statistics (
+	_ /* rows */, err := txn.Exec(
+		ctx,
+		"insert-stats",
+		txn.KV(),
+		`INSERT INTO system.table_statistics (
 					"tableID",
 					"name",
 					"columnIDs",
@@ -1711,20 +1621,19 @@ func insertJSONStatistic(
 					"partialPredicate",
 					"fullStatisticID"
 				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-			tableID,
-			name,
-			columnIDs,
-			s.CreatedAt,
-			s.RowCount,
-			s.DistinctCount,
-			s.NullCount,
-			s.AvgSize,
-			histogram,
-			predicateValue,
-			fullStatisticIDValue,
-		)
-		return err
-	}
+		tableID,
+		name,
+		columnIDs,
+		s.CreatedAt,
+		s.RowCount,
+		s.DistinctCount,
+		s.NullCount,
+		s.AvgSize,
+		histogram,
+		predicateValue,
+		fullStatisticIDValue,
+	)
+	return err
 }
 
 // validateConstraintNameIsNotUsed checks that the name of the constraint we're
@@ -1798,7 +1707,7 @@ func validateConstraintNameIsNotUsed(
 			return true, nil
 		}
 		if idx.Dropped() {
-			return false, pgerror.Newf(pgcode.DuplicateRelation, "constraint with name %q already exists and is being dropped, try again later", name)
+			return false, pgerror.Newf(pgcode.DuplicateObject, "constraint with name %q already exists and is being dropped, try again later", name)
 		}
 		return false, pgerror.Newf(pgcode.DuplicateRelation, "constraint with name %q already exists", name)
 
@@ -1892,7 +1801,7 @@ func dropColumnImpl(
 					"cannot drop column %s as it is used to store the region in a REGIONAL BY ROW table",
 					t.Column,
 				),
-				"You must change the table locality before dropping this column or alter the table to use a different column for the region.",
+				"You must change the table locality before dropping this table or alter the table to use a different column to use for the region.",
 			)
 		}
 	}
@@ -1966,8 +1875,7 @@ func dropColumnImpl(
 			continue
 		}
 		err := params.p.canRemoveDependent(
-			params.ctx, "column", string(t.Column), tableDesc.ID, tableDesc.ParentID, ref, t.DropBehavior,
-			true, /* blockOnTriggerDependency */
+			params.ctx, "column", string(t.Column), tableDesc.ParentID, ref, t.DropBehavior,
 		)
 		if err != nil {
 			return nil, err
@@ -1982,15 +1890,12 @@ func dropColumnImpl(
 		return nil, err
 	}
 
-	// We cannot remove this column if there are computed columns, TTL expiration
-	// expression, or policy expressions that use it.
+	// We cannot remove this column if there are computed columns or a TTL
+	// expiration expression that use it.
 	if err := schemaexpr.ValidateColumnHasNoDependents(tableDesc, colToDrop); err != nil {
 		return nil, err
 	}
-	if err := schemaexpr.ValidateTTLExpression(tableDesc, rowLevelTTL, colToDrop, tn, "drop"); err != nil {
-		return nil, err
-	}
-	if err := schemaexpr.ValidatePolicyExpressionsDoNotDependOnColumn(tableDesc, colToDrop, "column", "drop"); err != nil {
+	if err := schemaexpr.ValidateTTLExpressionDoesNotDependOnColumn(tableDesc, rowLevelTTL, colToDrop); err != nil {
 		return nil, err
 	}
 
@@ -2017,8 +1922,7 @@ func dropColumnImpl(
 
 			if colIDs.Contains(colToDrop.GetID()) {
 				containsThisColumn = true
-				return nil, sqlerrors.ColumnReferencedByPartialIndex(
-					"drop", "column", string(colToDrop.ColName()), idx.GetName())
+				return nil, sqlerrors.NewColumnReferencedByPartialIndex(string(colToDrop.ColName()), idx.GetName())
 			}
 		}
 		// Perform the DROP.
@@ -2061,8 +1965,7 @@ func dropColumnImpl(
 			}
 
 			if colIDs.Contains(colToDrop.GetID()) {
-				return nil, sqlerrors.ColumnReferencedByPartialUniqueWithoutIndexConstraint(
-					"drop", "column", string(colToDrop.ColName()), uwoi.GetName())
+				return nil, sqlerrors.NewColumnReferencedByPartialUniqueWithoutIndexConstraint(string(colToDrop.ColName()), uwoi.GetName())
 			}
 		}
 		if uwoi.Dropped() || !uwoi.CollectKeyColumnIDs().Contains(colToDrop.GetID()) {
@@ -2170,7 +2073,7 @@ func handleTTLStorageParamChange(
 			if err != nil {
 				return false, err
 			}
-			if err := s.SetScheduleAndNextRun(after.DeletionCronOrDefault()); err != nil {
+			if err := s.SetSchedule(after.DeletionCronOrDefault()); err != nil {
 				return false, err
 			}
 			if err := schedules.Update(params.ctx, s); err != nil {
@@ -2283,24 +2186,8 @@ func handleTTLStorageParamChange(
 			&descpb.ModifyRowLevelTTL{RowLevelTTL: after},
 			direction,
 		)
-		// Also, check if the table has inbound foreign keys (i.e. this table is being
-		// referenced  by other tables). In such a case, flag a notice to the user
-		// advising them to update the ttl_delete_batch_size to avoid generating
-		// TTL deletion jobs with a high cardinality of rows being deleted.
-		// See https://github.com/cockroachdb/cockroach/issues/125103 for more details.
-		for _, fk := range tableDesc.InboundFKs {
-			// Use foreign key actions to determine upstream impact and flag a notice if the
-			// actions for delete involve cascading deletes for any one of the inbound foreign keys.
-			if fk.OnDelete != semenumpb.ForeignKeyAction_NO_ACTION && fk.OnDelete != semenumpb.ForeignKeyAction_RESTRICT {
-				params.p.BufferClientNotice(
-					params.ctx,
-					pgnotice.Newf("Columns within table %s are referenced as foreign keys."+
-						" This will make TTL deletion jobs more expensive as dependent rows"+
-						" in other tables will need to be updated as well. To improve performance"+
-						" of the TTL job, consider reducing the value of ttl_delete_batch_size.", tableDesc.GetName()))
-			}
-		}
 	}
+
 	// Validate the type and volatility of ttl_expiration_expression.
 	if after != nil {
 		if err := schemaexpr.ValidateTTLExpirationExpression(
@@ -2379,195 +2266,27 @@ func (p *planner) tryRemoveFKBackReferences(
 	return nil
 }
 
-func handleRBRUsingConstraintStorageParamChange(
-	params runParams, tableDesc *tabledesc.Mutable, storageParams tree.StorageParams,
-) (descriptorChanged bool, err error) {
-	if storageParams.GetVal(catpb.RBRUsingConstraintTableSettingName) == nil {
-		return false, nil
-	}
-	if !tableDesc.IsLocalityRegionalByRow() {
-		return false, pgerror.Newf(
-			pgcode.InvalidParameterValue,
-			`storage parameter "%s" can only be set on REGIONAL BY ROW tables`,
-			catpb.RBRUsingConstraintTableSettingName,
-		)
-	}
-	regionColName, err := tableDesc.GetRegionalByRowTableRegionColumnName()
-	if err != nil {
-		return false, err
-	}
-	constraintID, ok, err := maybeGetRBRTableUsingConstraint(
-		params.ctx, params.p.SemaCtx(), params.p.EvalContext(), tableDesc, storageParams, regionColName,
-	)
-	if err != nil {
-		return false, err
-	} else if ok {
-		tableDesc.RBRUsingConstraint = constraintID
-	}
-	return true, nil
-}
-
-// maybeGetRBRTableUsingConstraint resolves the foreign-key constraint that will
-// be used to determine the region column for a REGIONAL BY ROW table, if
-// specified in the table's storage params. It validates the constraint for
-// region column lookup, and returns the ID of the resolved constraint with
-// ok=true if valid.
-func maybeGetRBRTableUsingConstraint(
-	ctx context.Context,
-	semaCtx *tree.SemaContext,
-	evalCtx *eval.Context,
-	tableDesc *tabledesc.Mutable,
-	storageParams tree.StorageParams,
-	regionColName tree.Name,
-) (id descpb.ConstraintID, ok bool, err error) {
-	constraintName, err := extractRBRTableUsingConstraint(
-		ctx, semaCtx, evalCtx, storageParams,
-	)
-	if constraintName == "" || err != nil {
-		return 0, false, err
-	}
-	constraint, err := catalog.MustFindConstraintWithName(tableDesc, string(constraintName))
-	if err != nil {
-		return 0, false, err
-	}
-	err = tabledesc.ValidateRBRTableUsingConstraint(tableDesc, constraint, regionColName)
-	if err != nil {
-		return 0, false, err
-	}
-	return constraint.GetConstraintID(), true, nil
-}
-
-// inferRegionUsingConstraintEnabled is used to enable and disable setting a
-// foreign key constraint for looking up the region column in a REGIONAL BY ROW
-// table.
-var inferRegionUsingConstraintEnabled = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"feature.infer_rbr_region_col_using_constraint.enabled",
-	"set to true to enable looking up the region column via a foreign key constraint in a "+
-		"REGIONAL BY ROW table, false to disable; default is false",
-	false,
-	settings.WithPublic,
-)
-
-func extractRBRTableUsingConstraint(
-	ctx context.Context,
-	semaCtx *tree.SemaContext,
-	evalCtx *eval.Context,
-	storageParams tree.StorageParams,
-) (tree.Name, error) {
-	paramVal := storageParams.GetVal(catpb.RBRUsingConstraintTableSettingName)
-	if paramVal == nil {
-		return "", nil
-	}
-	if !evalCtx.Settings.Version.IsActive(ctx, clusterversion.V25_3) {
-		return "", pgerror.Newf(
-			pgcode.FeatureNotSupported,
-			`storage parameter "%s" is not supported in this version; `+
-				`finalize the upgrade to v25.3 or later to use it`,
-			catpb.RBRUsingConstraintTableSettingName,
-		)
-	}
-	if !inferRegionUsingConstraintEnabled.Get(&evalCtx.Settings.SV) {
-		return "", pgerror.Newf(
-			pgcode.FeatureNotSupported,
-			`storage parameter "%s" is not enabled; set the cluster setting`+
-				` "feature.infer_rbr_region_col_using_constraint.enabled" to true to enable it`,
-			catpb.RBRUsingConstraintTableSettingName,
-		)
-	}
-	if paramVal == tree.DNull {
-		return "", pgerror.Newf(
-			pgcode.InvalidParameterValue,
-			`storage parameter "%s" cannot be NULL`, catpb.RBRUsingConstraintTableSettingName,
-		)
-	}
-	// The expressions may be an unresolved name. Cast it as a string.
-	paramVal = paramparse.UnresolvedNameToStrVal(paramVal)
-	typedExpr, err := schemaexpr.SanitizeVarFreeExpr(
-		ctx, paramVal, types.String, "RBR_USING_CONSTRAINT_NAME", semaCtx,
-		volatility.Volatile, false, /*allowAssignmentCast*/
-	)
-	if err != nil {
-		return "", err
-	}
-	d, err := eval.Expr(ctx, evalCtx, typedExpr)
-	if err != nil {
-		return "", err
-	}
-	constraintName, isStringVal := tree.AsDString(d)
-	if !isStringVal {
-		return "", pgerror.Newf(
-			pgcode.InvalidParameterValue,
-			`storage parameter "%s" must be a string`, catpb.RBRUsingConstraintTableSettingName,
-		)
-	}
-	return tree.Name(constraintName), nil
-}
-
-// checkSchemaChangeIsAllowed checks if a schema change is allowed on
-// this table. A schema change is disallowed if one of the following is true:
-//   - The schema_locked table storage parameter is true, and this statement is
-//     cannot set schema_locked automatically via a whitelist.
-//   - The table is referenced by logical data replication jobs, and the statement
-//     is not in the allow list of LDR schema changes.
-func (p *planner) checkSchemaChangeIsAllowed(
-	ctx context.Context, desc catalog.TableDescriptor, n tree.Statement,
-) (ret error) {
-	// Adding descriptors can be skipped.
-	if desc == nil || desc.Adding() || p.descCollection.IsNewUncommittedDescriptor(desc.GetID()) {
-		return nil
-	}
-	// Check if this schema change is on the allowed list, which will only
-	// be simple non-back filling schema changes. All commands except set/reset
-	// schema_locked are unsupported before 25.2
-	preventedBySchemaLocked := !p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.V25_3) &&
-		!tree.IsSetOrResetSchemaLocked(n)
-	// These schema changes are allowed because the events generated will always
-	// be ignored by the schema_locked. The tableEventFilter (in CDC schemafeed)
-	// only cares about a limited number of events:
-	// - ADD / DROP COLUMN (visible column)
-	// - TRUNCATE
-	// - ALTER PRIMARY KEY
-	// - ALTER LOCALITY
-	switch stmt := n.(type) {
-	case *tree.AlterTable:
-		for _, cmd := range stmt.Cmds {
-			switch t := cmd.(type) {
-			case *tree.AlterTableSetStorageParams:
-				// TTL expire after expressions can end up adding a column implicitly,
-				// so if this parameter is being mutated, we will block any modifications
-				// on a schema_locked table.
-				if t.StorageParams.GetVal("ttl_expire_after") != nil {
-					preventedBySchemaLocked = true
-				}
-			case *tree.AlterTableRenameColumn, *tree.AlterTableRenameConstraint,
-				*tree.AlterTableResetStorageParams, *tree.AlterTablePartitionByTable,
-				*tree.AlterTableSetOnUpdate, *tree.AlterTableDropNotNull,
-				*tree.AlterTableSetVisible, *tree.AlterTableDropStored,
-				*tree.AlterTableValidateConstraint, *tree.AlterTableInjectStats:
-			default:
-				preventedBySchemaLocked = true
-			}
-		}
-	case *tree.AlterIndex, *tree.AlterIndexVisible, *tree.DropTable, *tree.RenameColumn,
-		*tree.RenameIndex, *tree.RenameTable, *tree.AlterTableSetSchema, *tree.SetZoneConfig:
-	default:
-		preventedBySchemaLocked = true
-	}
-	if desc.IsSchemaLocked() && preventedBySchemaLocked {
+func checkTableSchemaUnlocked(desc catalog.TableDescriptor) (ret error) {
+	if desc != nil && desc.IsSchemaLocked() {
 		return sqlerrors.NewSchemaChangeOnLockedTableErr(desc.GetName())
 	}
-	if len(desc.TableDesc().LDRJobIDs) > 0 {
-		var virtualColNames []string
-		for _, col := range desc.NonDropColumns() {
-			if col.IsVirtual() {
-				virtualColNames = append(virtualColNames, col.GetName())
+	return nil
+}
+
+// isSetOrResetSchemaLocked returns true if `n` contains a command to
+// set/reset "schema_locked" storage parameter.
+func isSetOrResetSchemaLocked(n *tree.AlterTable) bool {
+	for _, cmd := range n.Cmds {
+		switch cmd := cmd.(type) {
+		case *tree.AlterTableSetStorageParams:
+			if cmd.StorageParams.GetVal("schema_locked") != nil {
+				return true
+			}
+		case *tree.AlterTableResetStorageParams:
+			if slices.Contains(cmd.Params, "schema_locked") {
+				return true
 			}
 		}
-		kvWriterEnabled := sqlclustersettings.LDRWriterType(sqlclustersettings.LDRImmediateModeWriter.Get(&p.execCfg.Settings.SV))
-		if !tree.IsAllowedLDRSchemaChange(n, virtualColNames, kvWriterEnabled == sqlclustersettings.LDRWriterTypeLegacyKV) {
-			return sqlerrors.NewDisallowedSchemaChangeOnLDRTableErr(desc.GetName(), desc.TableDesc().LDRJobIDs)
-		}
 	}
-	return nil
+	return false
 }

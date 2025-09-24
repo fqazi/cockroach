@@ -3,17 +3,15 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import { render } from "@testing-library/react";
-import * as H from "history";
 import moment from "moment-timezone";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
+import { JobsPage, JobsPageProps } from "./jobsPage";
+import { formatDuration } from "../util/duration";
+import { allJobsFixture, earliestRetainedTime } from "./jobsPage.fixture";
+import { render } from "@testing-library/react";
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
-
-import { formatDuration } from "../util/duration";
-
-import { JobsPage, JobsPageProps } from "./jobsPage";
-import { allJobsFixture, earliestRetainedTime } from "./jobsPage.fixture";
+import * as H from "history";
 
 import Job = cockroach.server.serverpb.IJobResponse;
 

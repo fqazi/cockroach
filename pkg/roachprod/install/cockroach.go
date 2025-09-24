@@ -19,13 +19,10 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
-	"time"
 
 	"github.com/alessio/shellescape"
-	"github.com/cockroachdb/cockroach/pkg/ccl/utilccl/licenseccl"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/roachprodutil"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/ssh"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/gce"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -33,15 +30,18 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/version"
-	"golang.org/x/exp/maps"
 )
 
 //go:embed scripts/start.sh
 var startScript string
 
-//go:embed files/cockroachdb-logging.yaml
-var loggingConfig string
+// sharedProcessVirtualClusterNode is a constant node that is used
+// whenever we register a service descriptor for a shared-process
+// virtual cluster. Since these virtual clusters use the system
+// interface process, the service descriptor just represents the
+// existence of the virtual cluster; at service discovery time, ports
+// are resolved based on existing services for the system interface.
+var sharedProcessVirtualClusterNode = Node(1)
 
 func cockroachNodeBinary(c *SyncedCluster, node Node) string {
 	if filepath.IsAbs(c.Binary) {
@@ -127,19 +127,8 @@ type StartOpts struct {
 	// -- Options that apply only to StartDefault target --
 
 	SkipInit        bool
-	SkipWaitForSQL  bool
 	StoreCount      int
 	EncryptedStores bool
-	// WALFailover, if non-empty, configures the value to supply to the
-	// --wal-failover start flag.
-	//
-	// In a multi-store configuration, this may be set to "among-stores" to
-	// enable WAL failover among stores. In a single-store configuration, this
-	// should be set to `path=<path>`.
-	WALFailover string
-	// Populated in Start() by checking the version of the cockroach binary on the first node.
-	// N.B. may be nil if the version cannot be fetched.
-	Version *version.Version
 
 	// -- Options that apply only to the StartServiceForVirtualCluster target --
 	VirtualClusterName     string
@@ -149,49 +138,12 @@ type StartOpts struct {
 	StorageCluster         *SyncedCluster
 
 	// IsRestart allows skipping steps that are used during initial start like
-	// initialization and sequential node starts and also reuses the previous start script.
+	// initialization and sequential node starts.
 	IsRestart bool
-
-	// EnableFluentSink determines whether to enable the fluent-servers attribute
-	// in the CockroachDB logging configuration.
-	EnableFluentSink bool
-
-	// PreStartHooks are hooks that are run after service registration has occurred,
-	// but before starting the cockroach process.
-	PreStartHooks []PreStartHook
 }
 
 func (s *StartOpts) IsVirtualCluster() bool {
 	return s.Target == StartSharedProcessForVirtualCluster || s.Target == StartServiceForVirtualCluster
-}
-
-// customPortsSpecified determines if custom ports were passed in
-// the start options (via command line or otherwise).
-func (s *StartOpts) customPortsSpecified() bool {
-	if s.SQLPort != 0 && s.SQLPort != config.DefaultSQLPort {
-		return true
-	}
-	if s.AdminUIPort != 0 && s.AdminUIPort != config.DefaultAdminUIPort {
-		return true
-	}
-	return false
-}
-
-// validate checks that the start options are valid to be used in a
-// cluster with the given properties. Returns an error describing the
-// problem if the options are invalid.
-func (s *StartOpts) validate(isLocal, supportsRegistration bool) error {
-	// Local clusters do not support specifying ports. An error is returned if we
-	// detect that they were set.
-	if isLocal && s.customPortsSpecified() {
-		return fmt.Errorf("local clusters do not support specifying ports")
-	}
-
-	if !supportsRegistration && s.customPortsSpecified() {
-		return fmt.Errorf("service registration is not supported for this cluster, but custom ports were specified")
-	}
-
-	return nil
 }
 
 // StartTarget identifies what flavor of cockroach we are starting.
@@ -206,6 +158,9 @@ const (
 	// StartServiceForVirtualCluster starts a SQL/HTTP-only server
 	// process for a virtual cluster.
 	StartServiceForVirtualCluster
+	// StartRoutingProxy starts the SQL proxy process to route
+	// connections to multiple virtual clusters.
+	StartRoutingProxy
 )
 
 const (
@@ -222,9 +177,9 @@ const (
 
 func (st StartTarget) String() string {
 	return [...]string{
-		StartDefault:                        "default",
-		StartSharedProcessForVirtualCluster: "shared-process virtual cluster instance",
-		StartServiceForVirtualCluster:       "SQL/HTTP instance for virtual cluster",
+		StartDefault:                  "default",
+		StartServiceForVirtualCluster: "SQL/HTTP instance for virtual cluster",
+		StartRoutingProxy:             "SQL proxy for multiple tenants",
 	}[st]
 }
 
@@ -271,18 +226,11 @@ func (c *SyncedCluster) allowServiceRegistration() bool {
 	return true
 }
 
-// maybeRegisterServices registers the SQL and Admin UI DNS services for the cluster if necessary:
-//  1. The system interface is only registered if custom ports are passed in or if it
-//     is running in local mode. By default, the system interface is assumed to be
-//     running on the default ports.
-//  2. Separate process virtual clusters are always registered. They always run on non
-//     default ports as we assume those to be taken by the system interface.
-//  3. Shared-process virtual clusters do not register services, as they share the same
-//     ports as the system interface.
-//
-// If service registration is deemed necessary, ports will be selected in the following order:
-//  1. If the startOpts specify non-zero ports, they will be used.
-//  2. If no port is specified, a search for open ports will be performed and selected for use.
+// maybeRegisterServices registers the SQL and Admin UI DNS services
+// for the cluster if no previous services for the virtual or storage
+// cluster are found. Any ports specified in the startOpts are used
+// for the services. If no ports are specified, a search for open
+// ports will be performed and selected for use.
 func (c *SyncedCluster) maybeRegisterServices(
 	ctx context.Context, l *logger.Logger, startOpts StartOpts, portFunc FindOpenPortsFunc,
 ) error {
@@ -294,26 +242,33 @@ func (c *SyncedCluster) maybeRegisterServices(
 	var servicesToRegister ServiceDescriptors
 	switch startOpts.Target {
 	case StartDefault:
-		// The system interface is registered only when custom ports are specified or
-		// if it is a local cluster. Local clusters utilize non-default ports to prevent
-		// conflicts, which necessitates explicit service registration.
-		if startOpts.customPortsSpecified() || c.IsLocal() {
-			startOpts.VirtualClusterName = SystemInterfaceName
-			// The system interface is always regarded as a shared service, as it contains both a
-			// SQL and KV server.
-			servicesToRegister, err = c.servicesWithOpenPortSelection(
-				ctx, l, startOpts, ServiceModeShared, serviceMap, portFunc,
-			)
+		startOpts.VirtualClusterName = SystemInterfaceName
+		servicesToRegister, err = c.servicesWithOpenPortSelection(
+			ctx, l, startOpts, ServiceModeShared, serviceMap, portFunc,
+		)
+	case StartSharedProcessForVirtualCluster:
+		// Specifying a sql instance for shared process virtual clusters
+		// doesn't make sense, so return an error in that case to make it
+		// explicit.
+		if startOpts.SQLInstance != 0 {
+			err = fmt.Errorf("sql instance must be unset for shared process deployments")
+			break
+		}
+
+		for _, serviceType := range []ServiceType{ServiceTypeSQL, ServiceTypeUI} {
+			if _, ok := serviceMap[sharedProcessVirtualClusterNode][serviceType]; !ok {
+				servicesToRegister = append(servicesToRegister, ServiceDesc{
+					VirtualClusterName: startOpts.VirtualClusterName,
+					ServiceType:        serviceType,
+					ServiceMode:        ServiceModeShared,
+					Node:               sharedProcessVirtualClusterNode,
+				})
+			}
 		}
 	case StartServiceForVirtualCluster:
-		// Separate process virtual clusters are always external services,
-		// as they only contain a SQL server.
 		servicesToRegister, err = c.servicesWithOpenPortSelection(
 			ctx, l, startOpts, ServiceModeExternal, serviceMap, portFunc,
 		)
-	default:
-		// For shared-process virtual clusters, we don't need to register
-		// services as these will be resolved to the system interface process.
 	}
 
 	if err != nil {
@@ -324,9 +279,9 @@ func (c *SyncedCluster) maybeRegisterServices(
 
 // servicesWithOpenPortSelection returns services to be registered for
 // cases where a new cockroach process is being instantiated and needs
-// to bind to available ports. This happens when we start the system
-// interface process, or when we start SQL servers for separate process
-// virtual clusters. If an existing service is found it is not registered again.
+// to being to available ports. This happens when we start the system
+// interface process, or when we start SQL servers for separate
+// process virtual clusters.
 func (c *SyncedCluster) servicesWithOpenPortSelection(
 	ctx context.Context,
 	l *logger.Logger,
@@ -344,7 +299,7 @@ func (c *SyncedCluster) servicesWithOpenPortSelection(
 			services = append(services, ServiceDesc{
 				VirtualClusterName: startOpts.VirtualClusterName,
 				ServiceType:        ServiceTypeSQL,
-				ServiceMode:        serviceMode,
+				ServiceMode:        ServiceModeExternal,
 				Node:               node,
 				Port:               startOpts.SQLPort,
 				Instance:           startOpts.SQLInstance,
@@ -354,7 +309,7 @@ func (c *SyncedCluster) servicesWithOpenPortSelection(
 			services = append(services, ServiceDesc{
 				VirtualClusterName: startOpts.VirtualClusterName,
 				ServiceType:        ServiceTypeUI,
-				ServiceMode:        serviceMode,
+				ServiceMode:        ServiceModeExternal,
 				Node:               node,
 				Port:               startOpts.AdminUIPort,
 				Instance:           startOpts.SQLInstance,
@@ -393,156 +348,6 @@ func (c *SyncedCluster) servicesWithOpenPortSelection(
 	return servicesToRegister, nil
 }
 
-// IsExternalService is a helper that determines if a given virtual cluster
-// is an external service.
-func (c *SyncedCluster) IsExternalService(
-	ctx context.Context, virtualClusterName string,
-) (bool, error) {
-	if IsSystemInterface(virtualClusterName) {
-		return false, nil
-	}
-	services, err := c.discoverServices(ctx, virtualClusterName, ServiceTypeSQL)
-	if err != nil {
-		return false, err
-	}
-
-	// We only register services for external secondary tenants. If we find any
-	// results we know it must be one.
-	return len(services) > 0, nil
-}
-
-// defaultServiceDescriptors returns the default ports for a service type. This is
-// required for scenarios where the services were not registered with a DNS
-// provider (Google DNS). Currently, services will not be registered in the
-// following scenarios:
-//
-// 1. A system interface started with default ports. This is an optimisation
-// to avoid the overhead of registering services when starting a storage
-// cluster with default ports.
-// 2. Shared process virtual clusters. These are always started with the same
-// ports as the system interface, so we do not register them with DNS.
-// 2. Clusters not on GCP
-// 3. Clusters that specify a custom project.
-//
-// Note that because separate process virtual clusters require service registration,
-// there is no default port and only shared process services should call this.
-func defaultServiceDescriptors(
-	virtualClusterName string, nodes Nodes, serviceType ServiceType, sqlInstance int,
-) ServiceDescriptors {
-	var port int
-	switch serviceType {
-	case ServiceTypeSQL:
-		port = config.DefaultSQLPort
-	case ServiceTypeUI:
-		port = config.DefaultAdminUIPort
-	}
-	services := make(ServiceDescriptors, len(nodes))
-	for i, node := range nodes {
-		services[i] = ServiceDesc{
-			VirtualClusterName: virtualClusterName,
-			ServiceType:        serviceType,
-			ServiceMode:        ServiceModeShared,
-			Node:               node,
-			Port:               port,
-			Instance:           sqlInstance,
-		}
-	}
-	return services
-}
-
-// ServiceDescriptors returns the service descriptors for the given nodes and virtual
-// cluster. If no services are found, it returns a service descriptor with the default port
-// for the service type.
-func (c *SyncedCluster) ServiceDescriptors(
-	ctx context.Context,
-	nodes Nodes,
-	virtualClusterName string,
-	serviceType ServiceType,
-	sqlInstance int,
-) (ServiceDescriptors, error) {
-	// Not all virtual clusters are registered with DNS, so we must reconstruct our
-	// service descriptor based on the registration rules stated in maybeRegisterServices.
-	//
-	// We first try to discover a service for the virtual cluster name provided on the
-	// requested node. If we find a result, we are done.
-	services, err := c.discoverServices(
-		ctx, virtualClusterName, serviceType,
-		ServiceNodePredicate(nodes...), ServiceInstancePredicate(sqlInstance),
-	)
-	if err != nil {
-		return ServiceDescriptors{}, err
-	}
-	if len(services) > 0 {
-		return services, nil
-	}
-
-	// If we are looking for the system interface at this point, we know it must be using the default
-	// ports, or we would have found it above. Return the default fallback case.
-	if IsSystemInterface(virtualClusterName) {
-		return defaultServiceDescriptors(
-			virtualClusterName, nodes, serviceType, 0, /* sqlInstance */
-		), nil
-	}
-
-	// If we are looking for a secondary tenant, we know it must be a shared process tenant as all
-	// external process services are registered with DNS. Shared process secondary tenants resolve
-	// to the system interface, so we must attempt to discover that instead.
-	services, err = c.discoverServices(
-		ctx, SystemInterfaceName, serviceType, ServiceNodePredicate(nodes...),
-	)
-	if err != nil {
-		return ServiceDescriptors{}, err
-	}
-
-	// Update the system service to point to the virtual cluster requested.
-	for i := range services {
-		services[i].VirtualClusterName = virtualClusterName
-		services[i].Instance = sqlInstance
-	}
-
-	// If we still have not found a service at this point, it must be a shared process secondary
-	// tenant where the system interface is on the default ports.
-	if len(services) == 0 {
-		return defaultServiceDescriptors(
-			virtualClusterName, nodes, serviceType, sqlInstance,
-		), nil
-	}
-	return services, err
-}
-
-// ServiceDescriptor is a convenience wrapper for ServiceDescriptors that
-// returns only a single service.
-func (c *SyncedCluster) ServiceDescriptor(
-	ctx context.Context,
-	node Node,
-	virtualClusterName string,
-	serviceType ServiceType,
-	sqlInstance int,
-) (ServiceDesc, error) {
-	services, err := c.ServiceDescriptors(ctx, Nodes{node}, virtualClusterName, serviceType, sqlInstance)
-	if err != nil {
-		return ServiceDesc{}, err
-	}
-	return services[0], err
-}
-
-// Attempts to fetch the version of the cockroach binary on the first node.
-// N.B. For mixed-version clusters, it's the user's responsibility to start only the nodes of
-// the same version, at a time.
-func (c *SyncedCluster) fetchVersion(
-	ctx context.Context, l *logger.Logger, startOpts StartOpts,
-) (*version.Version, error) {
-	node := c.Nodes[0]
-	runVersionCmd := SuppressMetamorphicConstantsEnvVar() + " " + cockroachNodeBinary(c, node) + " version --build-tag"
-
-	result, err := c.runCmdOnSingleNode(ctx, l, node, runVersionCmd, defaultCmdOpts("run-cockroach-version"))
-	if err != nil {
-		return nil, err
-	}
-	v, err := version.Parse(strings.TrimSpace(result.CombinedOut))
-	return &v, err
-}
-
 // Start cockroach on the cluster. For non-multitenant deployments or
 // SQL instances that are deployed as external services, this will
 // start a cockroach process on the nodes. For shared-process
@@ -552,16 +357,34 @@ func (c *SyncedCluster) fetchVersion(
 // Starting the first node is special-cased quite a bit, it's used to distribute
 // certs, set cluster settings, and initialize the cluster. Also, if we're only
 // starting a single node in the cluster and it happens to be the "first" node
-// (node 1, as understood by SyncedCluster.Nodes), we use
+// (node 1, as understood by SyncedCluster.TargetNodes), we use
 // `start-single-node` (this was written to provide a short hand to start a
 // single node cluster with a replication factor of one).
 func (c *SyncedCluster) Start(ctx context.Context, l *logger.Logger, startOpts StartOpts) error {
-	if err := startOpts.validate(c.IsLocal(), c.allowServiceRegistration()); err != nil {
-		return err
+	if startOpts.Target == StartRoutingProxy {
+		return fmt.Errorf("start SQL proxy not implemented")
 	}
 
+	// Determine if custom ports were specified in the start options.
+	customPortsSpecified := func() bool {
+		if startOpts.SQLPort != 0 && startOpts.SQLPort != config.DefaultSQLPort {
+			return true
+		}
+		if startOpts.AdminUIPort != 0 && startOpts.AdminUIPort != config.DefaultAdminUIPort {
+			return true
+		}
+		return false
+	}
+
+	// Local clusters do not support specifying ports. An error is returned if we
+	// detect that they were set.
 	if c.IsLocal() {
-		// We find open ports dynamically in local mode.
+		if customPortsSpecified() {
+			return fmt.Errorf("local clusters do not support specifying ports")
+		}
+		// We don't need to return an error if the ports are the default values
+		// specified in DefaultStartOps, as these have not been specified explicitly
+		// by the user.
 		startOpts.SQLPort = 0
 		startOpts.AdminUIPort = 0
 	}
@@ -572,6 +395,9 @@ func (c *SyncedCluster) Start(ctx context.Context, l *logger.Logger, startOpts S
 			return err
 		}
 	} else {
+		if customPortsSpecified() {
+			return fmt.Errorf("service registration is not supported for this cluster, but custom ports were specified")
+		}
 		l.Printf(strings.Join([]string{
 			"WARNING: Service registration and custom ports are not supported for this cluster.",
 			fmt.Sprintf("Setting ports to default SQL Port: %d, and Admin UI Port: %d.", config.DefaultSQLPort, config.DefaultAdminUIPort),
@@ -579,16 +405,6 @@ func (c *SyncedCluster) Start(ctx context.Context, l *logger.Logger, startOpts S
 		}, "\n"))
 		startOpts.SQLPort = config.DefaultSQLPort
 		startOpts.AdminUIPort = config.DefaultAdminUIPort
-	}
-
-	for _, hook := range startOpts.PreStartHooks {
-		hookCtx, cancel := context.WithTimeout(ctx, hook.Timeout)
-		l.Printf("running pre-start hook: %s", hook.Name)
-		err := roachprodutil.PanicAsError(hookCtx, l, hook.Fn)
-		cancel()
-		if err != nil {
-			return err
-		}
 	}
 
 	if startOpts.IsVirtualCluster() {
@@ -611,20 +427,14 @@ func (c *SyncedCluster) Start(ctx context.Context, l *logger.Logger, startOpts S
 
 	// Start cockroach processes and `init` cluster, if necessary.
 	if startOpts.Target != StartSharedProcessForVirtualCluster {
-		if parsedVersion, err := c.fetchVersion(ctx, l, startOpts); err == nil {
-			// store the version for later checks
-			startOpts.Version = parsedVersion
-		} else {
-			l.Printf("WARN: unable to fetch cockroach version: %s", err)
-		}
-
-		l.Printf("%s (%s): starting cockroach processes", c.Name, startOpts.VirtualClusterName)
 		if startOpts.IsRestart {
+			l.Printf("%s (%s): starting cockroach processes", c.Name, startOpts.VirtualClusterName)
 			return c.Parallel(ctx, l, WithNodes(c.Nodes).WithDisplay("starting nodes"), func(ctx context.Context, node Node) (*RunResultDetails, error) {
-				return c.startNodeWithResult(ctx, l, node, &startOpts)
+				return c.startNodeWithResult(ctx, l, node, startOpts)
 			})
 		}
 
+		l.Printf("%s (%s): starting cockroach processes", c.Name, startOpts.VirtualClusterName)
 		// For single node non-virtual clusters, `init` can be skipped
 		// because during the c.StartNode call above, the
 		// `--start-single-node` flag will handle all of this for us.
@@ -633,7 +443,7 @@ func (c *SyncedCluster) Start(ctx context.Context, l *logger.Logger, startOpts S
 		for _, node := range c.Nodes {
 			// NB: if cockroach started successfully, we ignore the output as it is
 			// some harmless start messaging.
-			if err := c.startNode(ctx, l, node, &startOpts); err != nil {
+			if err := c.startNode(ctx, l, node, startOpts); err != nil {
 				return err
 			}
 			// We reserve a few special operations (bootstrapping, and setting
@@ -672,8 +482,12 @@ func (c *SyncedCluster) Start(ctx context.Context, l *logger.Logger, startOpts S
 		c.createAdminUserForSecureCluster(ctx, l, startOpts.VirtualClusterName, startOpts.SQLInstance)
 
 		if startOpts.ScheduleBackups {
-			if err := c.createFixedBackupSchedule(ctx, l, startOpts); err != nil {
-				return err
+			if config.CockroachDevLicense == "" {
+				l.Printf("WARNING: no backup schedules will be created as there is no enterprise license configured")
+			} else {
+				if err := c.createFixedBackupSchedule(ctx, l, startOpts); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -753,61 +567,18 @@ const (
 
 	DefaultUser     = "roachprod"
 	DefaultPassword = "cockroachdb"
-
-	DefaultAuthModeEnv = "ROACHPROD_DEFAULT_AUTH_MODE"
 )
-
-// PGAuthModes is a map from auth mode string names to the actual PGAuthMode.
-// The string names are used by CLI and the DefaultAuthModeEnv var.
-var PGAuthModes = map[string]PGAuthMode{
-	"root":          AuthRootCert,
-	"user-password": AuthUserPassword,
-	"user-cert":     AuthUserCert,
-}
-
-// DefaultAuthMode is the auth mode used for functions that don't
-// take an auth mode or the user doesn't specify one.
-func DefaultAuthMode() PGAuthMode {
-	if auth, err := ResolveAuthMode(os.Getenv(DefaultAuthModeEnv)); err == nil {
-		return auth
-	}
-	return AuthUserCert
-}
-
-func ResolveAuthMode(authMode string) (PGAuthMode, error) {
-	auth, ok := PGAuthModes[authMode]
-	if !ok {
-		return -1, errors.Newf("unsupported auth-mode %s, valid auth-modes: %v", authMode, maps.Keys(PGAuthModes))
-	}
-	return auth, nil
-}
-
-func (auth PGAuthMode) String() string {
-	for modeStr, mode := range PGAuthModes {
-		if mode == auth {
-			return modeStr
-		}
-	}
-
-	panic(fmt.Errorf("could not find string for auth mode"))
-}
 
 // NodeURL constructs a postgres URL. If virtualClusterName is not empty, it will
 // be used as the virtual cluster name in the URL. This is used to connect to a
 // shared process running services for multiple virtual clusters.
 func (c *SyncedCluster) NodeURL(
-	host string,
-	port int,
-	virtualClusterName string,
-	serviceMode ServiceMode,
-	auth PGAuthMode,
-	database string,
+	host string, port int, virtualClusterName string, serviceMode ServiceMode, auth PGAuthMode,
 ) string {
 	var u url.URL
 	u.Scheme = "postgres"
 	u.User = url.User("root")
 	u.Host = fmt.Sprintf("%s:%d", host, port)
-	u.Path = database
 	v := url.Values{}
 	if c.Secure {
 		user := DefaultUser
@@ -833,15 +604,27 @@ func (c *SyncedCluster) NodeURL(
 		v.Add("sslmode", "disable")
 	}
 
-	// We only want to pass an explicit `cluster` name if the user provided one.
-	if virtualClusterName != "" {
-		// We can only pass the cluster parameter for shared processes, as SQL server
-		// only processes don't support cluster selection.
-		if serviceMode == ServiceModeShared {
-			v.Add("options", fmt.Sprintf("-ccluster=%s", virtualClusterName))
-		}
+	// The rules for when to include the `cluster` connection parameter
+	// are a little nuanced:
+	//
+	// Firstly, we only want to pass an explicit `cluster` name if the
+	// user provided one.
+	if virtualClusterName != "" &&
+		// If this is a shared service, we should always be passing the
+		// cluster connection parameter.
+		((serviceMode == ServiceModeShared) ||
+			// However, if this is an external process, this means that the
+			// service is either the system tenant, or a virtual cluster
+			// serviced by an external process. We only want to specify the
+			// `cluster` parameter in the former case, as SQL server
+			// processes don't support cluster selection. The main use-case
+			// for specifying the cluster parameter in this case would be in
+			// a shared-process deployment model where the default tenant is
+			// switched, and we want to connect to the system tenant
+			// directly.
+			(serviceMode == ServiceModeExternal && virtualClusterName == SystemInterfaceName)) {
+		v.Add("options", fmt.Sprintf("-ccluster=%s", virtualClusterName))
 	}
-
 	u.RawQuery = v.Encode()
 	return "'" + u.String() + "'"
 }
@@ -850,7 +633,7 @@ func (c *SyncedCluster) NodeURL(
 func (c *SyncedCluster) NodePort(
 	ctx context.Context, node Node, virtualClusterName string, sqlInstance int,
 ) (int, error) {
-	desc, err := c.ServiceDescriptor(ctx, node, virtualClusterName, ServiceTypeSQL, sqlInstance)
+	desc, err := c.DiscoverService(ctx, node, virtualClusterName, ServiceTypeSQL, sqlInstance)
 	if err != nil {
 		return 0, err
 	}
@@ -861,7 +644,7 @@ func (c *SyncedCluster) NodePort(
 func (c *SyncedCluster) NodeUIPort(
 	ctx context.Context, node Node, virtualClusterName string, sqlInstance int,
 ) (int, error) {
-	desc, err := c.ServiceDescriptor(ctx, node, virtualClusterName, ServiceTypeUI, sqlInstance)
+	desc, err := c.DiscoverService(ctx, node, virtualClusterName, ServiceTypeUI, sqlInstance)
 	if err != nil {
 		return 0, err
 	}
@@ -875,22 +658,16 @@ func (c *SyncedCluster) NodeUIPort(
 //
 // CAUTION: this function should not be used by roachtest writers. Use ExecSQL below.
 func (c *SyncedCluster) ExecOrInteractiveSQL(
-	ctx context.Context,
-	l *logger.Logger,
-	virtualClusterName string,
-	sqlInstance int,
-	authMode PGAuthMode,
-	database string,
-	args []string,
+	ctx context.Context, l *logger.Logger, virtualClusterName string, sqlInstance int, args []string,
 ) error {
 	if len(c.Nodes) != 1 {
 		return fmt.Errorf("invalid number of nodes for interactive sql: %d", len(c.Nodes))
 	}
-	desc, err := c.ServiceDescriptor(ctx, c.Nodes[0], virtualClusterName, ServiceTypeSQL, sqlInstance)
+	desc, err := c.DiscoverService(ctx, c.Nodes[0], virtualClusterName, ServiceTypeSQL, sqlInstance)
 	if err != nil {
 		return err
 	}
-	url := c.NodeURL("localhost", desc.Port, virtualClusterName, desc.ServiceMode, authMode, database)
+	url := c.NodeURL("localhost", desc.Port, virtualClusterName, desc.ServiceMode, AuthRootCert)
 	binary := cockroachNodeBinary(c, c.Nodes[0])
 	allArgs := []string{binary, "sql", "--url", url}
 	allArgs = append(allArgs, ssh.Escape(args))
@@ -906,14 +683,12 @@ func (c *SyncedCluster) ExecSQL(
 	nodes Nodes,
 	virtualClusterName string,
 	sqlInstance int,
-	authMode PGAuthMode,
-	database string,
 	args []string,
 ) ([]*RunResultDetails, error) {
 	display := fmt.Sprintf("%s: executing sql", c.Name)
 	results, _, err := c.ParallelE(ctx, l, WithNodes(nodes).WithDisplay(display).WithFailSlow(),
 		func(ctx context.Context, node Node) (*RunResultDetails, error) {
-			desc, err := c.ServiceDescriptor(ctx, node, virtualClusterName, ServiceTypeSQL, sqlInstance)
+			desc, err := c.DiscoverService(ctx, node, virtualClusterName, ServiceTypeSQL, sqlInstance)
 			if err != nil {
 				return nil, err
 			}
@@ -922,7 +697,7 @@ func (c *SyncedCluster) ExecSQL(
 				cmd = fmt.Sprintf(`cd %s ; `, c.localVMDir(node))
 			}
 			cmd += SuppressMetamorphicConstantsEnvVar() + " " + cockroachNodeBinary(c, node) + " sql --url " +
-				c.NodeURL("localhost", desc.Port, virtualClusterName, desc.ServiceMode, authMode, database) + " " +
+				c.NodeURL("localhost", desc.Port, virtualClusterName, desc.ServiceMode, AuthRootCert) + " " +
 				ssh.Escape(args)
 			return c.runCmdOnSingleNode(ctx, l, node, cmd, defaultCmdOpts("run-sql"))
 		})
@@ -930,53 +705,44 @@ func (c *SyncedCluster) ExecSQL(
 	return results, err
 }
 
-// N.B. not thread-safe because startOpts is shared and may be mutated.
 func (c *SyncedCluster) startNodeWithResult(
-	ctx context.Context, l *logger.Logger, node Node, startOpts *StartOpts,
+	ctx context.Context, l *logger.Logger, node Node, startOpts StartOpts,
 ) (*RunResultDetails, error) {
-	l.Printf("starting node %d", node)
-	startScriptPath := StartScriptPath(startOpts.VirtualClusterName, startOpts.SQLInstance)
+	startCmd, err := c.generateStartCmd(ctx, l, node, startOpts)
+	if err != nil {
+		return newRunResultDetails(node, err), err
+	}
+	var uploadCmd string
+	if c.IsLocal() {
+		uploadCmd = fmt.Sprintf(`cd %s ; `, c.localVMDir(node))
+	}
+	uploadCmd += `cat > cockroach.sh && chmod +x cockroach.sh`
+
+	var res = &RunResultDetails{}
+	uploadOpts := defaultCmdOpts("upload-start-script")
+	uploadOpts.stdin = strings.NewReader(startCmd)
+	res, err = c.runCmdOnSingleNode(ctx, l, node, uploadCmd, uploadOpts)
+	if err != nil || res.Err != nil {
+		return res, err
+	}
+
 	var runScriptCmd string
 	if c.IsLocal() {
 		runScriptCmd = fmt.Sprintf(`cd %s ; `, c.localVMDir(node))
 	}
-	runScriptCmd += "./" + startScriptPath
-
-	// If we are performing a restart, the start script should already
-	// exist, and we are going to reuse it.
-	if !startOpts.IsRestart {
-		startCmd, err := c.generateStartCmd(ctx, l, node, startOpts)
-		if err != nil {
-			return newRunResultDetails(node, err), err
-		}
-		var uploadCmd string
-		if c.IsLocal() {
-			uploadCmd = fmt.Sprintf(`cd %s ; `, c.localVMDir(node))
-		}
-		uploadCmd += fmt.Sprintf(`cat > %[1]s && chmod +x %[1]s`, startScriptPath)
-
-		var res = &RunResultDetails{}
-		uploadOpts := defaultCmdOpts("upload-start-script")
-		uploadOpts.stdin = strings.NewReader(startCmd)
-		res, err = c.runCmdOnSingleNode(ctx, l, node, uploadCmd, uploadOpts)
-		if err != nil || res.Err != nil {
-			return res, err
-		}
-	}
-
+	runScriptCmd += "./cockroach.sh"
 	return c.runCmdOnSingleNode(ctx, l, node, runScriptCmd, defaultCmdOpts("run-start-script"))
 }
 
-// N.B. not thread-safe because startOpts is shared and may be mutated.
 func (c *SyncedCluster) startNode(
-	ctx context.Context, l *logger.Logger, node Node, startOpts *StartOpts,
+	ctx context.Context, l *logger.Logger, node Node, startOpts StartOpts,
 ) error {
 	res, err := c.startNodeWithResult(ctx, l, node, startOpts)
 	return errors.CombineErrors(err, res.Err)
 }
 
 func (c *SyncedCluster) generateStartCmd(
-	ctx context.Context, l *logger.Logger, node Node, startOpts *StartOpts,
+	ctx context.Context, l *logger.Logger, node Node, startOpts StartOpts,
 ) (string, error) {
 	args, err := c.generateStartArgs(ctx, l, node, startOpts)
 	if err != nil {
@@ -993,10 +759,7 @@ func (c *SyncedCluster) generateStartCmd(
 		EnvVars: append(append([]string{
 			fmt.Sprintf("ROACHPROD=%s", c.roachprodEnvValue(node)),
 			"GOTRACEBACK=crash",
-			// N.B. disable telemetry (see `TelemetryOptOut`).
 			"COCKROACH_SKIP_ENABLING_DIAGNOSTIC_REPORTING=1",
-			// N.B. set crash reporting URL (see `crashReportURL()`) to the empty string to disable Sentry crash reports.
-			"COCKROACH_CRASH_REPORTS=",
 		}, c.Env...), getEnvVars()...),
 		Binary:              cockroachNodeBinary(c, node),
 		Args:                args,
@@ -1017,10 +780,6 @@ type startTemplateData struct {
 	VirtualClusterLabel string
 	Args                []string
 	EnvVars             []string
-}
-
-type loggingTemplateData struct {
-	LogDir string
 }
 
 // VirtualClusterLabel is the value used to "label" virtual cluster
@@ -1072,14 +831,6 @@ func VirtualClusterInfoFromLabel(virtualClusterLabel string) (string, int, error
 	return virtualClusterName, sqlInstance, nil
 }
 
-func StartScriptPath(virtualClusterName string, sqlInstance int) string {
-	// Use the default start script name for the system tenant (storage cluster).
-	if virtualClusterName == SystemInterfaceName || virtualClusterName == "" {
-		return "cockroach.sh"
-	}
-	return fmt.Sprintf("cockroach-%s.sh", VirtualClusterLabel(virtualClusterName, sqlInstance))
-}
-
 func execStartTemplate(data startTemplateData) (string, error) {
 	tpl, err := template.New("start").
 		Funcs(template.FuncMap{"shesc": func(i interface{}) string {
@@ -1097,24 +848,10 @@ func execStartTemplate(data startTemplateData) (string, error) {
 	return buf.String(), nil
 }
 
-func execLoggingTemplate(data loggingTemplateData) (string, error) {
-	tpl, err := template.New("loggingConfig").
-		Delims("#{", "#}").
-		Parse(loggingConfig)
-	if err != nil {
-		return "", err
-	}
-	var buf strings.Builder
-	if err := tpl.Execute(&buf, data); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
-}
-
 // generateStartArgs generates cockroach binary arguments for starting a node.
 // The first argument is the command (e.g. "start").
 func (c *SyncedCluster) generateStartArgs(
-	ctx context.Context, l *logger.Logger, node Node, startOpts *StartOpts,
+	ctx context.Context, l *logger.Logger, node Node, startOpts StartOpts,
 ) ([]string, error) {
 	var args []string
 
@@ -1128,6 +865,10 @@ func (c *SyncedCluster) generateStartArgs(
 
 	case StartServiceForVirtualCluster:
 		args = []string{"mt", "start-sql"}
+
+	case StartRoutingProxy:
+		// args = []string{"mt", "start-proxy"}
+		panic("unimplemented")
 
 	default:
 		return nil, errors.Errorf("unsupported start target %v", startOpts.Target)
@@ -1147,33 +888,12 @@ func (c *SyncedCluster) generateStartArgs(
 
 	// if neither --log nor --log-config-file are present
 	if idx1 == -1 && idx2 == -1 {
-		if !startOpts.EnableFluentSink {
-			args = append(args, "--log", `file-defaults: {dir: '`+logDir+`', exit-on-error: false}`)
-		} else {
-			loggingConfig, err := execLoggingTemplate(loggingTemplateData{
-				LogDir: logDir,
-			})
-			if err != nil {
-				return nil, errors.Wrap(err, "failed rendering logging template")
-			}
-
-			loggingConfigFile := fmt.Sprintf("cockroachdb-logging%s.yaml",
-				virtualClusterDirSuffix(startOpts.VirtualClusterName, startOpts.SQLInstance))
-
-			// To speed up the startup time of nodes in large cluster, the cockroachdb-logging.yaml file is copied
-			// to all nodes in parallel.
-			if c.Nodes[0] == node {
-				if err := c.PutString(ctx, l, c.Nodes, loggingConfig, loggingConfigFile, 0644); err != nil {
-					return nil, errors.Wrap(err, "failed writing remote logging configuration: %w")
-				}
-			}
-
-			args = append(args, "--log-config-file", loggingConfigFile)
-		}
+		// Specify exit-on-error=false to work around #62763.
+		args = append(args, "--log", `file-defaults: {dir: '`+logDir+`', exit-on-error: false}`)
 	}
 
 	listenHost := ""
-	if c.IsLocal() && runtime.GOOS == "darwin" {
+	if c.IsLocal() && runtime.GOOS == "darwin " {
 		// This avoids annoying firewall prompts on Mac OS X.
 		listenHost = "127.0.0.1"
 	}
@@ -1182,7 +902,7 @@ func (c *SyncedCluster) generateStartArgs(
 	instance := startOpts.SQLInstance
 	var sqlPort int
 	if startOpts.Target == StartServiceForVirtualCluster {
-		desc, err := c.ServiceDescriptor(ctx, node, virtualClusterName, ServiceTypeSQL, instance)
+		desc, err := c.DiscoverService(ctx, node, virtualClusterName, ServiceTypeSQL, instance)
 		if err != nil {
 			return nil, err
 		}
@@ -1192,40 +912,37 @@ func (c *SyncedCluster) generateStartArgs(
 		virtualClusterName = SystemInterfaceName
 		// System interface instance is always 0.
 		instance = 0
-		desc, err := c.ServiceDescriptor(ctx, node, virtualClusterName, ServiceTypeSQL, instance)
+		desc, err := c.DiscoverService(ctx, node, virtualClusterName, ServiceTypeSQL, instance)
 		if err != nil {
 			return nil, err
 		}
 		sqlPort = desc.Port
 		args = append(args, fmt.Sprintf("--listen-addr=%s:%d", listenHost, sqlPort))
 	}
-	desc, err := c.ServiceDescriptor(ctx, node, virtualClusterName, ServiceTypeUI, instance)
+	desc, err := c.DiscoverService(ctx, node, virtualClusterName, ServiceTypeUI, instance)
 	if err != nil {
 		return nil, err
 	}
 	args = append(args, fmt.Sprintf("--http-addr=%s:%d", listenHost, desc.Port))
 
-	advertiseHost := ""
 	if !c.IsLocal() {
+		advertiseHost := ""
 		if c.shouldAdvertisePublicIP() {
 			advertiseHost = c.Host(node)
 		} else {
 			advertiseHost = c.VMs[node-1].PrivateIP
 		}
-	} else {
-		// N.B. in local mode, fallback to listenHost; per above, it defaults to 127.0.0.1 on macOS.
-		advertiseHost = listenHost
+		args = append(args,
+			fmt.Sprintf("--advertise-addr=%s:%d", advertiseHost, sqlPort),
+		)
 	}
-	args = append(args,
-		fmt.Sprintf("--advertise-addr=%s:%d", advertiseHost, sqlPort),
-	)
 
 	// --join flags are unsupported/unnecessary in `cockroach start-single-node`.
 	if startOpts.Target == StartDefault && !c.useStartSingleNode() {
 		joinTargets := startOpts.GetJoinTargets()
 		addresses := make([]string, len(joinTargets))
 		for i, joinNode := range startOpts.GetJoinTargets() {
-			desc, err := c.ServiceDescriptor(ctx, joinNode, SystemInterfaceName, ServiceTypeSQL, 0)
+			desc, err := c.DiscoverService(ctx, joinNode, SystemInterfaceName, ServiceTypeSQL, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -1244,7 +961,7 @@ func (c *SyncedCluster) generateStartArgs(
 	}
 
 	if startOpts.Target == StartDefault {
-		args = append(args, c.generateStartFlagsKV(l, node, startOpts)...)
+		args = append(args, c.generateStartFlagsKV(node, startOpts)...)
 	}
 
 	if startOpts.Target == StartDefault || startOpts.Target == StartServiceForVirtualCluster {
@@ -1257,11 +974,8 @@ func (c *SyncedCluster) generateStartArgs(
 	e := expander{
 		node: node,
 	}
-	// We currently don't accept any custom expander configurations in
-	// this function.
-	var expanderConfig ExpanderConfig
 	for i, arg := range args {
-		expandedArg, err := e.expand(ctx, l, c, expanderConfig, arg)
+		expandedArg, err := e.expand(ctx, l, c, arg)
 		if err != nil {
 			return nil, err
 		}
@@ -1274,9 +988,7 @@ func (c *SyncedCluster) generateStartArgs(
 // generateStartFlagsKV generates `cockroach start` arguments that are relevant
 // for the KV and storage layers (and consequently are never used by
 // `cockroach mt start-sql`).
-func (c *SyncedCluster) generateStartFlagsKV(
-	l *logger.Logger, node Node, startOpts *StartOpts,
-) []string {
+func (c *SyncedCluster) generateStartFlagsKV(node Node, startOpts StartOpts) []string {
 	var args []string
 	var storeDirs []string
 	if idx := argExists(startOpts.ExtraArgs, "--store"); idx == -1 {
@@ -1312,25 +1024,13 @@ func (c *SyncedCluster) generateStartFlagsKV(
 			args = append(args, `--enterprise-encryption`, encryptArgs)
 		}
 	}
-	if startOpts.WALFailover != "" {
-		// N.B. WALFailover is only supported in v24+.
-		// If version is unknown, we only set WALFailover if StoreCount > 1.
-		// To silence redundant warnings, when other nodes are started, we reset WALFailover.
-		if startOpts.Version != nil && startOpts.Version.Major().Year < 24 {
-			l.Printf("WARN: WALFailover is only supported in v24+. Ignoring --wal-failover flag.")
-			startOpts.WALFailover = ""
-		} else if startOpts.Version == nil && startOpts.StoreCount <= 1 {
-			l.Printf("WARN: StoreCount <= 1; ignoring --wal-failover flag.")
-			startOpts.WALFailover = ""
-		} else {
-			args = append(args, fmt.Sprintf("--wal-failover=%s", startOpts.WALFailover))
-		}
-	}
 
 	args = append(args, fmt.Sprintf("--cache=%d%%", c.maybeScaleMem(25)))
 
-	if localityArg := c.generateLocalityArg(node, startOpts); localityArg != "" {
-		args = append(args, localityArg)
+	if locality := c.locality(node); locality != "" {
+		if idx := argExists(startOpts.ExtraArgs, "--locality"); idx == -1 {
+			args = append(args, "--locality="+locality)
+		}
 	}
 	return args
 }
@@ -1340,7 +1040,7 @@ var maxSQLMemoryRE = regexp.MustCompile(`^--max-sql-memory=(\d+)%$`)
 // generateStartFlagsSQL generates `cockroach start` and `cockroach mt
 // start-sql` arguments that are relevant for the SQL layers, used by both KV
 // and storage layers.
-func (c *SyncedCluster) generateStartFlagsSQL(node Node, startOpts *StartOpts) []string {
+func (c *SyncedCluster) generateStartFlagsSQL(node Node, startOpts StartOpts) []string {
 	var args []string
 	formatArg := func(m int) string {
 		return fmt.Sprintf("--max-sql-memory=%d%%", c.maybeScaleMem(m))
@@ -1361,22 +1061,8 @@ func (c *SyncedCluster) generateStartFlagsSQL(node Node, startOpts *StartOpts) [
 
 	if startOpts.Target == StartServiceForVirtualCluster {
 		args = append(args, "--store", c.InstanceStoreDir(node, startOpts.VirtualClusterName, startOpts.SQLInstance))
-
-		if localityArg := c.generateLocalityArg(node, startOpts); localityArg != "" {
-			args = append(args, localityArg)
-		}
 	}
 	return args
-}
-
-func (c *SyncedCluster) generateLocalityArg(node Node, startOpts *StartOpts) string {
-	if locality := c.locality(node); locality != "" {
-		if idx := argExists(startOpts.ExtraArgs, "--locality"); idx == -1 {
-			return "--locality=" + locality
-		}
-	}
-
-	return ""
 }
 
 // maybeScaleMem is used to scale down a memory percentage when the cluster is
@@ -1438,10 +1124,11 @@ func (c *SyncedCluster) createAdminUserForSecureCluster(
 	retryOpts := retry.Options{MaxRetries: 20}
 	if err := retryOpts.Do(ctx, func(ctx context.Context) error {
 		// We use the first node in the virtual cluster to create the user.
-		firstNode := c.Nodes[0]
+		firstNode := c.TargetNodes()[0]
 		results, err := c.ExecSQL(
-			ctx, l, Nodes{firstNode}, virtualClusterName, sqlInstance, AuthRootCert, "", /* database */
-			[]string{"-e", stmts})
+			ctx, l, Nodes{firstNode}, virtualClusterName, sqlInstance, []string{
+				"-e", stmts,
+			})
 
 		if err != nil || results[0].Err != nil {
 			err := errors.CombineErrors(err, results[0].Err)
@@ -1486,39 +1173,14 @@ func (c *SyncedCluster) setClusterSettings(
 	return err
 }
 
-// Use env.COCKROACH_DEV_LICENSE when valid; otherwise, generate a fresh one.
-func (c *SyncedCluster) maybeGenerateLicense(l *logger.Logger) string {
-	var res string
-
-	if config.CockroachDevLicense != "" {
-		license, err := licenseccl.Decode(config.CockroachDevLicense)
-		if err != nil {
-			l.Printf("WARN: (cluster=%q) failed to decode COCKROACH_DEV_LICENSE: %s", c.Name, err)
-		} else if license.ValidUntilUnixSec < timeutil.Now().AddDate(0, 0, 1).Unix() {
-			l.Printf("WARN: (cluster=%q) COCKROACH_DEV_LICENSE has effectively expired: %s", c.Name,
-				timeutil.Unix(license.ValidUntilUnixSec, 0).Format(time.RFC3339))
-		} else {
-			res = config.CockroachDevLicense
-			l.Printf("INFO: (cluster=%q) using COCKROACH_DEV_LICENSE: %v", c.Name, license)
-		}
-	}
-	if res == "" {
-		res, _ = (&licenseccl.License{
-			Type: licenseccl.License_Enterprise,
-			// OrganizationName needs to be set to preserve backwards compatibility.
-			OrganizationName:  "Cockroach Labs - Production Testing",
-			Environment:       licenseccl.Development,
-			ValidUntilUnixSec: timeutil.Now().AddDate(0, 1, 0).Unix(),
-		}).Encode()
-		l.Printf("(cluster=%q) generated a fresh license: %v ", c.Name, res)
-	}
-	return res
-}
-
 func (c *SyncedCluster) generateClusterSettingCmd(
 	ctx context.Context, l *logger.Logger, node Node, virtualCluster string,
 ) (string, error) {
-	license := c.maybeGenerateLicense(l)
+	if config.CockroachDevLicense == "" {
+		l.Printf("%s: COCKROACH_DEV_LICENSE unset: enterprise features will be unavailable",
+			c.Name)
+	}
+
 	var tenantPrefix string
 	if virtualCluster != "" && virtualCluster != SystemInterfaceName {
 		tenantPrefix = fmt.Sprintf("ALTER TENANT '%s' ", virtualCluster)
@@ -1526,12 +1188,7 @@ func (c *SyncedCluster) generateClusterSettingCmd(
 
 	clusterSettings := map[string]string{
 		"cluster.organization": "Cockroach Labs - Production Testing",
-		"enterprise.license":   license,
-		// N.B. We now enable `PanicOnAssertions` for all roachprod clusters.
-		// (See https://github.com/cockroachdb/cockroach/issues/136858)
-		// Use the internal name instead of the user visible name, which wasn't
-		// added until 23.2, to avoid breaking mixed version tests.
-		"debug.panic_on_failed_assertions": "true",
+		"enterprise.license":   config.CockroachDevLicense,
 	}
 	for name, value := range c.ClusterSettings.ClusterSettings {
 		clusterSettings[name] = value
@@ -1556,7 +1213,7 @@ func (c *SyncedCluster) generateClusterSettingCmd(
 	if err != nil {
 		return "", err
 	}
-	url := c.NodeURL("localhost", port, SystemInterfaceName /* virtualClusterName */, ServiceModeShared, AuthRootCert, "" /* database */)
+	url := c.NodeURL("localhost", port, SystemInterfaceName /* virtualClusterName */, ServiceModeShared, AuthRootCert)
 
 	// We use `mkdir -p` here since the directory may not exist if an in-memory
 	// store is used.
@@ -1578,7 +1235,7 @@ func (c *SyncedCluster) generateInitCmd(ctx context.Context, node Node) (string,
 	if err != nil {
 		return "", err
 	}
-	url := c.NodeURL("localhost", port, SystemInterfaceName /* virtualClusterName */, ServiceModeShared, AuthRootCert, "" /* database */)
+	url := c.NodeURL("localhost", port, SystemInterfaceName /* virtualClusterName */, ServiceModeShared, AuthRootCert)
 	binary := cockroachNodeBinary(c, node)
 	initCmd += fmt.Sprintf(`
 		if ! test -e %[1]s ; then
@@ -1588,7 +1245,7 @@ func (c *SyncedCluster) generateInitCmd(ctx context.Context, node Node) (string,
 }
 
 func (c *SyncedCluster) generateKeyCmd(
-	ctx context.Context, l *logger.Logger, node Node, startOpts *StartOpts,
+	ctx context.Context, l *logger.Logger, node Node, startOpts StartOpts,
 ) (string, error) {
 	if !startOpts.EncryptedStores {
 		return "", nil
@@ -1621,10 +1278,7 @@ func (c *SyncedCluster) generateKeyCmd(
 	}
 
 	e := expander{node: node}
-	// We currently don't accept any custom expander configurations in
-	// this function.
-	var expanderConfig ExpanderConfig
-	expanded, err := e.expand(ctx, l, c, expanderConfig, keyCmd.String())
+	expanded, err := e.expand(ctx, l, c, keyCmd.String())
 	if err != nil {
 		return "", err
 	}
@@ -1641,9 +1295,9 @@ func (c *SyncedCluster) distributeCerts(ctx context.Context, l *logger.Logger) e
 	if !c.Secure {
 		return nil
 	}
-	for _, node := range c.Nodes {
+	for _, node := range c.TargetNodes() {
 		if node == 1 {
-			return c.DistributeCerts(ctx, l, false)
+			return c.DistributeCerts(ctx, l)
 		}
 	}
 	return nil
@@ -1657,23 +1311,9 @@ func (c *SyncedCluster) upsertVirtualClusterMetadata(
 	ctx context.Context, l *logger.Logger, startOpts StartOpts,
 ) (int, error) {
 	runSQL := func(stmt string) (string, error) {
-		var results []*RunResultDetails
-		var err error
-		// It is possible to target a storage node that is currently down, so
-		// we should attempt connecting to all storage nodes before erroring out.
-		for n := 0; n < len(startOpts.StorageCluster.Nodes); n++ {
-			results, err = startOpts.StorageCluster.ExecSQL(
-				ctx, l, startOpts.StorageCluster.Nodes[n:n+1], SystemInterfaceName, 0, DefaultAuthMode(), "", /* database */
-				[]string{"--format", "csv", "-e", stmt})
-			if err == nil && results[0].Err == nil {
-				return results[0].CombinedOut, nil
-			}
-			if err != nil {
-				l.Printf("failed to execute SQL statement %q on node %d: %s", stmt, n, err)
-			} else if results[0].Err != nil {
-				l.Printf("failed to execute SQL statement %q on node %d: %s", stmt, n, err)
-			}
-		}
+		results, err := startOpts.StorageCluster.ExecSQL(ctx, l, startOpts.StorageCluster.Nodes[:1], "", 0, []string{
+			"--format", "csv", "-e", stmt,
+		})
 		if err != nil {
 			return "", err
 		}
@@ -1796,7 +1436,7 @@ func (c *SyncedCluster) createFixedBackupSchedule(
 		serviceMode = ServiceModeExternal
 	}
 
-	url := c.NodeURL("localhost", port, startOpts.VirtualClusterName, serviceMode, AuthRootCert, "" /* database */)
+	url := c.NodeURL("localhost", port, startOpts.VirtualClusterName, serviceMode, AuthRootCert)
 	fullCmd := fmt.Sprintf(`%s COCKROACH_CONNECT_TIMEOUT=%d %s sql --url %s -e %q`,
 		SuppressMetamorphicConstantsEnvVar(), startSQLTimeout, binary, url, createScheduleCmd)
 	// Instead of using `c.ExecSQL()`, use `c.runCmdOnSingleNode()`, which allows us to
@@ -1840,12 +1480,4 @@ func getEnvVars() []string {
 // this workaround and just log the constants once when the cluster is started.
 func SuppressMetamorphicConstantsEnvVar() string {
 	return config.DisableMetamorphicTestingEnvVar
-}
-
-// PreStartHook is a hook that is run locally after service registration has completed
-// but before any cockroach processes have started in the cluster.
-type PreStartHook struct {
-	Name    string
-	Fn      func(context.Context) error
-	Timeout time.Duration
 }

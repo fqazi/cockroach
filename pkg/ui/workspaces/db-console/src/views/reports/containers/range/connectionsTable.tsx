@@ -3,18 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Loading } from "@cockroachlabs/cluster-ui";
 import classNames from "classnames";
-import flow from "lodash/flow";
-import isEmpty from "lodash/isEmpty";
-import isNil from "lodash/isNil";
-import keys from "lodash/keys";
-import map from "lodash/map";
-import sortBy from "lodash/sortBy";
+import _ from "lodash";
 import React from "react";
 
 import * as protos from "src/js/protos";
 import { CachedDataReducerState } from "src/redux/cachedDataReducer";
+import { Loading } from "@cockroachlabs/cluster-ui";
 
 interface ConnectionsTableProps {
   range: CachedDataReducerState<protos.cockroach.server.serverpb.RangeResponse>;
@@ -24,12 +19,11 @@ export default function ConnectionsTable(props: ConnectionsTableProps) {
   const { range } = props;
   let ids: number[];
   let viaNodeID = "";
-  if (range && !range.inFlight && !isNil(range.data)) {
-    ids = flow(
-      keys,
-      nodeIds => map(nodeIds, id => parseInt(id, 10)),
-      nodeIds => sortBy(nodeIds, id => id),
-    )(range.data.responses_by_node_id);
+  if (range && !range.inFlight && !_.isNil(range.data)) {
+    ids = _.chain(_.keys(range.data.responses_by_node_id))
+      .map(id => parseInt(id, 10))
+      .sortBy(id => id)
+      .value();
     viaNodeID = ` (via n${range.data.node_id.toString()})`;
   }
 
@@ -57,11 +51,11 @@ export default function ConnectionsTable(props: ConnectionsTableProps) {
                   Error
                 </th>
               </tr>
-              {map(ids, id => {
+              {_.map(ids, id => {
                 const resp = range.data.responses_by_node_id[id];
                 const rowClassName = classNames("connections-table__row", {
                   "connections-table__row--warning":
-                    !resp.response || !isEmpty(resp.error_message),
+                    !resp.response || !_.isEmpty(resp.error_message),
                 });
                 return (
                   <tr key={id} className={rowClassName}>

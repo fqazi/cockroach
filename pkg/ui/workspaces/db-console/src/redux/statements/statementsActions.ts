@@ -3,10 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { TimeScale, api as clusterUiApi } from "@cockroachlabs/cluster-ui";
 import { Action } from "redux";
-
 import { PayloadAction } from "src/interfaces/action";
+import { TimeScale, api as clusterUiApi } from "@cockroachlabs/cluster-ui";
 
 export const CREATE_STATEMENT_DIAGNOSTICS_REPORT =
   "cockroachui/statements/CREATE_STATEMENT_DIAGNOSTICS_REPORT";

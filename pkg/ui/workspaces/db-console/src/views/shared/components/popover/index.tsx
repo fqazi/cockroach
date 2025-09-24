@@ -3,8 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames";
 import React from "react";
+import classNames from "classnames";
 
 import { OutsideEventHandler } from "src/components/outsideEventHandler";
 

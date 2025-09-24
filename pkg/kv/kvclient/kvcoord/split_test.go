@@ -71,7 +71,7 @@ func startTestWriter(
 					key := randutil.RandBytes(src, 10)
 					val := randutil.RandBytes(src, int(src.Int31n(valBytes)))
 					if err := txn.Put(ctx, key, val); err != nil {
-						log.Dev.Infof(ctx, "experienced an error in routine %d: %s", i, err)
+						log.Infof(ctx, "experienced an error in routine %d: %s", i, err)
 						return err
 					}
 				}
@@ -103,7 +103,7 @@ func TestRangeSplitMeta(t *testing.T) {
 	// Execute the consecutive splits.
 	for _, splitRKey := range splitKeys {
 		splitKey := roachpb.Key(splitRKey)
-		log.Dev.Infof(ctx, "starting split at key %q...", splitKey)
+		log.Infof(ctx, "starting split at key %q...", splitKey)
 		if err := s.DB.AdminSplit(
 			ctx,
 			splitKey,
@@ -111,7 +111,7 @@ func TestRangeSplitMeta(t *testing.T) {
 		); err != nil {
 			t.Fatal(err)
 		}
-		log.Dev.Infof(ctx, "split at key %q complete", splitKey)
+		log.Infof(ctx, "split at key %q complete", splitKey)
 	}
 
 	testutils.SucceedsSoon(t, func() error {
@@ -154,7 +154,7 @@ func TestRangeSplitsWithConcurrentTxns(t *testing.T) {
 		for i := 0; i < concurrency; i++ {
 			<-txnChannel
 		}
-		log.Dev.Infof(ctx, "starting split at key %q...", splitKey)
+		log.Infof(ctx, "starting split at key %q...", splitKey)
 		if pErr := s.DB.AdminSplit(
 			context.Background(),
 			splitKey,
@@ -162,7 +162,7 @@ func TestRangeSplitsWithConcurrentTxns(t *testing.T) {
 		); pErr != nil {
 			t.Error(pErr)
 		}
-		log.Dev.Infof(ctx, "split at key %q complete", splitKey)
+		log.Infof(ctx, "split at key %q complete", splitKey)
 	}
 
 	close(done)
@@ -253,7 +253,7 @@ func TestRangeSplitsWithSameKeyTwice(t *testing.T) {
 	ctx := context.Background()
 
 	splitKey := roachpb.Key("aa")
-	log.Dev.Infof(ctx, "starting split at key %q...", splitKey)
+	log.Infof(ctx, "starting split at key %q...", splitKey)
 	if err := s.DB.AdminSplit(
 		ctx,
 		splitKey,
@@ -261,7 +261,7 @@ func TestRangeSplitsWithSameKeyTwice(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	log.Dev.Infof(ctx, "split at key %q first time complete", splitKey)
+	log.Infof(ctx, "split at key %q first time complete", splitKey)
 	if err := s.DB.AdminSplit(
 		ctx,
 		splitKey,
@@ -314,15 +314,6 @@ func TestRangeSplitsStickyBit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Ensure the sticky bit was removed.
-	err = s.DB.GetProto(ctx, descKey, &desc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !desc.StickyBit.IsEmpty() {
-		t.Fatal("Sticky bit not unset after unsplitting")
-	}
-
 	// Splitting range.
 	if err := s.DB.AdminSplit(
 		ctx,
@@ -340,11 +331,6 @@ func TestRangeSplitsStickyBit(t *testing.T) {
 	if desc.StickyBit.IsEmpty() {
 		t.Fatal("Sticky bit not set after splitting")
 	}
-
-	// TODO(arul): we should add something to ensure that the sticky bit is updated
-	// in the in-memory descriptor as well. See the comment on updateRangeDescriptor.
-	// As is, the test wouldn't catch if the StickyBitTrigger wasn't run in
-	// splitTxnStickyUpdateAttempt.
 }
 
 func TestSplitPredicates(t *testing.T) {

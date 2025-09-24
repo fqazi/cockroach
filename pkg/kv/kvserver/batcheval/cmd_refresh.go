@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
@@ -40,7 +39,7 @@ func Refresh(
 	if h.Timestamp != h.Txn.WriteTimestamp {
 		// We're expecting the read and write timestamp to have converged before the
 		// Refresh request was sent.
-		log.KvExec.Fatalf(ctx, "expected provisional commit ts %s == read ts %s. txn: %s", h.Timestamp,
+		log.Fatalf(ctx, "expected provisional commit ts %s == read ts %s. txn: %s", h.Timestamp,
 			h.Txn.WriteTimestamp, h.Txn)
 	}
 	refreshTo := h.Timestamp
@@ -57,7 +56,7 @@ func Refresh(
 	res, err := storage.MVCCGet(ctx, reader, args.Key, refreshTo, storage.MVCCGetOptions{
 		Inconsistent: true,
 		Tombstones:   true,
-		ReadCategory: fs.BatchEvalReadCategory,
+		ReadCategory: storage.BatchEvalReadCategory,
 	})
 
 	if err != nil {

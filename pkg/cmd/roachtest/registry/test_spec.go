@@ -9,12 +9,10 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 )
@@ -25,25 +23,6 @@ var LibGEOS = []string{"libgeos", "libgeos_c"}
 // PrometheusNameSpace is the namespace which all metrics exposed on the roachtest
 // endpoint should use.
 var PrometheusNameSpace = "roachtest"
-
-var DefaultProcessFunction = func(test string, histograms *roachtestutil.HistogramMetric) (roachtestutil.AggregatedPerfMetrics, error) {
-	totalOps := 0.0
-	for _, summary := range histograms.Summaries {
-		if summary.TotalElapsed == 0 {
-			continue
-		}
-		totalOps += float64(summary.TotalCount*1000) / float64(summary.TotalElapsed)
-	}
-
-	return roachtestutil.AggregatedPerfMetrics{
-		{
-			Name:           fmt.Sprintf("%s_%s", test, "total_ops_per_s"),
-			Value:          roachtestutil.MetricPoint(totalOps),
-			Unit:           "ops/s",
-			IsHigherBetter: true,
-		},
-	}, nil
-}
 
 // testStats is internally populated based on its previous runs and used for
 // deciding on the current execution approach. This includes decisions like
@@ -114,6 +93,12 @@ type TestSpec struct {
 	// still be run regularly.
 	NonReleaseBlocker bool
 
+	// RequiresLicense indicates that the test requires an
+	// enterprise license to run correctly. Use this to ensure
+	// tests will fail-early if COCKROACH_DEV_LICENSE is not set
+	// in the environment.
+	RequiresLicense bool
+
 	// RequiresDeprecatedWorkload indicates that the test requires
 	// the 'workload' binary to be present for the test to run. Use
 	// this to ensure tests will fail-early if a 'workload' binary
@@ -133,12 +118,6 @@ type TestSpec struct {
 	// Leases specifies the kind of leases to use for the cluster. Defaults
 	// to epoch leases.
 	Leases LeaseType
-
-	// WriteOptimization specifies what kind of write optimization to use.
-	// Defaults to pipelining. This is currently used only in benchmark tests.
-	// If used in a non-benchmark test, this setting will be overwritten to enable
-	// pipelining and additionally, with 50% probability, buffering.
-	WriteOptimization WriteOptimizationType
 
 	// SkipPostValidations is a bit-set of post-validations that should be skipped
 	// after the test completes. This is useful for tests that are known to be
@@ -193,18 +172,8 @@ type TestSpec struct {
 	// important.
 	Randomized bool
 
-	// Monitor specifies whether the test initiates a process monitor. Eventually,
-	// this should replace all instances of `cluster.NewDeprecatedMonitor`. To make this
-	// transition, tests should be modified to utilize the `test.Monitor` and
-	// `roachtestutil.Task` interfaces provided with each test.
-	Monitor bool
-
 	// stats are populated by test selector based on previous execution data
 	stats *testStats
-
-	// PostProcessPerfMetrics can be used to custom aggregated metrics
-	// from the histogram metrics that are emitted by the roachtest
-	PostProcessPerfMetrics func(string, *roachtestutil.HistogramMetric) (roachtestutil.AggregatedPerfMetrics, error)
 }
 
 // SetStats sets the stats for the test
@@ -220,21 +189,7 @@ func (ts *TestSpec) IsLastFailurePreempt() bool {
 	return ts.stats != nil && ts.stats.LastFailureIsPreempt
 }
 
-func (ts *TestSpec) GetPostProcessWorkloadMetricsFunction() func(string, *roachtestutil.HistogramMetric) (roachtestutil.AggregatedPerfMetrics, error) {
-	if ts.PostProcessPerfMetrics != nil {
-		return ts.PostProcessPerfMetrics
-	}
-
-	return DefaultProcessFunction
-}
-
 // PostValidation is a type of post-validation that runs after a test completes.
-// By default, all validations are run unless TestSpec.SkipPostValidations is set to a bitwise OR
-// of the validations to skip.
-//
-// E.g., SkipPostValidations : PostValidationReplicaDivergence | PostValidationInvalidDescriptors
-// would skip the replica divergence and invalid descriptors validations and run the rest.
-// SkipPostValidations: PostValidationAll would skip _all_ validations.
 type PostValidation int
 
 const (
@@ -246,12 +201,7 @@ const (
 	// the crdb_internal.invalid_objects virtual table.
 	PostValidationInvalidDescriptors
 	// PostValidationNoDeadNodes checks if there are any dead nodes in the cluster.
-	// TODO: Deprecate or replace this functionality.
-	// In its current state it is no longer functional.
-	// See: https://github.com/cockroachdb/cockroach/issues/137329 for details.
 	PostValidationNoDeadNodes
-	// PostValidationAll is a bitwise OR of all post-validations to skip.
-	PostValidationAll = PostValidationReplicaDivergence | PostValidationInvalidDescriptors | PostValidationNoDeadNodes
 )
 
 // PromSub replaces all non prometheus friendly chars with "_". Note,
@@ -273,8 +223,6 @@ func (l LeaseType) String() string {
 		return "epoch"
 	case ExpirationLeases:
 		return "expiration"
-	case LeaderLeases:
-		return "leader"
 	case MetamorphicLeases:
 		return "metamorphic"
 	default:
@@ -289,53 +237,24 @@ const (
 	EpochLeases
 	// ExpirationLeases uses expiration leases for all ranges.
 	ExpirationLeases
-	// LeaderLeases uses leader leases where possible.
-	LeaderLeases
 	// MetamorphicLeases randomly chooses epoch or expiration
-	// leases (across the entire cluster).
+	// leases (across the entire cluster)
 	MetamorphicLeases
 )
 
-// LeaseTypes contains all lease types.
-//
-// The list does not contain aliases like "default" and "metamorphic".
-var LeaseTypes = []LeaseType{EpochLeases, ExpirationLeases, LeaderLeases}
-
-// WriteOptimizationType specifies the type of write optimization to use.
-type WriteOptimizationType int
-
-func (w WriteOptimizationType) String() string {
-	switch w {
-	case DefaultWriteOptimization:
-		return "default"
-	case Pipelining:
-		return "pipelining"
-	case Buffering:
-		return "buffering"
-	default:
-		return fmt.Sprintf("writeoptimization-%d", w)
-	}
-}
-
-const (
-	// DefaultWriteOptimization uses the default cluster settings.
-	DefaultWriteOptimization = WriteOptimizationType(iota)
-	// Pipelining uses write pipelining, and disables buffering.
-	Pipelining
-	// Buffering uses client-side write buffering, and disabled pipelining.
-	Buffering
-)
+var allClouds = []string{spec.Local, spec.GCE, spec.AWS, spec.Azure}
 
 // CloudSet represents a set of clouds.
 //
 // Instances of CloudSet are immutable. The uninitialized (zero) value is not
 // valid.
 type CloudSet struct {
-	m map[spec.Cloud]struct{}
+	// m contains only values from allClouds.
+	m map[string]struct{}
 }
 
 // AllClouds contains all clouds.
-var AllClouds = Clouds(spec.Local, spec.GCE, spec.AWS, spec.Azure, spec.IBM)
+var AllClouds = Clouds(allClouds...)
 
 // AllExceptLocal contains all clouds except Local.
 var AllExceptLocal = AllClouds.NoLocal()
@@ -346,9 +265,6 @@ var AllExceptAWS = AllClouds.NoAWS()
 // AllExceptAzure contains all clouds except Azure.
 var AllExceptAzure = AllClouds.NoAzure()
 
-// AllExceptIBM contains all clouds except IBM.
-var AllExceptIBM = AllClouds.NoIBM()
-
 // OnlyAWS contains only the AWS cloud.
 var OnlyAWS = Clouds(spec.AWS)
 
@@ -358,9 +274,6 @@ var OnlyGCE = Clouds(spec.GCE)
 // OnlyAzure contains only the Azure cloud.
 var OnlyAzure = Clouds(spec.Azure)
 
-// OnlyIBM contains only the IBM cloud.
-var OnlyIBM = Clouds(spec.IBM)
-
 // OnlyLocal contains only the Local cloud.
 var OnlyLocal = Clouds(spec.Local)
 
@@ -368,8 +281,9 @@ var OnlyLocal = Clouds(spec.Local)
 var CloudsWithServiceRegistration = Clouds(spec.Local, spec.GCE)
 
 // Clouds creates a CloudSet for the given clouds. Cloud names must be one of:
-// spec.Local, spec.GCE, spec.AWS, spec.Azure, spec.IBM.
-func Clouds(clouds ...spec.Cloud) CloudSet {
+// spec.Local, spec.GCE, spec.AWS, spec.Azure.
+func Clouds(clouds ...string) CloudSet {
+	assertValidValues(allClouds, clouds...)
 	return CloudSet{m: addToSet(nil, clouds...)}
 }
 
@@ -388,11 +302,6 @@ func (cs CloudSet) NoAzure() CloudSet {
 	return CloudSet{m: removeFromSet(cs.m, spec.Azure)}
 }
 
-// NoIBM removes the IBM cloud and returns the new set.
-func (cs CloudSet) NoIBM() CloudSet {
-	return CloudSet{m: removeFromSet(cs.m, spec.IBM)}
-}
-
 // Remove removes all clouds passed in and returns the new set.
 func (cs CloudSet) Remove(clouds CloudSet) CloudSet {
 	copyCs := CloudSet{m: cs.m}
@@ -404,7 +313,7 @@ func (cs CloudSet) Remove(clouds CloudSet) CloudSet {
 }
 
 // Contains returns true if the set contains the given cloud.
-func (cs CloudSet) Contains(cloud spec.Cloud) bool {
+func (cs CloudSet) Contains(cloud string) bool {
 	cs.AssertInitialized()
 	_, ok := cs.m[cloud]
 	return ok
@@ -412,19 +321,7 @@ func (cs CloudSet) Contains(cloud spec.Cloud) bool {
 
 func (cs CloudSet) String() string {
 	cs.AssertInitialized()
-	if len(cs.m) == 0 {
-		return "<none>"
-	}
-	res := make([]spec.Cloud, 0, len(cs.m))
-	for k := range cs.m {
-		res = append(res, k)
-	}
-	slices.Sort(res)
-	strs := make([]string, len(res))
-	for i := range res {
-		strs[i] = res[i].String()
-	}
-	return strings.Join(strs, ",")
+	return setToString(allClouds, cs.m)
 }
 
 // AssertInitialized panics if the CloudSet is the zero value.
@@ -446,6 +343,7 @@ const (
 	ORM                   = "orm"
 	Driver                = "driver"
 	Tool                  = "tool"
+	Smoketest             = "smoketest"
 	Quick                 = "quick"
 	Fixtures              = "fixtures"
 	Pebble                = "pebble"
@@ -454,14 +352,11 @@ const (
 	PebbleNightlyYCSBRace = "pebble_nightly_ycsb_race"
 	Roachtest             = "roachtest"
 	Acceptance            = "acceptance"
-	Perturbation          = "perturbation"
-	MixedVersion          = "mixedversion"
 )
 
 var allSuites = []string{
-	Nightly, Weekly, ReleaseQualification, ORM, Driver, Tool, Quick, Fixtures,
+	Nightly, Weekly, ReleaseQualification, ORM, Driver, Tool, Smoketest, Quick, Fixtures,
 	Pebble, PebbleNightlyWrite, PebbleNightlyYCSB, PebbleNightlyYCSBRace, Roachtest, Acceptance,
-	Perturbation, MixedVersion,
 }
 
 // SuiteSet represents a set of suites.
@@ -527,8 +422,8 @@ func assertValidValues(validValues []string, values ...string) {
 }
 
 // addToSet returns a new set that is the initial set with the given values added.
-func addToSet[T comparable](initial map[T]struct{}, values ...T) map[T]struct{} {
-	m := make(map[T]struct{})
+func addToSet(initial map[string]struct{}, values ...string) map[string]struct{} {
+	m := make(map[string]struct{})
 	for k := range initial {
 		m[k] = struct{}{}
 	}
@@ -539,8 +434,8 @@ func addToSet[T comparable](initial map[T]struct{}, values ...T) map[T]struct{} 
 }
 
 // removeFromSet returns a new set that is the initial set with the given values removed.
-func removeFromSet[T comparable](initial map[T]struct{}, values ...T) map[T]struct{} {
-	m := make(map[T]struct{})
+func removeFromSet(initial map[string]struct{}, values ...string) map[string]struct{} {
+	m := make(map[string]struct{})
 	for k := range initial {
 		m[k] = struct{}{}
 	}

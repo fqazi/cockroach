@@ -61,7 +61,6 @@ func ReverseScan(
 		LockTable:               lockTableForSkipLocked,
 		DontInterleaveIntents:   cArgs.DontInterleaveIntents,
 		ReadCategory:            readCategory,
-		ReturnRawMVCCValues:     args.ReturnRawMVCCValues,
 	}
 
 	switch args.ScanFormat {

@@ -6,11 +6,11 @@
 #  7 [a7]        [d7]                    [j7]    [l7]
 #  6                      f6
 #  5          o---------------o               k5
-#  4  x   x       d4      f4  g4  x
+#  4  x   x       d4      f4  g4
 #  3      o-------o   e3  o-------oh3
 #  2  a2                  f2  g2
-#  1  o---------------------------------------o   o---o
-#     a   b   c   d   e   f   g   h   i   j   k   l   m
+#  1  o---------------------------------------o
+#     a   b   c   d   e   f   g   h   i   j   k
 #
 run ok
 put_rangekey k=a end=k ts=1
@@ -41,12 +41,12 @@ with t=A
 del: "a": found key true
 del: "b": found key false
 del: "h": found key true
-put: lock acquisition = {span=a id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0 durability=Replicated strength=Intent ignored=[]}
-put: lock acquisition = {span=d id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0 durability=Replicated strength=Intent ignored=[]}
-put: lock acquisition = {span=j id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0 durability=Replicated strength=Intent ignored=[]}
-put: lock acquisition = {span=l id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0 durability=Replicated strength=Intent ignored=[]}
+put: lock acquisition = {a id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0 Replicated Intent []}
+put: lock acquisition = {d id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0 Replicated Intent []}
+put: lock acquisition = {j id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0 Replicated Intent []}
+put: lock acquisition = {l id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0 Replicated Intent []}
 >> at end:
-txn: "A" meta={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=7.000000000,0 gul=0,0
+txn: "A" meta={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0} lock=true stat=PENDING rts=7.000000000,0 wto=false gul=0,0
 rangekey: {a-b}/[1.000000000,0=/<empty>]
 rangekey: {b-c}/[3.000000000,0=/<empty> 1.000000000,0=/<empty>]
 rangekey: {c-d}/[5.000000000,0=/<empty> 3.000000000,0=/<empty> 1.000000000,0=/<empty>]
@@ -78,16 +78,6 @@ meta: "l"/0,0 -> txn={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0
 data: "l"/7.000000000,0 -> /BYTES/l7
 
 # Clear a few range key segments.
-# After (removes the range key span [f-g)@3):
-#  T
-#  7 [a7]        [d7]                    [j7]    [l7]
-#  6                      f6
-#  5          o---------------o               k5
-#  4  x   x       d4      f4  g4  x
-#  3      o-------o   e3      o---oh3
-#  2  a2                  f2  g2
-#  1  o---------------------------------------o   o---o
-#     a   b   c   d   e   f   g   h   i   j   k   l   m
 run ok
 clear_rangekey k=f end=g ts=3
 ----
@@ -121,16 +111,6 @@ data: "k"/5.000000000,0 -> /BYTES/k5
 meta: "l"/0,0 -> txn={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0} ts=7.000000000,0 del=false klen=12 vlen=7 mergeTs=<nil> txnDidNotUpdateMeta=true
 data: "l"/7.000000000,0 -> /BYTES/l7
 
-# After (removes the range key span [e-f)@1):
-#  T
-#  7 [a7]        [d7]                    [j7]    [l7]
-#  6                      f6
-#  5          o---------------o               k5
-#  4  x   x       d4      f4  g4  x
-#  3      o-------o   e3      o---oh3
-#  2  a2                  f2  g2
-#  1  o---------------o   o-------------------o   o---o
-#     a   b   c   d   e   f   g   h   i   j   k   l   m
 run ok
 clear_rangekey k=e end=f ts=1
 ----
@@ -166,17 +146,7 @@ data: "k"/5.000000000,0 -> /BYTES/k5
 meta: "l"/0,0 -> txn={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0} ts=7.000000000,0 del=false klen=12 vlen=7 mergeTs=<nil> txnDidNotUpdateMeta=true
 data: "l"/7.000000000,0 -> /BYTES/l7
 
-# Clearing segments is idempotent.
-# After (no change):
-#  T
-#  7 [a7]        [d7]                    [j7]    [l7]
-#  6                      f6
-#  5          o---------------o               k5
-#  4  x   x       d4      f4  g4  x
-#  3      o-------o   e3      o---oh3
-#  2  a2                  f2  g2
-#  1  o---------------o   o-------------------o   o---o
-#     a   b   c   d   e   f   g   h   i   j   k   l   m
+# Clearing segments is idempotent and works on missing segments.
 run ok
 clear_rangekey k=f end=g ts=3
 ----
@@ -212,17 +182,6 @@ data: "k"/5.000000000,0 -> /BYTES/k5
 meta: "l"/0,0 -> txn={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0} ts=7.000000000,0 del=false klen=12 vlen=7 mergeTs=<nil> txnDidNotUpdateMeta=true
 data: "l"/7.000000000,0 -> /BYTES/l7
 
-# Clearing segments works on missing segments.
-# After (no change):
-#  T
-#  7 [a7]        [d7]                    [j7]    [l7]
-#  6                      f6
-#  5          o---------------o               k5
-#  4  x   x       d4      f4  g4  x
-#  3      o-------o   e3      o---oh3
-#  2  a2                  f2  g2
-#  1  o---------------o   o-------------------o   o---o
-#     a   b   c   d   e   f   g   h   i   j   k   l   m
 run ok
 clear_rangekey k=a end=z ts=10
 ----
@@ -259,17 +218,6 @@ meta: "l"/0,0 -> txn={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0
 data: "l"/7.000000000,0 -> /BYTES/l7
 
 # Now clear a few spans.
-#
-# After (wipes out [c-d)):
-#  T
-#  7 [a7]        [d7]                    [j7]    [l7]
-#  6                      f6
-#  5              o-----------o               k5
-#  4  x   x       d4      f4  g4  x
-#  3      o---o       e3      o---oh3
-#  2  a2                  f2  g2
-#  1  o-------o   o---o   o-------------------o   o---o
-#     a   b   c   d   e   f   g   h   i   j   k   l   m
 run ok
 clear_range k=c end=d
 ----
@@ -304,16 +252,6 @@ data: "k"/5.000000000,0 -> /BYTES/k5
 meta: "l"/0,0 -> txn={id=00000001 key=/Min iso=Serializable pri=0.00000000 epo=0 ts=7.000000000,0 min=0,0 seq=0} ts=7.000000000,0 del=false klen=12 vlen=7 mergeTs=<nil> txnDidNotUpdateMeta=true
 data: "l"/7.000000000,0 -> /BYTES/l7
 
-# After (wipes out [f-g)):
-#  T
-#  7 [a7]        [d7]                    [j7]    [l7]
-#  6
-#  5              o-------o                   k5
-#  4  x   x       d4          g4  x
-#  3      o---o       e3      o---oh3
-#  2  a2                      g2
-#  1  o-------o   o---o       o---------------o   o---o
-#     a   b   c   d   e   f   g   h   i   j   k   l   m
 run ok
 clear_range k=f end=g
 ----

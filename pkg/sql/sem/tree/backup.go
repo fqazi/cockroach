@@ -55,17 +55,24 @@ type Backup struct {
 	// the docs).
 	To StringOrPlaceholderOptList
 
+	// IncrementalFrom is only set for the old 'BACKUP .... TO ...' syntax.
+	IncrementalFrom Exprs
+
 	AsOf    AsOfClause
 	Options BackupOptions
+
+	// Nested is set to true when the user creates a backup with
+	//`BACKUP ... INTO... ` syntax.
+	Nested bool
 
 	// AppendToLatest is set to true if the user creates a backup with
 	//`BACKUP...INTO LATEST...`
 	AppendToLatest bool
 
 	// Subdir may be set by the parser when the SQL query is of the form `BACKUP
-	// INTO 'subdir' IN...`. Alternatively, if a subdir was not explicitly specified
-	// by the user, then this will be set during BACKUP planning once the destination
-	// has been resolved.
+	// INTO 'subdir' IN...`. Alternatively, if Nested is true but a subdir was not
+	// explicitly specified by the user, then this will be set during BACKUP
+	// planning once the destination has been resolved.
 	Subdir Expr
 }
 
@@ -78,17 +85,30 @@ func (node *Backup) Format(ctx *FmtCtx) {
 		ctx.FormatNode(node.Targets)
 		ctx.WriteString(" ")
 	}
-	ctx.WriteString("INTO ")
-	if node.Subdir != nil {
-		ctx.FormatNode(node.Subdir)
-		ctx.WriteString(" IN ")
-	} else if node.AppendToLatest {
-		ctx.WriteString("LATEST IN ")
+	if node.Nested {
+		ctx.WriteString("INTO ")
+		if node.Subdir != nil {
+			ctx.FormatNode(node.Subdir)
+			ctx.WriteString(" IN ")
+		} else if node.AppendToLatest {
+			ctx.WriteString("LATEST IN ")
+		}
+	} else {
+		ctx.WriteString("TO ")
 	}
 	ctx.FormatURIs(node.To)
 	if node.AsOf.Expr != nil {
 		ctx.WriteString(" ")
 		ctx.FormatNode(&node.AsOf)
+	}
+	if node.IncrementalFrom != nil {
+		ctx.WriteString(" INCREMENTAL FROM ")
+		for i, from := range node.IncrementalFrom {
+			if i > 0 {
+				ctx.WriteString(", ")
+			}
+			ctx.FormatURI(from)
+		}
 	}
 
 	if !node.Options.IsDefault() {
@@ -118,6 +138,7 @@ type RestoreOptions struct {
 	SkipMissingUDFs                  bool
 	Detached                         bool
 	SkipLocalitiesCheck              bool
+	DebugPauseOn                     Expr
 	NewDBName                        Expr
 	IncrementalStorage               StringOrPlaceholderOptList
 	AsTenant                         Expr
@@ -127,12 +148,7 @@ type RestoreOptions struct {
 	UnsafeRestoreIncompatibleVersion bool
 	ExecutionLocality                Expr
 	ExperimentalOnline               bool
-	ExperimentalCopy                 bool
 	RemoveRegions                    bool
-}
-
-func (opts *RestoreOptions) OnlineImpl() bool {
-	return opts.ExperimentalCopy || opts.ExperimentalOnline
 }
 
 var _ NodeFormatter = &RestoreOptions{}
@@ -142,16 +158,20 @@ type Restore struct {
 	Targets            BackupTargetList
 	DescriptorCoverage DescriptorCoverage
 
-	// From contains the URIs for the backup we seek to restore.
-	//   - len(From) > 1 implies the backups are locality aware
-	//   - From[0] must be the default locality.
-	From    StringOrPlaceholderOptList
+	// From contains the URIs for the backup(s) we seek to restore.
+	//   - len(From)>1 implies the user explicitly passed incremental backup paths,
+	//     which is only allowed using the old syntax, `RESTORE <targets> FROM <destination>.
+	//     In this case, From[0] contains the URI(s) for the full backup.
+	//   - len(From)==1 implies we'll have to look for incremental backups in planning
+	//   - len(From[0]) > 1 implies the backups are locality aware
+	//   - From[i][0] must be the default locality.
+	From    []StringOrPlaceholderOptList
 	AsOf    AsOfClause
 	Options RestoreOptions
 
 	// Subdir may be set by the parser when the SQL query is of the form `RESTORE
-	// ... FROM 'subdir' IN 'from'...`. Alternatively, restore_planning.go will set
-	// it for the query `RESTORE ... FROM LATEST IN 'from'...`
+	// ... FROM 'from' IN 'subdir'...`. Alternatively, restore_planning.go will set
+	// it for the query `RESTORE ... FROM 'from' IN LATEST...`
 	Subdir Expr
 }
 
@@ -169,7 +189,12 @@ func (node *Restore) Format(ctx *FmtCtx) {
 		ctx.FormatNode(node.Subdir)
 		ctx.WriteString(" IN ")
 	}
-	ctx.FormatURIs(node.From)
+	for i := range node.From {
+		if i > 0 {
+			ctx.WriteString(", ")
+		}
+		ctx.FormatURIs(node.From[i])
+	}
 	if node.AsOf.Expr != nil {
 		ctx.WriteString(" ")
 		ctx.FormatNode(&node.AsOf)
@@ -409,6 +434,12 @@ func (o *RestoreOptions) Format(ctx *FmtCtx) {
 		ctx.FormatNode(o.IntoDB)
 	}
 
+	if o.DebugPauseOn != nil {
+		maybeAddSep()
+		ctx.WriteString("debug_pause_on = ")
+		ctx.FormatNode(o.DebugPauseOn)
+	}
+
 	if o.SkipMissingFKs {
 		maybeAddSep()
 		ctx.WriteString("skip_missing_foreign_keys")
@@ -491,11 +522,6 @@ func (o *RestoreOptions) Format(ctx *FmtCtx) {
 	if o.ExperimentalOnline {
 		maybeAddSep()
 		ctx.WriteString("experimental deferred copy")
-	}
-
-	if o.ExperimentalCopy {
-		maybeAddSep()
-		ctx.WriteString("experimental copy")
 	}
 
 	if o.RemoveRegions {
@@ -582,6 +608,12 @@ func (o *RestoreOptions) CombineWith(other *RestoreOptions) error {
 		o.SkipLocalitiesCheck = other.SkipLocalitiesCheck
 	}
 
+	if o.DebugPauseOn == nil {
+		o.DebugPauseOn = other.DebugPauseOn
+	} else if other.DebugPauseOn != nil {
+		return errors.New("debug_pause_on specified multiple times")
+	}
+
 	if o.NewDBName == nil {
 		o.NewDBName = other.NewDBName
 	} else if other.NewDBName != nil {
@@ -643,14 +675,6 @@ func (o *RestoreOptions) CombineWith(other *RestoreOptions) error {
 		o.ExperimentalOnline = other.ExperimentalOnline
 	}
 
-	if o.ExperimentalCopy {
-		if other.ExperimentalCopy {
-			return errors.New("experimental copy specified multiple times")
-		}
-	} else {
-		o.ExperimentalCopy = other.ExperimentalCopy
-	}
-
 	if o.RemoveRegions {
 		if other.RemoveRegions {
 			return errors.New("remove_regions specified multiple times")
@@ -675,6 +699,7 @@ func (o RestoreOptions) IsDefault() bool {
 		o.IntoDB == options.IntoDB &&
 		o.Detached == options.Detached &&
 		o.SkipLocalitiesCheck == options.SkipLocalitiesCheck &&
+		o.DebugPauseOn == options.DebugPauseOn &&
 		o.NewDBName == options.NewDBName &&
 		cmp.Equal(o.IncrementalStorage, options.IncrementalStorage) &&
 		o.AsTenant == options.AsTenant &&
@@ -684,7 +709,6 @@ func (o RestoreOptions) IsDefault() bool {
 		o.UnsafeRestoreIncompatibleVersion == options.UnsafeRestoreIncompatibleVersion &&
 		o.ExecutionLocality == options.ExecutionLocality &&
 		o.ExperimentalOnline == options.ExperimentalOnline &&
-		o.ExperimentalCopy == options.ExperimentalCopy &&
 		o.RemoveRegions == options.RemoveRegions
 }
 

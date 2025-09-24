@@ -10,10 +10,8 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/errors"
 )
@@ -22,19 +20,11 @@ import (
 type joinerBase struct {
 	execinfra.ProcessorBase
 
-	joinType descpb.JoinType
-	onCond   execexpr.Helper
-	// combinedRow has enough space for both the left and right input rows even
-	// if only columns from one side of the join are included in the output.
-	// This allows storing values for columns referenced in the ON condition,
-	// which can originate from either side of the join. combinedRow also
-	// includes space for the value of the continuation column, if necessary.
+	joinType    descpb.JoinType
+	onCond      execinfrapb.ExprHelper
+	emptyLeft   rowenc.EncDatumRow
+	emptyRight  rowenc.EncDatumRow
 	combinedRow rowenc.EncDatumRow
-	// outputSize is the number of columns in the output row, not including the
-	// continuation column. It is only equal to the length of combinedRow when
-	// both the left and right columns are included in the output, and when
-	// there is no continuation column.
-	outputSize int
 }
 
 // Init initializes the joinerBase.
@@ -53,49 +43,47 @@ func (jb *joinerBase) init(
 	outputContinuationColumn bool,
 	post *execinfrapb.PostProcessSpec,
 	opts execinfra.ProcStateOpts,
-) (*eval.Context, error) {
+) error {
 	jb.joinType = jType
 
 	if jb.joinType.IsSetOpJoin() {
 		if !onExpr.Empty() {
-			return nil, errors.AssertionFailedf("expected empty onExpr, got %v", onExpr)
+			return errors.Errorf("expected empty onExpr, got %v", onExpr)
 		}
 	}
 
-	// Allocate enough space to fit the left row, right row, and continuation
-	// column.
-	combinedRowSize := len(leftTypes) + len(rightTypes)
+	jb.emptyLeft = make(rowenc.EncDatumRow, len(leftTypes))
+	for i := range jb.emptyLeft {
+		jb.emptyLeft[i] = rowenc.NullEncDatum()
+	}
+	jb.emptyRight = make(rowenc.EncDatumRow, len(rightTypes))
+	for i := range jb.emptyRight {
+		jb.emptyRight[i] = rowenc.NullEncDatum()
+	}
+
+	rowSize := len(leftTypes) + len(rightTypes)
 	if outputContinuationColumn {
 		// NB: Can only be true for inner joins and left outer joins.
-		combinedRowSize++
+		rowSize++
 	}
-	jb.combinedRow = make(rowenc.EncDatumRow, combinedRowSize)
+	jb.combinedRow = make(rowenc.EncDatumRow, rowSize)
 
 	onCondTypes := make([]*types.T, 0, len(leftTypes)+len(rightTypes))
 	onCondTypes = append(onCondTypes, leftTypes...)
 	onCondTypes = append(onCondTypes, rightTypes...)
 
-	var outputTypes []*types.T
+	outputTypes := jType.MakeOutputTypes(leftTypes, rightTypes)
 	if outputContinuationColumn {
-		outputTypes = jType.MakeOutputTypesWithContinuationColumn(leftTypes, rightTypes)
-		jb.outputSize = len(outputTypes) - 1
-	} else {
-		outputTypes = jType.MakeOutputTypes(leftTypes, rightTypes)
-		jb.outputSize = len(outputTypes)
+		outputTypes = append(outputTypes, types.Bool)
 	}
 
-	evalCtx := flowCtx.EvalCtx
-	if !onExpr.Empty() {
-		// Only make a copy if we need to evaluate ON expression.
-		evalCtx = flowCtx.NewEvalCtx()
-	}
-	if err := jb.ProcessorBase.InitWithEvalCtx(
-		ctx, self, post, outputTypes, flowCtx, evalCtx, processorID, nil /* memMonitor */, opts,
+	if err := jb.ProcessorBase.Init(
+		ctx, self, post, outputTypes, flowCtx, processorID, nil /* memMonitor */, opts,
 	); err != nil {
-		return nil, err
+		return err
 	}
 	semaCtx := flowCtx.NewSemaContext(flowCtx.Txn)
-	return evalCtx, jb.onCond.Init(ctx, onExpr, onCondTypes, semaCtx, evalCtx)
+	return jb.onCond.Init(ctx, onExpr, onCondTypes, semaCtx, jb.EvalCtx)
 }
 
 // joinSide is the utility type to distinguish between two sides of the join.
@@ -115,73 +103,19 @@ func (j joinSide) String() string {
 	return "right"
 }
 
-// emptyRow is used for rendering unmatched rows in outer and anti-joins.
-var emptyRow = [16]rowenc.EncDatum{
-	rowenc.NullEncDatum(), rowenc.NullEncDatum(), rowenc.NullEncDatum(), rowenc.NullEncDatum(),
-	rowenc.NullEncDatum(), rowenc.NullEncDatum(), rowenc.NullEncDatum(), rowenc.NullEncDatum(),
-	rowenc.NullEncDatum(), rowenc.NullEncDatum(), rowenc.NullEncDatum(), rowenc.NullEncDatum(),
-	rowenc.NullEncDatum(), rowenc.NullEncDatum(), rowenc.NullEncDatum(), rowenc.NullEncDatum(),
-}
-
-// copyEmptyRow copies NULL values into dst.
-func copyEmptyRow(dst []rowenc.EncDatum) {
-	for len(dst) > 0 {
-		n := copy(dst, emptyRow[:])
-		dst = dst[n:]
-	}
-}
-
 // renderUnmatchedRow creates a result row given an unmatched row on either
 // side. Only used for outer and anti joins. Note that if the join is outputting
 // a continuation column, the returned slice does not include the continuation
 // column, but has the capacity for it.
 func (jb *joinerBase) renderUnmatchedRow(row rowenc.EncDatumRow, side joinSide) rowenc.EncDatumRow {
-	// Return row if the empty side of the join should not be rendered.
-	if (side == leftSide && !jb.joinType.ShouldIncludeRightColsInOutput()) ||
-		(side == rightSide && !jb.joinType.ShouldIncludeLeftColsInOutput()) {
-		return row
-	}
-
-	// Return an empty row if the non-empty side of the join should not be
-	// rendered.
-	if (side == leftSide && !jb.joinType.ShouldIncludeLeftColsInOutput()) ||
-		(side == rightSide && !jb.joinType.ShouldIncludeRightColsInOutput()) {
-		copyEmptyRow(jb.combinedRow[:jb.outputSize])
-		return jb.combinedRow[:jb.outputSize]
-	}
-
-	// Otherwise, combine row and NULLs in combined row. First, determine which
-	// side of the row should be filled with NULLs.
-	var nonEmpty rowenc.EncDatumRow
-	var empty rowenc.EncDatumRow
+	lrow, rrow := jb.emptyLeft, jb.emptyRight
 	if side == leftSide {
-		nonEmpty = jb.combinedRow[:len(row)]
-		empty = jb.combinedRow[len(row):jb.outputSize]
+		lrow = row
 	} else {
-		split := jb.outputSize - len(row)
-		empty = jb.combinedRow[:split]
-		nonEmpty = jb.combinedRow[split:jb.outputSize]
+		rrow = row
 	}
 
-	// Copy the non-empty side of the row.
-	if len(nonEmpty) == 1 {
-		// If the slice is of length 1, it is faster to use direct assignment
-		// instead of copy.
-		nonEmpty[0] = row[0]
-	} else {
-		copy(nonEmpty, row)
-	}
-
-	// Copy the empty side of the row.
-	if len(empty) == 1 {
-		// If the slice is of length 1, it is faster to use direct assignment
-		// instead of copyEmptyRow.
-		empty[0] = rowenc.NullEncDatum()
-	} else {
-		copyEmptyRow(empty)
-	}
-
-	return jb.combinedRow[:jb.outputSize]
+	return jb.renderForOutput(lrow, rrow)
 }
 
 // shouldEmitUnmatchedRow determines if we should emit an unmatched row (with

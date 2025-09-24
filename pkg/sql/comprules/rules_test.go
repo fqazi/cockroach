@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/compengine"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/datadriven"
-	"github.com/cockroachdb/redact"
 )
 
 // TestCompletionPatterns checks the traces resulting from running the
@@ -43,8 +42,8 @@ func TestCompletionPatterns(t *testing.T) {
 
 				ctx := context.Background()
 				var buf strings.Builder
-				fakeQueryFn := func(_ context.Context, label redact.RedactableString, q string, args ...interface{}) (compengine.Rows, error) {
-					if curTraceFilter.MatchString(label.StripMarkers() + ":") {
+				fakeQueryFn := func(_ context.Context, label string, q string, args ...interface{}) (compengine.Rows, error) {
+					if curTraceFilter.MatchString(label + ":") {
 						fmt.Fprintf(&buf, "--sql:\n%s\n--placeholders: %#v\n",
 							strings.TrimSpace(q), args)
 					}

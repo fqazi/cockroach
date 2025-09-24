@@ -1,4 +1,5 @@
-# LogicTest: !local-prepared
+# LogicTest: default-configs !local-mixed-23.1
+
 # Add JSON columns as primary index.
 statement ok
 CREATE TABLE t (x JSONB PRIMARY KEY)

@@ -3,37 +3,23 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import ArrowLeftOutlined from "@ant-design/icons/ArrowLeftOutlined";
-import { Time as TimeIcon, ErrorCircleFilled } from "@cockroachlabs/icons";
-import { Alert, DatePicker as AntDatePicker } from "antd";
-import classNames from "classnames/bind";
-import moment, { Moment } from "moment-timezone";
-import momentGenerateConfig from "rc-picker/lib/generate/moment";
 import React, { useContext, useState } from "react";
-
+import { Alert, DatePicker, Icon, TimePicker } from "antd";
+import "antd/lib/time-picker/style";
+import "antd/lib/icon/style";
+import "antd/lib/date-picker/style";
+import "antd/lib/alert/style";
+import moment, { Moment } from "moment-timezone";
+import classNames from "classnames/bind";
+import { Time as TimeIcon, ErrorCircleFilled } from "@cockroachlabs/icons";
 import { Button } from "src/button";
 import { Text, TextTypes } from "src/text";
-import { Timezone } from "src/timestamp";
-
-import { TimezoneContext } from "../contexts";
 
 import styles from "./dateRangeMenu.module.scss";
-
-import type { PickerTimeProps } from "antd/es/date-picker/generatePicker";
+import { TimezoneContext } from "../contexts";
+import { Timezone } from "src/timestamp";
 
 const cx = classNames.bind(styles);
-
-// DatePicker is a custom version of "moment.js" friendly date picker.
-// More details: https://ant.design/docs/react/use-custom-date-library#timepickertsx
-const DatePicker = AntDatePicker.generatePicker<Moment>(momentGenerateConfig);
-
-export type TimePickerProps = Omit<PickerTimeProps<Moment>, "picker">;
-
-const TimePicker = React.forwardRef<any, TimePickerProps>((props, ref) => (
-  <DatePicker {...props} picker="time" mode={undefined} ref={ref} />
-));
-
-TimePicker.displayName = "TimePicker";
 
 type DateRangeMenuProps = {
   startInit?: Moment;
@@ -122,7 +108,7 @@ export function DateRangeMenu({
     <div className={cx("popup-content")}>
       <div className={cx("return-to-preset-options-wrapper")}>
         <a onClick={onReturnToPresetOptionsClick}>
-          <ArrowLeftOutlined className={cx("icon")} />
+          <Icon type={"arrow-left"} className={cx("icon")} />
           <Text textType={TextTypes.BodyStrong}>Preset time intervals</Text>
         </a>
       </div>
@@ -136,7 +122,6 @@ export function DateRangeMenu({
         onChange={onChangeStart}
         suffixIcon={<TimeIcon />}
         value={startMoment}
-        className={cx("date-picker")}
       />
       <TimePicker
         allowClear={false}
@@ -144,8 +129,6 @@ export function DateRangeMenu({
         onChange={onChangeStart}
         suffixIcon={<span />}
         value={startMoment}
-        className={cx("time-picker")}
-        showNow={false}
       />
       <div className={cx("divider")} />
       <Text className={cx("label")} textType={TextTypes.BodyStrong}>
@@ -158,7 +141,6 @@ export function DateRangeMenu({
         onChange={onChangeEnd}
         suffixIcon={<TimeIcon />}
         value={endMoment}
-        className={cx("date-picker")}
       />
       <TimePicker
         allowClear={false}
@@ -166,8 +148,6 @@ export function DateRangeMenu({
         onChange={onChangeEnd}
         suffixIcon={<span />}
         value={endMoment}
-        className={cx("time-picker")}
-        showNow={false}
       />
       {!isValid && (
         <Alert
@@ -175,7 +155,6 @@ export function DateRangeMenu({
           message={errorMessage}
           type="error"
           showIcon
-          className={cx("alert")}
         />
       )}
       <div className={cx("popup-footer")}>

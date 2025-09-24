@@ -3,17 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
 import React from "react";
-import { Link } from "react-router-dom";
-
-import { ColumnDescriptor } from "src/sortedtable";
-import { capitalize, DATE_FORMAT, Duration } from "src/util";
-
-import { Timestamp, Timezone } from "../timestamp";
-
-import { StatusIcon } from "./statusIcon";
+import { Tooltip } from "@cockroachlabs/ui-components";
 import { ExecutionType, ActiveExecution } from "./types";
+import { ColumnDescriptor } from "src/sortedtable";
+import { Link } from "react-router-dom";
+import { capitalize, DATE_FORMAT, Duration } from "src/util";
+import { StatusIcon } from "./statusIcon";
+import { Timestamp, Timezone } from "../timestamp";
 
 export type ExecutionsColumn =
   | "applicationName"
@@ -26,8 +23,7 @@ export type ExecutionsColumn =
   | "statementCount"
   | "status"
   | "timeSpentBlocking"
-  | "timeSpentWaiting"
-  | "isolationLevel";
+  | "timeSpentWaiting";
 
 export const executionsColumnLabels: Record<
   ExecutionsColumn,
@@ -56,7 +52,6 @@ export const executionsColumnLabels: Record<
   status: () => "Status",
   timeSpentBlocking: () => "Time Spent Blocking",
   timeSpentWaiting: () => "Time Spent Waiting",
-  isolationLevel: () => "Isolation Level",
 };
 
 export type ExecutionsTableColumnKeys = keyof typeof executionsColumnLabels;
@@ -150,15 +145,6 @@ export const executionsTableTitles: ExecutionsTableTitleType = {
       {getLabel("timeSpentWaiting")}
     </Tooltip>
   ),
-  isolationLevel: () => (
-    <Tooltip
-      placement="bottom"
-      style="tableTitle"
-      content={<p>Isolation level of this transaction.</p>}
-    >
-      {getLabel("isolationLevel")}
-    </Tooltip>
-  ),
 };
 
 function getID(item: ActiveExecution, execType: ExecutionType) {
@@ -225,12 +211,6 @@ function makeActiveExecutionColumns(
       title: executionsTableTitles.applicationName(execType),
       cell: (item: ActiveExecution) => item.application,
       sort: (item: ActiveExecution) => item.application,
-    },
-    isolationLevel: {
-      name: "isolationLevel",
-      title: executionsTableTitles.isolationLevel(execType),
-      cell: (item: ActiveExecution) => item.isolationLevel,
-      sort: (item: ActiveExecution) => item.isolationLevel,
     },
   };
 }

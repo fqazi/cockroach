@@ -7,6 +7,7 @@
 // doesn't clean up needed dependencies when running `go install`.
 
 //go:build tools
+// +build tools
 
 package main
 
@@ -23,6 +24,7 @@ import (
 	_ "github.com/cockroachdb/gostdlib/x/tools/cmd/goimports"
 	_ "github.com/cockroachdb/stress"
 	_ "github.com/cockroachdb/tools/cmd/stringer"
+	_ "github.com/go-swagger/go-swagger/cmd/swagger"
 	_ "github.com/golang/mock/mockgen"
 	_ "github.com/goware/modvendor"
 	_ "github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway"
@@ -36,7 +38,6 @@ import (
 	_ "golang.org/x/perf/cmd/benchstat"
 	_ "golang.org/x/tools/cmd/goyacc"
 	_ "golang.org/x/tools/go/analysis/passes/shadow/cmd/shadow"
-	_ "golang.org/x/tools/go/vcs"
 	_ "honnef.co/go/tools/cmd/staticcheck"
 )
 

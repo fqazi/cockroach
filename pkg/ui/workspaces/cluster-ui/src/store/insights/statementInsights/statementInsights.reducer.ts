@@ -4,12 +4,10 @@
 // included in the /LICENSE file.
 
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-import moment from "moment-timezone";
-
-import { SqlApiResponse, StmtInsightsReq } from "src/api";
-import { StmtInsightEvent } from "src/insights";
-
 import { DOMAIN_NAME } from "../../utils";
+import { StmtInsightEvent } from "src/insights";
+import { SqlApiResponse, StmtInsightsReq } from "src/api";
+import moment from "moment-timezone";
 
 export type StmtInsightsState = {
   data: SqlApiResponse<StmtInsightEvent[]>;

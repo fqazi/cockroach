@@ -24,11 +24,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/bitarray"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
-	"github.com/cockroachdb/cockroach/pkg/util/ltree"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/trigram"
 	"github.com/cockroachdb/cockroach/pkg/util/tsearch"
-	"github.com/cockroachdb/cockroach/pkg/util/vector"
 	"github.com/cockroachdb/errors"
 )
 
@@ -48,7 +46,7 @@ func (e *evaluator) EvalAppendToMaybeNullArrayOp(
 func (e *evaluator) EvalArrayOverlapsOp(
 	ctx context.Context, _ *tree.OverlapsArrayOp, a, b tree.Datum,
 ) (tree.Datum, error) {
-	return tree.ArrayOverlaps(ctx, e.ctx(), tree.MustBeDArray(a), tree.MustBeDArray(b))
+	return tree.ArrayOverlaps(e.ctx(), tree.MustBeDArray(a), tree.MustBeDArray(b))
 }
 
 func (e *evaluator) EvalBitAndINetOp(
@@ -155,7 +153,7 @@ func (e *evaluator) EvalCompareScalarOp(
 			return tree.DNull, nil
 		}
 	}
-	cmp, err := left.Compare(ctx, e.ctx(), right)
+	cmp, err := left.CompareError(e.ctx(), right)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +196,7 @@ func (e *evaluator) EvalCompareTupleOp(
 			}
 		} else {
 			var err error
-			cmp, err = leftElem.Compare(ctx, e.ctx(), rightElem)
+			cmp, err = leftElem.CompareError(e.ctx(), rightElem)
 			if err != nil {
 				return tree.DNull, err
 			}
@@ -284,26 +282,12 @@ func (e *evaluator) EvalConcatVarBitOp(
 	}, nil
 }
 
-func (e *evaluator) EvalConcatLTreeOp(
-	ctx context.Context, _ *tree.ConcatLTreeOp, left, right tree.Datum,
-) (tree.Datum, error) {
-	lhs := tree.MustBeDLTree(left)
-	rhs := tree.MustBeDLTree(right)
-	concat, err := ltree.Concat(lhs.LTree, rhs.LTree)
-	if err != nil {
-		return nil, err
-	}
-	return &tree.DLTree{
-		LTree: concat,
-	}, nil
-}
-
 func (e *evaluator) EvalContainedByArrayOp(
 	ctx context.Context, _ *tree.ContainedByArrayOp, a, b tree.Datum,
 ) (tree.Datum, error) {
 	needles := tree.MustBeDArray(a)
 	haystack := tree.MustBeDArray(b)
-	return tree.ArrayContains(ctx, e.ctx(), haystack, needles)
+	return tree.ArrayContains(e.ctx(), haystack, needles)
 }
 
 func (e *evaluator) EvalContainedByJsonbOp(
@@ -316,56 +300,12 @@ func (e *evaluator) EvalContainedByJsonbOp(
 	return tree.MakeDBool(tree.DBool(c)), nil
 }
 
-func (e *evaluator) EvalContainedByLTreeOp(
-	ctx context.Context, _ *tree.ContainedByLTreeOp, a, b tree.Datum,
-) (tree.Datum, error) {
-	left := tree.MustBeDLTree(a)
-	right := tree.MustBeDLTree(b)
-	c := right.LTree.Contains(left.LTree)
-	return tree.MakeDBool(tree.DBool(c)), nil
-}
-
-func (e *evaluator) EvalContainedByLTreeArrayOp(
-	ctx context.Context, _ *tree.ContainedByLTreeArrayOp, a, b tree.Datum,
-) (tree.Datum, error) {
-	array, ok := a.(*tree.DArray)
-	elem, _ := b.(*tree.DLTree)
-	if !ok {
-		array = tree.MustBeDArray(b)
-		elem = tree.MustBeDLTree(a)
-	}
-
-	for _, d := range array.Array {
-		if elem.LTree.Contains(tree.MustBeDLTree(d).LTree) {
-			return tree.DBoolTrue, nil
-		}
-	}
-	return tree.DBoolFalse, nil
-}
-
-func (e *evaluator) EvalFirstContainedByLTreeOp(
-	ctx context.Context, _ *tree.FirstContainedByLTreeOp, a, b tree.Datum,
-) (tree.Datum, error) {
-	array := tree.MustBeDArray(a)
-	elem := tree.MustBeDLTree(b)
-
-	if array.HasNulls() {
-		return nil, pgerror.New(pgcode.NullValueNotAllowed, "array must not contain nulls")
-	}
-	for _, d := range array.Array {
-		if elem.LTree.Contains(tree.MustBeDLTree(d).LTree) {
-			return tree.MustBeDLTree(d), nil
-		}
-	}
-	return tree.DNull, nil
-}
-
 func (e *evaluator) EvalContainsArrayOp(
 	ctx context.Context, _ *tree.ContainsArrayOp, a, b tree.Datum,
 ) (tree.Datum, error) {
 	haystack := tree.MustBeDArray(a)
 	needles := tree.MustBeDArray(b)
-	return tree.ArrayContains(ctx, e.ctx(), haystack, needles)
+	return tree.ArrayContains(e.ctx(), haystack, needles)
 }
 
 func (e *evaluator) EvalContainsJsonbOp(
@@ -376,50 +316,6 @@ func (e *evaluator) EvalContainsJsonbOp(
 		return nil, err
 	}
 	return tree.MakeDBool(tree.DBool(c)), nil
-}
-
-func (e *evaluator) EvalContainsLTreeOp(
-	ctx context.Context, _ *tree.ContainsLTreeOp, a, b tree.Datum,
-) (tree.Datum, error) {
-	left := tree.MustBeDLTree(a)
-	right := tree.MustBeDLTree(b)
-	c := left.LTree.Contains(right.LTree)
-	return tree.MakeDBool(tree.DBool(c)), nil
-}
-
-func (e *evaluator) EvalContainsLTreeArrayOp(
-	ctx context.Context, _ *tree.ContainsLTreeArrayOp, a, b tree.Datum,
-) (tree.Datum, error) {
-	array, ok := a.(*tree.DArray)
-	elem, _ := b.(*tree.DLTree)
-	if !ok {
-		array = tree.MustBeDArray(b)
-		elem = tree.MustBeDLTree(a)
-	}
-
-	for _, d := range array.Array {
-		if tree.MustBeDLTree(d).LTree.Contains(elem.LTree) {
-			return tree.DBoolTrue, nil
-		}
-	}
-	return tree.DBoolFalse, nil
-}
-
-func (e *evaluator) EvalFirstContainsLTreeOp(
-	ctx context.Context, _ *tree.FirstContainsLTreeOp, a, b tree.Datum,
-) (tree.Datum, error) {
-	array := tree.MustBeDArray(a)
-	elem := tree.MustBeDLTree(b)
-
-	if array.HasNulls() {
-		return nil, pgerror.New(pgcode.NullValueNotAllowed, "array must not contain nulls")
-	}
-	for _, d := range array.Array {
-		if tree.MustBeDLTree(d).LTree.Contains(elem.LTree) {
-			return tree.MustBeDLTree(d), nil
-		}
-	}
-	return tree.DNull, nil
 }
 
 func (e *evaluator) EvalDivDecimalIntOp(
@@ -606,7 +502,7 @@ func (e *evaluator) EvalInTupleOp(
 		//
 		// We can use binary search to make a determination in this case. This
 		// is the common case when tuples don't contain NULLs.
-		_, result := vtuple.SearchSorted(ctx, e.ctx(), arg)
+		_, result := vtuple.SearchSorted(e.ctx(), arg)
 		return tree.MakeDBool(tree.DBool(result)), nil
 	}
 
@@ -616,7 +512,7 @@ func (e *evaluator) EvalInTupleOp(
 		for _, val := range vtuple.D {
 			if val == tree.DNull {
 				sawNull = true
-			} else if cmp, err := val.Compare(ctx, e.ctx(), arg); err != nil {
+			} else if cmp, err := val.CompareError(e.ctx(), arg); err != nil {
 				return tree.DNull, err
 			} else if cmp == 0 {
 				return tree.DBoolTrue, nil
@@ -632,7 +528,7 @@ func (e *evaluator) EvalInTupleOp(
 			} else {
 				// Use the EQ function which properly handles NULLs.
 				if res, err := cmpOpTupleFn(
-					ctx, e.ctx(), *argTuple, *val.(*tree.DTuple),
+					e.ctx(), *argTuple, *val.(*tree.DTuple),
 					treecmp.MakeComparisonOperator(treecmp.EQ),
 				); err != nil {
 					return tree.DNull, err
@@ -1299,7 +1195,7 @@ func (e *evaluator) EvalOverlapsArrayOp(
 ) (tree.Datum, error) {
 	array := tree.MustBeDArray(left)
 	other := tree.MustBeDArray(right)
-	return tree.ArrayOverlaps(ctx, e.ctx(), array, other)
+	return tree.ArrayOverlaps(e.ctx(), array, other)
 }
 
 func (e *evaluator) EvalOverlapsINetOp(
@@ -1326,33 +1222,6 @@ func (e *evaluator) EvalTSMatchesVectorQueryOp(
 	q := tree.MustBeDTSQuery(right)
 	ret, err := tsearch.EvalTSQuery(q.TSQuery, v.TSVector)
 	return tree.MakeDBool(tree.DBool(ret)), err
-}
-
-func (e *evaluator) EvalDistanceVectorOp(
-	ctx context.Context, _ *tree.DistanceVectorOp, left, right tree.Datum,
-) (tree.Datum, error) {
-	v := tree.MustBeDPGVector(left)
-	q := tree.MustBeDPGVector(right)
-	ret, err := vector.L2Distance(q.T, v.T)
-	return tree.NewDFloat(tree.DFloat(ret)), err
-}
-
-func (e *evaluator) EvalCosDistanceVectorOp(
-	ctx context.Context, _ *tree.CosDistanceVectorOp, left, right tree.Datum,
-) (tree.Datum, error) {
-	v := tree.MustBeDPGVector(left)
-	q := tree.MustBeDPGVector(right)
-	ret, err := vector.CosDistance(q.T, v.T)
-	return tree.NewDFloat(tree.DFloat(ret)), err
-}
-
-func (e *evaluator) EvalNegInnerProductVectorOp(
-	ctx context.Context, _ *tree.NegInnerProductVectorOp, left, right tree.Datum,
-) (tree.Datum, error) {
-	v := tree.MustBeDPGVector(left)
-	q := tree.MustBeDPGVector(right)
-	ret, err := vector.NegInnerProduct(q.T, v.T)
-	return tree.NewDFloat(tree.DFloat(ret)), err
 }
 
 func (e *evaluator) EvalPlusDateIntOp(
@@ -1596,7 +1465,7 @@ func (e *evaluator) EvalPowDecimalIntOp(
 	r := tree.MustBeDInt(right)
 	dd := &tree.DDecimal{}
 	dd.SetInt64(int64(r))
-	err := DecimalPow(tree.DecimalCtx, &dd.Decimal, l, &dd.Decimal)
+	_, err := tree.DecimalCtx.Pow(&dd.Decimal, l, &dd.Decimal)
 	return dd, err
 }
 
@@ -1606,7 +1475,7 @@ func (e *evaluator) EvalPowDecimalOp(
 	l := &left.(*tree.DDecimal).Decimal
 	r := &right.(*tree.DDecimal).Decimal
 	dd := &tree.DDecimal{}
-	err := DecimalPow(tree.DecimalCtx, &dd.Decimal, l, r)
+	_, err := tree.DecimalCtx.Pow(&dd.Decimal, l, r)
 	return dd, err
 }
 
@@ -1624,7 +1493,7 @@ func (e *evaluator) EvalPowIntDecimalOp(
 	r := &right.(*tree.DDecimal).Decimal
 	dd := &tree.DDecimal{}
 	dd.SetInt64(int64(l))
-	err := DecimalPow(tree.DecimalCtx, &dd.Decimal, &dd.Decimal, r)
+	_, err := tree.DecimalCtx.Pow(&dd.Decimal, &dd.Decimal, r)
 	return dd, err
 }
 
@@ -1693,13 +1562,13 @@ func init() {
 func (e *evaluator) EvalPlusDecimalPGLSNOp(
 	ctx context.Context, _ *tree.PlusDecimalPGLSNOp, left, right tree.Datum,
 ) (tree.Datum, error) {
-	return decimalPGLSNEval(left, right, lsnMathCtx.Add, false /* subtraction */)
+	return decimalPGLSNEval(left, right, lsnMathCtx.Add)
 }
 
 func (e *evaluator) EvalPlusPGLSNDecimalOp(
 	ctx context.Context, _ *tree.PlusPGLSNDecimalOp, left, right tree.Datum,
 ) (tree.Datum, error) {
-	return decimalPGLSNEval(right, left, lsnMathCtx.Add, false /* subtraction */)
+	return decimalPGLSNEval(right, left, lsnMathCtx.Add)
 }
 
 func (e *evaluator) EvalMinusPGLSNOp(
@@ -1727,14 +1596,11 @@ func (e *evaluator) EvalMinusPGLSNOp(
 func (e *evaluator) EvalMinusPGLSNDecimalOp(
 	ctx context.Context, _ *tree.MinusPGLSNDecimalOp, left, right tree.Datum,
 ) (tree.Datum, error) {
-	return decimalPGLSNEval(right, left, lsnMathCtx.Sub, true /* subtraction */)
+	return decimalPGLSNEval(right, left, lsnMathCtx.Sub)
 }
 
 func decimalPGLSNEval(
-	decDatum tree.Datum,
-	lsnDatum tree.Datum,
-	op func(d, x, y *apd.Decimal) (apd.Condition, error),
-	subtraction bool,
+	decDatum tree.Datum, lsnDatum tree.Datum, op func(d, x, y *apd.Decimal) (apd.Condition, error),
 ) (tree.Datum, error) {
 	n := tree.MustBeDDecimal(decDatum)
 	lsnVal := tree.MustBeDPGLSN(lsnDatum)
@@ -1743,9 +1609,6 @@ func decimalPGLSNEval(
 	case apd.Infinite:
 		return nil, pgerror.New(pgcode.NumericValueOutOfRange, "cannot convert infinity to pg_lsn")
 	case apd.NaN, apd.NaNSignaling:
-		if subtraction {
-			return nil, pgerror.New(pgcode.NumericValueOutOfRange, "cannot subtract NaN from pg_lsn")
-		}
 		return nil, pgerror.New(pgcode.NumericValueOutOfRange, "cannot add NaN to pg_lsn")
 	case apd.Finite:
 		// ok
@@ -1773,40 +1636,4 @@ func decimalPGLSNEval(
 		resultLSN *= 10
 	}
 	return tree.NewDPGLSN(resultLSN), nil
-}
-
-func (e *evaluator) EvalPlusPGVectorOp(
-	ctx context.Context, _ *tree.PlusPGVectorOp, left, right tree.Datum,
-) (tree.Datum, error) {
-	t1 := tree.MustBeDPGVector(left)
-	t2 := tree.MustBeDPGVector(right)
-	ret, err := vector.Add(t1.T, t2.T)
-	if err != nil {
-		return nil, err
-	}
-	return tree.NewDPGVector(ret), nil
-}
-
-func (e *evaluator) EvalMinusPGVectorOp(
-	ctx context.Context, _ *tree.MinusPGVectorOp, left, right tree.Datum,
-) (tree.Datum, error) {
-	t1 := tree.MustBeDPGVector(left)
-	t2 := tree.MustBeDPGVector(right)
-	ret, err := vector.Minus(t1.T, t2.T)
-	if err != nil {
-		return nil, err
-	}
-	return tree.NewDPGVector(ret), nil
-}
-
-func (e *evaluator) EvalMultPGVectorOp(
-	ctx context.Context, _ *tree.MultPGVectorOp, left, right tree.Datum,
-) (tree.Datum, error) {
-	t1 := tree.MustBeDPGVector(left)
-	t2 := tree.MustBeDPGVector(right)
-	ret, err := vector.Mult(t1.T, t2.T)
-	if err != nil {
-		return nil, err
-	}
-	return tree.NewDPGVector(ret), nil
 }

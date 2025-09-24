@@ -104,17 +104,6 @@ func FormatEntryAsJSON(entry logpb.Entry) (string, error) {
 	return printJSONMap(jsonMap)
 }
 
-func FromLogEntry[T any](entry logpb.Entry) (T, error) {
-	var payload T
-	err := json.Unmarshal([]byte(entry.Message[entry.StructuredStart:entry.StructuredEnd]), &payload)
-	return payload, err
-}
-
-func AsLogEntry(entry logpb.Entry) (logpb.Entry, error) {
-	entry.Message = entry.Message[entry.StructuredStart:entry.StructuredEnd]
-	return entry, nil
-}
-
 // StructuredLogSpy is a test utility that intercepts structured log entries
 // and stores them in memory. It can be used to verify the contents of log
 // entries in tests.
@@ -137,9 +126,6 @@ type StructuredLogSpy[T any] struct {
 	// that match the event type in the log message.
 	eventTypeRe []*regexp.Regexp
 
-	// Function to transform log entries into the desired format.
-	format func(entry logpb.Entry) (T, error)
-
 	mu struct {
 		syncutil.RWMutex
 
@@ -149,9 +135,8 @@ type StructuredLogSpy[T any] struct {
 		// to determine if the log should be intercepted.
 		filters []func(entry logpb.Entry, formattedEntry T) bool
 
-		// lastReadIdx is a map of channel to int, representing the last read log
-		// line read when calling GetUnreadLogs.
-		lastReadIdx map[logpb.Channel]int
+		// Function to transform log entries into the desired format.
+		format func(entry logpb.Entry) (T, error)
 	}
 }
 
@@ -172,7 +157,6 @@ func NewStructuredLogSpy[T any](
 	filters ...func(entry logpb.Entry, formattedEntry T) bool,
 ) *StructuredLogSpy[T] {
 	s := &StructuredLogSpy[T]{
-		format:    format,
 		testState: testState,
 		channels:  make(map[logpb.Channel]struct{}, len(channels)),
 	}
@@ -180,8 +164,8 @@ func NewStructuredLogSpy[T any](
 	for _, ch := range channels {
 		s.channels[ch] = struct{}{}
 	}
-	s.mu.lastReadIdx = make(map[logpb.Channel]int, len(channels))
 	s.mu.logs = make(map[logpb.Channel][]T, len(s.channels))
+	s.mu.format = format
 	s.mu.filters = append(s.mu.filters, filters...)
 	s.eventTypes = eventTypes
 	for _, eventType := range eventTypes {
@@ -248,29 +232,6 @@ func (s *StructuredLogSpy[T]) GetLogs(ch logpb.Channel) []T {
 	return logs
 }
 
-// GetUnreadLogs returns all logs that have been intercepted in the given channel
-// since the last time this method was called.
-func (s *StructuredLogSpy[T]) GetUnreadLogs(ch logpb.Channel) []T {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	currentCount := len(s.mu.logs[ch])
-	lastReadLogLine := s.mu.lastReadIdx[ch]
-	logs := make([]T, 0, currentCount-lastReadLogLine)
-	logs = append(logs, s.mu.logs[ch][lastReadLogLine:currentCount]...)
-	s.mu.lastReadIdx[ch] = currentCount
-	return logs
-}
-
-// SetLastNLogsAsUnread will decrement lastReadIdx[ch] by n to consider those
-// logs "unread". As a result, they will be included in the next GetUnreadLogs
-// call.
-func (s *StructuredLogSpy[T]) SetLastNLogsAsUnread(ch logpb.Channel, n int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.mu.lastReadIdx[ch] -= n
-
-}
-
 // Intercept intercepts a log entry and stores it in memory.
 // Logs are formatted and then filtered before being stored.
 func (s *StructuredLogSpy[T]) Intercept(entry []byte) {
@@ -298,13 +259,10 @@ func (s *StructuredLogSpy[T]) Intercept(entry []byte) {
 		}
 	}
 
-	formattedLog, err := s.format(logEntry)
+	formattedLog, err := s.mu.format(logEntry)
 	if err != nil {
 		s.testState.Fatal(err)
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if s.mu.filters != nil {
 		for _, filter := range s.mu.filters {
@@ -313,6 +271,9 @@ func (s *StructuredLogSpy[T]) Intercept(entry []byte) {
 			}
 		}
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.mu.logs[logEntry.Channel] = append(s.mu.logs[logEntry.Channel], formattedLog)
 }
 
@@ -321,7 +282,6 @@ func (s *StructuredLogSpy[T]) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.mu.logs = make(map[logpb.Channel][]T, len(s.channels))
-	s.mu.lastReadIdx = make(map[logpb.Channel]int, len(s.channels))
 }
 
 // Channels returns a list of the channels that the spy is

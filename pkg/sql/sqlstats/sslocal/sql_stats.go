@@ -12,14 +12,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/insights"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/ssmemstorage"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 )
-
-var _ sqlstats.SSDrainer = &SQLStats{}
 
 // SQLStats carries per-application in-memory statistics for all applications.
 type SQLStats struct {
@@ -39,17 +38,16 @@ type SQLStats struct {
 	// Server level counter
 	atomic *ssmemstorage.SQLStatsAtomicCounters
 
-	discardedStatsCount *metric.Counter
-
 	// flushTarget is a Sink that, when the SQLStats resets at the end of its
 	// reset interval, the SQLStats will dump all of the stats into if it is not
 	// nil.
 	flushTarget Sink
 
 	knobs *sqlstats.TestingKnobs
-}
 
-var _ SQLStatsSink = &SQLStats{}
+	insights           insights.WriterProvider
+	latencyInformation insights.LatencyInformation
+}
 
 func newSQLStats(
 	st *cluster.Settings,
@@ -57,23 +55,24 @@ func newSQLStats(
 	uniqueTxnFingerprintLimit *settings.IntSetting,
 	curMemBytesCount *metric.Gauge,
 	maxMemBytesHist metric.IHistogram,
-	discardedStatsCount *metric.Counter,
+	insightsWriter insights.WriterProvider,
 	parentMon *mon.BytesMonitor,
 	flushTarget Sink,
 	knobs *sqlstats.TestingKnobs,
+	latencyInformation insights.LatencyInformation,
 ) *SQLStats {
 	monitor := mon.NewMonitor(mon.Options{
-		Name:       mon.MakeName("SQLStats"),
-		CurCount:   curMemBytesCount,
-		MaxHist:    maxMemBytesHist,
-		Settings:   st,
-		LongLiving: true,
+		Name:     "SQLStats",
+		CurCount: curMemBytesCount,
+		MaxHist:  maxMemBytesHist,
+		Settings: st,
 	})
 	s := &SQLStats{
-		st:                  st,
-		flushTarget:         flushTarget,
-		discardedStatsCount: discardedStatsCount,
-		knobs:               knobs,
+		st:                 st,
+		flushTarget:        flushTarget,
+		knobs:              knobs,
+		insights:           insightsWriter,
+		latencyInformation: latencyInformation,
 	}
 	s.atomic = ssmemstorage.NewSQLStatsAtomicCounters(
 		st,
@@ -116,6 +115,8 @@ func (s *SQLStats) getStatsForApplication(appName string) *ssmemstorage.Containe
 		s.mu.mon,
 		appName,
 		s.knobs,
+		s.insights(false /* internal */),
+		s.latencyInformation,
 	)
 	s.mu.apps[appName] = a
 	return a
@@ -182,59 +183,4 @@ func (s *SQLStats) MaybeDumpStatsToLog(
 
 func (s *SQLStats) GetClusterSettings() *cluster.Settings {
 	return s.st
-}
-
-// ObserveTransaction implements the sslocal.SQLStatsSink interface.
-func (s *SQLStats) ObserveTransaction(
-	ctx context.Context,
-	transaction *sqlstats.RecordedTxnStats,
-	statements []*sqlstats.RecordedStmtStats,
-) {
-	if transaction == nil && len(statements) == 0 {
-		// This shouldn't ever happen, but it's cleaner below to work
-		// under the assumption that we either have a valid transaction
-		// or some statements to work with.
-		return
-	}
-
-	// Retrieve application container.
-	var application string
-	if transaction != nil {
-		application = transaction.Application
-	} else {
-		application = statements[0].App
-	}
-	appStats := s.getStatsForApplication(application)
-
-	// Record statements.
-	var discardedCount int64
-	for _, stmt := range statements {
-		if stmt.App != application {
-			application = stmt.App
-			appStats = s.getStatsForApplication(application)
-		}
-		err := appStats.RecordStatement(ctx, stmt)
-		if err != nil {
-			discardedCount++
-		}
-	}
-
-	// Record transaction, if it exists. Currently, statements
-	// executed in connections with an outer transaction are not
-	// recorded with their transaction.
-	if transaction != nil {
-		// Write statements.
-		err := appStats.RecordTransaction(ctx, transaction)
-		if err != nil {
-			discardedCount++
-		}
-	}
-
-	// Update the counter for discarded stats.
-	if discardedCount > 0 {
-		if s.discardedStatsCount != nil {
-			s.discardedStatsCount.Inc(discardedCount)
-		}
-		appStats.MaybeLogDiscardMessage(ctx)
-	}
 }

@@ -28,7 +28,7 @@ type VersionSetting struct {
 	common
 }
 
-var _ internalSetting = &VersionSetting{}
+var _ Setting = &VersionSetting{}
 
 // VersionSettingImpl is the interface bridging pkg/settings and
 // pkg/clusterversion. See VersionSetting for additional commentary.
@@ -107,8 +107,8 @@ func (v *VersionSetting) String(sv *Values) string {
 }
 
 // DefaultString returns the default value for the setting as a string.
-func (v *VersionSetting) DefaultString() string {
-	return encodedDefaultVersion
+func (v *VersionSetting) DefaultString() (string, error) {
+	return v.DecodeToString(v.EncodedDefault())
 }
 
 // Encoded is part of the NonMaskedSetting interface.
@@ -153,32 +153,10 @@ func (v *VersionSetting) SetInternal(ctx context.Context, sv *Values, newVal Clu
 	sv.setGeneric(ctx, v.slot, newVal)
 }
 
-// setToDefault is part of the internalSetting interface. This is a no-op for
+// setToDefault is part of the extendingSetting interface. This is a no-op for
 // VersionSetting. They don't have defaults that they can go back to at any
 // time.
 func (v *VersionSetting) setToDefault(ctx context.Context, sv *Values) {}
-
-// decodeAndSet is part of the internalSetting interface. We intentionally avoid
-//
-// We intentionally avoid updating the setting through this code path. The
-// specific setting backed by VersionSetting is the cluster version setting,
-// changes to which are propagated through direct RPCs to each node in the
-// cluster instead of gossip. This is done using the BumpClusterVersion RPC.
-func (v *VersionSetting) decodeAndSet(ctx context.Context, sv *Values, encoded string) error {
-	return nil
-}
-
-// decodeAndSetDefaultOverride is part of the internalSetting interface.
-//
-// We intentionally avoid updating the setting through this code path. The
-// specific setting backed by VersionSetting is the cluster version setting,
-// changes to which are propagated through direct RPCs to each node in the
-// cluster instead of gossip. This is done using the BumpClusterVersion RPC.
-func (v *VersionSetting) decodeAndSetDefaultOverride(
-	ctx context.Context, sv *Values, encoded string,
-) error {
-	return nil
-}
 
 // RegisterVersionSetting adds the provided version setting to the global
 // registry.

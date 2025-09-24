@@ -15,18 +15,16 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
-	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/internal/sqlsmith"
 	"github.com/cockroachdb/cockroach/pkg/internal/workloadreplay"
-	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/testutils/floatcmp"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -42,11 +40,9 @@ const (
 )
 
 type queryComparisonTest struct {
-	name          string
-	setupName     string
-	isMultiRegion bool
-	nodeCount     int
-	run           func(queryGenerator, *rand.Rand, queryComparisonHelper) error
+	name      string
+	setupName string
+	run       func(queryGenerator, *rand.Rand, queryComparisonHelper) error
 }
 
 // queryGenerator provides interface for tests to generate queries via method
@@ -179,33 +175,11 @@ func runOneRoundQueryComparison(
 		fmt.Fprint(failureLog, "\n")
 	}
 
-	connSetup := func(conn *gosql.DB) {
-		setStmtTimeout := fmt.Sprintf("SET statement_timeout='%s';", statementTimeout.String())
-		t.Status("setting statement_timeout")
-		t.L().Printf("statement timeout:\n%s", setStmtTimeout)
-		if _, err := conn.Exec(setStmtTimeout); err != nil {
-			t.Fatal(err)
-		}
-		logStmt(setStmtTimeout)
-
-		setUnconstrainedStmt := "SET unconstrained_non_covering_index_scan_enabled = true;"
-		t.Status("setting unconstrained_non_covering_index_scan_enabled")
-		t.L().Printf("\n%s", setUnconstrainedStmt)
-		if _, err := conn.Exec(setUnconstrainedStmt); err != nil {
-			logStmt(setUnconstrainedStmt)
-			t.Fatal(err)
-		}
-		logStmt(setUnconstrainedStmt)
-	}
-
-	node := 1
-	conn := c.Conn(ctx, t.L(), node)
+	conn := c.Conn(ctx, t.L(), 1)
 
 	rnd, seed := randutil.NewTestRand()
 	t.L().Printf("seed: %d", seed)
 	t.L().Printf("setupName: %s", qct.setupName)
-
-	connSetup(conn)
 
 	if qct.setupName == "workload-replay" {
 
@@ -222,27 +196,21 @@ func runOneRoundQueryComparison(
 		var signatures map[string][]string
 
 		for {
+			done := ctx.Done()
+
 			select {
-			case <-ctx.Done():
+			case <-done:
 				return
 			default:
 			}
 
 			t.L().Printf("Choosing Random Query")
-			finalStmt, signatures, err = workloadreplay.ChooseRandomQuery(ctx, log)
-			if err != nil {
-				// An error here likely denotes an infrastructure issue; i.e., unable to connect to snowflake. Wrapping
-				// it as a transient failure will route the test failure to TestEng, bypassing the (issue) owner.
-				t.Fatal(rperrors.TransientFailure(err, "snowflake connectivity issue"))
-			}
+			finalStmt, signatures = workloadreplay.ChooseRandomQuery(ctx, log)
 			if finalStmt == "" {
 				continue
 			}
 			t.L().Printf("Generating Random Data in Snowflake")
-			schemaMap, err := workloadreplay.CreateRandomDataSnowflake(ctx, signatures, log)
-			if err != nil {
-				t.Fatal(rperrors.TransientFailure(err, "snowflake connectivity issue"))
-			}
+			schemaMap := workloadreplay.CreateRandomDataSnowflake(ctx, signatures, log)
 			if schemaMap == nil {
 				continue
 			}
@@ -264,7 +232,7 @@ func runOneRoundQueryComparison(
 				credKey, ok := os.LookupEnv(keyTag)
 				if !ok {
 					t.L().Printf("%s not set\n", keyTag)
-					t.Fatal(rperrors.TransientFailure(err, "GCE credentials issue"))
+					return
 				}
 				encodedKey := b64.StdEncoding.EncodeToString([]byte(credKey))
 				importStr = "IMPORT INTO " + tableName + " (" + schemaInfo[1] + ")\n"
@@ -273,7 +241,7 @@ func runOneRoundQueryComparison(
 				logTest(queryStr, "QUERY_SNOWFLAKE_TO_GCS:")
 				if _, err := conn.Exec(queryStr); err != nil {
 					t.L().Printf("error while inserting rows: %v", err)
-					t.Fatal(rperrors.TransientFailure(err, "snowflake connectivity issue"))
+					return
 				}
 			}
 
@@ -293,13 +261,11 @@ func runOneRoundQueryComparison(
 				logTest(finalStmt, "Valid Query")
 
 				h := queryComparisonHelper{
-					conn1:      conn,
-					conn2:      conn,
+					conn:       conn,
 					logStmt:    logStmt,
 					logFailure: logFailure,
 					printStmt:  printStmt,
 					stmtNo:     0,
-					rnd:        rnd,
 				}
 
 				workloadqg := workloadReplayGenerator{finalStmt}
@@ -325,22 +291,31 @@ func runOneRoundQueryComparison(
 			}
 		}
 
-		conn2 := conn
-		node2 := 1
-		if qct.isMultiRegion {
-			t.Status("setting up multi-region database")
-			setupMultiRegionDatabase(t, conn, rnd, logStmt)
+		setStmtTimeout := fmt.Sprintf("SET statement_timeout='%s';", statementTimeout.String())
+		t.Status("setting statement_timeout")
+		t.L().Printf("statement timeout:\n%s", setStmtTimeout)
+		if _, err := conn.Exec(setStmtTimeout); err != nil {
+			t.Fatal(err)
+		}
+		logStmt(setStmtTimeout)
 
-			// Choose a different node than node 1.
-			node2 = rnd.Intn(qct.nodeCount-1) + 2
-			t.Status(fmt.Sprintf("running some queries from node %d with conn1 and some queries from node %d with conn2", node, node2))
-			conn2 = c.Conn(ctx, t.L(), node2)
-			connSetup(conn2)
+		setUnconstrainedStmt := "SET unconstrained_non_covering_index_scan_enabled = true;"
+		t.Status("setting unconstrained_non_covering_index_scan_enabled")
+		t.L().Printf("\n%s", setUnconstrainedStmt)
+		if _, err := conn.Exec(setUnconstrainedStmt); err != nil {
+			logStmt(setUnconstrainedStmt)
+			t.Fatal(err)
+		}
+		logStmt(setUnconstrainedStmt)
+
+		isMultiRegion := qct.setupName == sqlsmith.SeedMultiRegionSetupName
+		if isMultiRegion {
+			setupMultiRegionDatabase(t, conn, logStmt)
 		}
 
 		// Initialize a smither that generates only INSERT and UPDATE statements with
 		// the InsUpdOnly option.
-		mutatingSmither := newMutatingSmither(conn, rnd, t, true /* disableDelete */, qct.isMultiRegion)
+		mutatingSmither := newMutatingSmither(conn, rnd, t, true /* disableDelete */, isMultiRegion)
 		defer mutatingSmither.Close()
 
 		// Initialize a smither that generates only deterministic SELECT statements.
@@ -373,51 +348,42 @@ func runOneRoundQueryComparison(
 			default:
 			}
 
-			numInitialMutations := 1000
-			if qct.isMultiRegion {
-				// Inserts are slow in multi-region setups, so we can't get through as
-				// many before the end of the test.
-				numInitialMutations = 100
-			}
+			const numInitialMutations = 1000
 
 			if i == numInitialMutations {
 				t.Status("running ", qct.name, ": ", i, " initial mutations completed")
 				// Initialize a new mutating smither that generates INSERT, UPDATE and
 				// DELETE statements with the MutationsOnly option.
-				mutatingSmither = newMutatingSmither(conn, rnd, t, false /* disableDelete */, qct.isMultiRegion)
-				defer mutatingSmither.Close() //nolint:deferloop
+				mutatingSmither = newMutatingSmither(conn, rnd, t, false /* disableDelete */, isMultiRegion)
+				defer mutatingSmither.Close()
 			}
 
-			if i%numInitialMutations == 0 {
+			if i%1000 == 0 {
 				if i != numInitialMutations {
 					t.Status("running ", qct.name, ": ", i, " statements completed")
 				}
-			}
-
-			h := queryComparisonHelper{
-				conn1:      conn,
-				conn2:      conn2,
-				node1:      node,
-				node2:      node2,
-				logStmt:    logStmt,
-				logFailure: logFailure,
-				printStmt:  printStmt,
-				stmtNo:     i,
-				rnd:        rnd,
 			}
 
 			// Run `numInitialMutations` mutations first so that the tables have rows.
 			// Run a mutation every 25th iteration afterwards to continually change the
 			// state of the database.
 			if i < numInitialMutations || i%25 == 0 {
-				mConn, mConnInfo := h.chooseConn()
-				runMutationStatement(t, mConn, mConnInfo, mutatingSmither, logStmt)
+				runMutationStatement(conn, mutatingSmither, logStmt)
 				continue
+			}
+
+			h := queryComparisonHelper{
+				conn:       conn,
+				logStmt:    logStmt,
+				logFailure: logFailure,
+				printStmt:  printStmt,
+				stmtNo:     i,
 			}
 
 			if err := qct.run(smither, rnd, h); err != nil {
 				t.Fatal(err)
 			}
+
 		}
 	}
 }
@@ -460,66 +426,41 @@ type sqlAndOutput struct {
 // tests. It keeps track of each statement that is executed so they can be
 // logged in case of failure.
 type queryComparisonHelper struct {
-	// There are two different connections so that we sometimes execute the
-	// queries on different nodes.
-	conn1, conn2 *gosql.DB
-	node1, node2 int
-	logStmt      func(string)
-	logFailure   func(string, [][]string)
-	printStmt    func(string)
-	stmtNo       int
-	rnd          *rand.Rand
+	conn       *gosql.DB
+	logStmt    func(string)
+	logFailure func(string, [][]string)
+	printStmt  func(string)
+	stmtNo     int
 
 	statements            []string
 	statementsAndExplains []sqlAndOutput
 	colTypes              []string
 }
 
-// chooseConn flips a coin to determine which connection is used. It returns the
-// connection and a string to identify the connection for debugging purposes.
-func (h *queryComparisonHelper) chooseConn() (conn *gosql.DB, connInfo string) {
-	if h.node1 == h.node2 {
-		return h.conn1, ""
-	}
-	// Assuming we will be using cockroach demo --insecure to replay any failed
-	// logs, we add a \connect command for the SQL CLI to switch to the other node
-	// using only a port number.
-	defaultFirstPort, _ := strconv.Atoi(base.DefaultPort)
-	if h.rnd.Intn(2) == 0 {
-		conn = h.conn1
-		connInfo = fmt.Sprintf("\\connect - - - %d\n", defaultFirstPort+h.node1-1)
-	} else {
-		conn = h.conn2
-		connInfo = fmt.Sprintf("\\connect - - - %d\n", defaultFirstPort+h.node2-1)
-	}
-	return conn, connInfo
-}
-
 // runQuery runs the given query and returns the output. If the stmt doesn't
 // result in an error, as a side effect, it also saves the query, the query
 // plan, and the output of running the query so they can be logged in case of
 // failure.
-//
-//	stmt - the query to run
-//	conn - the connection to use
-//	connInfo - a string to identify the connection for debugging purposes
-func (h *queryComparisonHelper) runQuery(
-	stmt string, conn *gosql.DB, connInfo string,
-) ([][]string, error) {
+func (h *queryComparisonHelper) runQuery(stmt string) ([][]string, error) {
 	// Log this statement with a timestamp but commented out. This will help in
 	// cases when the stmt will get stuck and the whole test will time out (in
 	// such a scenario, since the stmt didn't execute successfully, it won't get
 	// logged by the caller).
 	h.logStmt(fmt.Sprintf("-- %s: %s", timeutil.Now(),
-		// Escape all control characters, including newline symbols, to log this
-		// stmt as a single line. This way this auxiliary logging takes up less
-		// space (if the stmt executes successfully, it'll still get logged with the
-		// usual formatting below).
-		strconv.Quote(connInfo+stmt+";"),
+		// Replace all control characters, including newline symbols, with a
+		// single space to log this stmt as a single line. This way this
+		// auxiliary logging takes up less space (if the stmt executes
+		// successfully, it'll still get logged with the nice formatting).
+		strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) {
+				return ' '
+			}
+			return r
+		}, stmt),
 	))
 
-	runQueryImpl := func(stmt string, conn *gosql.DB) ([][]string, error) {
-		rows, err := conn.Query(stmt)
+	runQueryImpl := func(stmt string) ([][]string, error) {
+		rows, err := h.conn.Query(stmt)
 		if err != nil {
 			return nil, err
 		}
@@ -538,7 +479,7 @@ func (h *queryComparisonHelper) runQuery(
 	// First use EXPLAIN (DISTSQL) to try to get the query plan. This is
 	// best-effort, and only for the purpose of debugging, so ignore any errors.
 	explainStmt := "EXPLAIN (DISTSQL) " + stmt
-	explainRows, err := runQueryImpl(explainStmt, conn)
+	explainRows, err := runQueryImpl(explainStmt)
 	if err == nil {
 		h.statementsAndExplains = append(
 			h.statementsAndExplains, sqlAndOutput{sql: explainStmt, output: explainRows},
@@ -546,14 +487,14 @@ func (h *queryComparisonHelper) runQuery(
 	}
 
 	// Now run the query and save the output.
-	rows, err := runQueryImpl(stmt, conn)
+	rows, err := runQueryImpl(stmt)
 	if err != nil {
 		return nil, err
 	}
 	// Only save the stmt on success - this makes it easier to reproduce the
 	// log. The caller still can include it into the statements later if
 	// necessary.
-	h.addStmtForLogging(connInfo+stmt, rows)
+	h.addStmtForLogging(stmt, rows)
 	return rows, nil
 }
 
@@ -566,13 +507,9 @@ func (h *queryComparisonHelper) addStmtForLogging(stmt string, rows [][]string) 
 
 // execStmt executes the given statement. As a side effect, it also saves the
 // statement so it can be logged in case of failure.
-//
-//	stmt - the statement to execute
-//	conn - the connection to use
-//	connInfo - a string to identify the connection for debugging purposes
-func (h *queryComparisonHelper) execStmt(stmt string, conn *gosql.DB, connInfo string) error {
-	h.addStmtForLogging(connInfo+stmt, nil /* rows */)
-	_, err := conn.Exec(stmt)
+func (h *queryComparisonHelper) execStmt(stmt string) error {
+	h.addStmtForLogging(stmt, nil /* rows */)
+	_, err := h.conn.Exec(stmt)
 	return err
 }
 

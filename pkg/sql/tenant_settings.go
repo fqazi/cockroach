@@ -9,7 +9,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -25,7 +24,6 @@ import (
 // alterTenantSetClusterSettingNode represents an
 // ALTER VIRTUAL CLUSTER ... SET CLUSTER SETTING statement.
 type alterTenantSetClusterSettingNode struct {
-	zeroInputPlanNode
 	name       settings.SettingName
 	tenantSpec tenantSpec
 	st         *cluster.Settings
@@ -53,11 +51,6 @@ func (p *planner) AlterTenantSetClusterSetting(
 	}
 
 	name := settings.SettingName(strings.ToLower(n.Name))
-	// Disallow setting the 'version' setting for any tenant.
-	if name == clusterversion.KeyVersionSetting {
-		return nil, errors.Errorf("cannot set '%s' for tenants", name)
-	}
-
 	st := p.EvalContext().Settings
 	setting, ok, nameStatus := settings.LookupForLocalAccess(name, true /* forSystemTenant - checked above already */)
 	if !ok {

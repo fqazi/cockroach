@@ -5,17 +5,16 @@
 
 import { all, fork } from "redux-saga/effects";
 
-import { timeScaleSaga } from "src/redux/timeScale";
-
-import { analyticsSaga } from "./analyticsSagas";
-import { customAnalyticsSaga } from "./customAnalytics";
-import { indexUsageStatsSaga } from "./indexUsageStats";
-import { jobsSaga } from "./jobs/jobsSagas";
-import { localSettingsSaga } from "./localsettings";
 import { queryMetricsSaga } from "./metrics";
+import { localSettingsSaga } from "./localsettings";
+import { customAnalyticsSaga } from "./customAnalytics";
+import { statementsSaga } from "./statements";
+import { analyticsSaga } from "./analyticsSagas";
 import { sessionsSaga } from "./sessions";
 import { sqlStatsSaga } from "./sqlStats";
-import { statementsSaga } from "./statements";
+import { indexUsageStatsSaga } from "./indexUsageStats";
+import { timeScaleSaga } from "src/redux/timeScale";
+import { jobsSaga } from "./jobs/jobsSagas";
 
 export default function* rootSaga() {
   yield all([

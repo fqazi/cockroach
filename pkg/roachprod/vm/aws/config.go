@@ -48,14 +48,14 @@ import (
 // but it was deemed more straightforward to utilize the json.Unmarshaler
 // interface to construct a well formed value from the terraform output.
 type awsConfig struct {
-	// Regions is a slice of region structs sorted by name.
-	Regions []AWSRegion
-	// AZByName maps from availability zone name to a struct which itself refers
+	// regions is a slice of region structs sorted by name.
+	regions []awsRegion
+	// azByName maps from availability zone name to a struct which itself refers
 	// back to a region.
-	AZByName map[string]*availabilityZone
+	azByName map[string]*availabilityZone
 }
 
-type AWSRegion struct {
+type awsRegion struct {
 	Name              string            `json:"region"`
 	SecurityGroup     string            `json:"security_group"`
 	AMI_X86_64        string            `json:"ami_id"`
@@ -65,9 +65,9 @@ type AWSRegion struct {
 }
 
 type availabilityZone struct {
-	Name     string
-	SubnetID string
-	Region   *AWSRegion // set up in awsConfig.UnmarshalJSON
+	name     string
+	subnetID string
+	region   *awsRegion // set up in awsConfig.UnmarshalJSON
 }
 
 // UnmarshalJSON implement json.Unmarshaler.
@@ -78,7 +78,7 @@ type availabilityZone struct {
 func (c *awsConfig) UnmarshalJSON(data []byte) error {
 	type raw struct {
 		Regions struct {
-			Value []AWSRegion `json:"value"`
+			Value []awsRegion `json:"value"`
 		} `json:"regions"`
 	}
 	var v raw
@@ -86,38 +86,48 @@ func (c *awsConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*c = awsConfig{
-		Regions:  v.Regions.Value,
-		AZByName: make(map[string]*availabilityZone),
+		regions:  v.Regions.Value,
+		azByName: make(map[string]*availabilityZone),
 	}
-	sort.Slice(c.Regions, func(i, j int) bool {
-		return c.Regions[i].Name < c.Regions[j].Name
+	sort.Slice(c.regions, func(i, j int) bool {
+		return c.regions[i].Name < c.regions[j].Name
 	})
-	for i := range c.Regions {
-		r := &c.Regions[i]
+	for i := range c.regions {
+		r := &c.regions[i]
 		for i := range r.AvailabilityZones {
 			az := &r.AvailabilityZones[i]
-			az.Region = r
-			c.AZByName[az.Name] = az
+			az.region = r
+			c.azByName[az.name] = az
 		}
 	}
 	return nil
 }
 
+func (c *awsConfig) getRegion(name string) *awsRegion {
+	i := sort.Search(len(c.regions), func(i int) bool {
+		return c.regions[i].Name >= name
+	})
+	if i < len(c.regions) && c.regions[i].Name == name {
+		return &c.regions[i]
+	}
+	return nil
+}
+
 func (c *awsConfig) regionNames() (names []string) {
-	for _, r := range c.Regions {
+	for _, r := range c.regions {
 		names = append(names, r.Name)
 	}
 	return names
 }
 
 func (c *awsConfig) getAvailabilityZone(azName string) *availabilityZone {
-	return c.AZByName[azName]
+	return c.azByName[azName]
 }
 
 func (c *awsConfig) availabilityZoneNames() (zoneNames []string) {
-	for _, r := range c.Regions {
+	for _, r := range c.regions {
 		for _, az := range r.AvailabilityZones {
-			zoneNames = append(zoneNames, az.Name)
+			zoneNames = append(zoneNames, az.name)
 		}
 	}
 	sort.Strings(zoneNames)
@@ -136,12 +146,12 @@ func (s *availabilityZones) UnmarshalJSON(data []byte) error {
 	*s = make(availabilityZones, 0, len(m))
 	for az, sn := range m {
 		*s = append(*s, availabilityZone{
-			Name:     az,
-			SubnetID: sn,
+			name:     az,
+			subnetID: sn,
 		})
 	}
 	sort.Slice(*s, func(i, j int) bool {
-		return (*s)[i].Name < (*s)[j].Name
+		return (*s)[i].name < (*s)[j].name
 	})
 	return nil
 }
@@ -170,11 +180,7 @@ func (c *awsConfigValue) Set(path string) (err error) {
 	if err != nil {
 		return err
 	}
-	err = json.Unmarshal(data, &c.awsConfig)
-	if err != nil {
-		return err
-	}
-	return nil
+	return json.Unmarshal(data, &c.awsConfig)
 }
 
 // Type is part of the pflag.Value interface.

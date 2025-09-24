@@ -7,19 +7,17 @@ package rpc
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"google.golang.org/grpc"
-	"storj.io/drpc/drpcclient"
 )
 
 // ContextTestingKnobs provides hooks to aid in testing the system. The testing
@@ -33,15 +31,11 @@ type ContextTestingKnobs struct {
 	//
 	// Note that this is not called for streaming RPCs using the
 	// internalClientAdapter - i.e. KV RPCs done against the local server.
-	StreamClientInterceptor func(target string, class rpcbase.ConnectionClass) grpc.StreamClientInterceptor
+	StreamClientInterceptor func(target string, class ConnectionClass) grpc.StreamClientInterceptor
 
 	// UnaryClientInterceptor, if non-nil, will be called when invoking any
 	// unary RPC.
-	UnaryClientInterceptor func(target string, class rpcbase.ConnectionClass) grpc.UnaryClientInterceptor
-
-	UnaryClientInterceptorDRPC func(target string, class rpcbase.ConnectionClass) drpcclient.UnaryClientInterceptor
-
-	StreamClientInterceptorDRPC func(target string, class rpcbase.ConnectionClass) drpcclient.StreamClientInterceptor
+	UnaryClientInterceptor func(target string, class ConnectionClass) grpc.UnaryClientInterceptor
 
 	// InjectedLatencyOracle if non-nil contains a map from target address
 	// (server.RPCServingAddr() of a remote node) to artificial latency in
@@ -149,7 +143,7 @@ func (d disablingClientStream) RecvMsg(m interface{}) error {
 // TODO(baptist): This could be enhanced to allow dynamic partition injection.
 type Partitioner struct {
 	partitionEnabled atomic.Bool
-	nodeAddrMap      syncutil.Map[string, roachpb.NodeID]
+	nodeAddrMap      sync.Map
 }
 
 // EnablePartition will enable or disable the partition.
@@ -164,7 +158,7 @@ func (p *Partitioner) RegisterNodeAddr(addr string, id roachpb.NodeID) {
 	if p.partitionEnabled.Load() {
 		panic("Can not register node addresses with a partition enabled")
 	}
-	p.nodeAddrMap.Store(addr, &id)
+	p.nodeAddrMap.Store(addr, id)
 }
 
 // RegisterTestingKnobs creates the testing knobs for this node. It will
@@ -188,18 +182,17 @@ func (p *Partitioner) RegisterTestingKnobs(
 		if !p.partitionEnabled.Load() {
 			return nil
 		}
-		idPtr, ok := p.nodeAddrMap.Load(addr)
+		id, ok := p.nodeAddrMap.Load(addr)
 		if !ok {
 			panic("address not mapped, call RegisterNodeAddr before enabling the partition" + addr)
 		}
-		id := *idPtr
-		if partitionedServers[id] {
-			return errors.Newf("rpc error: partitioned from %s, n%d", addr, id)
+		if partitionedServers[id.(roachpb.NodeID)] {
+			return errors.Newf("partitioned from %s, n%d", addr, id)
 		}
 		return nil
 	}
 	knobs.UnaryClientInterceptor =
-		func(target string, class rpcbase.ConnectionClass) grpc.UnaryClientInterceptor {
+		func(target string, class ConnectionClass) grpc.UnaryClientInterceptor {
 			return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 				if err := isPartitioned(target); err != nil {
 					return err
@@ -208,7 +201,7 @@ func (p *Partitioner) RegisterTestingKnobs(
 			}
 		}
 	knobs.StreamClientInterceptor =
-		func(target string, class rpcbase.ConnectionClass) grpc.StreamClientInterceptor {
+		func(target string, class ConnectionClass) grpc.StreamClientInterceptor {
 			return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
 				cs, err := streamer(ctx, desc, cc, method, opts...)
 				if err != nil {

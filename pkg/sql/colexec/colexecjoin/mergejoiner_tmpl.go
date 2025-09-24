@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for mergejoiner.eg.go. It's formatted in a
@@ -836,7 +837,7 @@ func (o *mergeJoin_JOIN_TYPE_STRINGOp) buildLeftGroupsFromBatch(
 				lastSrcCol := colIdx == len(input.sourceTypes)-1
 				outStartIdx := destStartIdx
 				out := o.output.ColVec(colIdx)
-				var src *coldata.Vec
+				var src coldata.Vec
 				if batch.Length() > 0 {
 					src = batch.ColVec(colIdx)
 				}
@@ -997,7 +998,7 @@ func (o *mergeJoin_JOIN_TYPE_STRINGOp) buildRightGroupsFromBatch(
 				lastSrcCol := colIdx == len(input.sourceTypes)-1
 				outStartIdx := destStartIdx
 				out := o.output.ColVec(colIdx + colOffset)
-				var src *coldata.Vec
+				var src coldata.Vec
 				if batch.Length() > 0 {
 					src = batch.ColVec(colIdx)
 				}

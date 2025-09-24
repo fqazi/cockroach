@@ -739,7 +739,7 @@ func (p *planner) ForceDeleteTableData(ctx context.Context, descID int64) error 
 
 	// Validate no descriptor exists for this table
 	id := descpb.ID(descID)
-	desc, err := p.Descriptors().ByIDWithoutLeased(p.txn).WithoutNonPublic().Get().Table(ctx, id)
+	desc, err := p.Descriptors().ByID(p.txn).WithoutNonPublic().Get().Table(ctx, id)
 	if err != nil && pgerror.GetPGCode(err) != pgcode.UndefinedTable {
 		return err
 	}
@@ -819,7 +819,7 @@ func (p *planner) UpsertDroppedRelationGCTTL(
 	}
 
 	// Fetch the descriptor and check that it's a dropped table.
-	tbl, err := p.Descriptors().ByIDWithoutLeased(p.txn).Get().Table(ctx, descpb.ID(id))
+	tbl, err := p.Descriptors().ByID(p.txn).Get().Table(ctx, descpb.ID(id))
 	if err != nil {
 		return err
 	}
@@ -850,20 +850,4 @@ func (p *planner) UpsertDroppedRelationGCTTL(
 		return err
 	}
 	return p.txn.Run(ctx, b)
-}
-
-// UnsafeDeleteComment deletes all comments under a given object_id.
-func (p *planner) UnsafeDeleteComment(ctx context.Context, objectID int64) error {
-	// Privilege check.
-	const method = "crdb_internal.unsafe_delete_comment()"
-	err := checkPlannerStateForRepairFunctions(ctx, p, method)
-	if err != nil {
-		return err
-	}
-	_, err = p.InternalSQLTxn().Exec(ctx,
-		"delete-comment",
-		p.txn,
-		"DELETE FROM system.comments WHERE object_id = $1",
-		objectID)
-	return err
 }

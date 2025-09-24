@@ -33,6 +33,8 @@ func init() {
 	config.ZoneConfigHook = zoneConfigHook
 }
 
+var errNoZoneConfigApplies = errors.New("no zone config applies")
+
 // getZoneConfig recursively looks up entries in system.zones until an
 // entry that applies to the object with the specified id is
 // found. Returns the ID of the matching zone, its zone config, and an
@@ -112,7 +114,7 @@ func getZoneConfig(
 	}
 
 	// No descriptor or not a table.
-	return 0, nil, 0, nil, sqlerrors.ErrNoZoneConfigApplies
+	return 0, nil, 0, nil, errNoZoneConfigApplies
 }
 
 // completeZoneConfig takes a zone config pointer and fills in the
@@ -177,7 +179,7 @@ func zoneConfigHook(
 		false, /* getInheritedDefault */
 		mayBeTable,
 	)
-	if errors.Is(err, sqlerrors.ErrNoZoneConfigApplies) {
+	if errors.Is(err, errNoZoneConfigApplies) {
 		return nil, nil, true, nil
 	} else if err != nil {
 		return nil, nil, false, err

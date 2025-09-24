@@ -76,7 +76,7 @@ func TestSpillingBuffer(t *testing.T) {
 		// spilling to disk queue occurs after some batches were added to
 		// the in-memory buffer.
 		setInMemTuplesLimit := rng.Float64() < 0.5
-		log.Dev.Infof(context.Background(), "MemoryLimit=%s/AlwaysCompress=%t/NumBatches=%d/InMemTuplesLimited=%t",
+		log.Infof(context.Background(), "MemoryLimit=%s/AlwaysCompress=%t/NumBatches=%d/InMemTuplesLimited=%t",
 			humanizeutil.IBytes(memoryLimit), alwaysCompress, numBatches, setInMemTuplesLimit)
 
 		// Since the spilling buffer appends tuples to an AppendOnlyBufferedBatch,
@@ -126,7 +126,7 @@ func TestSpillingBuffer(t *testing.T) {
 		testBatch := coldata.NewMemBatchNoCols(typesToStore, 0 /* capacity */)
 		oracleBatch := coldata.NewMemBatchNoCols(typesToStore, 0 /* capacity */)
 		checkWindowAtIndex := func(startIdx int) (nextIdx int) {
-			var vec *coldata.Vec
+			var vec coldata.Vec
 			var idx, length int
 			for i, colIdx := range colsToStore {
 				vec, idx, length = buf.GetVecWithTuple(ctx, i, startIdx)

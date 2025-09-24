@@ -74,7 +74,7 @@ func (sm *streamMerger) NextBatch(
 	}
 
 	cmp, err := CompareEncDatumRowForMerge(
-		ctx, sm.left.types, sm.right.types, lrow, rrow, sm.left.ordering, sm.right.ordering,
+		sm.left.types, sm.right.types, lrow, rrow, sm.left.ordering, sm.right.ordering,
 		sm.nullEquality, &sm.datumAlloc, evalCtx,
 	)
 	if err != nil {
@@ -103,7 +103,6 @@ func (sm *streamMerger) NextBatch(
 // a DatumAlloc which is used for decoding if any underlying EncDatum is not
 // yet decoded.
 func CompareEncDatumRowForMerge(
-	ctx context.Context,
 	lhsTypes, rhsTypes []*types.T,
 	lhs, rhs rowenc.EncDatumRow,
 	leftOrdering, rightOrdering colinfo.ColumnOrdering,
@@ -140,7 +139,7 @@ func CompareEncDatumRowForMerge(
 			}
 			continue
 		}
-		cmp, err := lhs[lIdx].CompareEx(ctx, lhsTypes[lIdx], da, evalCtx, &rhs[rIdx], rhsTypes[rIdx])
+		cmp, err := lhs[lIdx].CompareEx(lhsTypes[lIdx], da, evalCtx, &rhs[rIdx], rhsTypes[rIdx])
 		if err != nil {
 			return 0, err
 		}
@@ -172,12 +171,12 @@ func makeStreamMerger(
 	memMonitor *mon.BytesMonitor,
 ) (streamMerger, error) {
 	if len(leftOrdering) != len(rightOrdering) {
-		return streamMerger{}, errors.AssertionFailedf(
+		return streamMerger{}, errors.Errorf(
 			"ordering lengths don't match: %d and %d", len(leftOrdering), len(rightOrdering))
 	}
 	for i, ord := range leftOrdering {
 		if ord.Direction != rightOrdering[i].Direction {
-			return streamMerger{}, errors.AssertionFailedf("ordering mismatch")
+			return streamMerger{}, errors.New("ordering mismatch")
 		}
 	}
 

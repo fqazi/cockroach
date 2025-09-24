@@ -175,13 +175,13 @@ func runMultiTenantFairness(
 		node := virtualClusters[name]
 		c.StartServiceForVirtualCluster(
 			ctx, t.L(),
-			option.StartVirtualClusterOpts(name, node, option.NoBackupSchedule),
+			option.StartVirtualClusterOpts(name, node),
 			install.MakeClusterSettings(),
 		)
 
 		t.L().Printf("virtual cluster %q started on n%d", name, node[0])
 		_, err := systemConn.ExecContext(
-			ctx, fmt.Sprintf("SELECT crdb_internal.update_tenant_resource_limits('%s', 1000000000, 10000, 1000000)", name),
+			ctx, fmt.Sprintf("SELECT crdb_internal.update_tenant_resource_limits('%s', 1000000000, 10000, 1000000, now(), 0)", name),
 		)
 		require.NoError(t, err)
 
@@ -206,8 +206,12 @@ func runMultiTenantFairness(
 		c.Run(ctx, option.WithNodes(node), initKV)
 	}
 
+	t.L().Printf("setting up prometheus/grafana (<%s)", 2*time.Minute)
+	_, cleanupFunc := setupPrometheusForRoachtest(ctx, t, c, promCfg, nil)
+	defer cleanupFunc()
+
 	t.L().Printf("loading per-tenant data (<%s)", 10*time.Minute)
-	m1 := c.NewDeprecatedMonitor(ctx, c.All())
+	m1 := c.NewMonitor(ctx, c.All())
 	for name, node := range virtualClusters {
 		pgurl := fmt.Sprintf("{pgurl:%d:%s}", node[0], name)
 		name := name
@@ -232,7 +236,7 @@ func runMultiTenantFairness(
 				Flag("batch", s.batch).
 				Flag("max-ops", s.maxOps).
 				Flag("concurrency", 25).
-				Arg("%s", pgurl)
+				Arg(pgurl)
 
 			if err := c.RunE(ctx, option.WithNodes(node), cmd.String()); err != nil {
 				return err
@@ -249,7 +253,7 @@ func runMultiTenantFairness(
 	time.Sleep(waitDur)
 
 	t.L().Printf("running virtual cluster workloads (<%s)", s.duration+time.Minute)
-	m2 := c.NewDeprecatedMonitor(ctx, crdbNode)
+	m2 := c.NewMonitor(ctx, crdbNode)
 	var n int
 	for name, node := range virtualClusters {
 		pgurl := fmt.Sprintf("{pgurl:%d:%s}", node[0], name)
@@ -267,7 +271,7 @@ func runMultiTenantFairness(
 				Flag("duration", s.duration).
 				Flag("read-percent", s.readPercent).
 				Flag("concurrency", s.concurrency(n)).
-				Arg("%s", pgurl)
+				Arg(pgurl)
 
 			if err := c.RunE(ctx, option.WithNodes(node), cmd.String()); err != nil {
 				return err
@@ -295,12 +299,9 @@ func runMultiTenantFairness(
 		node := virtualClusters[name]
 
 		vcdb := c.Conn(ctx, t.L(), node[0], option.VirtualClusterName(name))
+		defer vcdb.Close()
 
 		_, err := vcdb.ExecContext(ctx, "USE kv")
-		// Retry once, since this can fail sometimes due the cluster running hot.
-		if err != nil {
-			_, err = vcdb.ExecContext(ctx, "USE kv")
-		}
 		require.NoError(t, err)
 
 		// TODO(aaditya): We no longer have the ability to filter for stats by
@@ -325,8 +326,8 @@ func runMultiTenantFairness(
 		} else {
 			t.Fatal("no query results")
 		}
+
 		require.NoError(t, rows.Err())
-		vcdb.Close()
 	}
 
 	failThreshold := .3

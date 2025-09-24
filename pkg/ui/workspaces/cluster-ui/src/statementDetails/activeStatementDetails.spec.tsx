@@ -3,19 +3,17 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
-import { MemoryRouter as Router } from "react-router-dom";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { createSandbox } from "sinon";
-
-import * as sqlApi from "../api/sqlApi";
-import { MockSqlResponse } from "../util/testing";
-
+import { MemoryRouter as Router } from "react-router-dom";
 import {
   ActiveStatementDetails,
   ActiveStatementDetailsProps,
 } from "./activeStatementDetails";
 import { getActiveStatementDetailsPropsFixture } from "./activeStatementDetails.fixture";
+import * as sqlApi from "../api/sqlApi";
+import { MockSqlResponse } from "../util/testing";
 
 const sandbox = createSandbox();
 

@@ -6,11 +6,10 @@
 package sidetransport
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"html"
-	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -34,8 +33,8 @@ func (s *Receiver) HTML() string {
 	}
 	s.mu.RUnlock()
 	// Sort by node id.
-	slices.SortFunc(conns, func(a, b *incomingStream) int {
-		return cmp.Compare(a.nodeID, b.nodeID)
+	sort.Slice(conns, func(i, j int) bool {
+		return conns[i].nodeID < conns[j].nodeID
 	})
 	for _, c := range conns {
 		sb.WriteString(c.html() + "<br>")
@@ -49,8 +48,8 @@ func (s *Receiver) HTML() string {
 	}
 	s.historyMu.Unlock()
 	// Sort by disconnection time, descending.
-	slices.SortFunc(closed, func(a, b streamCloseInfo) int {
-		return -a.closeTime.Compare(b.closeTime)
+	sort.Slice(closed, func(i, j int) bool {
+		return closed[i].closeTime.After(closed[j].closeTime)
 	})
 	now := timeutil.Now()
 	for _, c := range closed {
@@ -126,7 +125,9 @@ func (s *Sender) HTML() string {
 	for nid := range s.connsMu.conns {
 		nids = append(nids, nid)
 	}
-	slices.Sort(nids)
+	sort.Slice(nids, func(i, j int) bool {
+		return nids[i] < nids[j]
+	})
 	now := timeutil.Now()
 	for _, nid := range nids {
 		state := s.connsMu.conns[nid].getState()

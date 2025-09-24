@@ -42,10 +42,10 @@ then
    GEOS_TARGET=
 fi
 
-bazel build //pkg/cmd/bazci
-BAZEL_BIN=$(bazel info bazel-bin)
+bazel build //pkg/cmd/bazci --config=ci
+BAZEL_BIN=$(bazel info bazel-bin --config=ci)
 "$BAZEL_BIN/pkg/cmd/bazci/bazci_/bazci" -- build -c opt \
-		       --config "$CONFIG" $EXTRA_ARGS \
+		       --config "$CONFIG" --config ci $EXTRA_ARGS \
 		       //pkg/cmd/cockroach-short //pkg/cmd/cockroach \
 		       //pkg/cmd/cockroach-sql $GEOS_TARGET $EXTRA_TARGETS
 

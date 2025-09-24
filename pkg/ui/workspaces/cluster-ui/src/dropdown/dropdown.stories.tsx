@@ -3,14 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Download } from "@cockroachlabs/icons";
-import { storiesOf } from "@storybook/react";
-import noop from "lodash/noop";
 import React from "react";
-
-import { Button } from "src/button";
+import { storiesOf } from "@storybook/react";
+import { noop } from "lodash";
 
 import { Dropdown, DropdownOption } from "./dropdown";
+import { Button } from "src/button";
+import { Download } from "@cockroachlabs/icons";
 
 const items: DropdownOption[] = [
   { name: "A", value: "a" },

@@ -3,25 +3,23 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import moment from "moment-timezone";
-
+import {
+  TxnStmtFingerprintsResponseColumns,
+  FingerprintStmtsResponseColumns,
+} from "./txnInsightsApi";
+import * as sqlApi from "./sqlApi";
+import { SqlExecutionResponse } from "./sqlApi";
 import {
   InsightExecEnum,
   InsightNameEnum,
   TxnContentionInsightDetails,
 } from "../insights";
-import { MockSqlResponse } from "../util/testing";
-
 import {
   ContentionResponseColumns,
   getTxnInsightsContentionDetailsApi,
 } from "./contentionApi";
-import * as sqlApi from "./sqlApi";
-import { SqlExecutionResponse } from "./sqlApi";
-import {
-  TxnStmtFingerprintsResponseColumns,
-  FingerprintStmtsResponseColumns,
-} from "./txnInsightsApi";
+import moment from "moment-timezone";
+import { MockSqlResponse } from "../util/testing";
 
 type TxnContentionDetailsTests = {
   name: string;
@@ -96,7 +94,7 @@ describe("test txn insights api functions", () => {
           },
         ],
         execType: InsightExecEnum.TRANSACTION,
-        insightName: InsightNameEnum.HIGH_CONTENTION,
+        insightName: InsightNameEnum.highContention,
       },
     },
     {
@@ -143,7 +141,7 @@ describe("test txn insights api functions", () => {
           },
         ],
         execType: InsightExecEnum.TRANSACTION,
-        insightName: InsightNameEnum.HIGH_CONTENTION,
+        insightName: InsightNameEnum.highContention,
       },
     },
     {
@@ -199,7 +197,7 @@ describe("test txn insights api functions", () => {
           },
         ],
         execType: InsightExecEnum.TRANSACTION,
-        insightName: InsightNameEnum.HIGH_CONTENTION,
+        insightName: InsightNameEnum.highContention,
       },
     },
   ] as TxnContentionDetailsTests[])(

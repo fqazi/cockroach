@@ -36,6 +36,8 @@ import (
 // the serverccl package.
 var SQLAPIClock timeutil.TimeSource = timeutil.DefaultTimeSource{}
 
+// swagger:operation POST /sql/ execSQL
+//
 // # Execute one or more SQL statements
 //
 // Executes one or more SQL statements.
@@ -236,10 +238,10 @@ func (a *apiV2Server) execSQL(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			w.Header().Set("Content-Type", "text/plain")
 			w.WriteHeader(http.StatusInternalServerError)
-			log.Dev.Errorf(r.Context(), "JSON marshal error: %v", err)
+			log.Errorf(r.Context(), "JSON marshal error: %v", err)
 			_, err = w.Write([]byte(err.Error()))
 			if err != nil {
-				log.Dev.Warningf(r.Context(), "HTTP short write: %v", err)
+				log.Warningf(r.Context(), "HTTP short write: %v", err)
 			}
 			return
 		}
@@ -250,7 +252,7 @@ func (a *apiV2Server) execSQL(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(httpCode)
 		_, err = w.Write(b)
 		if err != nil {
-			log.Dev.Warningf(r.Context(), "HTTP short write: %v", err)
+			log.Warningf(r.Context(), "HTTP short write: %v", err)
 		}
 	}()
 
@@ -306,8 +308,7 @@ func (a *apiV2Server) execSQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if requestPayload.MaxResultSize == 0 {
-		// Default to 100 kb if no MaxResultSize is provided.
-		requestPayload.MaxResultSize = 100_000
+		requestPayload.MaxResultSize = 10000
 	}
 	if len(requestPayload.Statements) == 0 {
 		topLevelError(errors.New("no statements specified"), http.StatusBadRequest)
@@ -472,7 +473,12 @@ func (a *apiV2Server) execSQL(w http.ResponseWriter, r *http.Request) {
 						}
 					}()
 
-					if !tree.UserStmtAllowedForInternalExecutor(stmt.stmt.AST) {
+					if returnType == tree.Ack || stmt.stmt.AST.StatementType() == tree.TypeTCL {
+						// We want to disallow statements that modify txn state (like
+						// BEGIN and COMMIT) because the internal executor does not
+						// expect such statements. We'll lean on the safe side and
+						// prohibit all statements with an ACK return type, similar
+						// to the builtin `crdb_internal.execute_internally(...)`.
 						return errors.New("disallowed statement type")
 					}
 

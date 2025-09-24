@@ -433,14 +433,12 @@ func mvccScanToCols(
 
 	// Try to use the same root monitor (from the store) if the account is
 	// provided.
-	var monitor *mon.BytesMonitor
-	if opts.MemoryAccount != nil {
-		monitor = opts.MemoryAccount.Monitor()
-	} else {
+	monitor := opts.MemoryAccount.Monitor()
+	if monitor == nil {
 		// If we don't have the monitor, then we create a "fake" one that is not
 		// connected to the memory accounting system.
 		monitor = mon.NewMonitor(mon.Options{
-			Name:     mon.MakeName("mvcc-scan-to-cols"),
+			Name:     "mvcc-scan-to-cols",
 			Settings: st,
 		})
 		monitor.Start(ctx, nil /* pool */, mon.NewStandaloneBudget(math.MaxInt64))

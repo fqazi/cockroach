@@ -3,10 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import React from "react";
 import { assert } from "chai";
 import { shallow } from "enzyme";
-import React from "react";
-
 import {
   ResultsPerPageLabel,
   ResultsPerPageLabelProps,

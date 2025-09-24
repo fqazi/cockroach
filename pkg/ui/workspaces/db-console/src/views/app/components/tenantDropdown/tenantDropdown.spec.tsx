@@ -2,13 +2,11 @@
 //
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
+import { getCookieValue } from "src/redux/cookies";
+import React from "react";
+import TenantDropdown from "./tenantDropdown";
 import { shallow } from "enzyme";
 import fetchMock from "fetch-mock";
-import React from "react";
-
-import { getCookieValue } from "src/redux/cookies";
-
-import TenantDropdown from "./tenantDropdown";
 
 jest.mock("src/redux/cookies", () => ({
   getCookieValue: jest.fn(),

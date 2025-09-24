@@ -6,12 +6,10 @@
 package changefeedccl
 
 import (
-	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"hash/fnv"
-	"io"
 	"net"
 	"strings"
 	"time"
@@ -28,7 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
-	"github.com/klauspost/compress/zstd"
 	"github.com/rcrowley/go-metrics"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
@@ -47,7 +44,6 @@ type kafkaSinkClientV2 struct {
 	recordResize        func(numRecords int64)
 
 	topicsForConnectionCheck []string
-	constHeaders             []kgo.RecordHeader
 
 	// we need to fetch and keep track of this ourselves since kgo doesnt expose metadata to us
 	metadataMu struct {
@@ -69,7 +65,6 @@ func newKafkaSinkClientV2(
 	knobs kafkaSinkV2Knobs,
 	mb metricsRecorderBuilder,
 	topicsForConnectionCheck []string,
-	constHeaders map[string][]byte,
 ) (*kafkaSinkClientV2, error) {
 	bootstrapBrokers := strings.Split(bootstrapAddrsStr, `,`)
 
@@ -93,7 +88,7 @@ func newKafkaSinkClientV2(
 		// This detects unavoidable data loss due to kafka cluster issues, and we may as well log it if it happens.
 		// See #127246 for further work we can do here.
 		kgo.ProducerOnDataLossDetected(func(topic string, part int32) {
-			log.Changefeed.Errorf(ctx, `kafka sink detected data loss for topic %s partition %d`, redact.SafeString(topic), redact.SafeInt(part))
+			log.Errorf(ctx, `kafka sink detected data loss for topic %s partition %d`, redact.SafeString(topic), redact.SafeInt(part))
 		}),
 	}
 
@@ -121,11 +116,6 @@ func newKafkaSinkClientV2(
 		adminClient = kadm.NewClient(client.(*kgo.Client))
 	}
 
-	constHeadersKgo := make([]kgo.RecordHeader, 0, len(constHeaders))
-	for k, v := range constHeaders {
-		constHeadersKgo = append(constHeadersKgo, kgo.RecordHeader{Key: k, Value: v})
-	}
-
 	c := &kafkaSinkClientV2{
 		client:                   client,
 		adminClient:              adminClient,
@@ -135,7 +125,6 @@ func newKafkaSinkClientV2(
 		includeErrorDetails:      changefeedbase.KafkaV2ErrorDetailsEnabled.Get(&settings.SV),
 		recordResize:             recordResize,
 		topicsForConnectionCheck: topicsForConnectionCheck,
-		constHeaders:             constHeadersKgo,
 	}
 	c.metadataMu.allTopicPartitions = make(map[string][]int32)
 
@@ -214,7 +203,7 @@ func (k *kafkaSinkClientV2) FlushResolvedPayload(
 			msgs = make([]*kgo.Record, 0, len(k.metadataMu.allTopicPartitions))
 			return forEachTopic(func(topic string) error {
 				if _, ok := k.metadataMu.allTopicPartitions[topic]; !ok {
-					log.Changefeed.Warningf(ctx, `cannot flush resolved timestamp for unknown topic %s`, topic)
+					log.Warningf(ctx, `cannot flush resolved timestamp for unknown topic %s`, topic)
 				}
 				for _, partition := range k.metadataMu.allTopicPartitions[topic] {
 					msgs = append(msgs, &kgo.Record{
@@ -266,7 +255,7 @@ func (k *kafkaSinkClientV2) maybeUpdateTopicPartitions(
 		return nil
 	}
 
-	log.Changefeed.Infof(ctx, `updating kafka metadata for topics: %+v`, topics)
+	log.Infof(ctx, `updating kafka metadata for topics: %+v`, topics)
 
 	topicDetails, err := k.adminClient.ListTopics(ctx, topics...)
 	if err != nil {
@@ -283,7 +272,7 @@ func (k *kafkaSinkClientV2) maybeUpdateTopicPartitions(
 
 // MakeBatchBuffer implements SinkClient.
 func (k *kafkaSinkClientV2) MakeBatchBuffer(topic string) BatchBuffer {
-	return &kafkaBuffer{topic: topic, batchCfg: k.batchCfg, constHeaders: k.constHeaders, includeErrorDetails: k.includeErrorDetails}
+	return &kafkaBuffer{topic: topic, batchCfg: k.batchCfg, includeErrorDetails: k.includeErrorDetails}
 }
 
 func (k *kafkaSinkClientV2) shouldTryResizing(err error, msgs []*kgo.Record) bool {
@@ -322,7 +311,6 @@ type kafkaBuffer struct {
 	byteCount int
 
 	batchCfg            sinkBatchConfig
-	constHeaders        []kgo.RecordHeader
 	includeErrorDetails bool
 }
 
@@ -335,19 +323,12 @@ func (b *kafkaBuffer) Append(ctx context.Context, key []byte, value []byte, attr
 		key = []byte{}
 	}
 
-	headers := make([]kgo.RecordHeader, 0, len(b.constHeaders)+len(attrs.headers))
-	headers = append(headers, b.constHeaders...)
-
-	for k, v := range attrs.headers {
-		headers = append(headers, kgo.RecordHeader{Key: k, Value: v})
-	}
-
 	var rctx context.Context
 	if b.includeErrorDetails {
 		rctx = context.WithValue(ctx, mvccTSKey{}, attrs.mvcc)
 	}
 
-	b.messages = append(b.messages, &kgo.Record{Key: key, Value: value, Topic: b.topic, Headers: headers, Context: rctx})
+	b.messages = append(b.messages, &kgo.Record{Key: key, Value: value, Topic: b.topic, Context: rctx})
 	b.byteCount += len(value)
 }
 
@@ -365,7 +346,7 @@ func makeKafkaSinkV2(
 	ctx context.Context,
 	u *changefeedbase.SinkURL,
 	targets changefeedbase.Targets,
-	sinkOpts changefeedbase.KafkaSinkOptions,
+	jsonConfig changefeedbase.SinkSpecificJSONConfig,
 	parallelism int,
 	pacerFactory func() *admission.Pacer,
 	timeSource timeutil.TimeSource,
@@ -373,7 +354,6 @@ func makeKafkaSinkV2(
 	mb metricsRecorderBuilder,
 	knobs kafkaSinkV2Knobs,
 ) (Sink, error) {
-	jsonConfig := sinkOpts.JSONConfig
 	batchCfg, retryOpts, err := getSinkConfigFromJson(jsonConfig, sinkJSONConfig{
 		// Defaults from the v1 sink - flush immediately.
 		Flush: sinkBatchConfig{},
@@ -400,7 +380,7 @@ func makeKafkaSinkV2(
 
 	topicNamer, err := MakeTopicNamer(
 		targets,
-		WithPrefix(kafkaTopicPrefix), WithSingleName(kafkaTopicName), WithSanitizeFn(changefeedbase.SQLNameToKafkaName))
+		WithPrefix(kafkaTopicPrefix), WithSingleName(kafkaTopicName), WithSanitizeFn(SQLNameToKafkaName))
 
 	if err != nil {
 		return nil, err
@@ -412,7 +392,7 @@ func makeKafkaSinkV2(
 	}
 
 	topicsForConnectionCheck := topicNamer.DisplayNamesSlice()
-	client, err := newKafkaSinkClientV2(ctx, clientOpts, batchCfg, u.Host, settings, knobs, mb, topicsForConnectionCheck, sinkOpts.Headers)
+	client, err := newKafkaSinkClientV2(ctx, clientOpts, batchCfg, u.Host, settings, knobs, mb, topicsForConnectionCheck)
 	if err != nil {
 		return nil, err
 	}
@@ -481,7 +461,7 @@ func buildKgoConfig(
 			return nil, err
 		}
 		opts = append(opts, authOpts...)
-		log.Changefeed.VInfof(ctx, 2, "applied kafka auth mechanism: %+#v\n", dialConfig.authMechanism)
+		log.VInfof(ctx, 2, "applied kafka auth mechanism: %+#v\n", dialConfig.authMechanism)
 	}
 
 	// Apply some statement level overrides. The flush related ones (Messages, MaxMessages, Bytes) are not applied here, but on the sinkBatchConfig instead.
@@ -519,29 +499,20 @@ func buildKgoConfig(
 
 	// TODO(#126991): Remove this sarama dependency.
 	// NOTE: kgo lets you give multiple compression options in preference order, which is cool but the config json doesnt support that. Should we?
-	var comp kgo.CompressionCodec
 	switch sarama.CompressionCodec(sinkCfg.Compression) {
 	case sarama.CompressionNone:
+		opts = append(opts, kgo.ProducerBatchCompression(kgo.NoCompression()))
 	case sarama.CompressionGZIP:
-		comp = kgo.GzipCompression()
+		opts = append(opts, kgo.ProducerBatchCompression(kgo.GzipCompression()))
 	case sarama.CompressionSnappy:
-		comp = kgo.SnappyCompression()
+		opts = append(opts, kgo.ProducerBatchCompression(kgo.SnappyCompression()))
 	case sarama.CompressionLZ4:
-		comp = kgo.Lz4Compression()
+		opts = append(opts, kgo.ProducerBatchCompression(kgo.Lz4Compression()))
 	case sarama.CompressionZSTD:
-		comp = kgo.ZstdCompression()
+		opts = append(opts, kgo.ProducerBatchCompression(kgo.ZstdCompression()))
 	default:
 		return nil, errors.Errorf(`unknown compression codec: %v`, sinkCfg.Compression)
 	}
-
-	if level := sinkCfg.CompressionLevel; level != sarama.CompressionLevelDefault {
-		if err := validateCompressionLevel(sinkCfg.Compression, level); err != nil {
-			return nil, err
-		}
-		comp = comp.WithLevel(level)
-	}
-
-	opts = append(opts, kgo.ProducerBatchCompression(comp))
 
 	if version := sinkCfg.Version; version != "" {
 		if !strings.HasPrefix(version, `v`) {
@@ -560,34 +531,6 @@ func buildKgoConfig(
 	return opts, nil
 }
 
-// NOTE: kgo will ignore invalid compression levels, but the v1 sinks will fail validations. So we have to validate these ourselves.
-func validateCompressionLevel(compressionType compressionCodec, level int) error {
-	switch sarama.CompressionCodec(compressionType) {
-	case sarama.CompressionNone:
-		return nil
-	case sarama.CompressionGZIP:
-		if level < gzip.HuffmanOnly || level > gzip.BestCompression {
-			return errors.Errorf(`invalid gzip compression level: %d`, level)
-		}
-	case sarama.CompressionSnappy:
-		return errors.Errorf(`snappy does not support compression levels`)
-	case sarama.CompressionLZ4:
-		// The v1 sink ignores `level` for lz4, So let's use kgo's default
-		// behavior, which is to apply the level if it's valid, and fall back to
-		// the default otherwise.
-		return nil
-	case sarama.CompressionZSTD:
-		w, err := zstd.NewWriter(io.Discard, zstd.WithEncoderLevel(zstd.EncoderLevel(level)))
-		if err != nil {
-			return errors.Errorf(`invalid zstd compression level: %d`, level)
-		}
-		_ = w.Close()
-	default:
-		return errors.Errorf(`unknown compression codec: %v`, compressionType)
-	}
-	return nil
-}
-
 type kgoLogAdapter struct {
 	ctx context.Context
 }
@@ -604,7 +547,7 @@ func (k kgoLogAdapter) Log(level kgo.LogLevel, msg string, keyvals ...any) {
 	for i := 0; i < len(keyvals); i += 2 {
 		format += ` %s=%v`
 	}
-	log.Changefeed.InfofDepth(k.ctx, 1, format, append([]any{redact.SafeString(level.String()), redact.SafeString(msg)}, keyvals...)...) //nolint:fmtsafe
+	log.InfofDepth(k.ctx, 1, format, append([]any{redact.SafeString(level.String()), redact.SafeString(msg)}, keyvals...)...) //nolint:fmtsafe
 }
 
 var _ kgo.Logger = kgoLogAdapter{}

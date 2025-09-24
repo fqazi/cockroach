@@ -11,7 +11,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/cloud"
 	"github.com/cockroachdb/cockroach/pkg/cloud/externalconn/connectionpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
@@ -72,14 +71,14 @@ func NewExternalConnection(connDetails connectionpb.ConnectionDetails) ExternalC
 	return ec
 }
 
-// ExternalConnectionNotFoundError is returned from load when the external
+// externalConnectionNotFoundError is returned from load when the external
 // connection does not exist.
-type ExternalConnectionNotFoundError struct {
+type externalConnectionNotFoundError struct {
 	connectionName string
 }
 
 // Error makes scheduledJobNotFoundError an error.
-func (e *ExternalConnectionNotFoundError) Error() string {
+func (e *externalConnectionNotFoundError) Error() string {
 	return fmt.Sprintf("external connection with name %s does not exist", e.connectionName)
 }
 
@@ -97,10 +96,10 @@ func LoadExternalConnection(
 		fmt.Sprintf("SELECT * FROM system.external_connections WHERE connection_name = '%s'", name))
 
 	if err != nil {
-		return nil, errors.CombineErrors(err, &ExternalConnectionNotFoundError{connectionName: name})
+		return nil, errors.CombineErrors(err, &externalConnectionNotFoundError{connectionName: name})
 	}
 	if row == nil {
-		return nil, &ExternalConnectionNotFoundError{connectionName: name}
+		return nil, &externalConnectionNotFoundError{connectionName: name}
 	}
 
 	ec := NewMutableExternalConnection()
@@ -174,33 +173,6 @@ func (e *MutableExternalConnection) UnredactedConnectionStatement() string {
 		As: tree.NewDString(e.rec.ConnectionDetails.UnredactedURI()),
 	}
 	return tree.AsStringWithFlags(ecNode, tree.FmtShowFullURIs)
-}
-
-// RedactedConnectionURI implements the ExternalConnection interface and
-// returns the redacted URI
-func (e *MutableExternalConnection) RedactedConnectionURI() string {
-	unredactedURI := e.rec.ConnectionDetails.UnredactedURI()
-	var err error
-	switch e.rec.ConnectionType {
-	case connectionpb.TypeStorage.String():
-		redactedURI, err := cloud.SanitizeExternalStorageURI(unredactedURI, nil)
-		if err == nil {
-			return redactedURI
-		}
-	case connectionpb.TypeKMS.String():
-		redactedURI, err := cloud.RedactKMSURI(unredactedURI)
-		if err == nil {
-			return redactedURI
-		}
-	case connectionpb.TypeForeignData.String():
-		redactedURI, err := cloud.SanitizeExternalStorageURI(unredactedURI, nil)
-		if err == nil {
-			return redactedURI
-		}
-	default:
-		err = fmt.Errorf("cannot redact URI for unknown connection type: %s", e.rec.ConnectionType)
-	}
-	return fmt.Sprintf("failed to redact the URI: %s", err.Error())
 }
 
 // datumToNative is a helper to convert tree.Datum into Go native types.  We
@@ -352,32 +324,6 @@ func (e *MutableExternalConnection) Create(ctx context.Context, txn isql.Txn) er
 	}
 
 	return e.InitFromDatums(row, retCols)
-}
-
-func (e *MutableExternalConnection) Update(ctx context.Context, txn isql.Txn) error {
-	cols, qargsForChanges, err := e.marshalChanges()
-	if err != nil {
-		return err
-	}
-
-	qargs := make([]interface{}, 0, 1+len(qargsForChanges))
-	qargs = append(qargs, e.ConnectionName())
-	qargs = append(qargs, qargsForChanges...)
-
-	var setClauses []string
-	placeHolder := 2
-	for _, col := range cols {
-		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", col, placeHolder))
-		placeHolder++
-	}
-
-	updateQuery := fmt.Sprintf(`UPDATE system.external_connections 
-															SET %s, updated = now() 
-		                          WHERE connection_name = $1`,
-		strings.Join(setClauses, ", "))
-
-	_, err = txn.ExecEx(ctx, "ExternalConnection.Update", txn.KV(), sessiondata.NodeUserSessionDataOverride, updateQuery, qargs...)
-	return err
 }
 
 // marshalChanges marshals all changes in the in-memory representation and returns

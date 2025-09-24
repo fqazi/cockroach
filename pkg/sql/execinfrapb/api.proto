@@ -26,7 +26,6 @@ message SetupFlowRequest {
   reserved 1, 2;
 
   optional util.tracing.tracingpb.TraceInfo trace_info = 11;
-  // JobTag is only populated in distributed flows.
   optional string job_tag = 13 [(gogoproto.nullable) = false,
     (gogoproto.casttype) = "github.com/cockroachdb/redact.SafeString"];
 
@@ -44,12 +43,10 @@ message SetupFlowRequest {
   // Version of distsqlrun protocol; a server accepts a certain range of
   // versions, up to its own version. See server.go for more details.
   optional uint32 version = 5 [(gogoproto.nullable) = false,
-    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/execversion.V"];
+    (gogoproto.casttype) = "DistSQLVersion"];
 
   optional FlowSpec flow = 3 [(gogoproto.nullable) = false];
 
-  // EvalContext contains a subset of the eval.Context that needs to be sent to
-  // remote nodes for proper execution.
   optional EvalContext eval_context = 6 [(gogoproto.nullable) = false];
 
   optional bool trace_kv = 8 [(gogoproto.nullable) = false,

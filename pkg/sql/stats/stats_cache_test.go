@@ -108,7 +108,7 @@ func checkStatsForTable(
 
 	// Perform the lookup and refresh, and confirm the
 	// returned stats match the expected values.
-	statsList, err := sc.getTableStatsFromCache(ctx, tableID, nil /* forecast */, nil /* udtCols */, nil /* typeResolver */)
+	statsList, err := sc.getTableStatsFromCache(ctx, tableID, nil /* forecast */, nil /* udtCols */)
 	if err != nil {
 		t.Fatalf("error retrieving stats: %s", err)
 	}
@@ -197,10 +197,6 @@ func initTestData(
 			return nil, err
 		}
 
-		if stat.HistogramData != nil {
-			// Match the behavior from TableStatisticsCache.parseStats.
-			stat.HistogramData.Buckets = nil
-		}
 		expectedStats[stat.TableID] = append(expectedStats[stat.TableID], stat)
 	}
 
@@ -235,7 +231,7 @@ func TestCacheBasic(t *testing.T) {
 	// Create a cache and iteratively query the cache for each tableID. This
 	// will result in the cache getting populated. When the stats cache size is
 	// exceeded, entries should be evicted according to the LRU policy.
-	sc := NewTableStatisticsCache(2 /* cacheSize */, s.ClusterSettings(), db, s.AppStopper())
+	sc := NewTableStatisticsCache(2 /* cacheSize */, s.ClusterSettings(), db)
 	require.NoError(t, sc.Start(ctx, s.Codec(), s.RangeFeedFactory().(*rangefeed.Factory)))
 	for _, tableID := range tableIDs {
 		checkStatsForTable(ctx, t, sc, expectedStats[tableID], tableID)
@@ -337,12 +333,12 @@ func TestCacheUserDefinedTypes(t *testing.T) {
 	insqlDB := s.InternalDB().(descs.DB)
 
 	// Make a stats cache.
-	sc := NewTableStatisticsCache(1, s.ClusterSettings(), insqlDB, s.AppStopper())
+	sc := NewTableStatisticsCache(1, s.ClusterSettings(), insqlDB)
 	require.NoError(t, sc.Start(ctx, s.Codec(), s.RangeFeedFactory().(*rangefeed.Factory)))
 	tbl := desctestutils.TestingGetPublicTableDescriptor(kvDB, s.Codec(), "t", "tt")
 	// Get stats for our table. We are ensuring here that the access to the stats
 	// for tt properly hydrates the user defined type t before access.
-	stats, err := sc.GetTableStats(ctx, tbl, nil /* typeResolver */)
+	stats, err := sc.GetTableStats(ctx, tbl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +353,7 @@ func TestCacheUserDefinedTypes(t *testing.T) {
 	sc.InvalidateTableStats(ctx, tbl.GetID())
 	// Verify that GetTableStats ignores the statistic on the now unknown type and
 	// returns the rest.
-	stats, err = sc.GetTableStats(ctx, tbl, nil /* typeResolver */)
+	stats, err = sc.GetTableStats(ctx, tbl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +386,7 @@ func TestCacheWait(t *testing.T) {
 		tableIDs = append(tableIDs, tableID)
 	}
 	sort.Sort(tableIDs)
-	sc := NewTableStatisticsCache(len(tableIDs) /* cacheSize */, s.ClusterSettings(), db, s.AppStopper())
+	sc := NewTableStatisticsCache(len(tableIDs) /* cacheSize */, s.ClusterSettings(), db)
 	require.NoError(t, sc.Start(ctx, s.Codec(), s.RangeFeedFactory().(*rangefeed.Factory)))
 	for _, tableID := range tableIDs {
 		checkStatsForTable(ctx, t, sc, expectedStats[tableID], tableID)
@@ -406,7 +402,7 @@ func TestCacheWait(t *testing.T) {
 		for n := 0; n < 10; n++ {
 			wg.Add(1)
 			go func() {
-				stats, err := sc.getTableStatsFromCache(ctx, id, nil /* forecast */, nil /* udtCols */, nil /* typeResolver */)
+				stats, err := sc.getTableStatsFromCache(ctx, id, nil /* forecast */, nil /* udtCols */)
 				if err != nil {
 					t.Error(err)
 				} else if !checkStats(stats, expectedStats[id]) {
@@ -442,7 +438,6 @@ func TestCacheAutoRefresh(t *testing.T) {
 		10, /* cacheSize */
 		s.ClusterSettings(),
 		s.InternalDB().(descs.DB),
-		s.AppStopper(),
 	)
 	require.NoError(t, sc.Start(ctx, s.Codec(), s.RangeFeedFactory().(*rangefeed.Factory)))
 
@@ -455,7 +450,7 @@ func TestCacheAutoRefresh(t *testing.T) {
 	tableDesc := desctestutils.TestingGetPublicTableDescriptor(s.DB(), s.Codec(), "test", "t")
 
 	expectNStats := func(n int) error {
-		stats, err := sc.GetTableStats(ctx, tableDesc, nil /* typeResolver */)
+		stats, err := sc.GetTableStats(ctx, tableDesc)
 		if err != nil {
 			t.Fatal(err)
 		}

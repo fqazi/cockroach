@@ -3,11 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Button } from "@cockroachlabs/ui-components";
-import moment from "moment-timezone";
 import React, { useCallback, useEffect, useState } from "react";
 import { RouteComponentProps, withRouter } from "react-router-dom";
-
+import moment from "moment-timezone";
+import { Button } from "@cockroachlabs/ui-components";
 import { cockroach } from "src/js/protos";
 import { getHotRanges } from "src/util/api";
 
@@ -30,7 +29,7 @@ const HotRanges = (props: HotRangesProps) => {
 
   useEffect(() => {
     const request = new cockroach.server.serverpb.HotRangesRequest({
-      nodes: [nodeId],
+      node_id: nodeId,
       page_size: pageSize,
       page_token: pageToken,
     });
@@ -44,7 +43,7 @@ const HotRanges = (props: HotRangesProps) => {
     });
     // Avoid dispatching request when `hotRanges` list is updated.
     // This effect should be triggered only when pageToken is changed.
-    /* eslint react-hooks/exhaustive-deps: "off" */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageToken]);
 
   useEffect(() => {

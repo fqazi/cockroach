@@ -13,7 +13,6 @@ export const dashboardNameAttr = "dashboard_name";
 export const databaseAttr = "database";
 export const databaseNameAttr = "database_name";
 export const databaseNameCCAttr = "databaseName";
-export const databaseIDAttr = "dbID";
 export const fingerprintIDAttr = "fingerprint_id";
 export const implicitTxnAttr = "implicitTxn";
 export const executionIdAttr = "execution_id";
@@ -26,7 +25,6 @@ export const tabAttr = "tab";
 export const schemaNameAttr = "schemaName";
 export const tableNameAttr = "table_name";
 export const tableNameCCAttr = "tableName";
-export const tableIdAttr = "tableID";
 export const indexNameAttr = "index_name";
 export const txnFingerprintIdAttr = "txn_fingerprint_id";
 export const unset = "(unset)";
@@ -38,6 +36,13 @@ export const indexUnusedDuration = "168h";
 
 export const REMOTE_DEBUGGING_ERROR_TEXT =
   "This information is not available due to the current value of the 'server.remote_debugging.mode' setting.";
+
+export const serverToClientErrorMessageMap = new Map([
+  [
+    "not allowed (due to the 'server.remote_debugging.mode' setting)",
+    REMOTE_DEBUGGING_ERROR_TEXT,
+  ],
+]);
 
 export const NO_SAMPLES_FOUND = "no samples";
 

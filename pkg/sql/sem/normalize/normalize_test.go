@@ -75,7 +75,6 @@ func TestNormalizeExpr(t *testing.T) {
 		{`a BETWEEN b AND NULL`, `(a >= b) AND NULL`},
 		{`a BETWEEN SYMMETRIC b AND NULL`, `((a >= b) AND NULL) OR (NULL AND (a <= b))`},
 		{`a BETWEEN NULL AND NULL`, `NULL`},
-		{`b'bytes' BETWEEN SYMMETRIC 'a' AND 'c'`, `true`},
 		{`NULL BETWEEN 1 AND 2`, `NULL`},
 		{`1+1`, `2`},
 		{`(1+1,2+2,3+3)`, `(2, 4, 6)`},
@@ -218,14 +217,14 @@ func TestNormalizeExpr(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	for _, d := range testData {
 		t.Run(d.expr, func(t *testing.T) {
 			expr, err := parser.ParseExpr(d.expr)
 			if err != nil {
 				t.Fatalf("%s: %v", d.expr, err)
 			}
-			typedExpr, err := expr.TypeCheck(ctx, &semaCtx, types.AnyElement)
+			typedExpr, err := expr.TypeCheck(ctx, &semaCtx, types.Any)
 			if err != nil {
 				t.Fatalf("%s: %v", d.expr, err)
 			}

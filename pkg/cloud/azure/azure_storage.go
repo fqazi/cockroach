@@ -42,12 +42,6 @@ var maxConcurrentUploadBuffers = settings.RegisterIntSetting(
 	1,
 	settings.WithPublic)
 
-var maxRetries = settings.RegisterIntSetting(
-	settings.ApplicationLevel,
-	"cloudstorage.azure.max_retries",
-	"the maximum number of retries per Azure operation",
-	10)
-
 // A note on Azure authentication:
 //
 // The standardized way to authenticate a third-party identity to the Azure
@@ -227,21 +221,12 @@ func makeAzureStorage(
 	}
 
 	options := args.ExternalStorageOptions()
-	t, err := cloud.MakeHTTPClient(args.Settings, args.MetricsRecorder,
-		cloud.HTTPClientConfig{
-			Bucket:         dest.AzureConfig.Container,
-			Client:         options.ClientName,
-			Cloud:          "azure",
-			HttpMiddleware: args.HttpMiddleware,
-		})
+	t, err := cloud.MakeHTTPClient(args.Settings, args.MetricsRecorder, "azure", dest.AzureConfig.Container, options.ClientName)
 	if err != nil {
 		return nil, errors.Wrap(err, "azure: unable to create transport")
 	}
 	var opts service.ClientOptions
 	opts.Transport = t
-	// Azure SDK defaults to 3 retries, which is too low to survive the 30 second
-	// brownout in TestAzureFaultInjection.
-	opts.Retry.MaxRetries = int32(maxRetries.Get(&args.Settings.SV))
 
 	var azClient *service.Client
 	switch conf.Auth {
@@ -332,15 +317,6 @@ func (s *azureStorage) Writer(ctx context.Context, basename string) (io.WriteClo
 	}), nil
 }
 
-// isNotFoundErr checks if the error indicates a blob not found condition.
-func isNotFoundErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	var azerr *azcore.ResponseError
-	return errors.As(err, &azerr) && azerr.ErrorCode == "BlobNotFound"
-}
-
 func (s *azureStorage) ReadFile(
 	ctx context.Context, basename string, opts cloud.ReadOptions,
 ) (_ ioctx.ReadCloserCtx, fileSize int64, _ error) {
@@ -350,8 +326,15 @@ func (s *azureStorage) ReadFile(
 	resp, err := s.getBlob(basename).DownloadStream(ctx, &azblob.DownloadStreamOptions{Range: azblob.
 		HTTPRange{Offset: opts.Offset}})
 	if err != nil {
-		if isNotFoundErr(err) {
-			return nil, 0, cloud.WrapErrFileDoesNotExist(err, "azure blob does not exist")
+		if azerr := (*azcore.ResponseError)(nil); errors.As(err, &azerr) {
+			if azerr.ErrorCode == "BlobNotFound" {
+				// nolint:errwrap
+				return nil, 0, errors.Wrapf(
+					errors.Wrap(cloud.ErrFileDoesNotExist, "azure blob does not exist"),
+					"%v",
+					err.Error(),
+				)
+			}
 		}
 		return nil, 0, errors.Wrapf(err, "failed to create azure reader")
 	}
@@ -402,9 +385,6 @@ func (s *azureStorage) Delete(ctx context.Context, basename string) error {
 	err := timeutil.RunWithTimeout(ctx, "delete azure file", cloud.Timeout.Get(&s.settings.SV),
 		func(ctx context.Context) error {
 			_, err := s.getBlob(basename).Delete(ctx, nil)
-			if isNotFoundErr(err) {
-				return nil
-			}
 			return err
 		})
 	return errors.Wrap(err, "delete file")

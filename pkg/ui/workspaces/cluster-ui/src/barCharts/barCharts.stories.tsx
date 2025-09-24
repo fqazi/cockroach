@@ -3,11 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { storiesOf, DecoratorFn } from "@storybook/react";
-import Long from "long";
 import React from "react";
-
-import statementsPagePropsFixture from "src/statementsPage/statementsPage.fixture";
+import { storiesOf, DecoratorFn } from "@storybook/react";
 
 import {
   countBarChart,
@@ -17,6 +14,8 @@ import {
   networkBytesBarChart,
   retryBarChart,
 } from "./barCharts";
+import statementsPagePropsFixture from "src/statementsPage/statementsPage.fixture";
+import Long from "long";
 
 const statements =
   statementsPagePropsFixture.statementsResponse.data.statements;

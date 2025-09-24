@@ -4,9 +4,7 @@
 // included in the /LICENSE file.
 
 import * as protos from "src/js/protos";
-import { cockroach } from "src/js/protos";
 import { LocalityTier, LocalityTree } from "src/redux/localities";
-
 import {
   generateLocalityRoute,
   parseLocalityRoute,
@@ -17,6 +15,7 @@ import {
   getLocality,
   allNodesHaveLocality,
 } from "./localities";
+import { cockroach } from "src/js/protos";
 type INodeStatus = cockroach.server.status.statuspb.INodeStatus;
 
 describe("parseLocalityRoute", function () {

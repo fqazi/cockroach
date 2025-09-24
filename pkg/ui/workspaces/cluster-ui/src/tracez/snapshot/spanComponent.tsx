@@ -3,33 +3,30 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import { Switch } from "antd";
-import classNames from "classnames/bind";
-import Long from "long";
-import moment from "moment-timezone";
 import React, { useCallback, useMemo, useState } from "react";
+import moment from "moment-timezone";
 import { Helmet } from "react-helmet";
-import { useHistory } from "react-router-dom";
-
+import { commonStyles } from "src/common";
+import classNames from "classnames/bind";
+import styles from "../snapshot.module.scss";
+import { Loading } from "src/loading";
+import { SpanTable, formatDurationHours, TagCell } from "./spanTable";
+import { TimestampToMoment } from "src/util";
+import { SortSetting } from "src/sortedtable";
 import {
   GetTracingSnapshotResponse,
   SetTraceRecordingTypeResponse,
   Span,
 } from "src/api";
-import { Button } from "src/button";
-import { commonStyles } from "src/common";
 import { CircleFilled } from "src/icon";
-import { Loading } from "src/loading";
-import { SortSetting } from "src/sortedtable";
-import { TimestampToMoment } from "src/util";
-
-import styles from "../snapshot.module.scss";
-
-import { SpanMetadataTable } from "./spanMetadataTable";
-import { SpanTable, formatDurationHours, TagCell } from "./spanTable";
-
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import RecordingMode = cockroach.util.tracing.tracingpb.RecordingMode;
+import { Switch } from "antd";
+import "antd/lib/switch/style";
+import Long from "long";
+import { Button } from "src/button";
+import { useHistory } from "react-router-dom";
+import { SpanMetadataTable } from "./spanMetadataTable";
 
 const cx = classNames.bind(styles);
 

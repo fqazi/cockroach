@@ -41,7 +41,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/stretchr/testify/require"
 )
 
@@ -77,16 +76,16 @@ func TestExportCmd(t *testing.T) {
 
 	exportAndSlurpOne := func(
 		t *testing.T, start hlc.Timestamp, mvccFilter kvpb.MVCCFilter, maxResponseSSTBytes int64,
-	) (int, []storage.MVCCKeyValue, kvpb.ResponseHeader) {
+	) ([]string, []storage.MVCCKeyValue, kvpb.ResponseHeader) {
 		res, pErr := export(t, start, mvccFilter, maxResponseSSTBytes)
 		if pErr != nil {
 			t.Fatalf("%+v", pErr)
 		}
 
-		var files int
+		var paths []string
 		var kvs []storage.MVCCKeyValue
 		for _, file := range res.(*kvpb.ExportResponse).Files {
-			files++
+			paths = append(paths, file.Path)
 			iterOpts := storage.IterOptions{
 				KeyTypes:   storage.IterKeyTypePointsOnly,
 				LowerBound: keys.LocalMax,
@@ -117,13 +116,13 @@ func TestExportCmd(t *testing.T) {
 			}
 		}
 
-		return files, kvs, res.(*kvpb.ExportResponse).Header()
+		return paths, kvs, res.(*kvpb.ExportResponse).Header()
 	}
 	type ExportAndSlurpResult struct {
 		end                      hlc.Timestamp
-		mvccLatestFiles          int
+		mvccLatestFiles          []string
 		mvccLatestKVs            []storage.MVCCKeyValue
-		mvccAllFiles             int
+		mvccAllFiles             []string
 		mvccAllKVs               []storage.MVCCKeyValue
 		mvccLatestResponseHeader kvpb.ResponseHeader
 		mvccAllResponseHeader    kvpb.ResponseHeader
@@ -144,9 +143,9 @@ func TestExportCmd(t *testing.T) {
 		mvccLatestFilesLen int, mvccLatestKVsLen int, mvccAllFilesLen int, mvccAllKVsLen int,
 	) {
 		t.Helper()
-		require.Equal(t, res.mvccLatestFiles, mvccLatestFilesLen, "unexpected files in latest export")
+		require.Len(t, res.mvccLatestFiles, mvccLatestFilesLen, "unexpected files in latest export")
 		require.Len(t, res.mvccLatestKVs, mvccLatestKVsLen, "unexpected kvs in latest export")
-		require.Equal(t, res.mvccAllFiles, mvccAllFilesLen, "unexpected files in all export")
+		require.Len(t, res.mvccAllFiles, mvccAllFilesLen, "unexpected files in all export")
 		require.Len(t, res.mvccAllKVs, mvccAllKVsLen, "unexpected kvs in all export")
 	}
 
@@ -680,7 +679,7 @@ func assertEqualKVs(
 			var sst []byte
 			maxSize := uint64(0)
 			prevStart := start
-			var sstFile objstorage.MemObj
+			var sstFile bytes.Buffer
 			summary, resumeInfo, err := storage.MVCCExportToSST(ctx, st, e, storage.MVCCExportOptions{
 				StartKey:           start,
 				EndKey:             endKey,
@@ -693,7 +692,7 @@ func assertEqualKVs(
 			}, &sstFile)
 			require.NoError(t, err)
 			start = resumeInfo.ResumeKey
-			sst = sstFile.Data()
+			sst = sstFile.Bytes()
 			loaded := loadSST(t, sst, startKey, endKey)
 			// Ensure that the pagination worked properly.
 			if start.Key != nil {
@@ -739,7 +738,7 @@ func assertEqualKVs(
 					TargetSize:         targetSize,
 					MaxSize:            maxSize,
 					StopMidKey:         false,
-				}, &objstorage.MemObj{})
+				}, &bytes.Buffer{})
 				require.Regexp(t, fmt.Sprintf("export size \\(%d bytes\\) exceeds max size \\(%d bytes\\)",
 					dataSizeWhenExceeded, maxSize), err)
 			}

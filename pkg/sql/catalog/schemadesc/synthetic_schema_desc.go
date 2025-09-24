@@ -72,7 +72,7 @@ func (p synthetic) ByteSize() int64 {
 	return 0
 }
 func (p synthetic) NewBuilder() catalog.DescriptorBuilder {
-	log.Dev.Fatalf(context.TODO(),
+	log.Fatalf(context.TODO(),
 		"%s schema cannot create a builder", p.kindName())
 	return nil // unreachable
 }
@@ -114,7 +114,7 @@ func (p synthetic) ConcurrentSchemaChangeJobIDs() []catpb.JobID {
 // SkipNamespace implements the descriptor interface.
 // We never store synthetic descriptors.
 func (p synthetic) SkipNamespace() bool {
-	return p.SchemaKind() != catalog.SchemaTemporary
+	return true
 }
 
 // GetObjectType implements the Object interface.
@@ -148,9 +148,6 @@ func (p synthetic) ForEachFunctionSignature(
 func (p synthetic) ForEachUDTDependentForHydration(fn func(t *types.T) error) error {
 	return nil
 }
-
-// MaybeRequiresTypeHydration implements the catalog.Descriptor interface.
-func (p synthetic) MaybeRequiresTypeHydration() bool { return false }
 
 func (p synthetic) GetRawBytesInStorage() []byte {
 	return nil

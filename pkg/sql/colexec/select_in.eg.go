@@ -8,7 +8,6 @@ package colexec
 
 import (
 	"bytes"
-	"context"
 	"math"
 	"time"
 
@@ -53,7 +52,6 @@ const (
 )
 
 func GetInProjectionOperator(
-	ctx context.Context,
 	evalCtx *eval.Context,
 	allocator *colmem.Allocator,
 	t *types.T,
@@ -76,7 +74,7 @@ func GetInProjectionOperator(
 				outputIdx:      resultIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowBool(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowBool(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.BytesFamily:
@@ -90,7 +88,7 @@ func GetInProjectionOperator(
 				outputIdx:      resultIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowBytes(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowBytes(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.DecimalFamily:
@@ -104,7 +102,7 @@ func GetInProjectionOperator(
 				outputIdx:      resultIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowDecimal(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowDecimal(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.IntFamily:
@@ -117,7 +115,7 @@ func GetInProjectionOperator(
 				outputIdx:      resultIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowInt16(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowInt16(evalCtx, t, datumTuple)
 			return obj, nil
 		case 32:
 			obj := &projectInOpInt32{
@@ -127,7 +125,7 @@ func GetInProjectionOperator(
 				outputIdx:      resultIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowInt32(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowInt32(evalCtx, t, datumTuple)
 			return obj, nil
 		case -1:
 		default:
@@ -138,7 +136,7 @@ func GetInProjectionOperator(
 				outputIdx:      resultIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowInt64(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowInt64(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.FloatFamily:
@@ -152,7 +150,7 @@ func GetInProjectionOperator(
 				outputIdx:      resultIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowFloat64(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowFloat64(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.TimestampTZFamily:
@@ -166,7 +164,7 @@ func GetInProjectionOperator(
 				outputIdx:      resultIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowTimestamp(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowTimestamp(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.IntervalFamily:
@@ -180,7 +178,7 @@ func GetInProjectionOperator(
 				outputIdx:      resultIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowInterval(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowInterval(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.JsonFamily:
@@ -194,7 +192,7 @@ func GetInProjectionOperator(
 				outputIdx:      resultIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowJSON(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowJSON(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case typeconv.DatumVecCanonicalTypeFamily:
@@ -208,15 +206,14 @@ func GetInProjectionOperator(
 				outputIdx:      resultIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowDatum(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowDatum(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	}
-	return nil, errors.AssertionFailedf("unhandled type: %s", t.Name())
+	return nil, errors.Errorf("unhandled type: %s", t.Name())
 }
 
 func GetInOperator(
-	ctx context.Context,
 	evalCtx *eval.Context,
 	t *types.T,
 	input colexecop.Operator,
@@ -234,7 +231,7 @@ func GetInOperator(
 				colIdx:         colIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowBool(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowBool(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.BytesFamily:
@@ -246,7 +243,7 @@ func GetInOperator(
 				colIdx:         colIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowBytes(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowBytes(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.DecimalFamily:
@@ -258,7 +255,7 @@ func GetInOperator(
 				colIdx:         colIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowDecimal(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowDecimal(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.IntFamily:
@@ -269,7 +266,7 @@ func GetInOperator(
 				colIdx:         colIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowInt16(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowInt16(evalCtx, t, datumTuple)
 			return obj, nil
 		case 32:
 			obj := &selectInOpInt32{
@@ -277,7 +274,7 @@ func GetInOperator(
 				colIdx:         colIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowInt32(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowInt32(evalCtx, t, datumTuple)
 			return obj, nil
 		case -1:
 		default:
@@ -286,7 +283,7 @@ func GetInOperator(
 				colIdx:         colIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowInt64(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowInt64(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.FloatFamily:
@@ -298,7 +295,7 @@ func GetInOperator(
 				colIdx:         colIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowFloat64(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowFloat64(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.TimestampTZFamily:
@@ -310,7 +307,7 @@ func GetInOperator(
 				colIdx:         colIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowTimestamp(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowTimestamp(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.IntervalFamily:
@@ -322,7 +319,7 @@ func GetInOperator(
 				colIdx:         colIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowInterval(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowInterval(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case types.JsonFamily:
@@ -334,7 +331,7 @@ func GetInOperator(
 				colIdx:         colIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowJSON(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowJSON(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	case typeconv.DatumVecCanonicalTypeFamily:
@@ -346,11 +343,11 @@ func GetInOperator(
 				colIdx:         colIdx,
 				negate:         negate,
 			}
-			obj.filterRow, obj.hasNulls = fillDatumRowDatum(ctx, evalCtx, t, datumTuple)
+			obj.filterRow, obj.hasNulls = fillDatumRowDatum(evalCtx, t, datumTuple)
 			return obj, nil
 		}
 	}
-	return nil, errors.AssertionFailedf("unhandled type: %s", t.Name())
+	return nil, errors.Errorf("unhandled type: %s", t.Name())
 }
 
 type selectInOpBool struct {
@@ -376,10 +373,10 @@ type projectInOpBool struct {
 var _ colexecop.Operator = &projectInOpBool{}
 
 func fillDatumRowBool(
-	ctx context.Context, evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
+	evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
 ) ([]bool, bool) {
 	// Sort the contents of the tuple, if they are not already sorted.
-	datumTuple.Normalize(ctx, evalCtx)
+	datumTuple.Normalize(evalCtx)
 
 	conv := colconv.GetDatumToPhysicalFn(t)
 	var result []bool
@@ -610,10 +607,10 @@ type projectInOpBytes struct {
 var _ colexecop.Operator = &projectInOpBytes{}
 
 func fillDatumRowBytes(
-	ctx context.Context, evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
+	evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
 ) ([][]byte, bool) {
 	// Sort the contents of the tuple, if they are not already sorted.
-	datumTuple.Normalize(ctx, evalCtx)
+	datumTuple.Normalize(evalCtx)
 
 	conv := colconv.GetDatumToPhysicalFn(t)
 	var result [][]byte
@@ -832,10 +829,10 @@ type projectInOpDecimal struct {
 var _ colexecop.Operator = &projectInOpDecimal{}
 
 func fillDatumRowDecimal(
-	ctx context.Context, evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
+	evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
 ) ([]apd.Decimal, bool) {
 	// Sort the contents of the tuple, if they are not already sorted.
-	datumTuple.Normalize(ctx, evalCtx)
+	datumTuple.Normalize(evalCtx)
 
 	conv := colconv.GetDatumToPhysicalFn(t)
 	var result []apd.Decimal
@@ -1058,10 +1055,10 @@ type projectInOpInt16 struct {
 var _ colexecop.Operator = &projectInOpInt16{}
 
 func fillDatumRowInt16(
-	ctx context.Context, evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
+	evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
 ) ([]int64, bool) {
 	// Sort the contents of the tuple, if they are not already sorted.
-	datumTuple.Normalize(ctx, evalCtx)
+	datumTuple.Normalize(evalCtx)
 
 	// Ensure that we always upcast all integer types.
 	conv := colconv.GetDatumToPhysicalFn(types.Int)
@@ -1296,10 +1293,10 @@ type projectInOpInt32 struct {
 var _ colexecop.Operator = &projectInOpInt32{}
 
 func fillDatumRowInt32(
-	ctx context.Context, evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
+	evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
 ) ([]int64, bool) {
 	// Sort the contents of the tuple, if they are not already sorted.
-	datumTuple.Normalize(ctx, evalCtx)
+	datumTuple.Normalize(evalCtx)
 
 	// Ensure that we always upcast all integer types.
 	conv := colconv.GetDatumToPhysicalFn(types.Int)
@@ -1534,10 +1531,10 @@ type projectInOpInt64 struct {
 var _ colexecop.Operator = &projectInOpInt64{}
 
 func fillDatumRowInt64(
-	ctx context.Context, evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
+	evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
 ) ([]int64, bool) {
 	// Sort the contents of the tuple, if they are not already sorted.
-	datumTuple.Normalize(ctx, evalCtx)
+	datumTuple.Normalize(evalCtx)
 
 	conv := colconv.GetDatumToPhysicalFn(t)
 	var result []int64
@@ -1771,10 +1768,10 @@ type projectInOpFloat64 struct {
 var _ colexecop.Operator = &projectInOpFloat64{}
 
 func fillDatumRowFloat64(
-	ctx context.Context, evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
+	evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
 ) ([]float64, bool) {
 	// Sort the contents of the tuple, if they are not already sorted.
-	datumTuple.Normalize(ctx, evalCtx)
+	datumTuple.Normalize(evalCtx)
 
 	conv := colconv.GetDatumToPhysicalFn(t)
 	var result []float64
@@ -2016,10 +2013,10 @@ type projectInOpTimestamp struct {
 var _ colexecop.Operator = &projectInOpTimestamp{}
 
 func fillDatumRowTimestamp(
-	ctx context.Context, evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
+	evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
 ) ([]time.Time, bool) {
 	// Sort the contents of the tuple, if they are not already sorted.
-	datumTuple.Normalize(ctx, evalCtx)
+	datumTuple.Normalize(evalCtx)
 
 	conv := colconv.GetDatumToPhysicalFn(t)
 	var result []time.Time
@@ -2249,10 +2246,10 @@ type projectInOpInterval struct {
 var _ colexecop.Operator = &projectInOpInterval{}
 
 func fillDatumRowInterval(
-	ctx context.Context, evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
+	evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
 ) ([]duration.Duration, bool) {
 	// Sort the contents of the tuple, if they are not already sorted.
-	datumTuple.Normalize(ctx, evalCtx)
+	datumTuple.Normalize(evalCtx)
 
 	conv := colconv.GetDatumToPhysicalFn(t)
 	var result []duration.Duration
@@ -2475,10 +2472,10 @@ type projectInOpJSON struct {
 var _ colexecop.Operator = &projectInOpJSON{}
 
 func fillDatumRowJSON(
-	ctx context.Context, evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
+	evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
 ) ([]json.JSON, bool) {
 	// Sort the contents of the tuple, if they are not already sorted.
-	datumTuple.Normalize(ctx, evalCtx)
+	datumTuple.Normalize(evalCtx)
 
 	conv := colconv.GetDatumToPhysicalFn(t)
 	var result []json.JSON
@@ -2703,10 +2700,10 @@ type projectInOpDatum struct {
 var _ colexecop.Operator = &projectInOpDatum{}
 
 func fillDatumRowDatum(
-	ctx context.Context, evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
+	evalCtx *eval.Context, t *types.T, datumTuple *tree.DTuple,
 ) ([]interface{}, bool) {
 	// Sort the contents of the tuple, if they are not already sorted.
-	datumTuple.Normalize(ctx, evalCtx)
+	datumTuple.Normalize(evalCtx)
 
 	conv := colconv.GetDatumToPhysicalFn(t)
 	var result []interface{}

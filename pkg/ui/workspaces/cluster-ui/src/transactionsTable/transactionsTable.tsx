@@ -3,11 +3,27 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import * as protos from "@cockroachlabs/crdb-protobuf-client";
-import classNames from "classnames/bind";
 import React from "react";
-
-import statsTablePageStyles from "src/statementsTable/statementsTableContent.module.scss";
+import * as protos from "@cockroachlabs/crdb-protobuf-client";
+import {
+  SortedTable,
+  ISortedTablePagination,
+  longListWithTooltip,
+  ColumnDescriptor,
+} from "../sortedtable";
+import {
+  transactionsCountBarChart,
+  transactionsBytesReadBarChart,
+  transactionsLatencyBarChart,
+  transactionsContentionBarChart,
+  transactionsCPUBarChart,
+  transactionsMaxMemUsageBarChart,
+  transactionsNetworkBytesBarChart,
+  transactionsRetryBarChart,
+} from "./transactionsBarCharts";
+import { statisticsTableTitles } from "../statsTableUtil/statsTableUtil";
+import { tableClasses } from "./transactionsTableClasses";
+import { transactionLink } from "./transactionsCells";
 import {
   FixFingerprintHexValue,
   Count,
@@ -17,36 +33,16 @@ import {
   appNamesAttr,
   propsToQueryString,
 } from "src/util";
-
-import { BarChartOptions } from "../barCharts/barChartFactory";
-import {
-  SortedTable,
-  ISortedTablePagination,
-  longListWithTooltip,
-  ColumnDescriptor,
-  SortSetting,
-} from "../sortedtable";
-import { statisticsTableTitles } from "../statsTableUtil/statsTableUtil";
+import { SortSetting } from "../sortedtable";
 import {
   getStatementsByFingerprintId,
   collectStatementsText,
   statementFingerprintIdsToText,
   statementFingerprintIdsToSummarizedText,
 } from "../transactionsPage/utils";
-
-import {
-  transactionsCountBarChart,
-  transactionsBytesReadBarChart,
-  transactionsServiceLatencyBarChart,
-  transactionsContentionBarChart,
-  transactionsCPUBarChart,
-  transactionsMaxMemUsageBarChart,
-  transactionsNetworkBytesBarChart,
-  transactionsRetryBarChart,
-  transactionsCommitLatencyBarChart,
-} from "./transactionsBarCharts";
-import { transactionLink } from "./transactionsCells";
-import { tableClasses } from "./transactionsTableClasses";
+import classNames from "classnames/bind";
+import statsTablePageStyles from "src/statementsTable/statementsTableContent.module.scss";
+import { BarChartOptions } from "../barCharts/barChartFactory";
 
 export type Transaction =
   protos.cockroach.server.serverpb.StatementsResponse.IExtendedCollectedTransactionStatistics;
@@ -115,11 +111,7 @@ export function makeTransactionsColumns(
     transactions,
     defaultBarChartOptions,
   );
-  const serviceLatencyBar = transactionsServiceLatencyBarChart(
-    transactions,
-    latencyClasses.barChart,
-  );
-  const commitLatencyBar = transactionsCommitLatencyBarChart(
+  const latencyBar = transactionsLatencyBarChart(
     transactions,
     latencyClasses.barChart,
   );
@@ -212,16 +204,9 @@ export function makeTransactionsColumns(
     {
       name: "time",
       title: statisticsTableTitles.time(statType),
-      cell: serviceLatencyBar,
+      cell: latencyBar,
       className: latencyClasses.column,
       sort: (item: TransactionInfo) => item.stats_data.stats.service_lat.mean,
-    },
-    {
-      name: "commitLatency",
-      title: statisticsTableTitles.commitLatency(statType),
-      cell: commitLatencyBar,
-      className: latencyClasses.column,
-      sort: (item: TransactionInfo) => item.stats_data.stats.commit_lat.mean,
     },
     {
       name: "contention",

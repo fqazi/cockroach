@@ -18,7 +18,7 @@ import (
 func makeTestFilter(regexps []string) (*registry.TestFilter, error) {
 	var options []registry.TestFilterOption
 	if !roachtestflags.ForceCloudCompat {
-		if cloud := roachtestflags.Cloud; cloud.IsSet() {
+		if cloud := roachtestflags.Cloud; cloud != "all" && cloud != "" {
 			options = append(options, registry.WithCloud(cloud))
 		}
 	}

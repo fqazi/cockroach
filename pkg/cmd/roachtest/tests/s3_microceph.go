@@ -9,15 +9,14 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
+	"path"
 	"path/filepath"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cloud/amazon"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
-	"github.com/cockroachdb/cockroach/pkg/util/retry"
 )
 
 // cephDisksScript creates 3 4GB loop devices, e.g. virtual block devices that allows
@@ -39,7 +38,7 @@ for l in  a b c; do
   sudo microceph disk add --wipe "/dev/sdi${l}"
 done`
 
-// cephCleanup removes microceph and the loop devices.
+// cephCleanup remove microceph and the loop devices.
 const cephCleanup = `
 #!/bin/bash
 sudo microceph disable rgw
@@ -65,7 +64,7 @@ type cephManager struct {
 	cephNodes option.NodeListOption // The nodes within the cluster used by Ceph.
 	key       string
 	secret    string
-	secure    s3CloneSecureOption
+	secure    bool
 	version   string
 }
 
@@ -80,7 +79,7 @@ func (m cephManager) getBackupURI(ctx context.Context, dest string) (string, err
 	}
 	m.t.Status("cephNode: ", addr)
 	endpointURL := `http://` + addr[0]
-	if m.secure != s3ClonePlain {
+	if m.secure {
 		endpointURL = `https://` + addr[0]
 	}
 	q := make(url.Values)
@@ -90,9 +89,6 @@ func (m cephManager) getBackupURI(ctx context.Context, dest string) (string, err
 	// Region is required in the URL, but not used in Ceph.
 	q.Add(amazon.S3RegionParam, "dummy")
 	q.Add(amazon.AWSEndpointParam, endpointURL)
-	if m.secure == s3CloneTLSWithSkipVerify {
-		q.Add(amazon.AWSSkipTLSVerify, "true")
-	}
 	uri := fmt.Sprintf("s3://%s/%s?%s", m.bucket, dest, q.Encode())
 	return uri, nil
 }
@@ -121,15 +117,13 @@ func (m cephManager) install(ctx context.Context) {
 	// Start the Ceph Object Gateway, also known as RADOS Gateway (RGW). RGW is
 	// an object storage interface to provide applications with a RESTful
 	// gateway to Ceph storage clusters, compatible with the S3 APIs.
+	// We are leveraging the node certificates created by cockroach.
 	rgwCmd := "sudo microceph enable rgw "
-	if m.secure != s3ClonePlain {
-		// We are leveraging the node certificates created by cockroach.
+	if m.secure {
 		rgwCmd = rgwCmd + ` --ssl-certificate="$(base64 -w0 certs/node.crt)" --ssl-private-key="$(base64 -w0 certs/node.key)"`
 	}
 	m.run(ctx, `starting object gateway`, rgwCmd)
-	// We have seen occasional failures in creating users, so we
-	// wait until a read only request succeeds before proceeding.
-	m.checkRGW(ctx)
+
 	m.run(ctx, `creating backup user`,
 		`sudo radosgw-admin user create --uid=backup --display-name=backup`)
 	m.run(ctx, `add keys to the user`,
@@ -138,7 +132,7 @@ func (m cephManager) install(ctx context.Context) {
 
 	m.run(ctx, `install s3cmd`, `sudo apt install -y s3cmd`)
 	s3cmd := s3cmdNoSsl
-	if m.secure != s3ClonePlain {
+	if m.secure {
 		s3cmd = s3cmdSsl
 	}
 	m.run(ctx, `creating bucket`,
@@ -150,10 +144,32 @@ func (m cephManager) install(ctx context.Context) {
 
 // maybeInstallCa adds a custom ca in the CockroachDB cluster.
 func (m cephManager) maybeInstallCa(ctx context.Context) error {
-	if m.secure != s3CloneTLS {
+	if !m.secure {
 		return nil
 	}
-	return installCa(ctx, m.t, m.c)
+	localCertsDir, err := os.MkdirTemp("", "roachtest-certs")
+	if err != nil {
+		return err
+	}
+	// get the ca file from one of the nodes.
+	caFile := path.Join(localCertsDir, "ca.crt")
+	conn := m.c.Conn(ctx, m.t.L(), 1)
+	defer conn.Close()
+	if err := m.c.Get(ctx, m.t.L(), "certs/ca.crt", caFile, m.c.Node(1)); err != nil {
+		return err
+	}
+	caCert, err := os.ReadFile(caFile)
+	if err != nil {
+		return err
+	}
+	// Disabling caching for Custom CA, see https://github.com/cockroachdb/cockroach/issues/125051.
+	if _, err := conn.ExecContext(ctx, "set cluster setting cloudstorage.s3.session_reuse.enabled = false"); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "set cluster setting cloudstorage.http.custom_ca=$1", caCert); err != nil {
+		return err
+	}
+	return nil
 }
 
 // put creates a file in the ceph node with the given content.
@@ -170,21 +186,4 @@ func (m cephManager) run(ctx context.Context, msg string, cmd ...string) {
 	m.t.Status(cmd)
 	m.c.Run(ctx, option.WithNodes(m.cephNodes), cmd...)
 	m.t.Status(msg, " done")
-}
-
-// checkRGW verifies that the Ceph Object Gateway is up.
-func (m cephManager) checkRGW(ctx context.Context) {
-	m.t.Status("waiting for Ceph Object Gateway...")
-	if err := m.c.RunE(ctx,
-		option.WithNodes(m.cephNodes).
-			WithRetryOpts(retry.Options{
-				InitialBackoff: 2 * time.Second,
-				MaxBackoff:     30 * time.Second,
-				MaxRetries:     10,
-			}).
-			WithShouldRetryFn(func(*install.RunResultDetails) bool { return true }),
-		`sudo radosgw-admin user list`,
-	); err != nil {
-		m.t.Error("failed to connect to Ceph Object Gateway", err)
-	}
 }

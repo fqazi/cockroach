@@ -30,9 +30,7 @@ var (
 // checkColAgainstItselfForDistinct is similar to checkCol, but it probes the
 // vector against itself for the purposes of finding matches to unordered
 // distinct columns.
-func (ht *HashTable) checkColAgainstItselfForDistinct(
-	vec *coldata.Vec, nToCheck uint32, sel []int,
-) {
+func (ht *HashTable) checkColAgainstItselfForDistinct(vec coldata.Vec, nToCheck uint32, sel []int) {
 	probeVec, buildVec, probeSel := vec, vec, sel
 	switch probeVec.CanonicalTypeFamily() {
 	case types.BoolFamily:
@@ -3566,7 +3564,7 @@ func (ht *HashTable) checkColAgainstItselfForDistinct(
 }
 
 func (ht *HashTable) checkColForDistinctTuples(
-	probeVec, buildVec *coldata.Vec, nToCheck uint32, probeSel []int,
+	probeVec, buildVec coldata.Vec, nToCheck uint32, probeSel []int,
 ) {
 	switch probeVec.CanonicalTypeFamily() {
 	case types.BoolFamily:
@@ -5423,7 +5421,7 @@ func (ht *HashTable) checkColForDistinctTuples(
 
 // CheckProbeForDistinct performs a column by column check for duplicated tuples
 // in the probe table.
-func (ht *HashTable) CheckProbeForDistinct(vecs []*coldata.Vec, nToCheck uint32, sel []int) uint32 {
+func (ht *HashTable) CheckProbeForDistinct(vecs []coldata.Vec, nToCheck uint32, sel []int) uint32 {
 	for i := range ht.keyCols {
 		ht.checkColAgainstItselfForDistinct(vecs[i], nToCheck, sel)
 	}
@@ -5553,9 +5551,9 @@ func (ht *HashTable) updateSel(b coldata.Batch) {
 // NOTE: batch is assumed to be non-zero length.
 func (ht *HashTable) FindBuckets(
 	batch coldata.Batch,
-	keyCols []*coldata.Vec,
+	keyCols []coldata.Vec,
 	first, next []keyID,
-	duplicatesChecker func([]*coldata.Vec, uint32, []int) uint32,
+	duplicatesChecker func([]coldata.Vec, uint32, []int) uint32,
 	zeroHeadIDForDistinctTuple bool,
 	probingAgainstItself bool,
 ) {

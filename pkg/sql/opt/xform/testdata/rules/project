@@ -89,10 +89,10 @@ project
  ├── columns: k:1!null
  ├── immutable
  ├── key: (1)
- └── scan a@j,inverted
+ └── scan a@j
       ├── columns: k:1!null
       ├── inverted constraint: /8/1
-      │    └── spans: ["a"/"b", "a"/"b"]
+      │    └── spans: ["7a\x00\x01\x12b\x00\x01", "7a\x00\x01\x12b\x00\x01"]
       └── key: (1)
 
 # Eliminate the IndexJoin for an inverted index scan when only the primary key
@@ -103,10 +103,10 @@ SELECT k + 1 FROM a WHERE j @> '{"a": "b"}'
 project
  ├── columns: "?column?":9!null
  ├── immutable
- ├── scan a@j,inverted
+ ├── scan a@j
  │    ├── columns: k:1!null
  │    ├── inverted constraint: /8/1
- │    │    └── spans: ["a"/"b", "a"/"b"]
+ │    │    └── spans: ["7a\x00\x01\x12b\x00\x01", "7a\x00\x01\x12b\x00\x01"]
  │    └── key: (1)
  └── projections
       └── k:1 + 1 [as="?column?":9, outer=(1), immutable]
@@ -120,8 +120,8 @@ SELECT j FROM a WHERE j @> '{"a": "b"}'
 index-join a
  ├── columns: j:5!null
  ├── immutable
- └── scan a@j,inverted
+ └── scan a@j
       ├── columns: k:1!null
       ├── inverted constraint: /8/1
-      │    └── spans: ["a"/"b", "a"/"b"]
+      │    └── spans: ["7a\x00\x01\x12b\x00\x01", "7a\x00\x01\x12b\x00\x01"]
       └── key: (1)

@@ -3,9 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import get from "lodash/get";
-import isString from "lodash/isString";
-
+import { get, isString } from "lodash";
 import { track } from "./trackDiagnosticsModalOpen";
 
 describe("trackDiagnosticsModalOpen", () => {

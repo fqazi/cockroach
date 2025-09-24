@@ -14,10 +14,10 @@ interface ParamsObj {
 // properties to a query string
 // - keys with null or undefined values will be skipped
 // - non-string values will be toString'd
-export function propsToQueryString(props: { [k: string]: unknown }): string {
+export function propsToQueryString(props: { [k: string]: any }): string {
   const params = new URLSearchParams();
   Object.entries(props).forEach(
-    ([k, v]: [string, unknown]) => v != null && params.set(k, v.toString()),
+    ([k, v]: [string, any]) => v != null && params.set(k, v.toString()),
   );
   return params.toString();
 }
@@ -50,7 +50,7 @@ export function queryByName(location: Location, key: string): string {
 }
 
 export function getMatchParamByName(
-  match: Match<Record<string, string>>,
+  match: Match<any>,
   key: string,
 ): string | null {
   const param = match.params[key];

@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -54,7 +53,7 @@ func (s *settingsCacheWriter) SnapshotKVs(ctx context.Context, kvs []roachpb.Key
 		defer s.doneWriting()
 		for toWrite, ok := s.getToWrite(); ok; toWrite, ok = s.getToWrite() {
 			if err := storeCachedSettingsKVs(ctx, s.eng, toWrite); err != nil {
-				log.Dev.Warningf(ctx, "failed to write settings snapshot: %v", err)
+				log.Warningf(ctx, "failed to write settings snapshot: %v", err)
 			}
 		}
 	}); err != nil {
@@ -124,7 +123,7 @@ func loadCachedSettingsKVs(ctx context.Context, eng storage.Engine) ([]roachpb.K
 	var settingsKVs []roachpb.KeyValue
 	if err := eng.MVCCIterate(ctx, keys.LocalStoreCachedSettingsKeyMin,
 		keys.LocalStoreCachedSettingsKeyMax, storage.MVCCKeyAndIntentsIterKind,
-		storage.IterKeyTypePointsOnly, fs.UnknownReadCategory,
+		storage.IterKeyTypePointsOnly, storage.UnknownReadCategory,
 		func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
 			settingKey, err := keys.DecodeStoreCachedSettingsKey(kv.Key.Key)
 			if err != nil {
@@ -159,7 +158,7 @@ func initializeCachedSettings(
 		settingKey := settings.InternalKey(settingKeyS)
 		log.VEventf(ctx, 1, "loaded cached setting: %s -> %+v", settingKey, val)
 		if err := updater.Set(ctx, settingKey, val); err != nil {
-			log.Dev.Warningf(ctx, "setting %q to %v failed: %+v", settingKey, val, err)
+			log.Warningf(ctx, "setting %q to %v failed: %+v", settingKey, val, err)
 		}
 	}
 	updater.ResetRemaining(ctx)

@@ -4,11 +4,9 @@
 // included in the /LICENSE file.
 
 import { assert } from "chai";
-import moment from "moment-timezone";
-
-import { StatementDiagnosticsReport } from "../../api";
-
 import { selectDiagnosticsReportsPerStatement } from "./statementDiagnostics.selectors";
+import { StatementDiagnosticsReport } from "../../api";
+import moment from "moment-timezone";
 
 const reports: StatementDiagnosticsReport[] = [
   {

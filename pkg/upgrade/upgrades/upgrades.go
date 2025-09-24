@@ -59,66 +59,93 @@ var upgrades = []upgradebase.Upgrade{
 		bootstrapCluster,
 		upgrade.RestoreActionNotRequired("initialization runs before restore")),
 
-	newFirstUpgrade(clusterversion.V25_3_Start.Version()),
+	newFirstUpgrade(clusterversion.V23_2Start.Version()),
 
 	upgrade.NewTenantUpgrade(
-		"add 'payload' column to system.eventlog table and add new index on eventType column",
-		clusterversion.V25_3_AddEventLogColumnAndIndex.Version(),
+		"update system.statement_diagnostics_requests to support plan gist matching",
+		clusterversion.V23_2_StmtDiagForPlanGist.Version(),
 		upgrade.NoPrecondition,
-		eventLogTableMigration,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore the new column or index"),
+		stmtDiagForPlanGistMigration,
+		upgrade.RestoreActionNotRequired("diagnostics requests are unique to the cluster on which they were requested"),
+	),
+	upgrade.NewTenantUpgrade(
+		"create system.region_liveness table",
+		clusterversion.V23_2_RegionaLivenessTable.Version(),
+		upgrade.NoPrecondition,
+		createRegionLivenessTables,
+		upgrade.RestoreActionNotRequired("ephemeral table that is not backed up or restored"),
+	),
+	upgrade.NewTenantUpgrade(
+		"create system.mvcc_statistics table and job",
+		clusterversion.V23_2_MVCCStatisticsTable.Version(),
+		upgrade.NoPrecondition,
+		createMVCCStatisticsTableAndJobMigration,
+		upgrade.RestoreActionNotRequired("table is relevant to the storage cluster and is not restored"),
+	),
+	upgrade.NewTenantUpgrade(
+		"create transaction_execution_insights and statement_execution_insights tables",
+		clusterversion.V23_2_AddSystemExecInsightsTable.Version(),
+		upgrade.NoPrecondition,
+		systemExecInsightsTableMigration,
+		upgrade.RestoreActionNotRequired("execution insights are specific to the cluster that executed some query and are not restored"),
+	),
+
+	newFirstUpgrade(clusterversion.V24_1Start.Version()),
+
+	upgrade.NewTenantUpgrade(
+		"hide unused payload and progress columns from system.jobs table",
+		clusterversion.V24_1_DropPayloadAndProgressFromSystemJobsTable.Version(),
+		upgrade.NoPrecondition,
+		hidePayloadProgressFromSystemJobs,
+		upgrade.RestoreActionNotRequired("cluster restore does not restore the system.jobs table"),
 	),
 
 	upgrade.NewTenantUpgrade(
-		"add 'estimated_last_login_time' column to system.users table",
-		clusterversion.V25_3_AddEstimatedLastLoginTime.Version(),
+		"migrate old-style PTS records to the new style",
+		clusterversion.V24_1_MigrateOldStylePTSRecords.Version(),
 		upgrade.NoPrecondition,
-		usersLastLoginTimeTableMigration,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore the new column"),
+		migrateOldStylePTSRecords,
+		upgrade.RestoreActionNotRequired("restore does not restore the PTS table"),
 	),
 
 	upgrade.NewTenantUpgrade(
-		"add new hot range logger job",
-		clusterversion.V25_3_AddHotRangeLoggerJob.Version(),
+		"stop writing expiration based leases to system.lease table (equivalent to experimental_use_session_based_leasing=drain)",
+		clusterversion.V24_1_SessionBasedLeasingDrain.Version(),
 		upgrade.NoPrecondition,
-		addHotRangeLoggerJob,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore this job"),
+		disableWritesForExpiryBasedLeases,
+		upgrade.RestoreActionNotRequired("cluster restore does not restore the system.lease table"),
 	),
 
-	newFirstUpgrade(clusterversion.V25_4_Start.Version()),
+	upgrade.NewTenantUpgrade(
+		"only use session based leases  (equivalent to experimental_use_session_based_leasing=session)",
+		clusterversion.V24_1_SessionBasedLeasingOnly.Version(),
+		upgrade.NoPrecondition,
+		adoptUsingOnlySessionBasedLeases,
+		upgrade.RestoreActionNotRequired("cluster restore does not restore the system.lease table"),
+	),
 
 	upgrade.NewTenantUpgrade(
-		"add new system.inspect_errors table",
-		clusterversion.V25_4_InspectErrorsTable.Version(),
+		"update system.lease descriptor to be session base",
+		clusterversion.V24_1_SessionBasedLeasingUpgradeDescriptor.Version(),
 		upgrade.NoPrecondition,
-		createInspectErrorsTable,
+		upgradeSystemLeasesDescriptor,
+		upgrade.RestoreActionNotRequired("cluster restore does not restore the system.lease table"),
+	),
+
+	upgrade.NewTenantUpgrade(
+		"set survivability goal on MR system database; fix-up gc.ttl and exclude_data_from_backup",
+		clusterversion.V24_1_SystemDatabaseSurvivability.Version(),
+		upgrade.NoPrecondition,
+		alterSystemDatabaseSurvivalGoal,
+		upgrade.RestoreActionNotRequired("cluster restore does not preserve the multiregion configuration of the system database"),
+	),
+
+	upgrade.NewTenantUpgrade(
+		"add the span_counts table to the system tenant",
+		clusterversion.V24_1_AddSpanCounts.Version(),
+		upgrade.NoPrecondition,
+		addSpanCountTable,
 		upgrade.RestoreActionNotRequired("cluster restore does not restore this table"),
-	),
-
-	upgrade.NewTenantUpgrade(
-		"add transaction diagnostics tables and update statement_diagnostics table",
-		clusterversion.V25_4_TransactionDiagnosticsSupport.Version(),
-		upgrade.NoPrecondition,
-		createTransactionDiagnosticsTables,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore these tables"),
-	),
-
-	upgrade.NewTenantUpgrade(
-		"set autostats fraction for system stats tables",
-		clusterversion.V25_4_SystemStatsTablesAutostatsFraction.Version(),
-		upgrade.NoPrecondition,
-		systemStatsTablesAutostatsFractionMigration,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore table storage parameters"),
-	),
-
-	upgrade.NewTenantUpgrade(
-		"create statement_hints table",
-		clusterversion.V25_4_AddSystemStatementHintsTable.Version(),
-		upgrade.NoPrecondition,
-		createStatementHintsTable,
-		upgrade.RestoreActionNotRequired(
-			"restore for a cluster predating this table can leave it empty",
-		),
 	),
 
 	// Note: when starting a new release version, the first upgrade (for

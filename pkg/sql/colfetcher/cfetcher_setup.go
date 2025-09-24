@@ -9,10 +9,10 @@ import (
 	"context"
 	"sync"
 
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/fetchpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
-	"github.com/cockroachdb/cockroach/pkg/sql/row"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 )
 
@@ -21,6 +21,9 @@ import (
 // caller) are included in the internal state.
 type cFetcherTableArgs struct {
 	spec fetchpb.IndexFetchSpec
+	// ColIdxMap is a mapping from ColumnID to the ordinal of the corresponding
+	// column within spec.FetchedColumns.
+	ColIdxMap catalog.TableColMap
 	// typs are the types from spec.FetchedColumns.
 	typs []*types.T
 }
@@ -29,10 +32,6 @@ var cFetcherTableArgsPool = sync.Pool{
 	New: func() interface{} {
 		return &cFetcherTableArgs{}
 	},
-}
-
-func (a cFetcherTableArgs) RequiresRawMVCCValues() bool {
-	return row.FetchSpecRequiresRawMVCCValues(a.spec)
 }
 
 func (a *cFetcherTableArgs) Release() {
@@ -94,6 +93,9 @@ func populateTableArgs(
 		}
 	}
 	args.populateTypes(args.spec.FetchedColumns)
+	for i := range args.spec.FetchedColumns {
+		args.ColIdxMap.Set(args.spec.FetchedColumns[i].ColumnID, i)
+	}
 
 	return args, nil
 }

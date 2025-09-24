@@ -3,19 +3,16 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames";
-import isNumber from "lodash/isNumber";
-import last from "lodash/last";
-import sum from "lodash/sum";
+import _ from "lodash";
 import React from "react";
-
-import { InfoTooltip } from "src/components/infoTooltip";
+import classNames from "classnames";
 import * as protos from "src/js/protos";
-import { MetricsDataComponentProps } from "src/views/shared/components/metricQuery";
-import { MetricsDataProvider } from "src/views/shared/containers/metricDataProvider";
 
 import "./summarybar.styl";
 
+import { MetricsDataProvider } from "src/views/shared/containers/metricDataProvider";
+import { MetricsDataComponentProps } from "src/views/shared/components/metricQuery";
+import { InfoTooltip } from "src/components/infoTooltip";
 type TSResponse = protos.cockroach.ts.tspb.TimeSeriesQueryResponse;
 
 export enum SummaryMetricsAggregator {
@@ -34,7 +31,6 @@ interface SummaryStatProps {
   value?: number;
   format?: (n: number) => string;
   aggregator?: SummaryMetricsAggregator;
-  numberAlert?: boolean;
 }
 
 interface SummaryHeadlineStatProps extends SummaryStatProps {
@@ -61,7 +57,7 @@ export function formatNumberForDisplay(
   value: number,
   format: (n: number) => string = numberToString,
 ) {
-  if (!isNumber(value)) {
+  if (!_.isNumber(value)) {
     return "-";
   }
   return format(value);
@@ -108,12 +104,11 @@ export function SummaryValue(
 export function SummaryStat(
   props: SummaryStatProps & { children?: React.ReactNode },
 ) {
-  const classModifier = props.numberAlert ? "number-alert" : "number";
   return (
     <SummaryValue
       title={props.title}
       value={formatNumberForDisplay(props.value, props.format)}
-      classModifier={classModifier}
+      classModifier="number"
     >
       {props.children}
     </SummaryValue>
@@ -191,7 +186,7 @@ function SummaryMetricStatHelper(
     <SummaryStat
       title={title}
       format={format}
-      value={isNumber(value) ? value : props.value}
+      value={_.isNumber(value) ? value : props.value}
     >
       {summaryStatMessage && (
         <SummaryStatMessage message={summaryStatMessage} />
@@ -209,13 +204,13 @@ function aggregateLatestValuesFromMetrics(
   }
 
   const latestValues = data.results.map(({ datapoints }) => {
-    return datapoints && datapoints.length && last(datapoints).value;
+    return datapoints && datapoints.length && _.last(datapoints).value;
   });
 
   if (aggregator) {
     switch (aggregator) {
       case SummaryMetricsAggregator.SUM:
-        return sum(latestValues);
+        return _.sum(latestValues);
       case SummaryMetricsAggregator.FIRST:
       default:
         // Do nothing, which does default action (below) of

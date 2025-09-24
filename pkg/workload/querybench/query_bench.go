@@ -78,9 +78,6 @@ func (*queryBench) Meta() workload.Meta { return queryBenchMeta }
 // Flags implements the Flagser interface.
 func (g *queryBench) Flags() workload.Flags { return g.flags }
 
-// ConnFlags implements the ConnFlagser interface.
-func (g *queryBench) ConnFlags() *workload.ConnFlags { return g.connFlags }
-
 // Hooks implements the Hookser interface.
 func (g *queryBench) Hooks() workload.Hooks {
 	return workload.Hooks{
@@ -88,7 +85,7 @@ func (g *queryBench) Hooks() workload.Hooks {
 			if g.queryFile == "" {
 				return errors.Errorf("Missing required argument '--query-file'")
 			}
-			stmts, err := getQueries(g.queryFile, g.separator)
+			stmts, err := GetQueries(g.queryFile, g.separator)
 			if err != nil {
 				return err
 			}
@@ -114,6 +111,10 @@ func (*queryBench) Tables() []workload.Table {
 func (g *queryBench) Ops(
 	ctx context.Context, urls []string, reg *histogram.Registry,
 ) (workload.QueryLoad, error) {
+	sqlDatabase, err := workload.SanitizeUrls(g, g.connFlags.DBOverride, urls)
+	if err != nil {
+		return workload.QueryLoad{}, err
+	}
 	db, err := gosql.Open(`cockroach`, strings.Join(urls, ` `))
 	if err != nil {
 		return workload.QueryLoad{}, err
@@ -134,7 +135,7 @@ func (g *queryBench) Ops(
 		maxNumStmts = g.numRunsPerQuery * len(stmts)
 	}
 
-	ql := workload.QueryLoad{}
+	ql := workload.QueryLoad{SQLDatabase: sqlDatabase}
 	for i := 0; i < g.connFlags.Concurrency; i++ {
 		op := queryBenchWorker{
 			hists:       reg.GetHandle(),
@@ -148,9 +149,9 @@ func (g *queryBench) Ops(
 	return ql, nil
 }
 
-// getQueries returns the queries in a file as a slice of named statements. If
+// GetQueries returns the queries in a file as a slice of named statements. If
 // no separator is given, splits by newlines.
-func getQueries(path, separator string) ([]namedStmt, error) {
+func GetQueries(path, separator string) ([]namedStmt, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err

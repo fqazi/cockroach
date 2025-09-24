@@ -3,15 +3,17 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import React from "react";
 import { storiesOf } from "@storybook/react";
+import { createMemoryHistory } from "history";
+
+import { StatementDetails } from "./statementDetails";
+import { getStatementDetailsPropsFixture } from "./statementDetails.fixture";
 import {
   ConnectedRouter,
   connectRouter,
   routerMiddleware,
 } from "connected-react-router";
-import { createMemoryHistory } from "history";
-import React from "react";
-import { Provider } from "react-redux";
 import {
   applyMiddleware,
   combineReducers,
@@ -19,11 +21,8 @@ import {
   createStore,
   Store,
 } from "redux";
-
 import { AppState, rootReducer } from "../store";
-
-import { StatementDetails } from "./statementDetails";
-import { getStatementDetailsPropsFixture } from "./statementDetails.fixture";
+import { Provider } from "react-redux";
 
 const history = createMemoryHistory();
 const routerReducer = connectRouter(history);
@@ -35,8 +34,8 @@ const store: Store<AppState> = createStore(
   }),
   compose(
     applyMiddleware(routerMiddleware(history)),
-    window.__REDUX_DEVTOOLS_EXTENSION__ &&
-      window.__REDUX_DEVTOOLS_EXTENSION__(),
+    (window as any).__REDUX_DEVTOOLS_EXTENSION__ &&
+      (window as any).__REDUX_DEVTOOLS_EXTENSION__(),
   ),
 );
 

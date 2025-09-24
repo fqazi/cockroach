@@ -12,9 +12,6 @@ func Example_cert() {
 	c.RunWithCAArgs([]string{"cert", "create-client", "foo"})
 	c.RunWithCAArgs([]string{"cert", "create-client", "Ομηρος"})
 	c.RunWithCAArgs([]string{"cert", "create-client", "0foo"})
-	c.RunWithCAArgs([]string{"cert", "create-client", "foo-1", "--tenant-scope", "1"})
-	c.RunWithCAArgs([]string{"cert", "create-client", "foo-tenant2", "--tenant-name-scope", "tenant2"})
-	c.RunWithCAArgs([]string{"cert", "create-client", "foo-1-tenant2", "--tenant-scope", "1", "--tenant-name-scope", "tenant2"})
 	c.RunWithCAArgs([]string{"cert", "create-client", ",foo"})
 	c.RunWithCAArgs([]string{"cert", "create-client", "--disable-username-validation", ",foo"})
 
@@ -22,9 +19,6 @@ func Example_cert() {
 	// cert create-client foo
 	// cert create-client Ομηρος
 	// cert create-client 0foo
-	// cert create-client foo-1 --tenant-scope 1
-	// cert create-client foo-tenant2 --tenant-name-scope tenant2
-	// cert create-client foo-1-tenant2 --tenant-scope 1 --tenant-name-scope tenant2
 	// cert create-client ,foo
 	// ERROR: failed to generate client certificate and key: username is invalid
 	// HINT: Usernames are case insensitive, must start with a letter, digit or underscore, may contain letters, digits, dashes, periods, or underscores, and must not exceed 63 characters.

@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import { Action } from "redux";
-
 import { PayloadAction } from "src/interfaces/action";
 
 export const RESET_INDEX_USAGE_STATS =

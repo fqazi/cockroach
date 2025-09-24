@@ -16,10 +16,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
-	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
@@ -147,12 +145,10 @@ func registerLoadSplits(r registry.Registry) {
 	cSpec := r.MakeClusterSpec(numNodes, spec.WorkloadNode())
 
 	r.Add(registry.TestSpec{
-		Name:    fmt.Sprintf("splits/load/uniform/nodes=%d", numRoachNodes),
-		Owner:   registry.OwnerKV,
-		Cluster: cSpec,
-		// The tests assert on the CPU usage indirectly via the number of splits,
-		// only GCE was intended to be used with the hardcoded split numbers.
-		CompatibleClouds: registry.OnlyGCE,
+		Name:             fmt.Sprintf("splits/load/uniform/nodes=%d", numRoachNodes),
+		Owner:            registry.OwnerKV,
+		Cluster:          cSpec,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -200,7 +196,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/uniform/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -223,7 +219,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/sequential/nodes=%d", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -249,7 +245,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/sequential/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -276,7 +272,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/spanning/nodes=%d", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -297,7 +293,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/spanning/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -327,7 +323,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/ycsb/a/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -352,7 +348,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/ycsb/b/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -376,7 +372,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/ycsb/d/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -386,10 +382,8 @@ func registerLoadSplits(r registry.Registry) {
 				// YCSB/D has a latest distribution i.e. moving hotkey. The inserts are
 				// hashed - this will lead to many hotspots over the keyspace that
 				// move. Expect a few less splits than A and B.
-				minimumRanges: 15,
-				// We never see 60 splits here, but we've seen as high as 36 and are
-				// tired of flakes related to a strict limit here.
-				maximumRanges:     60,
+				minimumRanges:     15,
+				maximumRanges:     25,
 				initialRangeCount: 2,
 				load: ycsbSplitLoad{
 					workload:     "d",
@@ -403,7 +397,7 @@ func registerLoadSplits(r registry.Registry) {
 		Name:             fmt.Sprintf("splits/load/ycsb/e/nodes=%d/obj=cpu", numRoachNodes),
 		Owner:            registry.OwnerKV,
 		Cluster:          cSpec,
-		CompatibleClouds: registry.OnlyGCE,
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -413,7 +407,7 @@ func registerLoadSplits(r registry.Registry) {
 				// YCSB/E has a zipfian distribution with 95% scans (limit 1k) and 5%
 				// inserts.
 				minimumRanges:     5,
-				maximumRanges:     32,
+				maximumRanges:     18,
 				initialRangeCount: 2,
 				load: ycsbSplitLoad{
 					workload:     "e",
@@ -434,14 +428,9 @@ func runLoadSplits(ctx context.Context, t test.Test, c cluster.Cluster, params s
 		"--vmodule=split_queue=2,store_rebalancer=2,allocator=2,replicate_queue=2,"+
 			"decider=3,replica_split_load=1",
 	)
-	// This test sets a larger range size than allowed by the default settings.
-	settings := install.MakeClusterSettings()
-	if params.maxSize > 8<<30 {
-		settings.Env = append(settings.Env, fmt.Sprintf("COCKROACH_MAX_RANGE_MAX_BYTES=%d", params.maxSize))
-	}
-	c.Start(ctx, t.L(), startOpts, settings, c.CRDBNodes())
+	c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.CRDBNodes())
 
-	m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+	m := c.NewMonitor(ctx, c.CRDBNodes())
 	m.Go(func(ctx context.Context) error {
 		db := c.Conn(ctx, t.L(), 1)
 		defer db.Close()
@@ -475,13 +464,6 @@ func runLoadSplits(ctx context.Context, t test.Test, c cluster.Cluster, params s
 			t.Fatal("no CPU or QPS split threshold set")
 		}
 
-		// The default for backpressureRangeHardCap is 8 GiB.
-		if params.maxSize > 8<<30 {
-			t.Status("allowing ranges up to ", params.maxSize*2, " bytes")
-			_, err := db.ExecContext(ctx, fmt.Sprintf("SET CLUSTER SETTING kv.range.range_size_hard_cap = '%d'", params.maxSize*2))
-			require.NoError(t, err)
-		}
-
 		t.Status("increasing range_max_bytes")
 		minBytes := 16 << 20 // 16 MB
 		setRangeMaxBytes := func(maxBytes int) {
@@ -498,7 +480,7 @@ func runLoadSplits(ctx context.Context, t test.Test, c cluster.Cluster, params s
 		setRangeMaxBytes(params.maxSize)
 
 		require.NoError(t,
-			roachtestutil.WaitForReplication(ctx, t.L(), db, 3 /* repicationFactor */, roachprod.ExactlyReplicationFactor))
+			WaitForReplication(ctx, t, t.L(), db, 3 /* repicationFactor */, exactlyReplicationFactor))
 
 		// Init the split workload.
 		if err := params.load.init(ctx, t, c); err != nil {
@@ -596,16 +578,8 @@ func runLargeRangeSplits(ctx context.Context, t test.Test, c cluster.Cluster, si
 	rows := size / rowEstimate
 	const minBytes = 16 << 20 // 16 MB
 
-	// Set the range max size to a multiple of what we expect the size of the
-	// bank table to be. This should result in the table fitting inside a single
-	// range.
-	rangeMaxSize := 10 * size
-
 	numNodes := c.Spec().NodeCount
-	// This test sets a larger range size than allowed by the default settings.
-	settings := install.MakeClusterSettings()
-	settings.Env = append(settings.Env, fmt.Sprintf("COCKROACH_MAX_RANGE_MAX_BYTES=%d", rangeMaxSize))
-	c.Start(ctx, t.L(), option.DefaultStartOpts(), settings, c.Node(1))
+	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.Node(1))
 
 	db := c.Conn(ctx, t.L(), 1)
 	defer db.Close()
@@ -635,17 +609,12 @@ func runLargeRangeSplits(ctx context.Context, t test.Test, c cluster.Cluster, si
 	// Phase 1: start single node, disable splits, make large range.
 	t.Status(fmt.Sprintf("creating large bank table range (%d rows at ~%s each)", rows, humanizeutil.IBytes(rowEstimate)))
 	{
-		m := c.NewDeprecatedMonitor(ctx, c.Node(1))
+		m := c.NewMonitor(ctx, c.Node(1))
 		m.Go(func(ctx context.Context) error {
 
 			// We don't want load based splitting from splitting the range before
 			// it's ready to be split.
 			if err := disableLoadBasedSplitting(ctx, db); err != nil {
-				return err
-			}
-
-			// This effectively disables the hard cap.
-			if _, err := db.ExecContext(ctx, fmt.Sprintf("SET CLUSTER SETTING kv.range.range_size_hard_cap = '%d'", rangeMaxSize*2)); err != nil {
 				return err
 			}
 
@@ -661,7 +630,10 @@ func runLargeRangeSplits(ctx context.Context, t test.Test, c cluster.Cluster, si
 			if _, err := db.ExecContext(ctx, `SET CLUSTER SETTING kv.split.mvcc_stats_recomputation.enabled = 'false'`); err != nil {
 				return err
 			}
-			setRangeMaxBytes(t, db, minBytes, rangeMaxSize)
+			// Set the range size to a multiple of what we expect the size of the
+			// bank table to be. This should result in the table fitting
+			// inside a single range.
+			setRangeMaxBytes(t, db, minBytes, 10*size)
 
 			// NB: would probably be faster to use --data-loader=IMPORT here, but IMPORT
 			// will disregard our preference to keep things in a single range.
@@ -679,8 +651,8 @@ func runLargeRangeSplits(ctx context.Context, t test.Test, c cluster.Cluster, si
 	// Phase 2: add other nodes, wait for full replication of bank table.
 	t.Status("waiting for full replication")
 	{
-		c.Start(ctx, t.L(), option.DefaultStartOpts(), settings, c.Range(2, numNodes))
-		m := c.NewDeprecatedMonitor(ctx, c.All())
+		c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.Range(2, numNodes))
+		m := c.NewMonitor(ctx, c.All())
 		// NB: we do a round-about thing of making sure that there's at least one
 		// range that has 3 replicas (rather than waiting that there are no ranges
 		// with less than three replicas) because the `bank` table doesn't show
@@ -718,7 +690,7 @@ from [ SHOW RANGES FROM DATABASE bank ] where cardinality(voting_replicas) >= $1
 	expSplits := expRC - 1
 	t.Status(fmt.Sprintf("waiting for %d splits and rebalancing", expSplits))
 	{
-		m := c.NewDeprecatedMonitor(ctx, c.All())
+		m := c.NewMonitor(ctx, c.All())
 		m.Go(func(ctx context.Context) error {
 			setRangeMaxBytes(t, db, minBytes, rangeSize)
 			// Phase 3a: wait for splits.

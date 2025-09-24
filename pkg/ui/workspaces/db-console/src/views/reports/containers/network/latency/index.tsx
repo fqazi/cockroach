@@ -3,24 +3,23 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { ExclamationCircleOutlined, StopOutlined } from "@ant-design/icons";
-import { util } from "@cockroachlabs/cluster-ui";
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import { Badge, Divider, Tooltip } from "antd";
-import { BadgeProps } from "antd/lib/badge";
+import { Badge, Divider, Icon, Tooltip } from "antd";
+import "antd/lib/icon/style";
+import "antd/lib/badge/style";
+import "antd/lib/divider/style";
+import "antd/lib/tooltip/style";
 import classNames from "classnames";
-import map from "lodash/map";
+import _ from "lodash";
+import { util } from "@cockroachlabs/cluster-ui";
+import { Chip } from "src/views/app/components/chip";
 import React from "react";
 import { Link } from "react-router-dom";
-
-import { Empty } from "src/components/empty";
-import { livenessNomenclature } from "src/redux/nodes";
-import { Chip } from "src/views/app/components/chip";
-
 import { getValueFromString, Identity, isHealthyLivenessStatus } from "..";
-
 import "./latency.styl";
-
+import { Empty } from "src/components/empty";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
+import { livenessNomenclature } from "src/redux/nodes";
+import { BadgeProps } from "antd/lib/badge";
 import NodeLivenessStatus = cockroach.kv.kvserver.liveness.livenesspb.NodeLivenessStatus;
 import ConnectionStatus = cockroach.server.serverpb.NetworkConnectivityResponse.ConnectionStatus;
 
@@ -46,38 +45,6 @@ interface DetailedRow {
 type DetailedIdentity = Identity & {
   row: DetailedRow[];
   title?: string;
-};
-
-// SimpleTooltip is a specialized fast-rendering
-// component for the network latency table.
-const SimpleTooltip: React.FC<{
-  content: React.ReactNode;
-  children: React.ReactNode;
-}> = ({ content, children }) => {
-  const [isVisible, setIsVisible] = React.useState(false);
-  const tooltipRef = React.useRef<HTMLDivElement>(null);
-  const triggerRef = React.useRef<HTMLDivElement>(null);
-
-  // Handle mouse events
-  const handleMouseEnter = () => setIsVisible(true);
-  const handleMouseLeave = () => setIsVisible(false);
-
-  return (
-    <div
-      ref={triggerRef}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
-      style={{ position: "relative", display: "inline-block" }}
-    >
-      {children}
-      {isVisible && (
-        <div ref={tooltipRef} className={"Chip--tooltip"}>
-          {content}
-          <div className={"Chip--tooltip-arrow"} />
-        </div>
-      )}
-    </div>
-  );
 };
 
 // createHeaderCell creates and decorates a header cell.
@@ -381,7 +348,7 @@ const getLatencyCell = (
     if (!data) {
       return;
     }
-    return map(data.split(","), (identity, index) => (
+    return _.map(data.split(","), (identity, index) => (
       <p key={index} className="Chip--tooltip__nodes--item-description">
         {`${identity},`}
       </p>
@@ -392,8 +359,10 @@ const getLatencyCell = (
       {collapsed ? (
         <Chip title={`${latency.toFixed(2)}ms`} type={type} />
       ) : (
-        <SimpleTooltip
-          content={
+        <Tooltip
+          overlayClassName="Chip--tooltip"
+          placement="bottom"
+          title={
             <div>
               <div className="Chip--tooltip__nodes">
                 <div className="Chip--tooltip__nodes--item">
@@ -445,11 +414,11 @@ const getLatencyCell = (
             <Chip
               title={
                 isErrored ? (
-                  <StopOutlined />
+                  <Icon type="stop" />
                 ) : isEstablishing ? (
                   "--"
                 ) : isUnknown ? (
-                  <ExclamationCircleOutlined />
+                  <Icon type="exclamation-circle" />
                 ) : latency > 0 ? (
                   latency.toFixed(2) + "ms"
                 ) : (
@@ -459,7 +428,7 @@ const getLatencyCell = (
               type={type}
             />
           </div>
-        </SimpleTooltip>
+        </Tooltip>
       )}
     </td>
   );
@@ -500,11 +469,11 @@ export const Latency: React.SFC<ILatencyProps> = ({
           <tr>
             <th style={{ width: 115 }} />
             <th style={{ width: 45 }} />
-            {map(data, (value, index) => (
+            {_.map(data, (value, index) => (
               <th
                 className="region-name"
                 colSpan={data[index].length}
-                key={`region-${index}`}
+                key={index}
               >
                 {value[0].title}
               </th>
@@ -516,8 +485,8 @@ export const Latency: React.SFC<ILatencyProps> = ({
             {multipleHeader && <td />}
             <td className="latency-table__cell latency-table__cell--spacer" />
             {React.Children.toArray(
-              map(data, value =>
-                map(value, (identity, index: number) =>
+              _.map(data, value =>
+                _.map(value, (identity, index: number) =>
                   createHeaderCell(identity, index === 0, collapsed),
                 ),
               ),
@@ -527,8 +496,8 @@ export const Latency: React.SFC<ILatencyProps> = ({
       </thead>
       <tbody>
         {React.Children.toArray(
-          map(data, (value, index) =>
-            map(data[index], (identityA, indA: number) => {
+          _.map(data, (value, index) =>
+            _.map(data[index], (identityA, indA: number) => {
               return (
                 <tr
                   className={`latency-table__row ${
@@ -544,17 +513,15 @@ export const Latency: React.SFC<ILatencyProps> = ({
                     </th>
                   )}
                   {createHeaderCell(identityA, false, collapsed)}
-                  {map(identityA.row, (identity: any, indexB: number) => (
-                    <React.Fragment key={`cell-${indexB}`}>
-                      {getLatencyCell(
-                        { ...identity, identityA },
-                        getVerticalLines(data, indexB),
-                        false,
-                        std,
-                        collapsed,
-                      )}
-                    </React.Fragment>
-                  ))}
+                  {_.map(identityA.row, (identity: any, indexB: number) =>
+                    getLatencyCell(
+                      { ...identity, identityA },
+                      getVerticalLines(data, indexB),
+                      false,
+                      std,
+                      collapsed,
+                    ),
+                  )}
                 </tr>
               );
             }),

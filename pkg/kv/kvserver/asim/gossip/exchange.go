@@ -6,7 +6,7 @@
 package gossip
 
 import (
-	"slices"
+	"sort"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
@@ -38,11 +38,14 @@ func (u *fixedDelayExchange) put(tick time.Time, descs ...roachpb.StoreDescripto
 
 // updates returns back exchanged infos, wrapped as store details that have
 // completed between the last tick update was called and the tick given.
-func (u *fixedDelayExchange) updates(tick time.Time) []*storepool.StoreDetailMu {
-	slices.SortStableFunc(u.pending, func(a, b exchangeInfo) int {
-		return a.created.Compare(b.created)
+func (u *fixedDelayExchange) updates(tick time.Time) []*storepool.StoreDetail {
+	sort.Slice(u.pending, func(i, j int) bool {
+		if u.pending[i].created == u.pending[j].created {
+			return i < j
+		}
+		return u.pending[i].created.Before(u.pending[j].created)
 	})
-	var ready []*storepool.StoreDetailMu
+	ready := []*storepool.StoreDetail{}
 	i := 0
 	for ; i < len(u.pending) && !tick.Before(u.pending[i].created.Add(u.settings.StateExchangeDelay)); i++ {
 		ready = append(ready, makeStoreDetail(&u.pending[i].desc, u.pending[i].created))
@@ -51,10 +54,10 @@ func (u *fixedDelayExchange) updates(tick time.Time) []*storepool.StoreDetailMu 
 	return ready
 }
 
-// makeStoreDetail wraps a store descriptor into a storepool StoreDetailMu at the
+// makeStoreDetail wraps a store descriptor into a storepool StoreDetail at the
 // given tick.
-func makeStoreDetail(desc *roachpb.StoreDescriptor, tick time.Time) *storepool.StoreDetailMu {
-	return &storepool.StoreDetailMu{
+func makeStoreDetail(desc *roachpb.StoreDescriptor, tick time.Time) *storepool.StoreDetail {
+	return &storepool.StoreDetail{
 		Desc:            desc,
 		LastUpdatedTime: hlc.Timestamp{WallTime: tick.UnixNano()},
 	}

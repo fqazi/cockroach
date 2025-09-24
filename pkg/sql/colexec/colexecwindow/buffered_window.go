@@ -43,7 +43,7 @@ func newBufferedWindowOperator(
 			fdSemaphore:     args.FdSemaphore,
 			outputTypes:     outputTypes,
 			diskAcc:         args.DiskAcc,
-			diskQueueMemAcc: args.DiskQueueMemAcc,
+			converterMemAcc: args.ConverterMemAcc,
 			outputColIdx:    args.OutputColIdx,
 		},
 		windower: windower,
@@ -145,7 +145,7 @@ type windowInitFields struct {
 	fdSemaphore     semaphore.Semaphore
 	outputTypes     []*types.T
 	diskAcc         *mon.BoundAccount
-	diskQueueMemAcc *mon.BoundAccount
+	converterMemAcc *mon.BoundAccount
 	outputColIdx    int
 }
 
@@ -206,7 +206,7 @@ func (b *bufferedWindowOp) Init(ctx context.Context) {
 			DiskQueueCfg:       b.diskQueueCfg,
 			FDSemaphore:        b.fdSemaphore,
 			DiskAcc:            b.diskAcc,
-			DiskQueueMemAcc:    b.diskQueueMemAcc,
+			ConverterMemAcc:    b.converterMemAcc,
 		},
 	)
 	b.windower.startNewPartition()

@@ -3,26 +3,21 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { CaretDown } from "@cockroachlabs/icons";
-import { InlineAlert } from "@cockroachlabs/ui-components";
-import { Menu, Dropdown } from "antd";
-import classNames from "classnames/bind";
-import moment from "moment-timezone";
-import { MenuClickEventHandler } from "rc-menu/es/interface";
 import React from "react";
-
-import { SqlStatsSortOptions, SqlStatsSortType } from "src/api/statementsApi";
+import classNames from "classnames/bind";
+import styles from "./searchCriteria.module.scss";
+import { PageConfig, PageConfigItem } from "src/pageConfig";
 import { Button } from "src/button";
 import { commonStyles } from "src/common";
-import { PageConfig, PageConfigItem } from "src/pageConfig";
 import {
   TimeScale,
   timeScale1hMinOptions,
   TimeScaleDropdown,
-  toDateRange,
 } from "src/timeScaleDropdown";
-
 import { applyBtn } from "../queryFilter/filterClasses";
+import { Menu, Dropdown } from "antd";
+import "antd/lib/menu/style";
+import "antd/lib/dropdown/style";
 import {
   limitOptions,
   limitMoreOptions,
@@ -32,9 +27,9 @@ import {
   stmtRequestSortMoreOptions,
   txnRequestSortMoreOptions,
 } from "../util/sqlActivityConstants";
-
-import styles from "./searchCriteria.module.scss";
-
+import { SqlStatsSortOptions, SqlStatsSortType } from "src/api/statementsApi";
+import { CaretDown } from "@cockroachlabs/icons";
+import { ClickParam } from "antd/lib/menu";
 const cx = classNames.bind(styles);
 const { SubMenu } = Menu;
 
@@ -63,11 +58,6 @@ export function SearchCriteria(props: SearchCriteriaProps): React.ReactElement {
     onChangeBy,
     onChangeTimeScale,
   } = props;
-
-  // Check if selected time range is less than 1 hour
-  const [start, end] = toDateRange(currentScale);
-  const duration = moment.duration(end.diff(start));
-  const isSubHourRange = duration.asHours() < 1;
   const sortOptions: SortOption[] =
     searchType === "Statement" ? stmtRequestSortOptions : txnRequestSortOptions;
   const sortMoreOptions: SortOption[] =
@@ -81,13 +71,13 @@ export function SearchCriteria(props: SearchCriteriaProps): React.ReactElement {
     </span>
   );
 
-  const changeTop: MenuClickEventHandler = event => {
+  const changeTop = (event: ClickParam): void => {
     const top = Number(event.key);
     if (top !== topValue) {
       onChangeTop(top);
     }
   };
-  const changeBy: MenuClickEventHandler = event => {
+  const changeBy = (event: ClickParam): void => {
     const by = Object.values(SqlStatsSortOptions).find(
       s => s === Number(event.key),
     );
@@ -127,14 +117,6 @@ export function SearchCriteria(props: SearchCriteriaProps): React.ReactElement {
   return (
     <div className={cx("search-area")}>
       <h5 className={commonStyles("base-heading")}>Search Criteria</h5>
-      {isSubHourRange && (
-        <div style={{ marginBottom: "16px" }}>
-          <InlineAlert
-            intent="warning"
-            title="Sub-hour time range selected: Statement statistics are aggregated hourly by default. You may not see data for time ranges less than 1 hour if the aggregation interval has not elapsed yet. Adjust the sql.stats.aggregation.interval cluster setting if you need finer granularity."
-          />
-        </div>
-      )}
       <PageConfig className={cx("top-area")}>
         <PageConfigItem>
           <label>

@@ -38,49 +38,6 @@ ElementState:
     databaseId: 104
     roleName: __placeholder_role_name__
   Status: PUBLIC
-- DatabaseZoneConfig:
-    databaseId: 104
-    seqNum: 0
-    zoneConfig:
-      constraints:
-      - constraints:
-        - key: region
-          type: REQUIRED
-          value: us-east1
-        numReplicas: 1
-      - constraints:
-        - key: region
-          type: REQUIRED
-          value: us-east2
-        numReplicas: 1
-      - constraints:
-        - key: region
-          type: REQUIRED
-          value: us-east3
-        numReplicas: 1
-      gc: null
-      globalReads: null
-      inheritedConstraints: false
-      inheritedLeasePreferences: false
-      leasePreferences:
-      - constraints:
-        - key: region
-          type: REQUIRED
-          value: us-east1
-      nullVoterConstraintsIsEmpty: true
-      numReplicas: 5
-      numVoters: 5
-      rangeMaxBytes: null
-      rangeMinBytes: null
-      subzoneSpans: []
-      subzones: []
-      voterConstraints:
-      - constraints:
-        - key: region
-          type: REQUIRED
-          value: us-east1
-        numReplicas: 2
-  Status: PUBLIC
 - Namespace:
     databaseId: 0
     descriptorId: 104
@@ -136,26 +93,6 @@ ElementState:
     tableId: 110
   Status: PUBLIC
 - Column:
-    columnId: 4.294967292e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
-    pgAttributeNum: 0
-    tableId: 110
-  Status: PUBLIC
-- Column:
-    columnId: 4.294967293e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
-    pgAttributeNum: 0
-    tableId: 110
-  Status: PUBLIC
-- Column:
     columnId: 4.294967294e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
@@ -200,16 +137,6 @@ ElementState:
     tableId: 110
   Status: PUBLIC
 - ColumnName:
-    columnId: 4.294967292e+09
-    name: crdb_internal_origin_timestamp
-    tableId: 110
-  Status: PUBLIC
-- ColumnName:
-    columnId: 4.294967293e+09
-    name: crdb_internal_origin_id
-    tableId: 110
-  Status: PUBLIC
-- ColumnName:
     columnId: 4.294967294e+09
     name: tableoid
     tableId: 110
@@ -226,12 +153,10 @@ ElementState:
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 1
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -252,16 +177,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 64
-    typeName: INT8
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 2
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: false
     isVirtual: false
@@ -282,76 +204,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 64
-    typeName: INT8
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967292e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 110
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: DecimalFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 1700
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 0
-    typeName: DECIMAL
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967293e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 110
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: IntFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 23
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 32
-    typeName: INT4
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967294e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -372,16 +231,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: OID
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967295e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -402,7 +258,6 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: DECIMAL
   Status: PUBLIC
 - IndexColumn:
     columnId: 1
@@ -457,8 +312,6 @@ ElementState:
     sourceIndexId: 0
     tableId: 110
     temporaryIndexId: 0
-    type: FORWARD
-    vecConfig: null
   Status: PUBLIC
 - SchemaChild:
     childObjectId: 110
@@ -475,27 +328,8 @@ ElementState:
 - TableLocalityGlobal:
     tableId: 110
   Status: PUBLIC
-- TableSchemaLocked:
-    tableId: 110
-  Status: PUBLIC
 - TableZoneConfig:
-    seqNum: 0
     tableId: 110
-    zoneConfig:
-      constraints: []
-      gc: null
-      globalReads: true
-      inheritedConstraints: true
-      inheritedLeasePreferences: true
-      leasePreferences: []
-      nullVoterConstraintsIsEmpty: false
-      numReplicas: null
-      numVoters: null
-      rangeMaxBytes: null
-      rangeMinBytes: null
-      subzoneSpans: []
-      subzones: []
-      voterConstraints: []
   Status: PUBLIC
 - UserPrivileges:
     descriptorId: 110
@@ -532,26 +366,6 @@ ElementState:
     isHidden: true
     isInaccessible: false
     isSystemColumn: false
-    pgAttributeNum: 0
-    tableId: 109
-  Status: PUBLIC
-- Column:
-    columnId: 4.294967292e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
-    pgAttributeNum: 0
-    tableId: 109
-  Status: PUBLIC
-- Column:
-    columnId: 4.294967293e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
     pgAttributeNum: 0
     tableId: 109
   Status: PUBLIC
@@ -600,16 +414,6 @@ ElementState:
     tableId: 109
   Status: PUBLIC
 - ColumnName:
-    columnId: 4.294967292e+09
-    name: crdb_internal_origin_timestamp
-    tableId: 109
-  Status: PUBLIC
-- ColumnName:
-    columnId: 4.294967293e+09
-    name: crdb_internal_origin_id
-    tableId: 109
-  Status: PUBLIC
-- ColumnName:
     columnId: 4.294967294e+09
     name: tableoid
     tableId: 109
@@ -626,12 +430,10 @@ ElementState:
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 1
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -652,16 +454,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 64
-    typeName: INT8
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 2
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: false
     isVirtual: false
@@ -682,76 +481,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 64
-    typeName: INT8
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967292e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 109
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: DecimalFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 1700
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 0
-    typeName: DECIMAL
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967293e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 109
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: IntFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 23
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 32
-    typeName: INT4
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967294e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -772,16 +508,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: OID
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967295e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -802,7 +535,6 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: DECIMAL
   Status: PUBLIC
 - IndexColumn:
     columnId: 1
@@ -857,8 +589,6 @@ ElementState:
     sourceIndexId: 0
     tableId: 109
     temporaryIndexId: 0
-    type: FORWARD
-    vecConfig: null
   Status: PUBLIC
 - SchemaChild:
     childObjectId: 109
@@ -877,51 +607,8 @@ ElementState:
     regionName: us-east2
     tableId: 109
   Status: PUBLIC
-- TableSchemaLocked:
-    tableId: 109
-  Status: PUBLIC
 - TableZoneConfig:
-    seqNum: 0
     tableId: 109
-    zoneConfig:
-      constraints:
-      - constraints:
-        - key: region
-          type: REQUIRED
-          value: us-east1
-        numReplicas: 2
-      - constraints:
-        - key: region
-          type: REQUIRED
-          value: us-east2
-        numReplicas: 1
-      - constraints:
-        - key: region
-          type: REQUIRED
-          value: us-east3
-        numReplicas: 1
-      gc: null
-      globalReads: null
-      inheritedConstraints: false
-      inheritedLeasePreferences: false
-      leasePreferences:
-      - constraints:
-        - key: region
-          type: REQUIRED
-          value: us-east2
-      nullVoterConstraintsIsEmpty: true
-      numReplicas: 5
-      numVoters: 5
-      rangeMaxBytes: null
-      rangeMinBytes: null
-      subzoneSpans: []
-      subzones: []
-      voterConstraints:
-      - constraints:
-        - key: region
-          type: REQUIRED
-          value: us-east2
-        numReplicas: 2
   Status: PUBLIC
 - UserPrivileges:
     descriptorId: 109
@@ -968,26 +655,6 @@ ElementState:
     isHidden: true
     isInaccessible: false
     isSystemColumn: false
-    pgAttributeNum: 0
-    tableId: 108
-  Status: PUBLIC
-- Column:
-    columnId: 4.294967292e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
-    pgAttributeNum: 0
-    tableId: 108
-  Status: PUBLIC
-- Column:
-    columnId: 4.294967293e+09
-    generatedAsIdentitySequenceOption: ""
-    generatedAsIdentityType: 0
-    isHidden: true
-    isInaccessible: false
-    isSystemColumn: true
     pgAttributeNum: 0
     tableId: 108
   Status: PUBLIC
@@ -1049,16 +716,6 @@ ElementState:
     tableId: 108
   Status: PUBLIC
 - ColumnName:
-    columnId: 4.294967292e+09
-    name: crdb_internal_origin_timestamp
-    tableId: 108
-  Status: PUBLIC
-- ColumnName:
-    columnId: 4.294967293e+09
-    name: crdb_internal_origin_id
-    tableId: 108
-  Status: PUBLIC
-- ColumnName:
     columnId: 4.294967294e+09
     name: tableoid
     tableId: 108
@@ -1082,12 +739,10 @@ ElementState:
     closedTypeIds:
     - 106
     - 107
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 3
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: false
     isVirtual: false
@@ -1109,16 +764,13 @@ ElementState:
         arrayTypeOid: 100107
       visibleType: 0
       width: 0
-    typeName: public.crdb_internal_region
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 1
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: false
     isVirtual: false
@@ -1139,16 +791,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 64
-    typeName: INT8
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 2
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -1169,76 +818,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: STRING
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967292e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 108
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: DecimalFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 1700
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 0
-    typeName: DECIMAL
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
-    columnId: 4.294967293e+09
-    computeExpr: null
-    elementCreationMetadata:
-      in231OrLater: true
-      in243OrLater: true
-    familyId: 0
-    isNullable: true
-    isVirtual: false
-    tableId: 108
-    type:
-      arrayContents: null
-      arrayDimensions: []
-      arrayElemType: null
-      family: IntFamily
-      geoMetadata: null
-      intervalDurationField: null
-      locale: null
-      oid: 23
-      precision: 0
-      timePrecisionIsSet: false
-      tupleContents: []
-      tupleLabels: []
-      udtMetadata: null
-      visibleType: 0
-      width: 32
-    typeName: INT4
-  Status: PUBLIC
-- ColumnType:
-    closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967294e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -1259,16 +845,13 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: OID
   Status: PUBLIC
 - ColumnType:
     closedTypeIds: []
-    columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967295e+09
     computeExpr: null
     elementCreationMetadata:
       in231OrLater: true
-      in243OrLater: true
     familyId: 0
     isNullable: true
     isVirtual: false
@@ -1289,7 +872,6 @@ ElementState:
       udtMetadata: null
       visibleType: 0
       width: 0
-    typeName: DECIMAL
   Status: PUBLIC
 - IndexColumn:
     columnId: 1
@@ -1368,6 +950,21 @@ ElementState:
       range: []
     tableId: 108
   Status: PUBLIC
+- IndexZoneConfig:
+    indexId: 1
+    partitionName: us-east1
+    tableId: 108
+  Status: PUBLIC
+- IndexZoneConfig:
+    indexId: 1
+    partitionName: us-east2
+    tableId: 108
+  Status: PUBLIC
+- IndexZoneConfig:
+    indexId: 1
+    partitionName: us-east3
+    tableId: 108
+  Status: PUBLIC
 - Namespace:
     databaseId: 104
     descriptorId: 108
@@ -1377,165 +974,6 @@ ElementState:
 - Owner:
     descriptorId: 108
     owner: root
-  Status: PUBLIC
-- PartitionZoneConfig:
-    indexId: 1
-    oldIdxRef: -1
-    partitionName: us-east1
-    seqNum: 0
-    subzone:
-      config:
-        constraints:
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east1
-          numReplicas: 1
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east2
-          numReplicas: 2
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east3
-          numReplicas: 1
-        gc: null
-        globalReads: null
-        inheritedConstraints: false
-        inheritedLeasePreferences: false
-        leasePreferences:
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east1
-        nullVoterConstraintsIsEmpty: true
-        numReplicas: 5
-        numVoters: 5
-        rangeMaxBytes: null
-        rangeMinBytes: null
-        subzoneSpans: []
-        subzones: []
-        voterConstraints:
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east1
-          numReplicas: 2
-      indexId: 1
-      partitionName: us-east1
-    subzoneSpans:
-    - endKey: null
-      key: iRJAAAE=
-      subzoneIndex: 0
-    tableId: 108
-  Status: PUBLIC
-- PartitionZoneConfig:
-    indexId: 1
-    oldIdxRef: -1
-    partitionName: us-east2
-    seqNum: 0
-    subzone:
-      config:
-        constraints:
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east1
-          numReplicas: 2
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east2
-          numReplicas: 1
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east3
-          numReplicas: 1
-        gc: null
-        globalReads: null
-        inheritedConstraints: false
-        inheritedLeasePreferences: false
-        leasePreferences:
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east2
-        nullVoterConstraintsIsEmpty: true
-        numReplicas: 5
-        numVoters: 5
-        rangeMaxBytes: null
-        rangeMinBytes: null
-        subzoneSpans: []
-        subzones: []
-        voterConstraints:
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east2
-          numReplicas: 2
-      indexId: 1
-      partitionName: us-east2
-    subzoneSpans:
-    - endKey: null
-      key: iRKAAAE=
-      subzoneIndex: 1
-    tableId: 108
-  Status: PUBLIC
-- PartitionZoneConfig:
-    indexId: 1
-    oldIdxRef: -1
-    partitionName: us-east3
-    seqNum: 0
-    subzone:
-      config:
-        constraints:
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east1
-          numReplicas: 2
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east2
-          numReplicas: 1
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east3
-          numReplicas: 1
-        gc: null
-        globalReads: null
-        inheritedConstraints: false
-        inheritedLeasePreferences: false
-        leasePreferences:
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east3
-        nullVoterConstraintsIsEmpty: true
-        numReplicas: 5
-        numVoters: 5
-        rangeMaxBytes: null
-        rangeMinBytes: null
-        subzoneSpans: []
-        subzones: []
-        voterConstraints:
-        - constraints:
-          - key: region
-            type: REQUIRED
-            value: us-east3
-          numReplicas: 2
-      indexId: 1
-      partitionName: us-east3
-    subzoneSpans:
-    - endKey: null
-      key: iRLAAAE=
-      subzoneIndex: 2
-    tableId: 108
   Status: PUBLIC
 - PrimaryIndex:
     constraintId: 1
@@ -1551,8 +989,6 @@ ElementState:
     sourceIndexId: 0
     tableId: 108
     temporaryIndexId: 0
-    type: FORWARD
-    vecConfig: null
   Status: PUBLIC
 - SchemaChild:
     childObjectId: 108
@@ -1577,159 +1013,8 @@ ElementState:
 - TablePartitioning:
     tableId: 108
   Status: PUBLIC
-- TableSchemaLocked:
-    tableId: 108
-  Status: PUBLIC
 - TableZoneConfig:
-    seqNum: 0
     tableId: 108
-    zoneConfig:
-      constraints: []
-      gc: null
-      globalReads: null
-      inheritedConstraints: true
-      inheritedLeasePreferences: true
-      leasePreferences: []
-      nullVoterConstraintsIsEmpty: false
-      numReplicas: 0
-      numVoters: null
-      rangeMaxBytes: null
-      rangeMinBytes: null
-      subzoneSpans:
-      - endKey: null
-        key: iRJAAAE=
-        subzoneIndex: 0
-      - endKey: null
-        key: iRKAAAE=
-        subzoneIndex: 1
-      - endKey: null
-        key: iRLAAAE=
-        subzoneIndex: 2
-      subzones:
-      - config:
-          constraints:
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east1
-            numReplicas: 1
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east2
-            numReplicas: 2
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east3
-            numReplicas: 1
-          gc: null
-          globalReads: null
-          inheritedConstraints: false
-          inheritedLeasePreferences: false
-          leasePreferences:
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east1
-          nullVoterConstraintsIsEmpty: true
-          numReplicas: 5
-          numVoters: 5
-          rangeMaxBytes: null
-          rangeMinBytes: null
-          subzoneSpans: []
-          subzones: []
-          voterConstraints:
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east1
-            numReplicas: 2
-        indexId: 1
-        partitionName: us-east1
-      - config:
-          constraints:
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east1
-            numReplicas: 2
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east2
-            numReplicas: 1
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east3
-            numReplicas: 1
-          gc: null
-          globalReads: null
-          inheritedConstraints: false
-          inheritedLeasePreferences: false
-          leasePreferences:
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east2
-          nullVoterConstraintsIsEmpty: true
-          numReplicas: 5
-          numVoters: 5
-          rangeMaxBytes: null
-          rangeMinBytes: null
-          subzoneSpans: []
-          subzones: []
-          voterConstraints:
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east2
-            numReplicas: 2
-        indexId: 1
-        partitionName: us-east2
-      - config:
-          constraints:
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east1
-            numReplicas: 2
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east2
-            numReplicas: 1
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east3
-            numReplicas: 1
-          gc: null
-          globalReads: null
-          inheritedConstraints: false
-          inheritedLeasePreferences: false
-          leasePreferences:
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east3
-          nullVoterConstraintsIsEmpty: true
-          numReplicas: 5
-          numVoters: 5
-          rangeMaxBytes: null
-          rangeMinBytes: null
-          subzoneSpans: []
-          subzones: []
-          voterConstraints:
-          - constraints:
-            - key: region
-              type: REQUIRED
-              value: us-east3
-            numReplicas: 2
-        indexId: 1
-        partitionName: us-east3
-      voterConstraints: []
   Status: PUBLIC
 - UserPrivileges:
     descriptorId: 108

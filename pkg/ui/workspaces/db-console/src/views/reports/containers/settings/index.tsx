@@ -3,6 +3,15 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import _ from "lodash";
+import React from "react";
+import { Helmet } from "react-helmet";
+import { connect } from "react-redux";
+import { RouteComponentProps, withRouter } from "react-router-dom";
+
+import * as protos from "src/js/protos";
+import { refreshSettings } from "src/redux/apiReducers";
+import { AdminUIState } from "src/redux/state";
 import {
   Loading,
   ColumnDescriptor,
@@ -11,20 +20,9 @@ import {
   util,
   Timestamp,
 } from "@cockroachlabs/cluster-ui";
-import isNil from "lodash/isNil";
-import React from "react";
-import { Helmet } from "react-helmet";
-import { connect } from "react-redux";
-import { RouteComponentProps, withRouter } from "react-router-dom";
-
-import * as protos from "src/js/protos";
-import { refreshSettings } from "src/redux/apiReducers";
-import { CachedDataReducerState } from "src/redux/cachedDataReducer";
-import { AdminUIState } from "src/redux/state";
-
-import { BackToAdvanceDebug } from "../util";
-
 import "./index.styl";
+import { CachedDataReducerState } from "src/redux/cachedDataReducer";
+import { BackToAdvanceDebug } from "../util";
 
 interface SettingsOwnProps {
   settings: CachedDataReducerState<protos.cockroach.server.serverpb.SettingsResponse>;
@@ -74,7 +72,7 @@ export class Settings extends React.Component<SettingsProps, SettingsState> {
   }
 
   renderTable(wantPublic: boolean) {
-    if (isNil(this.props.settings.data)) {
+    if (_.isNil(this.props.settings.data)) {
       return null;
     }
 

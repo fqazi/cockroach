@@ -5,25 +5,21 @@
 
 import { connect } from "react-redux";
 import { RouteComponentProps, withRouter } from "react-router-dom";
-
 import { analyticsActions, AppState } from "src/store";
-import { actions as nodesLivenessActions } from "src/store/liveness";
-import { actions as localStorageActions } from "src/store/localStorage";
-import {
-  actions as nodesActions,
-  nodeDisplayNameByIDSelector,
-} from "src/store/nodes";
+import { SessionDetails } from ".";
 import {
   actions as sessionsActions,
   selectSession,
   selectSessionDetailsUiConfig,
 } from "src/store/sessions";
 import { actions as terminateQueryActions } from "src/store/terminateQuery";
-import { TimeScale } from "src/timeScaleDropdown";
+import { actions as nodesActions } from "src/store/nodes";
+import { actions as localStorageActions } from "src/store/localStorage";
+import { actions as nodesLivenessActions } from "src/store/liveness";
 
+import { nodeDisplayNameByIDSelector } from "src/store/nodes";
 import { selectIsTenant } from "../store/uiConfig";
-
-import { SessionDetails } from ".";
+import { TimeScale } from "src/timeScaleDropdown";
 
 export const SessionDetailsPageConnected = withRouter(
   connect(

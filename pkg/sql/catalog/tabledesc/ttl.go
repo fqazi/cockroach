@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemaexpr"
-	"github.com/cockroachdb/cockroach/pkg/sql/parserutils"
+	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
+	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/errors"
 	"github.com/robfig/cron/v3"
 )
@@ -72,7 +74,7 @@ func ValidateTTLExpirationExpr(desc catalog.TableDescriptor) error {
 	if expirationExpr == "" {
 		return nil
 	}
-	exprs, err := parserutils.ParseExprs([]string{string(expirationExpr)})
+	exprs, err := parser.ParseExprs([]string{string(expirationExpr)})
 	if err != nil {
 		return errors.Wrapf(err, "ttl_expiration_expression %q must be a valid expression", expirationExpr)
 	} else if len(exprs) != 1 {
@@ -96,7 +98,7 @@ func ValidateTTLExpirationExpr(desc catalog.TableDescriptor) error {
 // ValidateTTLExpirationColumn validates that the ttl_expire_after setting, if
 // any, is in a valid state. It requires that the TTLDefaultExpirationColumn
 // exists and has DEFAULT/ON UPDATE clauses.
-func ValidateTTLExpirationColumn(desc catalog.TableDescriptor) error {
+func ValidateTTLExpirationColumn(desc catalog.TableDescriptor, allowDescPK bool) error {
 	if !desc.HasRowLevelTTL() {
 		return nil
 	}
@@ -126,15 +128,29 @@ func ValidateTTLExpirationColumn(desc catalog.TableDescriptor) error {
 		)
 	}
 
+	// For row-level TTL, only ascending PKs are permitted.
+	if !allowDescPK {
+		pk := desc.GetPrimaryIndex()
+		for i := 0; i < pk.NumKeyColumns(); i++ {
+			dir := pk.GetKeyColumnDirection(i)
+			if dir != catenumpb.IndexColumn_ASC {
+				return unimplemented.NewWithIssuef(
+					76912,
+					`non-ascending ordering on PRIMARY KEYs are not supported with row-level TTL`,
+				)
+			}
+		}
+	}
+
 	return nil
 }
 
 // ValidateTTLBatchSize validates the batch size of a TTL.
 func ValidateTTLBatchSize(key string, val int64) error {
-	if val < 0 {
+	if val <= 0 {
 		return pgerror.Newf(
 			pgcode.InvalidParameterValue,
-			`"%s" must be at least 0`,
+			`"%s" must be at least 1`,
 			key,
 		)
 	}
@@ -157,10 +173,10 @@ func ValidateTTLCronExpr(key string, str string) error {
 // ValidateTTLRowStatsPollInterval validates the automatic statistics field
 // of TTL.
 func ValidateTTLRowStatsPollInterval(key string, val time.Duration) error {
-	if val < 0 {
+	if val <= 0 {
 		return pgerror.Newf(
 			pgcode.InvalidParameterValue,
-			`"%s" must be at least 0`,
+			`"%s" must be at least 1`,
 			key,
 		)
 	}
@@ -169,10 +185,10 @@ func ValidateTTLRowStatsPollInterval(key string, val time.Duration) error {
 
 // ValidateTTLRateLimit validates the rate limit parameters of TTL.
 func ValidateTTLRateLimit(key string, val int64) error {
-	if val < 0 {
+	if val <= 0 {
 		return pgerror.Newf(
 			pgcode.InvalidParameterValue,
-			`"%s" must be at least 0`,
+			`"%s" must be at least 1`,
 			key,
 		)
 	}

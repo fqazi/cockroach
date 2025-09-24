@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/ordering"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/partialidx"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/props"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/errors"
 )
@@ -43,7 +42,7 @@ func (c *CustomFuncs) Init(e *explorer) {
 		e: e,
 	}
 	c.CustomFuncs.Init(e.f)
-	c.im.Init(e.ctx, e.f, e.mem.Metadata(), e.evalCtx)
+	c.im.Init(e.f, e.mem.Metadata(), e.evalCtx)
 }
 
 // IsCanonicalScan returns true if the given ScanPrivate is an original
@@ -60,7 +59,7 @@ func (c *CustomFuncs) HasInvertedIndexes(scanPrivate *memo.ScanPrivate) bool {
 
 	// Skip the primary index because it cannot be inverted.
 	for i := 1; i < tab.IndexCount(); i++ {
-		if tab.Index(i).Type() == idxtype.INVERTED {
+		if tab.Index(i).IsInverted() {
 			return true
 		}
 	}
@@ -196,7 +195,7 @@ func (c *CustomFuncs) initIdxConstraintForIndex(
 
 	// Generate index constraints.
 	ic.Init(
-		c.e.ctx, requiredFilters, optionalFilters,
+		requiredFilters, optionalFilters,
 		columns, notNullCols, tabMeta.ComputedCols,
 		tabMeta.ColsInComputedColsExpressions,
 		true /* consolidate */, c.e.evalCtx, c.e.f, ps,
@@ -286,7 +285,7 @@ func (c *CustomFuncs) splitScanIntoUnionScansOrSelects(
 			}
 		}
 	}
-	keyCtx := constraint.MakeKeyContext(c.e.ctx, &cons.Columns, c.e.evalCtx)
+	keyCtx := constraint.MakeKeyContext(&cons.Columns, c.e.evalCtx)
 	spans := cons.Spans
 
 	// Get the total number of keys that can be extracted from the spans. Also
@@ -478,7 +477,7 @@ func (c *CustomFuncs) splitScanIntoUnionScansOrSelects(
 	// construct an unlimited Scan and add it to the UnionAll tree.
 	newScanPrivate := c.DuplicateScanPrivate(sp)
 	// Map from cons Columns to new columns.
-	newScanPrivate.SetConstraint(c.e.ctx, c.e.evalCtx, &constraint.Constraint{
+	newScanPrivate.SetConstraint(c.e.evalCtx, &constraint.Constraint{
 		Columns: cons.Columns.RemapColumns(sp.Table, newScanPrivate.Table),
 		Spans:   noLimitSpans,
 	})
@@ -536,7 +535,7 @@ func (c *CustomFuncs) numAllowedValues(
 			if constraint.IsContradiction() || constraint.IsUnconstrained() {
 				continue
 			}
-			if distinctVals, ok := constraint.CalculateMaxResults(c.e.ctx, c.e.evalCtx, cols, cols); ok {
+			if distinctVals, ok := constraint.CalculateMaxResults(c.e.evalCtx, cols, cols); ok {
 				if distinctVals > math.MaxInt32 {
 					return math.MaxInt32, true
 				}
@@ -650,7 +649,7 @@ func (c *CustomFuncs) makeNewScanPrivate(
 		Columns: columns.RemapColumns(sp.Table, newScanPrivate.Table),
 		Spans:   newSpans,
 	}
-	newScanPrivate.SetConstraint(c.e.ctx, c.e.evalCtx, newConstraint)
+	newScanPrivate.SetConstraint(c.e.evalCtx, newConstraint)
 
 	return newScanPrivate
 }
@@ -662,46 +661,21 @@ func (c *CustomFuncs) makeNewScanPrivate(
 // constraints. getKnownScanConstraint assumes that the scan is not inverted.
 func (c *CustomFuncs) getKnownScanConstraint(
 	sp *memo.ScanPrivate,
-) (_ *constraint.Constraint, found bool) {
+) (cons *constraint.Constraint, found bool) {
 	if sp.Constraint != nil {
 		// The ScanPrivate has a constraint, so return it.
-		return sp.Constraint, !sp.Constraint.IsUnconstrained()
+		cons = sp.Constraint
+	} else {
+		// Build a constraint set with the check constraints of the underlying
+		// table.
+		filters := c.checkConstraintFilters(sp.Table)
+		instance := c.initIdxConstraintForIndex(
+			nil, /* requiredFilters */
+			filters,
+			sp.Table,
+			sp.Index,
+		)
+		cons = instance.Constraint()
 	}
-
-	// Build a constraint set with the check constraints of the underlying
-	// table.
-	filters := c.checkConstraintFilters(sp.Table)
-	instance := c.initIdxConstraintForIndex(
-		nil, /* requiredFilters */
-		filters,
-		sp.Table,
-		sp.Index,
-	)
-	var cons constraint.Constraint
-	instance.Constraint(&cons)
-	return &cons, !cons.IsUnconstrained()
-}
-
-// GetFilteredCanonicalScan looks at a *ScanExpr or *SelectExpr "relation" and
-// returns the input *ScanExpr and FiltersExpr, along with ok=true, if the Scan
-// is a canonical scan. If "relation" is a different type, or if it's a
-// *SelectExpr with an Input other than a *ScanExpr, ok=false is returned. Scans
-// or Selects with no filters may return filters as nil.
-func (c *CustomFuncs) GetFilteredCanonicalScan(
-	relation memo.RelExpr,
-) (scanExpr *memo.ScanExpr, filters memo.FiltersExpr, ok bool) {
-	var selectExpr *memo.SelectExpr
-	if selectExpr, ok = relation.(*memo.SelectExpr); ok {
-		if scanExpr, ok = selectExpr.Input.(*memo.ScanExpr); !ok {
-			return nil, nil, false
-		}
-		filters = selectExpr.Filters
-	} else if scanExpr, ok = relation.(*memo.ScanExpr); !ok {
-		return nil, nil, false
-	}
-	scanPrivate := &scanExpr.ScanPrivate
-	if !c.IsCanonicalScan(scanPrivate) {
-		return nil, nil, false
-	}
-	return scanExpr, filters, true
+	return cons, !cons.IsUnconstrained()
 }

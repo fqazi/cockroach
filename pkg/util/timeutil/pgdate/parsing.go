@@ -61,43 +61,24 @@ var (
 // https://www.postgresql.org/docs/10/static/datatype-datetime.html#DATATYPE-DATETIME-SPECIAL-TABLE
 var (
 	TimeEpoch = timeutil.Unix(0, 0)
-	// TimeInfinity represents the "highest" possible time. Its value is
-	// "294277-01-01 23:59:59.999999 +0000 UTC", which is 24 hours after "MaxSupportedTime"
-	// (294276-12-31 23:59:59.999999 +0000 UTC).
-	//
-	// The "date" of TimeInfinity is one day after "MaxSupportedTime", it's choiced for no
-	// particular reason.
-	//
-	// The "time" of TimeInfinity is set to "23:59:59.999999" to maintain the behavior of
-	// 'Infinity'::time as it was before PR #127141. (Prior to PR #127141, 'Infinity'::time
-	// resulted in '23:59:59.999999'.) This behavior may change in the future, see issue #129148
-	// for more details.
-	//
-	// Refer to the doc comments of the function "timeutil.Unix" for the process of
-	// deriving the arguments to construct a specific time.Time.
-	TimeInfinity = timeutil.Unix(9224318102399 /* sec */, 999999000 /* nsec */)
-	// TimeNegativeInfinity represents the "lowest" possible time. Its value is
-	// "-4714-11-23 00:00:00 +0000 UTC", which is 24 hours before "MinSupportedTime"
-	// ("-4714-11-24 00:00:00 +0000 UTC").
-	//
-	// The "date" of TimeNegativeInfinity is one day before "MinSupportedTime", it's choiced for no
-	// particular reason.
-	//
-	// The "time" of TimeNegativeInfinity is set to "00:00:00" to maintain the behavior of
-	// '-Infinity'::time as it was before PR #127141. (Prior to PR #127141, '-Infinity'::time
-	// resulted in '00:00:00'.) This behavior may change in the future, see issue #129148
-	// for more details.
-	//
-	// Refer to the doc comments of the function "timeutil.Unix" for the process of
-	// deriving the arguments to construct a specific time.Time.
-	TimeNegativeInfinity = timeutil.Unix(-210898425600 /* sec */, 0 /* nsec */)
+	// TimeInfinity represents the "highest" possible time.
+	// TODO (#41564): this should actually behave as infinity, i.e. any operator
+	// leaves this as infinity. This time should always be greater than any other time.
+	// We should probably use the next microsecond after this value, i.e. timeutil.Unix(9224318016000, 0).
+	// Postgres uses math.MaxInt64 microseconds as the infinity value.
+	// See: https://github.com/postgres/postgres/blob/42aa1f0ab321fd43cbfdd875dd9e13940b485900/src/include/datatype/timestamp.h#L107.
+	TimeInfinity = timeutil.Unix(9224318016000-1, 999999000)
+	// TimeNegativeInfinity represents the "lowest" possible time.
+	// TODO (#41564): this should actually behave as -infinity, i.e. any operator
+	// leaves this as -infinity. This time should always be less than any other time.
+	// We should probably use the next microsecond before this value, i.e. timeutil.Unix(9224318016000-1, 999999000).
+	// Postgres uses math.MinInt64 microseconds as the -infinity value.
+	// See: https://github.com/postgres/postgres/blob/42aa1f0ab321fd43cbfdd875dd9e13940b485900/src/include/datatype/timestamp.h#L107.
+	TimeNegativeInfinity = timeutil.Unix(-210866803200, 0)
 )
 
 type ParseHelper struct {
 	fe fieldExtract
-	// SkipErrorAnnotation, if set, indicates that we should avoid allocating
-	// objects for error annotations as much as possible.
-	SkipErrorAnnotation bool
 }
 
 // ParseDate converts a string into Date.
@@ -125,12 +106,11 @@ func ParseDate(
 		// We allow time fields to be provided since they occur after
 		// the date fields that we're really looking for and for
 		// time values like 24:00:00, would push into the next day.
-		wanted:              dateTimeFields,
-		skipErrorAnnotation: h.SkipErrorAnnotation,
+		wanted: dateTimeFields,
 	}
 
 	if err := h.fe.Extract(s); err != nil {
-		return Date{}, false, parseError(err, "date", &h.fe)
+		return Date{}, false, parseError(err, "date", s)
 	}
 	date, err := h.fe.MakeDate()
 	return date, h.fe.currentTimeUsed, err
@@ -150,25 +130,23 @@ func ParseTime(
 		h = &ParseHelper{}
 	}
 	h.fe = fieldExtract{
-		currentTime:         now,
-		required:            timeRequiredFields,
-		wanted:              timeFields,
-		skipErrorAnnotation: h.SkipErrorAnnotation,
+		currentTime: now,
+		required:    timeRequiredFields,
+		wanted:      timeFields,
 	}
 
 	if err := h.fe.Extract(s); err != nil {
 		// It's possible that the user has given us a complete
 		// timestamp string; let's try again, accepting more fields.
 		h.fe = fieldExtract{
-			currentTime:         now,
-			dateStyle:           dateStyle,
-			required:            timeRequiredFields,
-			wanted:              dateTimeFields,
-			skipErrorAnnotation: h.SkipErrorAnnotation,
+			currentTime: now,
+			dateStyle:   dateStyle,
+			required:    timeRequiredFields,
+			wanted:      dateTimeFields,
 		}
 
 		if err := h.fe.Extract(s); err != nil {
-			return TimeEpoch, false, parseError(err, "time", &h.fe)
+			return TimeEpoch, false, parseError(err, "time", s)
 		}
 	}
 	res := h.fe.MakeTime()
@@ -185,69 +163,54 @@ func ParseTime(
 //
 // The dependsOnContext return value indicates if we had to consult the given
 // `now` value (either for the time or the local timezone).
-//
-// Memory allocations can be avoided by passing ParseHelper which can be re-used
-// across calls for batch parsing purposes, otherwise it can be nil.
 func ParseTimeWithoutTimezone(
-	now time.Time, dateStyle DateStyle, s string, h *ParseHelper,
+	now time.Time, dateStyle DateStyle, s string,
 ) (_ time.Time, dependsOnContext bool, _ error) {
-	if h == nil {
-		h = &ParseHelper{}
-	}
-	h.fe = fieldExtract{
-		currentTime:         now,
-		required:            timeRequiredFields,
-		wanted:              timeFields,
-		skipErrorAnnotation: h.SkipErrorAnnotation,
+	fe := fieldExtract{
+		currentTime: now,
+		required:    timeRequiredFields,
+		wanted:      timeFields,
 	}
 
-	if err := h.fe.Extract(s); err != nil {
+	if err := fe.Extract(s); err != nil {
 		// It's possible that the user has given us a complete
 		// timestamp string; let's try again, accepting more fields.
-		h.fe = fieldExtract{
-			currentTime:         now,
-			dateStyle:           dateStyle,
-			required:            timeRequiredFields,
-			wanted:              dateTimeFields,
-			skipErrorAnnotation: h.SkipErrorAnnotation,
+		fe = fieldExtract{
+			currentTime: now,
+			dateStyle:   dateStyle,
+			required:    timeRequiredFields,
+			wanted:      dateTimeFields,
 		}
 
-		if err := h.fe.Extract(s); err != nil {
-			return TimeEpoch, false, parseError(err, "time", &h.fe)
+		if err := fe.Extract(s); err != nil {
+			return TimeEpoch, false, parseError(err, "time", s)
 		}
 	}
-	res := h.fe.MakeTimeWithoutTimezone()
-	return res, h.fe.currentTimeUsed, nil
+	res := fe.MakeTimeWithoutTimezone()
+	return res, fe.currentTimeUsed, nil
 }
 
 // ParseTimestamp converts a string into a timestamp.
 //
 // The dependsOnContext return value indicates if we had to consult the given
 // `now` value (either for the time or the local timezone).
-//
-// Memory allocations can be avoided by passing ParseHelper which can be re-used
-// across calls for batch parsing purposes, otherwise it can be nil.
 func ParseTimestamp(
-	now time.Time, dateStyle DateStyle, s string, h *ParseHelper,
+	now time.Time, dateStyle DateStyle, s string,
 ) (_ time.Time, dependsOnContext bool, _ error) {
-	if h == nil {
-		h = &ParseHelper{}
-	}
-	h.fe = fieldExtract{
+	fe := fieldExtract{
 		dateStyle:   dateStyle,
 		currentTime: now,
 		// A timestamp only actually needs a date component; the time
 		// would be midnight.
-		required:            dateRequiredFields,
-		wanted:              dateTimeFields,
-		skipErrorAnnotation: h.SkipErrorAnnotation,
+		required: dateRequiredFields,
+		wanted:   dateTimeFields,
 	}
 
-	if err := h.fe.Extract(s); err != nil {
-		return TimeEpoch, false, parseError(err, "timestamp", &h.fe)
+	if err := fe.Extract(s); err != nil {
+		return TimeEpoch, false, parseError(err, "timestamp", s)
 	}
-	res := h.fe.MakeTimestamp()
-	return res, h.fe.currentTimeUsed, nil
+	res := fe.MakeTimestamp()
+	return res, fe.currentTimeUsed, nil
 }
 
 // ParseTimestampWithoutTimezone converts a string into a timestamp, stripping
@@ -263,30 +226,23 @@ func ParseTimestamp(
 //
 // The dependsOnContext return value indicates if we had to consult the given
 // `now` value (either for the time or the local timezone).
-//
-// Memory allocations can be avoided by passing ParseHelper which can be re-used
-// across calls for batch parsing purposes, otherwise it can be nil.
 func ParseTimestampWithoutTimezone(
-	now time.Time, dateStyle DateStyle, s string, h *ParseHelper,
+	now time.Time, dateStyle DateStyle, s string,
 ) (_ time.Time, dependsOnContext bool, _ error) {
-	if h == nil {
-		h = &ParseHelper{}
-	}
-	h.fe = fieldExtract{
+	fe := fieldExtract{
 		dateStyle:   dateStyle,
 		currentTime: now,
 		// A timestamp only actually needs a date component; the time
 		// would be midnight.
-		required:            dateRequiredFields,
-		wanted:              dateTimeFields,
-		skipErrorAnnotation: h.SkipErrorAnnotation,
+		required: dateRequiredFields,
+		wanted:   dateTimeFields,
 	}
 
-	if err := h.fe.Extract(s); err != nil {
-		return TimeEpoch, false, parseError(err, "timestamp", &h.fe)
+	if err := fe.Extract(s); err != nil {
+		return TimeEpoch, false, parseError(err, "timestamp", s)
 	}
-	res := h.fe.MakeTimestampWithoutTimezone()
-	return res, h.fe.currentTimeUsed, nil
+	res := fe.MakeTimestampWithoutTimezone()
+	return res, fe.currentTimeUsed, nil
 }
 
 // badFieldPrefixError constructs an error with pg code InvalidDatetimeFormat.
@@ -312,10 +268,7 @@ func outOfRangeError(field string, val int) error {
 
 // parseError ensures that any error we return to the client will
 // be some kind of error with a pg code.
-func parseError(err error, kind string, fi *fieldExtract) error {
-	if fi.skipErrorAnnotation {
-		return err
-	}
+func parseError(err error, kind string, s string) error {
 	return pgerror.WithCandidateCode(
 		errors.Wrapf(err, "parsing as type %s", errors.Safe(kind)),
 		pgcode.InvalidDatetimeFormat)

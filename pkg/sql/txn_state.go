@@ -7,7 +7,6 @@ package sql
 
 import (
 	"context"
-	"math/rand"
 	"sync/atomic"
 	"time"
 
@@ -27,7 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 	"go.opentelemetry.io/otel/attribute"
@@ -36,7 +34,9 @@ import (
 // txnState contains state associated with an ongoing SQL txn; it constitutes
 // the ExtendedState of a connExecutor's state machine (defined in conn_fsm.go).
 // It contains fields that are mutated as side-effects of state transitions;
-// notably the kv.Txn.
+// notably the kv.Txn. All mutations to txnState are performed through calling
+// fsm.Machine.Apply(event); see conn_fsm.go for the definition of the state
+// machine.
 type txnState struct {
 	// Mutable fields accessed from goroutines not synchronized by this txn's
 	// session, such as when a SHOW SESSIONS statement is executed on another
@@ -52,7 +52,7 @@ type txnState struct {
 		txn *kv.Txn
 
 		// txnStart records the time that txn started.
-		txnStart crtime.Mono
+		txnStart time.Time
 
 		// The transaction's priority.
 		priority roachpb.UserPriority
@@ -70,12 +70,12 @@ type txnState struct {
 		// bundles, and also is surfaced in the DB Console.
 		autoRetryReason error
 
-		// autoRetryCounter keeps track of the number of automatic transaction
-		// retries that have occurred. It's 0 whenever the transaction state is not
+		// autoRetryCounter keeps track of the number of automatic retries that have
+		// occurred. It includes per-statement retries performed under READ
+		// COMMITTED as well as transaction retries for serialization failures under
+		// SNAPSHOT and SERIALIZABLE. It's 0 whenever the transaction state is not
 		// stateOpen.
 		autoRetryCounter int32
-
-		hasSavepoints bool
 	}
 
 	// connCtx is the connection's context. This is the parent of Ctx.
@@ -88,19 +88,6 @@ type txnState struct {
 	// often root spans, as SQL txns are frequently the level at which we do
 	// tracing. This context is hijacked when session tracing is enabled.
 	Ctx context.Context
-
-	// txnCancelFn is a function that can be used to cancel the current
-	// txn context.
-	txnCancelFn context.CancelFunc
-
-	// shouldRecord is used to indicate whether this transaction should record a
-	// trace. This is set to true if we have a positive sample rate and a
-	// positive duration trigger for logging.
-	shouldRecord bool
-
-	// outputJaegerJSON is used to indicate whether the traces in logs
-	// should be in a plaintext or Jaeger format.
-	outputJaegerJSON bool
 
 	// recordingThreshold, is not zero, indicates that sp is recording and that
 	// the recording should be dumped to the log if execution of the transaction
@@ -142,9 +129,6 @@ type txnState struct {
 	// testingForceRealTracingSpans is a test-only knob that forces the use of
 	// real (i.e. not no-op) tracing spans for every statement.
 	testingForceRealTracingSpans bool
-
-	// execType records the executor type for the transaction.
-	execType executorType
 }
 
 // txnType represents the type of a SQL transaction.
@@ -168,29 +152,30 @@ const (
 // and returns the ID of the new transaction.
 //
 // connCtx: The context in which the new transaction is started (usually a
-// connection's context). ts.Ctx will be set to a child context and should be
-// used for everything that happens within this SQL transaction.
+//
+//	connection's context). ts.Ctx will be set to a child context and should be
+//	used for everything that happens within this SQL transaction.
 //
 // txnType: The type of the starting txn.
-//
 // sqlTimestamp: The timestamp to report for current_timestamp(), now() etc.
-//
 // historicalTimestamp: If non-nil indicates that the transaction is historical
-// and should be fixed to this timestamp.
+//
+//	and should be fixed to this timestamp.
 //
 // priority: The transaction's priority. Pass roachpb.UnspecifiedUserPriority if the txn arg is
-// not nil.
+//
+//	not nil.
 //
 // readOnly: The read-only character of the new txn.
-//
 // txn: If not nil, this txn will be used instead of creating a new txn. If so,
-// all the other arguments need to correspond to the attributes of this txn
-// (unless otherwise specified).
+//
+//	all the other arguments need to correspond to the attributes of this txn
+//	(unless otherwise specified).
 //
 // tranCtx: A bag of extra execution context.
-//
 // qualityOfService: If txn is nil, the QoSLevel/WorkPriority to assign the new
-// transaction for use in admission queues.
+//
+//	transaction for use in admission queues.
 func (ts *txnState) resetForNewSQLTxn(
 	connCtx context.Context,
 	txnType txnType,
@@ -203,8 +188,6 @@ func (ts *txnState) resetForNewSQLTxn(
 	qualityOfService sessiondatapb.QoSLevel,
 	isoLevel isolation.Level,
 	omitInRangefeeds bool,
-	bufferedWritesEnabled bool,
-	rng *rand.Rand,
 ) (txnID uuid.UUID) {
 	// Reset state vars to defaults.
 	ts.sqlTimestamp = sqlTimestamp
@@ -216,32 +199,22 @@ func (ts *txnState) resetForNewSQLTxn(
 	// (automatic or user-directed) retries. The span is closed by finishSQLTxn().
 	opName := sqlTxnName
 	alreadyRecording := tranCtx.sessionTracing.Enabled()
-	ctx, cancelFn := context.WithCancel(connCtx)
+
 	var sp *tracing.Span
-	duration := TraceTxnThreshold.Get(&tranCtx.settings.SV)
-
-	sampleRate := TraceTxnSampleRate.Get(&tranCtx.settings.SV)
-	includeInternal := TraceTxnIncludeInternal.Get(&tranCtx.settings.SV)
-	ts.shouldRecord = sampleRate > 0 && duration > 0 && rng.Float64() < sampleRate
-	if !includeInternal && ts.execType == executorTypeInternal {
-		ts.shouldRecord = false
-	}
-	ts.outputJaegerJSON = TraceTxnOutputJaegerJSON.Get(&tranCtx.settings.SV)
-
-	if alreadyRecording || ts.shouldRecord {
-		ts.Ctx, sp = tracing.EnsureChildSpan(ctx, tranCtx.tracer, opName,
+	duration := traceTxnThreshold.Get(&tranCtx.settings.SV)
+	if alreadyRecording || duration > 0 {
+		ts.Ctx, sp = tracing.EnsureChildSpan(connCtx, tranCtx.tracer, opName,
 			tracing.WithRecording(tracingpb.RecordingVerbose))
 	} else if ts.testingForceRealTracingSpans {
-		ts.Ctx, sp = tracing.EnsureChildSpan(ctx, tranCtx.tracer, opName, tracing.WithForceRealSpan())
+		ts.Ctx, sp = tracing.EnsureChildSpan(connCtx, tranCtx.tracer, opName, tracing.WithForceRealSpan())
 	} else {
-		ts.Ctx, sp = tracing.EnsureChildSpan(ctx, tranCtx.tracer, opName)
+		ts.Ctx, sp = tracing.EnsureChildSpan(connCtx, tranCtx.tracer, opName)
 	}
-	ts.txnCancelFn = cancelFn
 	if txnType == implicitTxn {
 		sp.SetTag("implicit", attribute.StringValue("true"))
 	}
 
-	if !alreadyRecording && ts.shouldRecord {
+	if !alreadyRecording && (duration > 0) {
 		ts.recordingThreshold = duration
 		ts.recordingStart = timeutil.Now()
 	}
@@ -264,12 +237,6 @@ func (ts *txnState) resetForNewSQLTxn(
 			if err := ts.setIsolationLevelLocked(isoLevel); err != nil {
 				panic(err)
 			}
-			if !bufferedWritesIsAllowedForIsolationLevel(connCtx, tranCtx.settings, isoLevel) {
-				bufferedWritesEnabled = false
-			}
-			if bufferedWritesEnabled {
-				ts.mu.txn.SetBufferedWritesEnabled(true /* enabled */)
-			}
 		} else {
 			if priority != roachpb.UnspecifiedUserPriority {
 				panic(errors.AssertionFailedf("unexpected priority when using an existing txn: %s", priority))
@@ -279,7 +246,7 @@ func (ts *txnState) resetForNewSQLTxn(
 
 		txnID = ts.mu.txn.ID()
 		sp.SetTag("txn", attribute.StringValue(txnID.String()))
-		ts.mu.txnStart = crtime.NowMono()
+		ts.mu.txnStart = timeutil.Now()
 		ts.mu.autoRetryCounter = 0
 		ts.mu.autoRetryReason = nil
 		return txnID
@@ -303,8 +270,11 @@ func (ts *txnState) resetForNewSQLTxn(
 func (ts *txnState) finishSQLTxn() (txnID uuid.UUID, commitTimestamp hlc.Timestamp) {
 	ts.mon.Stop(ts.Ctx)
 	sp := tracing.SpanFromContext(ts.Ctx)
+	if sp == nil {
+		panic(errors.AssertionFailedf("No span in context? Was resetForNewSQLTxn() called previously?"))
+	}
 
-	if ts.shouldRecord {
+	if ts.recordingThreshold > 0 {
 		if elapsed := timeutil.Since(ts.recordingStart); elapsed >= ts.recordingThreshold {
 			logTraceAboveThreshold(ts.Ctx,
 				sp.GetRecording(sp.RecordingType()), /* recording */
@@ -312,17 +282,12 @@ func (ts *txnState) finishSQLTxn() (txnID uuid.UUID, commitTimestamp hlc.Timesta
 				redact.Sprint(redact.Safe(txnID)),   /* detail */
 				ts.recordingThreshold,               /* threshold */
 				elapsed,                             /* elapsed */
-				ts.outputJaegerJSON,                 /* outputJaegerJSON */
 			)
 		}
 	}
 
 	sp.Finish()
-	if ts.txnCancelFn != nil {
-		ts.txnCancelFn()
-	}
 	ts.Ctx = nil
-	ts.shouldRecord = false
 	ts.recordingThreshold = 0
 	return func() (txnID uuid.UUID, timestamp hlc.Timestamp) {
 		ts.mu.Lock()
@@ -336,7 +301,7 @@ func (ts *txnState) finishSQLTxn() (txnID uuid.UUID, commitTimestamp hlc.Timesta
 			}
 		}
 		ts.mu.txn = nil
-		ts.mu.txnStart = 0
+		ts.mu.txnStart = time.Time{}
 		return txnID, timestamp
 	}()
 }
@@ -356,9 +321,6 @@ func (ts *txnState) finishExternalTxn() {
 		if sp := tracing.SpanFromContext(ts.Ctx); sp != nil {
 			sp.Finish()
 		}
-	}
-	if ts.txnCancelFn != nil {
-		ts.txnCancelFn()
 	}
 	ts.Ctx = nil
 	ts.mu.Lock()
@@ -496,10 +458,6 @@ const (
 	// rolled back, not to a savepoint). It is generated when an implicit
 	// transaction fails and when an explicit transaction runs a ROLLBACK.
 	txnRollback
-	// txnPrepare means that the SQL transaction has been prepared and is now
-	// being dissociated from the session. It is generated when an explicit
-	// transaction runs a PREPARE TRANSACTION statement.
-	txnPrepare
 	// txnRestart means that the transaction is restarting. The iteration of the
 	// txn just finished will not commit. It is generated when we're about to
 	// auto-retry a txn and after a rollback to a savepoint placed at the start of

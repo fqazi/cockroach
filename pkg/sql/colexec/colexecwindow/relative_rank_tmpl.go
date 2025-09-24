@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for relative_rank.eg.go. It's formatted in
@@ -64,7 +65,7 @@ func NewRelativeRankOperator(
 		fdSemaphore:     args.FdSemaphore,
 		inputTypes:      args.InputTypes,
 		diskAcc:         args.DiskAcc,
-		diskQueueMemAcc: args.DiskQueueMemAcc,
+		converterMemAcc: args.ConverterMemAcc,
 	}
 	switch windowFn {
 	case execinfrapb.WindowerSpec_PERCENT_RANK:
@@ -86,7 +87,7 @@ func NewRelativeRankOperator(
 			relativeRankInitFields: rrInitFields,
 		}, nil
 	default:
-		return nil, errors.AssertionFailedf("unsupported relative rank type %s", windowFn)
+		return nil, errors.Errorf("unsupported relative rank type %s", windowFn)
 	}
 }
 
@@ -202,7 +203,7 @@ type relativeRankInitFields struct {
 	inputTypes   []*types.T
 
 	diskAcc         *mon.BoundAccount
-	diskQueueMemAcc *mon.BoundAccount
+	converterMemAcc *mon.BoundAccount
 }
 
 type relativeRankSizesState struct {
@@ -278,7 +279,7 @@ func (r *_RELATIVE_RANK_STRINGOp) Init(ctx context.Context) {
 			DiskQueueCfg:       r.diskQueueCfg,
 			FDSemaphore:        r.fdSemaphore,
 			DiskAcc:            r.diskAcc,
-			DiskQueueMemAcc:    r.diskQueueMemAcc,
+			ConverterMemAcc:    r.converterMemAcc,
 		},
 	)
 	r.partitionsState.runningSizes = r.allocator.NewMemBatchWithFixedCapacity([]*types.T{types.Int}, coldata.BatchSize())
@@ -293,7 +294,7 @@ func (r *_RELATIVE_RANK_STRINGOp) Init(ctx context.Context) {
 			DiskQueueCfg:       r.diskQueueCfg,
 			FDSemaphore:        r.fdSemaphore,
 			DiskAcc:            r.diskAcc,
-			DiskQueueMemAcc:    r.diskQueueMemAcc,
+			ConverterMemAcc:    r.converterMemAcc,
 		},
 	)
 	r.peerGroupsState.runningSizes = r.allocator.NewMemBatchWithFixedCapacity([]*types.T{types.Int}, coldata.BatchSize())
@@ -307,7 +308,7 @@ func (r *_RELATIVE_RANK_STRINGOp) Init(ctx context.Context) {
 			DiskQueueCfg:       r.diskQueueCfg,
 			FDSemaphore:        r.fdSemaphore,
 			DiskAcc:            r.diskAcc,
-			DiskQueueMemAcc:    r.diskQueueMemAcc,
+			ConverterMemAcc:    r.converterMemAcc,
 		},
 	)
 	r.output = r.allocator.NewMemBatchWithFixedCapacity(append(r.inputTypes, types.Float), coldata.BatchSize())

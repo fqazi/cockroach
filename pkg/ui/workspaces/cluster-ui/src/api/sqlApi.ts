@@ -3,9 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { getLogger } from "../util";
-
 import { fetchDataJSON } from "./fetchData";
+import { getLogger } from "../util";
 
 export type SqlExecutionRequest = {
   statements: SqlStatement[];
@@ -90,7 +89,7 @@ export function executeSql<RowType>(
 
 export const INTERNAL_SQL_API_APP = "$ internal-console";
 export const LONG_TIMEOUT = "300s";
-export const LARGE_RESULT_SIZE = 1_000_000; // 1 Mb
+export const LARGE_RESULT_SIZE = 50000; // 50 kib
 export const MAX_RESULT_SIZE = 2_147_483_647; // Max result size is max int32, which is 2Gib
 export const FALLBACK_DB = "system";
 
@@ -286,15 +285,15 @@ export function combineQueryErrors(
   };
 }
 
-export function txnResultIsEmpty(txnResults: SqlTxnResult<unknown>): boolean {
-  return !txnResults || !txnResults.rows || txnResults.rows?.length === 0;
+export function txnResultIsEmpty(txn_result: SqlTxnResult<unknown>): boolean {
+  return !txn_result || !txn_result.rows || txn_result.rows?.length === 0;
 }
 
 export function txnResultSetIsEmpty(
-  txnResults: SqlTxnResult<unknown>[],
+  txn_results: SqlTxnResult<unknown>[],
 ): boolean {
-  if (!txnResults || txnResults.length === 0) {
+  if (!txn_results || txn_results.length === 0) {
     return true;
   }
-  return txnResults.every(x => txnResultIsEmpty(x));
+  return txn_results.every(x => txnResultIsEmpty(x));
 }

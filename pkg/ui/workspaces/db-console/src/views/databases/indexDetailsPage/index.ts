@@ -3,9 +3,9 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { IndexDetailsPage } from "@cockroachlabs/cluster-ui";
 import { connect } from "react-redux";
 import { withRouter } from "react-router-dom";
+import { IndexDetailsPage } from "@cockroachlabs/cluster-ui";
 
 import { mapStateToProps, mapDispatchToProps } from "./redux";
 

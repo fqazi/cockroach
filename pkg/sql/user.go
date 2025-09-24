@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/security/distinguishedname"
 	"github.com/cockroachdb/cockroach/pkg/security/password"
-	"github.com/cockroachdb/cockroach/pkg/security/provisioning"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -22,6 +21,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessioninit"
@@ -29,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
-	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
@@ -83,7 +82,6 @@ func GetUserSessionInitInfo(
 	isSuperuser bool,
 	defaultSettings []sessioninit.SettingsCacheEntry,
 	subject *ldap.DN,
-	provisioningSource *provisioning.Source,
 	pwRetrieveFn func(ctx context.Context) (expired bool, hashedPassword password.PasswordHash, err error),
 	err error,
 ) {
@@ -112,7 +110,7 @@ func GetUserSessionInitInfo(
 		// Root user cannot have password expiry and must have login.
 		// It also never has default settings applied to it, and it cannot
 		// have its SUBJECT configured.
-		return true, true, true, true, true, nil, nil, nil, rootFn, nil
+		return true, true, true, true, true, nil, nil, rootFn, nil
 	}
 
 	var authInfo sessioninit.AuthInfo
@@ -137,9 +135,6 @@ func GetUserSessionInitInfo(
 		return execCfg.InternalDB.DescsTxn(ctx, func(
 			ctx context.Context, txn descs.Txn,
 		) error {
-			if err := txn.Descriptors().MaybeSetReplicationSafeTS(ctx, txn.KV()); err != nil {
-				return err
-			}
 			memberships, err := MemberOfWithAdminOption(ctx, execCfg, txn, user)
 			if err != nil {
 				return err
@@ -197,7 +192,7 @@ func GetUserSessionInitInfo(
 			return nil
 		})
 	}); err != nil {
-		log.Dev.Warningf(ctx, "user membership lookup for %q failed: %v", user, err)
+		log.Warningf(ctx, "user membership lookup for %q failed: %v", user, err)
 		err = errors.Wrap(errors.Handled(err), "internal error while retrieving user account memberships")
 	}
 
@@ -208,7 +203,6 @@ func GetUserSessionInitInfo(
 		isSuperuser,
 		settingsEntries,
 		authInfo.Subject,
-		authInfo.ProvisioningSource,
 		func(ctx context.Context) (expired bool, ret password.PasswordHash, err error) {
 			ret = authInfo.HashedPassword
 			if authInfo.ValidUntil != nil {
@@ -279,7 +273,7 @@ func retrieveSessionInitInfoWithCache(
 		return errors.Wrap(retErr, "get default settings error")
 	}(); err != nil {
 		// Failed to retrieve the user account. Report in logs for later investigation.
-		log.Dev.Warningf(ctx, "user lookup for %q failed: %v", userName, err)
+		log.Warningf(ctx, "user lookup for %q failed: %v", userName, err)
 		err = errors.Wrap(errors.Handled(err), "internal error while retrieving user account")
 	}
 	return aInfo, settingsEntries, err
@@ -289,120 +283,96 @@ func retrieveAuthInfo(
 	ctx context.Context, f descs.DB, user username.SQLUsername,
 ) (aInfo sessioninit.AuthInfo, retErr error) {
 	// Use fully qualified table name to avoid looking up "".system.users.
+	// We use a nil txn as login is not tied to any transaction state, and
+	// we should always look up the latest data.
 	const getHashedPassword = `SELECT "hashedPassword" FROM system.public.users ` +
 		`WHERE username=$1`
-	// We are going to use a single txn for resolving the user information,
-	// and role_options for the user.
-	err := f.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
-		// When running on a PCR reader catalog we need to ensure all descriptors
-		// have matching timestamps for external row data. Certain system tables
-		// like users and role_options are replicated, which can cause mixed
-		// external row data timestamps, which can lead to a retryable error.
-		// To avoid this we will set a replication safe AOST timestamp when running
-		// on a reader catalog.
-		if err := txn.Descriptors().MaybeSetReplicationSafeTS(ctx, txn.KV()); err != nil {
-			return err
+	ie := f.Executor()
+	values, err := ie.QueryRowEx(
+		ctx, "get-hashed-pwd", nil, /* txn */
+		sessiondata.NodeUserSessionDataOverride,
+		getHashedPassword, user)
+
+	if err != nil {
+		return aInfo, errors.Wrapf(err, "error looking up user %s", user)
+	}
+	var hashedPassword []byte
+	if values != nil {
+		aInfo.UserExists = true
+		if v := values[0]; v != tree.DNull {
+			hashedPassword = []byte(*(v.(*tree.DBytes)))
 		}
-		values, err := txn.QueryRowEx(
-			ctx, "get-hashed-pwd", txn.KV(), /* txn */
-			sessiondata.NodeUserSessionDataOverride,
-			getHashedPassword, user)
-		if err != nil {
-			return errors.Wrapf(err, "error looking up user %s", user)
-		}
+	}
+	aInfo.HashedPassword = password.LoadPasswordHash(ctx, hashedPassword)
 
-		var hashedPassword []byte
-		if values != nil {
-			aInfo.UserExists = true
-			if v := values[0]; v != tree.DNull {
-				hashedPassword = []byte(*(v.(*tree.DBytes)))
-			}
-		}
+	if !aInfo.UserExists {
+		return aInfo, nil
+	}
 
-		aInfo.HashedPassword = password.LoadPasswordHash(ctx, hashedPassword)
+	// None of the rest of the role options are relevant for root.
+	if user.IsRootUser() {
+		return aInfo, nil
+	}
 
-		if !aInfo.UserExists {
-			return nil
-		}
+	// Use fully qualified table name to avoid looking up "".system.role_options.
+	const getLoginDependencies = `SELECT option, value FROM system.public.role_options ` +
+		`WHERE username=$1 AND option IN ('NOLOGIN', 'VALID UNTIL', 'NOSQLLOGIN', 'REPLICATION', 'SUBJECT')`
 
-		// None of the rest of the role options are relevant for root.
-		if user.IsRootUser() {
-			return nil
-		}
+	roleOptsIt, err := ie.QueryIteratorEx(
+		ctx, "get-login-dependencies", nil, /* txn */
+		sessiondata.NodeUserSessionDataOverride,
+		getLoginDependencies,
+		user,
+	)
 
-		// Use fully qualified table name to avoid looking up "".system.role_options.
-		const getLoginDependencies = `SELECT option, value FROM system.public.role_options ` +
-			`WHERE username=$1 AND option IN ('NOLOGIN', 'VALID UNTIL', 'NOSQLLOGIN', 'REPLICATION', 'SUBJECT')`
+	if err != nil {
+		return aInfo, errors.Wrapf(err, "error looking up user %s", user)
+	}
+	// We have to make sure to close the iterator since we might return from
+	// the for loop early (before Next() returns false).
+	defer func() { retErr = errors.CombineErrors(retErr, roleOptsIt.Close()) }()
 
-		roleOptsIt, err := txn.QueryIteratorEx(
-			ctx, "get-login-dependencies", txn.KV(), /* txn */
-			sessiondata.NodeUserSessionDataOverride,
-			getLoginDependencies,
-			user,
-		)
+	// To support users created before 20.1, allow all USERS/ROLES to login
+	// if NOLOGIN is not found.
+	aInfo.CanLoginSQLRoleOpt = true
+	aInfo.CanLoginDBConsoleRoleOpt = true
+	var ok bool
 
-		if err != nil {
-			return errors.Wrapf(err, "error looking up user %s", user)
-		}
-		// We have to make sure to close the iterator since we might return from
-		// the for loop early (before Next() returns false).
-		defer func() { retErr = errors.CombineErrors(retErr, roleOptsIt.Close()) }()
-
-		// To support users created before 20.1, allow all USERS/ROLES to login
-		// if NOLOGIN is not found.
-		aInfo.CanLoginSQLRoleOpt = true
-		aInfo.CanLoginDBConsoleRoleOpt = true
-		var ok bool
-		var loopErr error
-		for ok, loopErr = roleOptsIt.Next(ctx); ok; ok, loopErr = roleOptsIt.Next(ctx) {
-			row := roleOptsIt.Cur()
-			option := string(tree.MustBeDString(row[0]))
-			switch option {
-			case "NOLOGIN":
-				aInfo.CanLoginSQLRoleOpt = false
-				aInfo.CanLoginDBConsoleRoleOpt = false
-			case "NOSQLLOGIN":
-				aInfo.CanLoginSQLRoleOpt = false
-			case "REPLICATION":
-				aInfo.CanUseReplicationRoleOpt = true
-			case "VALID UNTIL":
-				if row[1] != tree.DNull {
-					ts := string(tree.MustBeDString(row[1]))
-					// This is okay because the VALID UNTIL is stored as a string
-					// representation of a TimestampTZ which has the same underlying
-					// representation in the table as a Timestamp (UTC time).
-					timeCtx := tree.NewParseContext(timeutil.Now())
-					aInfo.ValidUntil, _, err = tree.ParseDTimestamp(timeCtx, ts, time.Microsecond)
-					if err != nil {
-						return errors.Wrap(err,
-							"error trying to parse timestamp while retrieving password valid until value")
-					}
-				}
-			case "SUBJECT":
-				if row[1] != tree.DNull {
-					subjectStr := string(tree.MustBeDString(row[1]))
-					dn, err := distinguishedname.ParseDN(subjectStr)
-					if err != nil {
-						return err
-					}
-					aInfo.Subject = dn
-				}
-			case "PROVISIONSRC":
-				if row[1] != tree.DNull {
-					sourceStr := string(tree.MustBeDString(row[1]))
-					source, err := provisioning.ParseProvisioningSource(sourceStr)
-					if err != nil {
-						return err
-					}
-					aInfo.ProvisioningSource = source
+	for ok, err = roleOptsIt.Next(ctx); ok; ok, err = roleOptsIt.Next(ctx) {
+		row := roleOptsIt.Cur()
+		option := string(tree.MustBeDString(row[0]))
+		switch option {
+		case "NOLOGIN":
+			aInfo.CanLoginSQLRoleOpt = false
+			aInfo.CanLoginDBConsoleRoleOpt = false
+		case "NOSQLLOGIN":
+			aInfo.CanLoginSQLRoleOpt = false
+		case "REPLICATION":
+			aInfo.CanUseReplicationRoleOpt = true
+		case "VALID UNTIL":
+			if tree.DNull.Compare(nil, row[1]) != 0 {
+				ts := string(tree.MustBeDString(row[1]))
+				// This is okay because the VALID UNTIL is stored as a string
+				// representation of a TimestampTZ which has the same underlying
+				// representation in the table as a Timestamp (UTC time).
+				timeCtx := tree.NewParseContext(timeutil.Now())
+				aInfo.ValidUntil, _, err = tree.ParseDTimestamp(timeCtx, ts, time.Microsecond)
+				if err != nil {
+					return aInfo, errors.Wrap(err,
+						"error trying to parse timestamp while retrieving password valid until value")
 				}
 			}
+		case "SUBJECT":
+			if row[1] != tree.DNull {
+				subjectStr := string(tree.MustBeDString(row[1]))
+				dn, err := distinguishedname.ParseDN(subjectStr)
+				if err != nil {
+					return aInfo, err
+				}
+				aInfo.Subject = dn
+			}
 		}
-		if loopErr != nil {
-			return loopErr
-		}
-		return nil
-	})
+	}
 
 	return aInfo, err
 }
@@ -488,6 +458,7 @@ var userLoginTimeout = settings.RegisterDurationSetting(
 	"server.user_login.timeout",
 	"timeout after which client authentication times out if some system range is unavailable (0 = no timeout)",
 	10*time.Second,
+	settings.NonNegativeDuration,
 	settings.WithPublic)
 
 // GetAllRoles returns a "set" (map) of Roles -> true.
@@ -542,27 +513,58 @@ func RoleExists(ctx context.Context, txn isql.Txn, role username.SQLUsername) (b
 	return row != nil, nil
 }
 
-// BumpRoleMembershipTableVersion increases the table version for the role
-// membership table.
+var roleMembersTableName = tree.MakeTableNameWithSchema("system", catconstants.PublicSchemaName, "role_members")
+
+// BumpRoleMembershipTableVersion increases the table version for the
+// role membership table.
 func (p *planner) BumpRoleMembershipTableVersion(ctx context.Context) error {
-	return p.writeVersionBump(ctx, keys.RoleMembersTableID)
+	_, tableDesc, err := p.ResolveMutableTableDescriptor(ctx, &roleMembersTableName, true, tree.ResolveAnyTableKind)
+	if err != nil {
+		return err
+	}
+
+	return p.writeSchemaChange(
+		ctx, tableDesc, descpb.InvalidMutationID, "updating version for role membership table",
+	)
 }
 
-// bumpUsersTableVersion increases the table version for the users table.
+// bumpUsersTableVersion increases the table version for the
+// users table.
 func (p *planner) bumpUsersTableVersion(ctx context.Context) error {
-	return p.writeVersionBump(ctx, keys.UsersTableID)
+	_, tableDesc, err := p.ResolveMutableTableDescriptor(ctx, sessioninit.UsersTableName, true, tree.ResolveAnyTableKind)
+	if err != nil {
+		return err
+	}
+
+	return p.writeSchemaChange(
+		ctx, tableDesc, descpb.InvalidMutationID, "updating version for users table",
+	)
 }
 
 // bumpRoleOptionsTableVersion increases the table version for the
 // role_options table.
 func (p *planner) bumpRoleOptionsTableVersion(ctx context.Context) error {
-	return p.writeVersionBump(ctx, keys.RoleOptionsTableID)
+	_, tableDesc, err := p.ResolveMutableTableDescriptor(ctx, sessioninit.RoleOptionsTableName, true, tree.ResolveAnyTableKind)
+	if err != nil {
+		return err
+	}
+
+	return p.writeSchemaChange(
+		ctx, tableDesc, descpb.InvalidMutationID, "updating version for role options table",
+	)
 }
 
 // bumpDatabaseRoleSettingsTableVersion increases the table version for the
 // database_role_settings table.
 func (p *planner) bumpDatabaseRoleSettingsTableVersion(ctx context.Context) error {
-	return p.writeVersionBump(ctx, keys.DatabaseRoleSettingsTableID)
+	_, tableDesc, err := p.ResolveMutableTableDescriptor(ctx, sessioninit.DatabaseRoleSettingsTableName, true, tree.ResolveAnyTableKind)
+	if err != nil {
+		return err
+	}
+
+	return p.writeSchemaChange(
+		ctx, tableDesc, descpb.InvalidMutationID, "updating version for database_role_settings table",
+	)
 }
 
 // BumpPrivilegesTableVersion increases the table version for the
@@ -573,7 +575,9 @@ func (p *planner) BumpPrivilegesTableVersion(ctx context.Context) error {
 		return err
 	}
 
-	return p.writeVersionBump(ctx, tableDesc.ID)
+	return p.writeSchemaChange(
+		ctx, tableDesc, descpb.InvalidMutationID, "updating version for system.privileges table",
+	)
 }
 
 func (p *planner) setRole(ctx context.Context, local bool, s username.SQLUsername) error {
@@ -719,14 +723,14 @@ func MaybeConvertStoredPasswordHash(
 		autoUpgradePasswordHashesBool, autoDowngradePasswordHashesBool, autoRehashOnCostChangeBool,
 		configuredHashMethod, configuredSCRAMCost, cleartext, currentHash,
 		security.GetExpensiveHashComputeSem(ctx),
-		log.Dev.Infof,
+		log.Infof,
 	)
 	if err != nil {
 		// We're not returning an error: clients should not be refused a
 		// session just because a password conversion failed.
 		//
 		// Simply explain what happened in logs for troubleshooting.
-		log.Dev.Warningf(ctx, "password hash conversion failed: %+v", err)
+		log.Warningf(ctx, "password hash conversion failed: %+v", err)
 		return
 	} else if !converted {
 		// No conversion happening. Nothing to do.
@@ -739,10 +743,10 @@ func MaybeConvertStoredPasswordHash(
 		// point authentication succeeded.
 		//
 		// Simply explain what happened in logs for troubleshooting.
-		log.Dev.Warningf(ctx, "storing the new password hash after conversion failed: %+v", err)
+		log.Warningf(ctx, "storing the new password hash after conversion failed: %+v", err)
 	} else {
 		// Inform the security audit log that the hash was upgraded.
-		log.StructuredEvent(ctx, severity.INFO, &eventpb.PasswordHashConverted{
+		log.StructuredEvent(ctx, &eventpb.PasswordHashConverted{
 			RoleName:  userName.Normalized(),
 			OldMethod: currentHash.Method().String(),
 			NewMethod: newMethod,
@@ -804,36 +808,4 @@ func updateUserPasswordHash(
 			return d.WriteDesc(ctx, false /* kvTrace */, usersTable, txn.KV())
 		})
 	})
-}
-
-// UpdateLastLoginTime updates the estimated_last_login_time column for the users
-// logging in to the current time in the system.users table.
-func UpdateLastLoginTime(
-	ctx context.Context, execCfg *ExecutorConfig, dbUsers []username.SQLUsername,
-) error {
-	if len(dbUsers) == 0 {
-		return nil
-	}
-
-	now := timeutil.Now()
-	if err := execCfg.InternalDB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
-		// Convert SQLUsername slice to string slice for the SQL query.
-		usernames := make([]string, len(dbUsers))
-		for i, user := range dbUsers {
-			usernames[i] = user.Normalized()
-		}
-
-		if _, err := txn.Exec(
-			ctx, "UpdateLastLoginTime-authsuccess", txn.KV(),
-			"UPDATE system.users SET estimated_last_login_time = $1 WHERE username = ANY($2)",
-			now,
-			usernames,
-		); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
 }

@@ -1,6 +1,3 @@
-// This code has been modified from its original form by The Cockroach Authors.
-// All modifications are Copyright 2024 The Cockroach Authors.
-//
 // Copyright 2015 The etcd Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,33 +17,24 @@ package tracker
 import (
 	"testing"
 
-	"github.com/cockroachdb/redact"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestProgressStringAndSafeFormat(t *testing.T) {
+func TestProgressString(t *testing.T) {
 	ins := NewInflights(1, 0)
 	ins.Add(123, 1)
 	pr := &Progress{
-		MatchCommit:        1,
-		SentCommit:         2,
-		Match:              3,
-		Next:               4,
-		State:              StateSnapshot,
-		PendingSnapshot:    123,
-		RecentActive:       false,
-		MsgAppProbesPaused: true,
-		IsLearner:          true,
-		Inflights:          ins,
+		Match:            1,
+		Next:             2,
+		State:            StateSnapshot,
+		PendingSnapshot:  123,
+		RecentActive:     false,
+		MsgAppFlowPaused: true,
+		IsLearner:        true,
+		Inflights:        ins,
 	}
-	const exp = "StateSnapshot match=3 next=4 sentCommit=2 matchCommit=1 learner paused " +
-		"pendingSnap=123 inactive inflight=1[full]"
-	// String.
+	const exp = `StateSnapshot match=1 next=2 learner paused pendingSnap=123 inactive inflight=1[full]`
 	assert.Equal(t, exp, pr.String())
-	// Redactable string.
-	assert.EqualValues(t, exp, redact.Sprint(pr))
-	// Redacted string.
-	assert.EqualValues(t, exp, redact.Sprint(pr).Redact())
 }
 
 func TestProgressIsPaused(t *testing.T) {
@@ -59,35 +47,32 @@ func TestProgressIsPaused(t *testing.T) {
 		{StateProbe, false, false},
 		{StateProbe, true, true},
 		{StateReplicate, false, false},
-		{StateReplicate, true, false},
+		{StateReplicate, true, true},
 		{StateSnapshot, false, true},
 		{StateSnapshot, true, true},
 	}
 	for i, tt := range tests {
 		p := &Progress{
-			State:              tt.state,
-			MsgAppProbesPaused: tt.paused,
-			Inflights:          NewInflights(256, 0),
+			State:            tt.state,
+			MsgAppFlowPaused: tt.paused,
+			Inflights:        NewInflights(256, 0),
 		}
 		assert.Equal(t, tt.w, p.IsPaused(), i)
 	}
 }
 
-// TestProgressResume ensures that MaybeDecrTo resets MsgAppProbesPaused, and
-// MaybeUpdate does not.
-//
-// TODO(pav-kv): there is little sense in testing these micro-behaviours in the
-// struct. We should test the visible behaviour instead.
+// TestProgressResume ensures that MaybeUpdate and MaybeDecrTo will reset
+// MsgAppFlowPaused.
 func TestProgressResume(t *testing.T) {
 	p := &Progress{
-		Next:               2,
-		MsgAppProbesPaused: true,
+		Next:             2,
+		MsgAppFlowPaused: true,
 	}
 	p.MaybeDecrTo(1, 1)
-	assert.False(t, p.MsgAppProbesPaused)
-	p.MsgAppProbesPaused = true
+	assert.False(t, p.MsgAppFlowPaused)
+	p.MsgAppFlowPaused = true
 	p.MaybeUpdate(2)
-	assert.True(t, p.MsgAppProbesPaused)
+	assert.False(t, p.MsgAppFlowPaused)
 }
 
 func TestProgressBecomeProbe(t *testing.T) {

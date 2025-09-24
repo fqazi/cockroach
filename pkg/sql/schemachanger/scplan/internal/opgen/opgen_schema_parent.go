@@ -6,11 +6,8 @@
 package opgen
 
 import (
-	"strings"
-
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scop"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 )
 
@@ -19,24 +16,9 @@ func init() {
 		toPublic(
 			scpb.Status_ABSENT,
 			to(scpb.Status_PUBLIC,
-				emit(func(this *scpb.SchemaParent, md *opGenContext) *scop.AddSchemaParent {
-					// Skip adding a parent in the parent database for temporary schemas.
-					if strings.HasPrefix(md.Name(this.SchemaID), catconstants.PgTempSchemaName) {
-						return nil
-					}
+				emit(func(this *scpb.SchemaParent) *scop.AddSchemaParent {
 					return &scop.AddSchemaParent{
 						Parent: *protoutil.Clone(this).(*scpb.SchemaParent),
-					}
-				}),
-				emit(func(this *scpb.SchemaParent, md *opGenContext) *scop.InsertTemporarySchemaParent {
-					// If its not temporary schema then we don't need to register it in
-					// the session data.
-					if !strings.HasPrefix(md.Name(this.SchemaID), catconstants.PgTempSchemaName) {
-						return nil
-					}
-					return &scop.InsertTemporarySchemaParent{
-						SchemaID:   this.SchemaID,
-						DatabaseID: this.ParentDatabaseID,
 					}
 				}),
 			),

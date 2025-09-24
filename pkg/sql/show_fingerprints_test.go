@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -81,7 +81,7 @@ func TestShowFingerprintsColumnNames(t *testing.T) {
 		"cApiTaLByTEs" BYTES,
 		INDEX capital_int_idx ("cApiTaLInT"),
 		INDEX capital_bytes_idx ("cApiTaLByTEs")
-	) WITH (schema_locked=false)`)
+	)`)
 
 	sqlDB.Exec(t, `INSERT INTO d.t VALUES (1, 2, 'a')`)
 	fprint1 := sqlDB.QueryStr(t, `SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE d.t`)
@@ -93,37 +93,6 @@ func TestShowFingerprintsColumnNames(t *testing.T) {
 	if reflect.DeepEqual(fprint1, fprint2) {
 		t.Errorf("expected different fingerprints: %v vs %v", fprint1, fprint2)
 	}
-}
-
-func TestShowFingerprintInvertedIndex(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	tc := serverutils.StartCluster(t, 1, base.TestClusterArgs{})
-	defer tc.Stopper().Stop(ctx)
-
-	sqlDB := sqlutils.MakeSQLRunner(tc.ServerConn(0))
-	sqlDB.Exec(t, `CREATE DATABASE d`)
-	sqlDB.Exec(t, `CREATE TABLE d.t (
-		a INT PRIMARY KEY,
-		b INT,
-		c INT,
-		d JSONB,
-		INDEX b_idx (b),
-		INDEX c_partial_idx (c) WHERE c > 0,
-		INVERTED INDEX d_inverted_idx (d)
-	)`)
-
-	sqlDB.Exec(t, `INSERT INTO d.t VALUES (1, 2, 3, '{"a": 4}'), (2, 3, 0, '{"a": 5}')`)
-
-	// Get fingerprints for the table.
-	rows := sqlDB.QueryStr(t, `SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE d.t`)
-	require.Len(t, rows, 3, "expected only primary, b_idx, c_partial_idx to be fingerprinted")
-	require.Equal(t, rows[0][0], "t_pkey")
-	require.Equal(t, rows[1][0], "b_idx")
-	require.Equal(t, rows[2][0], "c_partial_idx")
-	// NOTE: no d_inverted_idx
 }
 
 // TestShowFingerprintsDuringSchemaChange is a regression test that asserts that
@@ -174,13 +143,14 @@ func TestShowTenantFingerprintsProtectsTimestamp(t *testing.T) {
 
 	ctx := context.Background()
 
-	var exportStartedClosed atomic.Bool
+	exportStartedClosed := syncutil.AtomicBool(0)
 	exportsStarted := make(chan struct{})
 	exportsResume := make(chan struct{})
 	testingRequestFilter := func(_ context.Context, ba *kvpb.BatchRequest) *kvpb.Error {
 		for _, req := range ba.Requests {
 			if expReq := req.GetExport(); expReq != nil {
-				if expReq.ExportFingerprint && exportStartedClosed.CompareAndSwap(false, true) {
+				if expReq.ExportFingerprint && !exportStartedClosed.Get() {
+					exportStartedClosed.Set(true)
 					close(exportsStarted)
 					<-exportsResume
 				}
@@ -233,9 +203,9 @@ func TestShowTenantFingerprintsProtectsTimestamp(t *testing.T) {
 		t.Logf("udating PTS reader cache to %s", asOf)
 		require.NoError(
 			t,
-			spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, asOf),
+			spanconfigptsreader.TestingRefreshPTSState(ctx, t, ptsReader, asOf),
 		)
-		require.NoError(t, repl.TestingReadProtectedTimestamps(ctx))
+		require.NoError(t, repl.ReadProtectedTimestampsForTesting(ctx))
 	}
 	gcTestTableRange := func() {
 		row := tenantSQL.QueryRow(t, "SELECT range_id FROM [SHOW RANGES FROM TABLE test.foo]")

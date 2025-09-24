@@ -34,12 +34,9 @@ go_library(
         "//pkg/raft/raftpb",
         "//pkg/roachpb",
         "//pkg/rpc",
-        "//pkg/rpc/nodedialer",
-        "//pkg/rpc/rpcbase",
         "//pkg/server/serverpb",
         "//pkg/settings/cluster",
         "//pkg/storage",
-        "//pkg/storage/fs",
         "//pkg/util/grpcutil",
         "//pkg/util/hlc",
         "//pkg/util/iterutil",
@@ -53,13 +50,13 @@ go_library(
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_pebble//vfs",
         "@com_github_cockroachdb_redact//:redact",
+        "@org_golang_google_grpc//:go_default_library",
         "@org_golang_x_sync//errgroup",
     ],
 )
 
 go_test(
     name = "loqrecovery_test",
-    size = "large",
     srcs = [
         "apply_test.go",
         "collect_raft_log_test.go",

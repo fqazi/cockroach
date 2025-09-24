@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for default_cmp_proj_op.eg.go and
@@ -52,7 +53,7 @@ func (d *defaultCmp_KINDProjOp) Next() coldata.Batch {
 	}
 	sel := batch.Selection()
 	output := batch.ColVec(d.outputIdx)
-	d.allocator.PerformOperation([]*coldata.Vec{output}, func() {
+	d.allocator.PerformOperation([]coldata.Vec{output}, func() {
 		d.toDatumConverter.ConvertBatchAndDeselect(batch)
 		// {{if .IsRightConst}}
 		nonConstColumn := d.toDatumConverter.GetDatumColumn(d.colIdx)

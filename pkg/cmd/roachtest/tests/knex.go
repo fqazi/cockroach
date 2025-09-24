@@ -64,8 +64,43 @@ func registerKnex(r registry.Registry) {
 		)
 		require.NoError(t, err)
 
-		// Install NodeJS 18.x, update NPM to the latest and install Mocha.
-		err = installNode18(ctx, t, c, node, nodeOpts{withMocha: true})
+		// In case we are running into a state where machines are being reused, we first check to see if we
+		// can use npm to reduce the potential of trying to add another nodesource key
+		// (preventing gpg: dearmoring failed: File exists) errors.
+		err = c.RunE(
+			ctx, option.WithNodes(node), `sudo npm i -g npm`,
+		)
+
+		if err != nil {
+			err = repeatRunE(
+				ctx,
+				t,
+				c,
+				node,
+				"add nodesource key and deb repository",
+				`
+sudo apt-get update && \
+sudo apt-get install -y ca-certificates curl gnupg && \
+sudo mkdir -p /etc/apt/keyrings && \
+curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | sudo gpg --batch --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_18.x nodistro main" | sudo tee /etc/apt/sources.list.d/nodesource.list`,
+			)
+			require.NoError(t, err)
+
+			err = repeatRunE(
+				ctx, t, c, node, "install nodejs and npm", `sudo apt-get update && sudo apt-get -qq install nodejs`,
+			)
+			require.NoError(t, err)
+
+			err = repeatRunE(
+				ctx, t, c, node, "update npm", `sudo npm i -g npm`,
+			)
+			require.NoError(t, err)
+		}
+
+		err = repeatRunE(
+			ctx, t, c, node, "install mocha", `sudo npm i -g mocha`,
+		)
 		require.NoError(t, err)
 
 		err = repeatRunE(
@@ -113,15 +148,12 @@ func registerKnex(r registry.Registry) {
 			//   This can be removed once the upstream knex repo updates to test with
 			//   v23.1.
 			// - (3) ignores a failure caused by our use of the autocommit_before_ddl
-			//   setting. It does a migration then checks the transaction is still
-			//   opened. Since those include DDL, it was committed, which is unexpected.
-			// - Like (3), (4) is related to autocommit_before_ddl. The test drops a
-			//   primary key and then re-adds it in the same transaction but fails.
+			//   setting, which makes a test that drops a primary key and then re-adds
+			//   it in the same transaction fail.
 			if !strings.Contains(rawResultsStr, "1) should handle basic delete with join") ||
 				!strings.Contains(rawResultsStr, "2) should handle returning") ||
-				!strings.Contains(rawResultsStr, "3) should not create column for invalid migration with transaction enabled") ||
-				!strings.Contains(rawResultsStr, "4) #1430 - .primary() & .dropPrimary() same for all dialects") ||
-				strings.Contains(rawResultsStr, " 5) ") {
+				!strings.Contains(rawResultsStr, "3) #1430 - .primary() & .dropPrimary() same for all dialects") ||
+				strings.Contains(rawResultsStr, " 4) ") {
 				t.Fatal(err)
 			}
 		}

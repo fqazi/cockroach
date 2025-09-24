@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
-	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/norm"
@@ -63,7 +62,7 @@ func TestStatsQuality(t *testing.T) {
 
 func TestCompositeSensitive(t *testing.T) {
 	datadriven.RunTest(t, datapathutils.TestDataPath(t, "composite_sensitive"), func(t *testing.T, d *datadriven.TestData) string {
-		semaCtx := tree.MakeSemaContext(nil /* resolver */)
+		semaCtx := tree.MakeSemaContext()
 		evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
 
 		var f norm.Factory
@@ -132,11 +131,7 @@ func TestMemoInit(t *testing.T) {
 
 func TestMemoIsStale(t *testing.T) {
 	catalog := testcat.New()
-	_, err := catalog.ExecuteDDL("CREATE TABLE xy (x INT PRIMARY KEY, y INT)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = catalog.ExecuteDDL("CREATE TABLE abc (a INT PRIMARY KEY, b INT, c STRING, INDEX (c))")
+	_, err := catalog.ExecuteDDL("CREATE TABLE abc (a INT PRIMARY KEY, b INT, c STRING, INDEX (c))")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,10 +140,6 @@ func TestMemoIsStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = catalog.ExecuteDDL("CREATE FUNCTION one() RETURNS INT LANGUAGE SQL AS $$ SELECT 1 $$")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = catalog.ExecuteDDL("CREATE TYPE typ AS ENUM ('hello', 'hiya')")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,13 +160,8 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.Planner = nil
 	evalCtx.StreamManagerFactory = nil
 
-	// Use a test query that references each schema object (apart table with
-	// restricted access) to help verify that the memo is not invalidated
-	// unnecessarily.
-	const query = "SELECT a, b+one(), 'hiya'::typ FROM abcview v, xy WHERE a = x AND c='foo'"
-
 	var o xform.Optimizer
-	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, query)
+	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, "SELECT a, b+one() FROM abcview WHERE c='foo'")
 	o.Memo().Metadata().AddSchema(catalog.Schema())
 
 	ctx := context.Background()
@@ -191,7 +177,7 @@ func TestMemoIsStale(t *testing.T) {
 		// tests as written still pass if the default value is 0. To detect this, we
 		// create a new memo with the changed setting and verify it's not stale.
 		var o2 xform.Optimizer
-		opttestutils.BuildQuery(t, &o2, catalog, &evalCtx, query)
+		opttestutils.BuildQuery(t, &o2, catalog, &evalCtx, "SELECT a, b+one() FROM abcview WHERE c='foo'")
 
 		if isStale, err := o2.Memo().IsStale(ctx, &evalCtx, catalog); err != nil {
 			t.Fatal(err)
@@ -227,12 +213,6 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.SessionData().OptimizerUseForecasts = true
 	stale()
 	evalCtx.SessionData().OptimizerUseForecasts = false
-	notStale()
-
-	// Stale optimizer merged partial statistics usage enable.
-	evalCtx.SessionData().OptimizerUseMergedPartialStatistics = true
-	stale()
-	evalCtx.SessionData().OptimizerUseMergedPartialStatistics = false
 	notStale()
 
 	// Stale optimizer histogram usage enable.
@@ -295,16 +275,16 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.SessionData().DisallowFullTableScans = false
 	notStale()
 
-	// Stale avoid full table scan.
-	evalCtx.SessionData().AvoidFullTableScansInMutations = true
-	stale()
-	evalCtx.SessionData().AvoidFullTableScansInMutations = false
-	notStale()
-
 	// Stale large full scan rows.
 	evalCtx.SessionData().LargeFullScanRows = 1000
 	stale()
 	evalCtx.SessionData().LargeFullScanRows = 0
+	notStale()
+
+	// Stale OptimizerApplyFullScanPenaltyToVirtualTables.
+	evalCtx.SessionData().OptimizerApplyFullScanPenaltyToVirtualTables = true
+	stale()
+	evalCtx.SessionData().OptimizerApplyFullScanPenaltyToVirtualTables = false
 	notStale()
 
 	// Stale txn rows read error.
@@ -371,12 +351,6 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.SessionData().TestingOptimizerDisableRuleProbability = 1
 	stale()
 	evalCtx.SessionData().TestingOptimizerDisableRuleProbability = 0
-	notStale()
-
-	// Stale disable_optimizer_rules.
-	evalCtx.SessionData().DisableOptimizerRules = []string{"some_rule"}
-	stale()
-	evalCtx.SessionData().DisableOptimizerRules = nil
 	notStale()
 
 	// Stale allow_ordinal_column_references.
@@ -491,6 +465,7 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.SessionData().TrigramSimilarityThreshold = 0.5
 	stale()
 	evalCtx.SessionData().TrigramSimilarityThreshold = 0
+	notStale()
 
 	// Stale opt_split_scan_limit.
 	evalCtx.SessionData().OptSplitScanLimit = 100
@@ -522,22 +497,10 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.SessionData().OptimizerPushOffsetIntoIndexJoin = false
 	notStale()
 
-	// Stale optimizer_use_polymorphic_parameter_fix.
-	evalCtx.SessionData().OptimizerUsePolymorphicParameterFix = true
-	stale()
-	evalCtx.SessionData().OptimizerUsePolymorphicParameterFix = false
-	notStale()
-
 	// Stale optimizer_push_limit_into_project_filtered_scan.
 	evalCtx.SessionData().OptimizerPushLimitIntoProjectFilteredScan = true
 	stale()
 	evalCtx.SessionData().OptimizerPushLimitIntoProjectFilteredScan = false
-	notStale()
-
-	// Stale unsafe_allow_triggers_modifying_cascades.
-	evalCtx.SessionData().UnsafeAllowTriggersModifyingCascades = true
-	stale()
-	evalCtx.SessionData().UnsafeAllowTriggersModifyingCascades = false
 	notStale()
 
 	evalCtx.SessionData().LegacyVarcharTyping = true
@@ -558,41 +521,6 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.SessionData().OptimizerCheckInputMinRowCount = 1.0
 	stale()
 	evalCtx.SessionData().OptimizerCheckInputMinRowCount = 0
-	notStale()
-
-	evalCtx.SessionData().OptimizerPlanLookupJoinsWithReverseScans = true
-	stale()
-	evalCtx.SessionData().OptimizerPlanLookupJoinsWithReverseScans = false
-	notStale()
-
-	evalCtx.SessionData().InsertFastPath = true
-	stale()
-	evalCtx.SessionData().InsertFastPath = false
-	notStale()
-
-	evalCtx.SessionData().Internal = true
-	stale()
-	evalCtx.SessionData().Internal = false
-	notStale()
-
-	evalCtx.SessionData().UsePre_25_2VariadicBuiltins = true
-	stale()
-	evalCtx.SessionData().UsePre_25_2VariadicBuiltins = false
-	notStale()
-
-	evalCtx.SessionData().OptimizerUseExistsFilterHoistRule = true
-	stale()
-	evalCtx.SessionData().OptimizerUseExistsFilterHoistRule = false
-	notStale()
-
-	evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables = true
-	stale()
-	evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables = false
-	notStale()
-
-	evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject = true
-	stale()
-	evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject = false
 	notStale()
 
 	// User no longer has access to view.
@@ -616,10 +544,6 @@ func TestMemoIsStale(t *testing.T) {
 	// Stale data sources and schema. Create new catalog so that data sources are
 	// recreated and can be modified independently.
 	catalog = testcat.New()
-	_, err = catalog.ExecuteDDL("CREATE TABLE xy (x INT PRIMARY KEY, y INT)")
-	if err != nil {
-		t.Fatal(err)
-	}
 	_, err = catalog.ExecuteDDL("CREATE TABLE abc (a INT PRIMARY KEY, b INT, c STRING, INDEX (c))")
 	if err != nil {
 		t.Fatal(err)
@@ -632,47 +556,23 @@ func TestMemoIsStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = catalog.ExecuteDDL("CREATE TYPE typ AS ENUM ('hello', 'hiya')")
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	// Table ID changes.
 	catalog.Table(tree.NewTableNameWithSchema("t", catconstants.PublicSchemaName, "abc")).TabID = 1
 	stale()
-	catalog.Table(tree.NewTableNameWithSchema("t", catconstants.PublicSchemaName, "abc")).TabID = 54
+	catalog.Table(tree.NewTableNameWithSchema("t", catconstants.PublicSchemaName, "abc")).TabID = 53
 	notStale()
 
-	// Table version changes.
+	// Table Version changes.
 	catalog.Table(tree.NewTableNameWithSchema("t", catconstants.PublicSchemaName, "abc")).TabVersion = 1
 	stale()
 	catalog.Table(tree.NewTableNameWithSchema("t", catconstants.PublicSchemaName, "abc")).TabVersion = 0
 	notStale()
 
-	// Function version changes.
+	// Function Version changes.
 	catalog.Function("one").Version = 1
 	stale()
 	catalog.Function("one").Version = 0
-	notStale()
-
-	// User changes (without RLS)
-	oldUser := evalCtx.SessionData().UserProto
-	newUser := username.MakeSQLUsernameFromPreNormalizedString("newuser").EncodeProto()
-	evalCtx.SessionData().UserProto = newUser
-	notStale()
-	evalCtx.SessionData().UserProto = oldUser
-	notStale()
-
-	// User changes (with RLS)
-	o.Memo().Metadata().SetRLSEnabled(evalCtx.SessionData().User(), true, /* admin */
-		1 /* tableID */, false, /* isTableOwnerAndNotForced */
-		false /* bypassRLS */)
-	notStale()
-	evalCtx.SessionData().UserProto = newUser
-	stale()
-	evalCtx.SessionData().UserProto = oldUser
-	notStale()
-	o.Memo().Metadata().ClearRLSEnabled()
 	notStale()
 }
 
@@ -702,15 +602,15 @@ func TestStatsAvailable(t *testing.T) {
 
 	// Stats should not be available for any expression.
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, "SELECT * FROM t WHERE a=1")
-	testNotAvailable(o.Memo().RootExpr())
+	testNotAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, "SELECT sum(a), b FROM t GROUP BY b")
-	testNotAvailable(o.Memo().RootExpr())
+	testNotAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx,
 		"SELECT * FROM t AS t1, t AS t2 WHERE t1.a = t2.a AND t1.b = 5",
 	)
-	testNotAvailable(o.Memo().RootExpr())
+	testNotAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	if _, err := catalog.ExecuteDDL(
 		`ALTER TABLE t INJECT STATISTICS '[
@@ -740,15 +640,15 @@ func TestStatsAvailable(t *testing.T) {
 
 	// Stats should be available for all expressions.
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, "SELECT * FROM t WHERE a=1")
-	testAvailable(o.Memo().RootExpr())
+	testAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, "SELECT sum(a), b FROM t GROUP BY b")
-	testAvailable(o.Memo().RootExpr())
+	testAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx,
 		"SELECT * FROM t AS t1, t AS t2 WHERE t1.a = t2.a AND t1.b = 5",
 	)
-	testAvailable(o.Memo().RootExpr())
+	testAvailable(o.Memo().RootExpr().(memo.RelExpr))
 }
 
 // traverseExpr is a helper function to recursively traverse a relational

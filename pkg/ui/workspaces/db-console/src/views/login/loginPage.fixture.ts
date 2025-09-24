@@ -3,12 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import { emptyLoginState } from "src/redux/login";
+import type { LoginPageProps } from "./loginPage";
 import { createMemoryHistory } from "history";
 import { RouteComponentProps } from "react-router-dom";
-
-import { emptyLoginState } from "src/redux/login";
-
-import type { LoginPageProps } from "./loginPage";
 
 const history = createMemoryHistory({ initialEntries: ["/statements"] });
 

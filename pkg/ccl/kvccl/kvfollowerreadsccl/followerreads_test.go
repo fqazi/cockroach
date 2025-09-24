@@ -26,10 +26,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvtestutils"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -44,7 +42,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 	"github.com/cockroachdb/errors"
@@ -89,7 +86,7 @@ func TestCanSendToFollower(t *testing.T) {
 	skip.UnderDeadlock(t, "test is flaky under deadlock+stress")
 
 	ctx := context.Background()
-	clock := hlc.NewClockWithSystemTimeSource(base.DefaultMaxClockOffset, base.DefaultMaxClockOffset, hlc.PanicLogger)
+	clock := hlc.NewClockWithSystemTimeSource(base.DefaultMaxClockOffset, base.DefaultMaxClockOffset)
 	stale := clock.Now().Add(2*expectedFollowerReadOffset.Nanoseconds(), 0)
 	current := clock.Now()
 	future := clock.Now().Add(2*clock.MaxOffset().Nanoseconds(), 0)
@@ -468,13 +465,13 @@ func TestCanSendToFollower(t *testing.T) {
 				closedts.TargetDuration.Override(ctx, &st.SV, 0)
 			}
 
-			can := canSendToFollower(ctx, st, clock, c.ctPolicy, c.ba)
+			can := canSendToFollower(st, clock, c.ctPolicy, c.ba)
 			require.Equal(t, c.exp, can)
 		})
 	}
 }
 
-// mockNodeStore implements the kvclient.NodeDescStore interface.
+// mockNodeStore implements the kvcoord.NodeDescStore interface.
 type mockNodeStore []roachpb.NodeDescriptor
 
 func (s mockNodeStore) GetNodeDescriptor(id roachpb.NodeID) (*roachpb.NodeDescriptor, error) {
@@ -502,7 +499,7 @@ func TestOracle(t *testing.T) {
 	ctx := context.Background()
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
-	clock := hlc.NewClockWithSystemTimeSource(base.DefaultMaxClockOffset, base.DefaultMaxClockOffset, hlc.PanicLogger)
+	clock := hlc.NewClockWithSystemTimeSource(base.DefaultMaxClockOffset, base.DefaultMaxClockOffset)
 	stale := clock.Now().Add(2*expectedFollowerReadOffset.Nanoseconds(), 0)
 	current := clock.Now()
 	future := clock.Now().Add(2*clock.MaxOffset().Nanoseconds(), 0)
@@ -524,9 +521,9 @@ func TestOracle(t *testing.T) {
 		{NodeID: 3, Address: util.MakeUnresolvedAddr("tcp", "3"), Locality: region("c")},
 	}
 	replicas := []roachpb.ReplicaDescriptor{
-		{NodeID: 1, StoreID: 1, ReplicaID: 1},
-		{NodeID: 2, StoreID: 2, ReplicaID: 2},
-		{NodeID: 3, StoreID: 3, ReplicaID: 3},
+		{NodeID: 1, StoreID: 1},
+		{NodeID: 2, StoreID: 2},
+		{NodeID: 3, StoreID: 3},
 	}
 	desc := &roachpb.RangeDescriptor{
 		InternalReplicas: replicas,
@@ -540,7 +537,7 @@ func TestOracle(t *testing.T) {
 		// the exponentially-weighted moving average to work properly. See the
 		// comment on the WARMUP_SAMPLES const in the ewma package for details.
 		for i := 0; i < 11; i++ {
-			rpcContext.RemoteClocks.UpdateOffset(ctx, id, rpc.RemoteOffset{}, latency, rpcbase.DefaultClass)
+			rpcContext.RemoteClocks.UpdateOffset(ctx, id, rpc.RemoteOffset{}, latency)
 		}
 	}
 	setLatency(1, 100*time.Millisecond)
@@ -799,12 +796,10 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 	historicalQuery.Store(`SELECT * FROM test AS OF SYSTEM TIME follower_read_timestamp() WHERE k=2`)
 	recCh := make(chan tracingpb.Recording, 1)
 
-	settings := cluster.MakeClusterSettings()
 	tc := testcluster.StartTestCluster(t, 4,
 		base.TestClusterArgs{
 			ReplicationMode: base.ReplicationManual,
 			ServerArgs: base.TestServerArgs{
-				Settings:          settings,
 				DefaultTestTenant: base.TODOTestTenantDisabled,
 				UseDatabase:       "t",
 			},
@@ -843,10 +838,6 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 		})
 	defer tc.Stopper().Stop(ctx)
 
-	// Further down, we'll set up the test to pin the lease to store 1. Turn off
-	// load based rebalancing to make sure it doesn't move.
-	kvserverbase.LoadBasedRebalancingMode.Override(ctx, &settings.SV, kvserverbase.LBRebalancingOff)
-
 	n1 := sqlutils.MakeSQLRunner(tc.Conns[0])
 	n1.Exec(t, `CREATE DATABASE t`)
 	n1.Exec(t, `CREATE TABLE test (k INT PRIMARY KEY)`)
@@ -859,9 +850,9 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 
 	// Sleep so that we can perform follower reads. The read timestamp needs to be
 	// above the timestamp when the table was created.
-	log.Dev.Infof(ctx, "test sleeping for the follower read timestamps to pass the table creation timestamp...")
+	log.Infof(ctx, "test sleeping for the follower read timestamps to pass the table creation timestamp...")
 	n1.Exec(t, `SELECT pg_sleep((now() - follower_read_timestamp())::FLOAT)`)
-	log.Dev.Infof(ctx, "test sleeping... done")
+	log.Infof(ctx, "test sleeping... done")
 
 	// Run a query on n4 to populate its cache.
 	n4 := sqlutils.MakeSQLRunner(tc.Conns[3])
@@ -871,7 +862,7 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 	n1.QueryRow(t, `SELECT id from system.namespace WHERE name='test'`).Scan(&tableID)
 	tablePrefix := keys.MustAddr(keys.SystemSQLCodec.TablePrefix(tableID))
 	n4Cache := tc.Server(3).DistSenderI().(*kvcoord.DistSender).RangeDescriptorCache()
-	entry, err := n4Cache.TestingGetCached(ctx, tablePrefix, false, roachpb.LAG_BY_CLUSTER_SETTING)
+	entry, err := n4Cache.TestingGetCached(ctx, tablePrefix, false /* inverted */)
 	require.NoError(t, err)
 	require.False(t, entry.Lease.Empty())
 	require.Equal(t, roachpb.StoreID(1), entry.Lease.Replica.StoreID)
@@ -892,9 +883,9 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 	n4.Exec(t, historicalQuery.Load().(string))
 	// As a sanity check, verify that this was not a follower read.
 	rec := <-recCh
-	require.False(t, kvtestutils.OnlyFollowerReads(rec), "query was served through follower reads: %s", rec)
+	require.False(t, kv.OnlyFollowerReads(rec), "query was served through follower reads: %s", rec)
 	// Check that the cache was properly updated.
-	entry, err = n4Cache.TestingGetCached(ctx, tablePrefix, false, roachpb.LAG_BY_CLUSTER_SETTING)
+	entry, err = n4Cache.TestingGetCached(ctx, tablePrefix, false /* inverted */)
 	require.NoError(t, err)
 	require.False(t, entry.Lease.Empty())
 	require.Equal(t, roachpb.StoreID(1), entry.Lease.Replica.StoreID)
@@ -919,7 +910,7 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 	rec = <-recCh
 
 	// Look at the trace and check that we've served a follower read.
-	require.True(t, kvtestutils.OnlyFollowerReads(rec), "query was not served through follower reads: %s", rec)
+	require.True(t, kv.OnlyFollowerReads(rec), "query was not served through follower reads: %s", rec)
 
 	// Check that the follower read metric was incremented.
 	var followerReadsCountAfter int64
@@ -937,7 +928,7 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 	n3 := sqlutils.MakeSQLRunner(tc.Conns[2])
 	n3.Exec(t, "SELECT * from test WHERE k=1")
 	n3Cache := tc.Server(2).DistSenderI().(*kvcoord.DistSender).RangeDescriptorCache()
-	entry, err = n3Cache.TestingGetCached(ctx, tablePrefix, false, roachpb.LAG_BY_CLUSTER_SETTING)
+	entry, err = n3Cache.TestingGetCached(ctx, tablePrefix, false /* inverted */)
 	require.NoError(t, err)
 	require.False(t, entry.Lease.Empty())
 	require.Equal(t, roachpb.StoreID(1), entry.Lease.Replica.StoreID)
@@ -965,7 +956,7 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 	// Sanity check that the plan was distributed.
 	require.True(t, strings.Contains(rec.String(), "creating DistSQL plan with isLocal=false"))
 	// Look at the trace and check that we've served a follower read.
-	require.True(t, kvtestutils.OnlyFollowerReads(rec), "query was not served through follower reads: %s", rec)
+	require.True(t, kv.OnlyFollowerReads(rec), "query was not served through follower reads: %s", rec)
 	// Verify that we didn't produce the "misplanned ranges" metadata that would
 	// purge the non-stale entries from the range cache on n4.
 	require.False(t, strings.Contains(rec.String(), "clearing entries overlapping"))
@@ -1000,7 +991,6 @@ func TestSecondaryTenantFollowerReadsRouting(t *testing.T) {
 	skip.UnderRace(t, "times out")
 	skip.UnderDeadlock(t)
 
-	rng, _ := randutil.NewTestRand()
 	for _, testCase := range []struct {
 		name             string
 		sharedProcess    bool
@@ -1059,15 +1049,8 @@ func TestSecondaryTenantFollowerReadsRouting(t *testing.T) {
 			systemSQL := sqlutils.MakeSQLRunner(tc.Conns[0])
 			systemSQL.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.target_duration = '0.1s'`)
 			systemSQL.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.side_transport_interval = '0.1s'`)
-			// Disable the store rebalancer to make sure leases stay where they are;
-			// the test cares about this.
-			systemSQL.Exec(t, `SET CLUSTER SETTING kv.allocator.load_based_rebalancing = off`)
 
 			historicalQuery := `SELECT * FROM t.test AS OF SYSTEM TIME follower_read_timestamp() WHERE k=2`
-			useExplainAnalyze := rng.Float64() < 0.5
-			if useExplainAnalyze {
-				historicalQuery = "EXPLAIN ANALYZE " + historicalQuery
-			}
 			recCh := make(chan tracingpb.Recording, 1)
 
 			var tenants [numNodes]serverutils.ApplicationLayerInterface
@@ -1183,15 +1166,15 @@ func TestSecondaryTenantFollowerReadsRouting(t *testing.T) {
 
 			// Sleep so that we can perform follower reads. The read timestamp
 			// needs to be above the timestamp when the table was created.
-			log.Dev.Infof(ctx, "test sleeping for the follower read timestamps to pass the table creation timestamp...")
+			log.Infof(ctx, "test sleeping for the follower read timestamps to pass the table creation timestamp...")
 			tenantSQL.Exec(t, `SELECT pg_sleep((now() - follower_read_timestamp())::FLOAT)`)
-			log.Dev.Infof(ctx, "test sleeping... done")
+			log.Infof(ctx, "test sleeping... done")
 
 			// Check that the cache was indeed populated.
 			tenantSQL.Exec(t, `SELECT * FROM t.test WHERE k = 1`)
 			tablePrefix := keys.MustAddr(codec.TenantPrefix())
 			cache := tenants[gatewayNode].DistSenderI().(*kvcoord.DistSender).RangeDescriptorCache()
-			entry, err := cache.TestingGetCached(ctx, tablePrefix, false, roachpb.LAG_BY_CLUSTER_SETTING)
+			entry, err := cache.TestingGetCached(ctx, tablePrefix, false /* inverted */)
 			require.NoError(t, err)
 			require.False(t, entry.Lease.Empty())
 			require.Equal(t, roachpb.StoreID(1), entry.Lease.Replica.StoreID)
@@ -1201,7 +1184,7 @@ func TestSecondaryTenantFollowerReadsRouting(t *testing.T) {
 				{NodeID: 3, StoreID: 3, ReplicaID: 3},
 			}, entry.Desc.Replicas().Descriptors())
 
-			rows := tenantSQL.QueryStr(t, historicalQuery)
+			tenantSQL.Exec(t, historicalQuery)
 			rec := <-recCh
 
 			// Look at the trace and check that the follower read was served by
@@ -1219,20 +1202,6 @@ func TestSecondaryTenantFollowerReadsRouting(t *testing.T) {
 			}
 			require.Equal(t, numFRs, 1, "query wasn't served through follower reads: %s", rec)
 			require.Equal(t, numN2FRs, 1, "follower read wasn't served by n2: %s", rec)
-
-			if useExplainAnalyze {
-				frMessage, historicalMessage := "used follower read", "historical"
-				var foundFRMessage, foundHistoricalMessage bool
-				for _, row := range rows {
-					if strings.TrimSpace(row[0]) == frMessage {
-						foundFRMessage = true
-					} else if strings.HasPrefix(strings.TrimSpace(row[0]), historicalMessage) {
-						foundHistoricalMessage = true
-					}
-				}
-				require.True(t, foundFRMessage, "didn't see %q message in EXPLAIN ANALYZE: %v", frMessage, rows)
-				require.True(t, foundHistoricalMessage, "didn't see %q message in EXPLAIN ANALYZE: %v", historicalMessage, rows)
-			}
 		})
 	}
 }

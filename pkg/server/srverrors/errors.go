@@ -7,6 +7,7 @@ package srverrors
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -19,12 +20,13 @@ import (
 // ServerError logs the provided error and returns an error that should be returned by
 // the RPC endpoint method.
 func ServerError(ctx context.Context, err error) error {
-	log.Dev.ErrorfDepth(ctx, 1, "%+v", err)
+	log.ErrorfDepth(ctx, 1, "%+v", err)
 
 	// Include the PGCode in the message for easier troubleshooting
 	errCode := pgerror.GetPGCode(err).String()
 	if errCode != pgcode.Uncategorized.String() {
-		return grpcstatus.Errorf(codes.Internal, "%s Error Code: %s", ErrAPIInternalErrorString, errCode)
+		errMessage := fmt.Sprintf("%s Error Code: %s", ErrAPIInternalErrorString, errCode)
+		return grpcstatus.Errorf(codes.Internal, errMessage)
 	}
 
 	// The error is already grpcstatus formatted error.
@@ -41,7 +43,7 @@ func ServerError(ctx context.Context, err error) error {
 // ServerErrorf logs the provided error and returns an error that should be returned by
 // he RPC endpoint method.
 func ServerErrorf(ctx context.Context, format string, args ...interface{}) error {
-	log.Dev.ErrorfDepth(ctx, 1, format, args...)
+	log.ErrorfDepth(ctx, 1, format, args...)
 	return ErrAPIInternalError
 }
 
@@ -49,7 +51,7 @@ func ServerErrorf(ctx context.Context, format string, args ...interface{}) error
 var ErrAPIInternalErrorString = "An internal server error has occurred. Please check your CockroachDB logs for more details."
 
 // ErrAPIInternalError is the gRPC status error returned when an internal error was encountered.
-var ErrAPIInternalError = grpcstatus.Error(
+var ErrAPIInternalError = grpcstatus.Errorf(
 	codes.Internal,
 	ErrAPIInternalErrorString,
 )
@@ -59,7 +61,7 @@ var ErrAPIInternalError = grpcstatus.Error(
 // and returns a standard GRPC error which is appropriate to return to the
 // client.
 func APIInternalError(ctx context.Context, err error) error {
-	log.Dev.ErrorfDepth(ctx, 1, "%s", err)
+	log.ErrorfDepth(ctx, 1, "%s", err)
 	return ErrAPIInternalError
 }
 
@@ -68,6 +70,6 @@ func APIInternalError(ctx context.Context, err error) error {
 // of the error to the server log, and sends the standard internal error string
 // over the http.ResponseWriter.
 func APIV2InternalError(ctx context.Context, err error, w http.ResponseWriter) {
-	log.Dev.ErrorfDepth(ctx, 1, "%s", err)
+	log.ErrorfDepth(ctx, 1, "%s", err)
 	http.Error(w, ErrAPIInternalErrorString, http.StatusInternalServerError)
 }

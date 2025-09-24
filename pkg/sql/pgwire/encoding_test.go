@@ -52,7 +52,7 @@ func readEncodingTests(t testing.TB) []*encodingTest {
 	f.Close()
 
 	ctx := context.Background()
-	sema := tree.MakeSemaContext(nil /* resolver */)
+	sema := tree.MakeSemaContext()
 	evalCtx := eval.MakeTestingEvalContext(nil)
 
 	for _, tc := range tests {
@@ -73,7 +73,7 @@ func readEncodingTests(t testing.TB) []*encodingTest {
 			t.Fatal("expected 1 expr")
 		}
 		expr := selectClause.Exprs[0].Expr
-		te, err := expr.TypeCheck(ctx, &sema, types.AnyElement)
+		te, err := expr.TypeCheck(ctx, &sema, types.Any)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -148,7 +148,6 @@ func TestEncodings(t *testing.T) {
 	conv, loc := makeTestingConvCfg()
 	ctx := context.Background()
 	evalCtx := eval.MakeTestingEvalContext(nil)
-	var da tree.DatumAlloc
 
 	type writeFunc func(tree.Datum, *types.T)
 	type testCase struct {
@@ -272,7 +271,6 @@ func TestEncodings(t *testing.T) {
 					types.OidToType[tc.Oid],
 					code,
 					value,
-					&da,
 				)
 				if err != nil {
 					t.Fatal(err)
@@ -286,9 +284,7 @@ func TestEncodings(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if cmp, err := d.Compare(ctx, &evalCtx, tc.Datum); err != nil {
-					t.Fatal(err)
-				} else if cmp != 0 {
+				if d.Compare(&evalCtx, tc.Datum) != 0 {
 					t.Fatalf("%v != %v", d, tc.Datum)
 				}
 			}
@@ -330,20 +326,22 @@ func TestExoticNumericEncodings(t *testing.T) {
 		{apd.New(1234123400, -2), []byte{0, 4, 0, 1, 0, 0, 0, 2, 0x4, 0xd2, 0x4, 0xd2, 0, 0, 0, 0}},
 	}
 
-	ctx := context.Background()
 	evalCtx := eval.MakeTestingEvalContext(nil)
-	var da tree.DatumAlloc
 	for i, c := range testCases {
 		t.Run(fmt.Sprintf("%d_%s", i, c.Value), func(t *testing.T) {
-			d, err := pgwirebase.DecodeDatum(ctx, &evalCtx, types.Decimal, pgwirebase.FormatBinary, c.Encoding, &da)
+			d, err := pgwirebase.DecodeDatum(
+				context.Background(),
+				&evalCtx,
+				types.Decimal,
+				pgwirebase.FormatBinary,
+				c.Encoding,
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			expected := &tree.DDecimal{Decimal: *c.Value}
-			if cmp, err := d.Compare(ctx, &evalCtx, expected); err != nil {
-				t.Fatal(err)
-			} else if cmp != 0 {
+			if d.Compare(&evalCtx, expected) != 0 {
 				t.Fatalf("%v != %v", d, expected)
 			}
 		})

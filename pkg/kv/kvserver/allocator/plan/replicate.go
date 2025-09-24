@@ -15,10 +15,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/allocatorimpl"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/benignerror"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/raft"
-	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -97,12 +95,10 @@ type AllocatorReplica interface {
 	LeaseCheckReplica
 	RangeUsageInfo() allocator.RangeUsageInfo
 	RaftStatus() *raft.Status
-	GetCompactedIndex() kvpb.RaftIndex
+	GetFirstIndex() kvpb.RaftIndex
 	LastReplicaAdded() (roachpb.ReplicaID, time.Time)
 	StoreID() roachpb.StoreID
-	NodeID() roachpb.NodeID
 	GetRangeID() roachpb.RangeID
-	SendStreamStats(*rac2.RangeSendStreamStats)
 }
 
 // ReplicaPlanner implements the ReplicationPlanner interface.
@@ -167,10 +163,7 @@ func (rp ReplicaPlanner) ShouldPlanChange(
 	voterReplicas := desc.Replicas().VoterDescriptors()
 	nonVoterReplicas := desc.Replicas().NonVoterDescriptors()
 	if !rp.knobs.DisableReplicaRebalancing {
-		scorerOptions := allocatorimpl.ScorerOptions(rp.allocator.ScorerOptions(ctx))
-		if rp.allocator.CountBasedRebalancingDisabled() {
-			scorerOptions = rp.allocator.BaseScorerOptionsWithNoConvergence()
-		}
+		scorerOptions := rp.allocator.ScorerOptions(ctx)
 		rangeUsageInfo := repl.RangeUsageInfo()
 		_, _, _, ok := rp.allocator.RebalanceVoter(
 			ctx,
@@ -539,7 +532,7 @@ func (rp ReplicaPlanner) findRemoveVoter(
 			lastReplAdded = 0
 		}
 		raftStatus := repl.RaftStatus()
-		if raftStatus == nil || raftStatus.RaftState != raftpb.StateLeader {
+		if raftStatus == nil || raftStatus.RaftState != raft.StateLeader {
 			// If requested, assume all replicas are up-to-date.
 			if rp.knobs.AllowVoterRemovalWhenNotLeader {
 				candidates = allocatorimpl.FilterUnremovableReplicasWithoutRaftStatus(
@@ -793,9 +786,6 @@ func (rp ReplicaPlanner) considerRebalance(
 	if scatter {
 		scorerOpts = rp.allocator.ScorerOptionsForScatter(ctx)
 	}
-	if rp.allocator.CountBasedRebalancingDisabled() {
-		scorerOpts = rp.allocator.BaseScorerOptionsWithNoConvergence()
-	}
 	rangeUsageInfo := repl.RangeUsageInfo()
 	addTarget, removeTarget, details, ok := rp.allocator.RebalanceVoter(
 		ctx,
@@ -915,14 +905,8 @@ func (rp ReplicaPlanner) maybeTransferLeaseAwayTarget(
 	log.KvDistribution.Infof(ctx, "transferring away lease to s%d", target.StoreID)
 
 	op = AllocationTransferLeaseOp{
-		Source: roachpb.ReplicationTarget{
-			NodeID:  repl.NodeID(),
-			StoreID: repl.StoreID(),
-		},
-		Target: roachpb.ReplicationTarget{
-			NodeID:  target.NodeID,
-			StoreID: target.StoreID,
-		},
+		Source:             repl.StoreID(),
+		Target:             target.StoreID,
 		Usage:              usageInfo,
 		bypassSafetyChecks: false,
 	}

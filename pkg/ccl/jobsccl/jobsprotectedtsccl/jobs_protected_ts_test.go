@@ -38,6 +38,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Register a fake job resumer for the test. We don't want the job to do
+// anything.
+func init() {
+	jobs.RegisterConstructor(
+		jobspb.TypeSchemaChangeGC,
+		func(_ *jobs.Job, _ *cluster.Settings) jobs.Resumer {
+			return fakeResumer{}
+		},
+		jobs.UsesTenantCostControl,
+	)
+}
+
 type fakeResumer struct{}
 
 func (f fakeResumer) Resume(ctx context.Context, _ interface{}) error {
@@ -65,49 +77,48 @@ func testJobsProtectedTimestamp(
 ) {
 	t.Helper()
 
-	insqlDB := execCfg.InternalDB
-	mkJobAndRecord := func(f func(context.Context, isql.Txn, *jobs.Job) error) (rec *ptpb.Record) {
-		ts := clock.Now()
-		jobID := jr.MakeJobID()
-		require.NoError(t, insqlDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-			jobRec := jobs.Record{
-				Description: "testing",
-				Statements:  []string{"SELECT 1"},
-				Username:    username.RootUserName(),
-				Details: jobspb.SchemaChangeGCDetails{
-					Tables: []jobspb.SchemaChangeGCDetails_DroppedID{
-						{
-							ID:       42,
-							DropTime: clock.PhysicalNow(),
-						},
+	mkJobRec := func() jobs.Record {
+		return jobs.Record{
+			Description: "testing",
+			Statements:  []string{"SELECT 1"},
+			Username:    username.RootUserName(),
+			Details: jobspb.SchemaChangeGCDetails{
+				Tables: []jobspb.SchemaChangeGCDetails_DroppedID{
+					{
+						ID:       42,
+						DropTime: clock.PhysicalNow(),
 					},
 				},
-				Progress:      jobspb.SchemaChangeGCProgress{},
-				DescriptorIDs: []descpb.ID{42},
-			}
-
-			j, err := jr.CreateJobWithTxn(ctx, jobRec, jobID, txn)
-			if err != nil {
+			},
+			Progress:      jobspb.SchemaChangeGCProgress{},
+			DescriptorIDs: []descpb.ID{42},
+		}
+	}
+	insqlDB := execCfg.InternalDB
+	mkJobAndRecord := func() (j *jobs.Job, rec *ptpb.Record) {
+		ts := clock.Now()
+		jobID := jr.MakeJobID()
+		require.NoError(t, insqlDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) (err error) {
+			if j, err = jr.CreateJobWithTxn(ctx, mkJobRec(), jobID, txn); err != nil {
 				return err
 			}
 			deprecatedSpansToProtect := roachpb.Spans{{Key: keys.MinKey, EndKey: keys.MaxKey}}
 			targetToProtect := ptpb.MakeClusterTarget()
 			rec = jobsprotectedts.MakeRecord(uuid.MakeV4(), int64(jobID), ts,
 				deprecatedSpansToProtect, jobsprotectedts.Jobs, targetToProtect)
-			if err := ptp.WithTxn(txn).Protect(ctx, rec); err != nil {
-				return err
-			}
-			return f(ctx, txn, j)
+			return ptp.WithTxn(txn).Protect(ctx, rec)
 		}))
-		return rec
+		return j, rec
 	}
-	recMovedToFailed := mkJobAndRecord(func(ctx context.Context, txn isql.Txn, j *jobs.Job) error {
-		return jr.UnsafeFailed(ctx, txn, j.ID(), io.ErrUnexpectedEOF)
-	})
-	recFinished := mkJobAndRecord(func(ctx context.Context, txn isql.Txn, j *jobs.Job) error {
-		return jr.Succeeded(ctx, txn, j.ID())
-	})
-	recRemains := mkJobAndRecord(func(context.Context, isql.Txn, *jobs.Job) error { return nil })
+	jMovedToFailed, recMovedToFailed := mkJobAndRecord()
+	require.NoError(t, insqlDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+		return jr.UnsafeFailed(ctx, txn, jMovedToFailed.ID(), io.ErrUnexpectedEOF)
+	}))
+	jFinished, recFinished := mkJobAndRecord()
+	require.NoError(t, insqlDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+		return jr.Succeeded(ctx, txn, jFinished.ID())
+	}))
+	_, recRemains := mkJobAndRecord()
 	ensureNotExists := func(ctx context.Context, txn isql.Txn, ptsID uuid.UUID) (err error) {
 		_, err = ptp.WithTxn(txn).GetRecord(ctx, ptsID)
 		if err == nil {
@@ -149,13 +160,6 @@ WHERE
 func TestJobsProtectedTimestamp(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	defer jobs.TestingRegisterConstructor(
-		jobspb.TypeSchemaChangeGC,
-		func(_ *jobs.Job, _ *cluster.Settings) jobs.Resumer {
-			return fakeResumer{}
-		},
-		jobs.UsesTenantCostControl)()
 
 	ctx := context.Background()
 	s0, db, _ := serverutils.StartServer(t, base.TestServerArgs{
@@ -276,13 +280,6 @@ WHERE
 func TestSchedulesProtectedTimestamp(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	defer jobs.TestingRegisterConstructor(
-		jobspb.TypeSchemaChangeGC,
-		func(_ *jobs.Job, _ *cluster.Settings) jobs.Resumer {
-			return fakeResumer{}
-		},
-		jobs.UsesTenantCostControl)()
 
 	ctx := context.Background()
 	s0, db, _ := serverutils.StartServer(t, base.TestServerArgs{

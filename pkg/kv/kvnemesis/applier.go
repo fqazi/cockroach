@@ -13,6 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvnemesis/kvnemesisutil"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -105,15 +106,14 @@ func exceptDelRangeUsingTombstoneStraddlesRangeBoundary(err error) bool {
 	return errors.Is(err, errDelRangeUsingTombstoneStraddlesRangeBoundary)
 }
 
-func exceptConditionFailed(err error) bool {
-	return errors.HasType(err, (*kvpb.ConditionFailedError)(nil))
+func exceptSharedLockPromotionError(err error) bool { // true if lock promotion error
+	return errors.Is(err, &concurrency.LockPromotionError{})
 }
 
 func applyOp(ctx context.Context, env *Env, db *kv.DB, op *Operation) {
 	switch o := op.GetValue().(type) {
 	case *GetOperation,
 		*PutOperation,
-		*CPutOperation,
 		*ScanOperation,
 		*BatchOperation,
 		*DeleteOperation,
@@ -134,9 +134,6 @@ func applyOp(ctx context.Context, env *Env, db *kv.DB, op *Operation) {
 	case *TransferLeaseOperation:
 		err := db.AdminTransferLease(ctx, o.Key, o.Target)
 		o.Result = resultInit(ctx, err)
-	case *ChangeSettingOperation:
-		err := changeClusterSettingInEnv(ctx, env, o)
-		o.Result = resultInit(ctx, err)
 	case *ChangeZoneOperation:
 		err := updateZoneConfigInEnv(ctx, env, o.Type)
 		o.Result = resultInit(ctx, err)
@@ -148,26 +145,18 @@ func applyOp(ctx context.Context, env *Env, db *kv.DB, op *Operation) {
 			_, err = db.Barrier(ctx, o.Key, o.EndKey)
 		}
 		o.Result = resultInit(ctx, err)
-	case *FlushLockTableOperation:
-		o.Result = resultInit(ctx, db.FlushLockTable(ctx, o.Key, o.EndKey))
 	case *ClosureTxnOperation:
 		// Use a backoff loop to avoid thrashing on txn aborts. Don't wait between
 		// epochs of the same transaction to avoid waiting while holding locks.
 		retryOnAbort := retry.StartWithCtx(ctx, retry.Options{
 			InitialBackoff: 1 * time.Millisecond,
-			MaxBackoff:     10 * time.Second,
+			MaxBackoff:     250 * time.Millisecond,
 		})
 		var savedTxn *kv.Txn
 		txnErr := db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
 			if err := txn.SetIsoLevel(o.IsoLevel); err != nil {
 				panic(err)
 			}
-			if o.UserPriority > 0 {
-				if err := txn.SetUserPriority(o.UserPriority); err != nil {
-					panic(err)
-				}
-			}
-			txn.SetBufferedWritesEnabled(o.BufferedWrites)
 			if savedTxn != nil && txn.TestingCloneTxn().Epoch == 0 {
 				// If the txn's current epoch is 0 and we've run at least one prior
 				// iteration, we were just aborted.
@@ -335,32 +324,11 @@ func applyClientOp(
 		}
 	case *PutOperation:
 		_, ts, err := dbRunWithResultAndTimestamp(ctx, db, func(b *kv.Batch) {
-			if o.MustAcquireExclusiveLock {
-				b.PutMustAcquireExclusiveLock(o.Key, o.Value())
-			} else {
-				b.Put(o.Key, o.Value())
-			}
+			b.Put(o.Key, o.Value())
 			setLastReqSeq(b, o.Seq)
 		})
 		o.Result = resultInit(ctx, err)
 		if err != nil {
-			return
-		}
-		o.Result.OptionalTimestamp = ts
-	case *CPutOperation:
-		_, ts, err := dbRunWithResultAndTimestamp(ctx, db, func(b *kv.Batch) {
-			expVal := roachpb.MakeValueFromBytes(o.ExpVal)
-			if o.AllowIfDoesNotExist {
-				b.CPutAllowingIfNotExists(o.Key, o.Value(), expVal.TagAndDataBytes())
-			} else {
-				b.CPut(o.Key, o.Value(), expVal.TagAndDataBytes())
-			}
-			setLastReqSeq(b, o.Seq)
-		})
-		o.Result = resultInit(ctx, err)
-		// If the CPut failed with ConditionFailedError, we still want to record the
-		// timestamp and do some validation later.
-		if err != nil && !exceptConditionFailed(err) {
 			return
 		}
 		o.Result.OptionalTimestamp = ts
@@ -407,11 +375,7 @@ func applyClientOp(
 		}
 	case *DeleteOperation:
 		res, ts, err := dbRunWithResultAndTimestamp(ctx, db, func(b *kv.Batch) {
-			if o.MustAcquireExclusiveLock {
-				b.DelMustAcquireExclusiveLock(o.Key)
-			} else {
-				b.Del(o.Key)
-			}
+			b.Del(o.Key)
 			setLastReqSeq(b, o.Seq)
 		})
 		o.Result = resultInit(ctx, err)
@@ -484,16 +448,6 @@ func applyClientOp(
 					EndKey: o.EndKey,
 				},
 				WithLeaseAppliedIndex: o.WithLeaseAppliedIndex,
-			})
-		})
-		o.Result = resultInit(ctx, err)
-	case *FlushLockTableOperation:
-		_, _, err := dbRunWithResultAndTimestamp(ctx, db, func(b *kv.Batch) {
-			b.AddRawRequest(&kvpb.FlushLockTableRequest{
-				RequestHeader: kvpb.RequestHeader{
-					Key:    o.Key,
-					EndKey: o.EndKey,
-				},
 			})
 		})
 		o.Result = resultInit(ctx, err)
@@ -577,19 +531,7 @@ func applyBatchOp(
 				b.Get(subO.Key)
 			}
 		case *PutOperation:
-			if subO.MustAcquireExclusiveLock {
-				b.PutMustAcquireExclusiveLock(subO.Key, subO.Value())
-			} else {
-				b.Put(subO.Key, subO.Value())
-			}
-			setLastReqSeq(b, subO.Seq)
-		case *CPutOperation:
-			expVal := roachpb.MakeValueFromBytes(subO.ExpVal)
-			if subO.AllowIfDoesNotExist {
-				b.CPutAllowingIfNotExists(subO.Key, subO.Value(), expVal.TagAndDataBytes())
-			} else {
-				b.CPut(subO.Key, subO.Value(), expVal.TagAndDataBytes())
-			}
+			b.Put(subO.Key, subO.Value())
 			setLastReqSeq(b, subO.Seq)
 		case *ScanOperation:
 			if subO.SkipLocked {
@@ -617,11 +559,7 @@ func applyBatchOp(
 				}
 			}
 		case *DeleteOperation:
-			if subO.MustAcquireExclusiveLock {
-				b.DelMustAcquireExclusiveLock(subO.Key)
-			} else {
-				b.Del(subO.Key)
-			}
+			b.Del(subO.Key)
 			setLastReqSeq(b, subO.Seq)
 		case *DeleteRangeOperation:
 			b.DelRange(subO.Key, subO.EndKey, true /* returnKeys */)
@@ -633,11 +571,6 @@ func applyBatchOp(
 			panic(errors.AssertionFailedf(`AddSSTable cannot be used in batches`))
 		case *BarrierOperation:
 			panic(errors.AssertionFailedf(`Barrier cannot be used in batches`))
-		case *FlushLockTableOperation:
-			panic(errors.AssertionFailedf(`FlushLockOperation cannot be used in batches`))
-		case *MutateBatchHeaderOperation:
-			b.Header.MaxSpanRequestKeys = subO.MaxSpanRequestKeys
-			b.Header.TargetBytes = subO.TargetBytes
 		default:
 			panic(errors.AssertionFailedf(`unknown batch operation type: %T %v`, subO, subO))
 		}
@@ -648,80 +581,57 @@ func applyBatchOp(
 	// to each result.
 	err = nil
 	o.Result.OptionalTimestamp = ts
-	resultIdx := 0
 	for i := range o.Ops {
 		switch subO := o.Ops[i].GetValue().(type) {
 		case *GetOperation:
-			res := b.Results[resultIdx]
-			if res.Err != nil {
-				subO.Result = resultInit(ctx, res.Err)
+			if b.Results[i].Err != nil {
+				subO.Result = resultInit(ctx, b.Results[i].Err)
 			} else {
-				if res.ResumeSpan != nil {
-					subO.Result.Type = ResultType_NoError
+				subO.Result.Type = ResultType_Value
+				result := b.Results[i].Rows[0]
+				if result.Value != nil {
+					subO.Result.Value = result.Value.RawBytes
 				} else {
-					subO.Result.Type = ResultType_Value
-					result := res.Rows[0]
-					if result.Value != nil {
-						subO.Result.Value = result.Value.RawBytes
-					} else {
-						subO.Result.Value = nil
-					}
+					subO.Result.Value = nil
 				}
 			}
-			subO.Result.ResumeSpan = res.ResumeSpan
 		case *PutOperation:
-			res := b.Results[resultIdx]
-			subO.Result = resultInit(ctx, res.Err)
-			subO.Result.ResumeSpan = res.ResumeSpan
-		case *CPutOperation:
-			res := b.Results[resultIdx]
-			subO.Result = resultInit(ctx, res.Err)
-			subO.Result.ResumeSpan = res.ResumeSpan
+			err := b.Results[i].Err
+			subO.Result = resultInit(ctx, err)
 		case *ScanOperation:
-			res := b.Results[resultIdx]
-			if res.Err != nil {
-				subO.Result = resultInit(ctx, res.Err)
+			kvs, err := b.Results[i].Rows, b.Results[i].Err
+			if err != nil {
+				subO.Result = resultInit(ctx, err)
 			} else {
 				subO.Result.Type = ResultType_Values
-				subO.Result.Values = make([]KeyValue, len(res.Rows))
-				for j, kv := range res.Rows {
+				subO.Result.Values = make([]KeyValue, len(kvs))
+				for j, kv := range kvs {
 					subO.Result.Values[j] = KeyValue{
 						Key:   []byte(kv.Key),
 						Value: kv.Value.RawBytes,
 					}
 				}
 			}
-			subO.Result.ResumeSpan = res.ResumeSpan
 		case *DeleteOperation:
-			res := b.Results[resultIdx]
-			subO.Result = resultInit(ctx, res.Err)
-			subO.Result.ResumeSpan = res.ResumeSpan
+			err := b.Results[i].Err
+			subO.Result = resultInit(ctx, err)
 		case *DeleteRangeOperation:
-			res := b.Results[resultIdx]
-			if res.Err != nil {
-				subO.Result = resultInit(ctx, res.Err)
+			keys, err := b.Results[i].Keys, b.Results[i].Err
+			if err != nil {
+				subO.Result = resultInit(ctx, err)
 			} else {
 				subO.Result.Type = ResultType_Keys
-				subO.Result.Keys = make([][]byte, len(res.Keys))
-				for j, key := range res.Keys {
+				subO.Result.Keys = make([][]byte, len(keys))
+				for j, key := range keys {
 					subO.Result.Keys[j] = key
 				}
 			}
-			subO.Result.ResumeSpan = res.ResumeSpan
 		case *DeleteRangeUsingTombstoneOperation:
-			res := b.Results[resultIdx]
-			subO.Result = resultInit(ctx, res.Err)
-			subO.Result.ResumeSpan = res.ResumeSpan
-		case *MutateBatchHeaderOperation:
-			// NB: MutateBatchHeaderOperation cannot fail.
-			subO.Result = resultInit(ctx, nil)
+			subO.Result = resultInit(ctx, err)
 		case *AddSSTableOperation:
 			panic(errors.AssertionFailedf(`AddSSTable cannot be used in batches`))
 		default:
 			panic(errors.AssertionFailedf(`unknown batch operation type: %T %v`, subO, subO))
-		}
-		if o.Ops[i].OperationHasResultInBatch() {
-			resultIdx++
 		}
 	}
 }
@@ -744,11 +654,11 @@ func getRangeDesc(ctx context.Context, key roachpb.Key, dbs ...*kv.DB) roachpb.R
 		sender := dbs[dbIdx].NonTransactionalSender()
 		descs, _, err := kv.RangeLookup(ctx, sender, key, kvpb.CONSISTENT, 0, false)
 		if err != nil {
-			log.Dev.Infof(ctx, "looking up descriptor for %s: %+v", key, err)
+			log.Infof(ctx, "looking up descriptor for %s: %+v", key, err)
 			continue
 		}
 		if len(descs) != 1 {
-			log.Dev.Infof(ctx, "unexpected number of descriptors for %s: %d", key, len(descs))
+			log.Infof(ctx, "unexpected number of descriptors for %s: %d", key, len(descs))
 			continue
 		}
 		return descs[0]
@@ -776,39 +686,6 @@ func newGetReplicasFn(dbs ...*kv.DB) GetReplicasFn {
 		}
 		return voters, nonVoters
 	}
-}
-
-func changeClusterSettingInEnv(ctx context.Context, env *Env, op *ChangeSettingOperation) error {
-	var settings map[string]string
-	switch op.Type {
-	case ChangeSettingType_SetLeaseType:
-		switch op.LeaseType {
-		case roachpb.LeaseExpiration:
-			settings = map[string]string{
-				"kv.lease.expiration_leases_only.enabled": "true",
-			}
-		case roachpb.LeaseEpoch:
-			settings = map[string]string{
-				"kv.lease.expiration_leases_only.enabled":       "false",
-				"kv.raft.leader_fortification.fraction_enabled": "0.0",
-			}
-		case roachpb.LeaseLeader:
-			settings = map[string]string{
-				"kv.lease.expiration_leases_only.enabled":       "false",
-				"kv.raft.leader_fortification.fraction_enabled": "1.0",
-			}
-		default:
-			panic(errors.AssertionFailedf(`unknown LeaseType: %v`, op.LeaseType))
-		}
-	default:
-		panic(errors.AssertionFailedf(`unknown ChangeSettingType: %v`, op.Type))
-	}
-	for name, val := range settings {
-		if err := env.SetClusterSetting(ctx, name, val); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func updateZoneConfig(zone *zonepb.ZoneConfig, change ChangeZoneType) {

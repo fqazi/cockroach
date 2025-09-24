@@ -9,7 +9,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/replica_rac2"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -58,9 +57,9 @@ func TestReplicaUpdateLastReplicaAdded(t *testing.T) {
 	for _, c := range testCases {
 		t.Run("", func(t *testing.T) {
 			var r Replica
-			r.shMu.state.Desc = &c.oldDesc
+			r.mu.state.Desc = &c.oldDesc
 			r.mu.lastReplicaAdded = c.lastReplicaAdded
-			r.flowControlV2 = noopProcessor{}
+			r.mu.replicaFlowControlIntegration = newReplicaFlowControlIntegration((*replicaFlowControl)(&r), nil, nil)
 			r.store = tc.store
 			r.concMgr = tc.repl.concMgr
 			r.setDescRaftMuLocked(context.Background(), &c.newDesc)
@@ -70,17 +69,4 @@ func TestReplicaUpdateLastReplicaAdded(t *testing.T) {
 			}
 		})
 	}
-}
-
-// noopProcessor provides a noop implementation of OnDescChangedLocked, since
-// the test does not initialize any of the dependencies needed by a real
-// replica_rac2.Processor.
-type noopProcessor struct {
-	// Always nil
-	replica_rac2.Processor
-}
-
-func (p noopProcessor) OnDescChangedLocked(
-	ctx context.Context, desc *roachpb.RangeDescriptor, tenantID roachpb.TenantID,
-) {
 }

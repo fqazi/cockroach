@@ -253,7 +253,6 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 					if ignoreStatsRowWithDroppedColumn {
 						continue
 					}
-					statsRow.ID = (uint64)(*r[statIDIdx].(*tree.DInt))
 					statsRow.CreatedAt = tree.AsStringWithFlags(r[createdAtIdx], tree.FmtBareStrings)
 					statsRow.RowCount = (uint64)(*r[rowCountIdx].(*tree.DInt))
 					statsRow.DistinctCount = (uint64)(*r[distinctCountIdx].(*tree.DInt))
@@ -297,16 +296,17 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 				}
 
 				colIDs := r[columnIDsIdx].(*tree.DArray).Array
-				colNames := make(tree.Datums, len(colIDs))
+				colNames := tree.NewDArray(types.String)
+				colNames.Array = make(tree.Datums, len(colIDs))
 				ignoreStatsRowWithDroppedColumn := false
+				var colName string
 				for i, d := range colIDs {
-					var colName string
 					colName, err = statColumnString(desc, d)
 					if err != nil && sqlerrors.IsUndefinedColumnError(err) {
 						ignoreStatsRowWithDroppedColumn = true
 						break
 					}
-					colNames[i] = tree.NewDString(colName)
+					colNames.Array[i] = tree.NewDString(colName)
 				}
 				if ignoreStatsRowWithDroppedColumn {
 					continue
@@ -325,7 +325,7 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 
 				res := tree.Datums{
 					r[nameIdx],
-					tree.NewDArrayFromDatums(types.String, colNames),
+					colNames,
 					createdAtTZ,
 					r[rowCountIdx],
 					r[distinctCountIdx],

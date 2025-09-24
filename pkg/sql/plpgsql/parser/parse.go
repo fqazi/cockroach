@@ -9,7 +9,6 @@ package parser
 import (
 	"go/constant"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser/statements"
 	"github.com/cockroachdb/cockroach/pkg/sql/scanner"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -20,13 +19,6 @@ import (
 func init() {
 	scanner.NewNumValFn = func(a constant.Value, s string, b bool) interface{} { return tree.NewNumVal(a, s, b) }
 	scanner.NewPlaceholderFn = func(s string) (interface{}, error) { return tree.NewPlaceholder(s) }
-	parser.ParseDoBlockFn = func(options tree.DoBlockOptions) (tree.DoBlockBody, error) {
-		doBlockBody, err := makeDoStmt(options)
-		if err != nil {
-			return nil, err
-		}
-		return doBlockBody, nil
-	}
 }
 
 // Parser wraps a scanner, parser and other utilities present in the parser
@@ -133,15 +125,6 @@ func (p *Parser) parse(
 }
 
 // Parse parses a sql statement string and returns a list of Statements.
-//
-// Note that most callers ignore the number of annotations set in the
-// PLpgStatement. (Annotations are used for different object names like table
-// names and type names.) Ignoring them is usually safe for different reasons
-// (depending on the context):
-// - in some cases (like in the optbuilder), we will replace the annotated node
-// during type checking with an expression that has resolved types;
-// - in other cases (like when operating on descriptors / with backups), we
-// operate with table OIDTypeReferences.
 func Parse(sql string) (statements.PLpgStatement, error) {
 	var p Parser
 	return p.parseWithDepth(1, sql, defaultNakedIntType)

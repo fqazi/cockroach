@@ -3,14 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import {
-  CheckCircleFilled,
-  CloseCircleFilled,
-  InfoCircleFilled,
-  WarningFilled,
-} from "@ant-design/icons";
-import { Alert } from "antd";
 import React from "react";
+import { Alert, Icon } from "antd";
+import "antd/lib/alert/style";
+import "antd/lib/icon/style";
 import { Link } from "react-router-dom";
 
 import { AlertInfo, AlertLevel } from "src/redux/alerts";
@@ -40,18 +36,18 @@ const mapAlertLevelToType = (alertLevel: AlertLevel): AlertType => {
   }
 };
 
-const getIcon = (alertLevel: AlertLevel): React.ReactNode => {
+const getIconType = (alertLevel: AlertLevel): string => {
   switch (alertLevel) {
     case AlertLevel.SUCCESS:
-      return <CheckCircleFilled className="alert-massage__icon" />;
+      return "check-circle";
     case AlertLevel.NOTIFICATION:
-      return <InfoCircleFilled className="alert-massage__icon" />;
+      return "info-circle";
     case AlertLevel.WARNING:
-      return <WarningFilled className="alert-massage__icon" />;
+      return "warning";
     case AlertLevel.CRITICAL:
-      return <CloseCircleFilled className="alert-massage__icon" />;
+      return "close-circle";
     default:
-      return <InfoCircleFilled className="alert-massage__icon" />;
+      return "info-circle";
   }
 };
 
@@ -88,17 +84,26 @@ export class AlertMessage extends React.Component<AlertMessageProps> {
     }
 
     const type = mapAlertLevelToType(level);
+    const iconType = getIconType(level);
     return (
       <Alert
         className="alert-massage"
         message={title}
         description={description}
         showIcon
-        icon={getIcon(level)}
+        icon={
+          <Icon
+            type={iconType}
+            theme="filled"
+            className="alert-massage__icon"
+          />
+        }
         closable={closable}
         onClose={dismiss}
+        closeText={
+          closable && <div className="alert-massage__close-text">&times;</div>
+        }
         type={type}
-        banner
       />
     );
   }

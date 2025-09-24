@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import { assert } from "chai";
-
 import { normalizeClosedDomain } from "./utils";
 
 describe("barCharts utils", () => {

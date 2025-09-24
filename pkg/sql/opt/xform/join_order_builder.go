@@ -6,7 +6,6 @@
 package xform
 
 import (
-	"context"
 	"math"
 	"math/bits"
 
@@ -269,7 +268,6 @@ type OnAddJoinFunc func(left, right, all, joinRefs, selectRefs []memo.RelExpr, o
 // Citations: [8]
 type JoinOrderBuilder struct {
 	f       *norm.Factory
-	ctx     context.Context
 	evalCtx *eval.Context
 
 	// vertexes is the set of base relations that form the vertexes of the join
@@ -314,9 +312,9 @@ type JoinOrderBuilder struct {
 	// once does not exceed the session limit.
 	joinCount int
 
-	// equivs is an EquivGroups set used to keep track of equivalence relations
-	// when assembling filters.
-	equivs props.EquivGroups
+	// equivs is an EquivSet used to keep track of equivalence relations when
+	// assembling filters.
+	equivs props.EquivSet
 
 	// rebuildAllJoins is true when the filters in the original matched join tree
 	// were not pushed down as far as possible. When this is true, all joins
@@ -334,17 +332,17 @@ type JoinOrderBuilder struct {
 // Init initializes a new JoinOrderBuilder with the given factory. The join
 // graph is reset, so a JoinOrderBuilder can be reused. Callback functions are
 // not reset.
-func (jb *JoinOrderBuilder) Init(ctx context.Context, f *norm.Factory, evalCtx *eval.Context) {
+func (jb *JoinOrderBuilder) Init(f *norm.Factory, evalCtx *eval.Context) {
 	// This initialization pattern ensures that fields are not unwittingly
 	// reused. Field reuse must be explicit.
 	*jb = JoinOrderBuilder{
 		f:               f,
-		ctx:             ctx,
 		evalCtx:         evalCtx,
 		plans:           make(map[vertexSet]memo.RelExpr),
 		applicableEdges: make(map[vertexSet]edgeSet),
 		onReorderFunc:   jb.onReorderFunc,
 		onAddJoinFunc:   jb.onAddJoinFunc,
+		equivs:          props.NewEquivSet(),
 	}
 }
 
@@ -616,22 +614,14 @@ func (jb *JoinOrderBuilder) addJoins(s1, s2 vertexSet) {
 	// Keep track of which edges are applicable to this join.
 	var appliedEdges edgeSet
 
-	// Lazily initialize jb.equivs and notNullCols.
-	innerEdgeReady := false
-	var notNullCols opt.ColSet
+	jb.equivs.Reset()
+	jb.equivs.AddFromFDs(&jb.plans[s1].Relational().FuncDeps)
+	jb.equivs.AddFromFDs(&jb.plans[s2].Relational().FuncDeps)
 
 	// Gather all inner edges that connect the left and right relation sets.
 	var innerJoinFilters memo.FiltersExpr
 	for i, ok := jb.innerEdges.Next(0); ok; i, ok = jb.innerEdges.Next(i + 1) {
 		e := &jb.edges[i]
-		if !innerEdgeReady {
-			jb.equivs.Reset()
-			jb.equivs.AddFromFDs(&jb.plans[s1].Relational().FuncDeps)
-			jb.equivs.AddFromFDs(&jb.plans[s2].Relational().FuncDeps)
-			notNullCols.UnionWith(jb.plans[s1].Relational().NotNullCols)
-			notNullCols.UnionWith(jb.plans[s2].Relational().NotNullCols)
-			innerEdgeReady = true
-		}
 
 		// Ensure that this edge forms a valid connection between the two sets. See
 		// the checkNonInnerJoin and checkInnerJoin comments for more information.
@@ -639,11 +629,7 @@ func (jb *JoinOrderBuilder) addJoins(s1, s2 vertexSet) {
 			// Record this edge as applied even if it's redundant, since redundant
 			// edges are trivially applied.
 			appliedEdges.Add(i)
-			redundant := areFiltersRedundant(&jb.equivs, e.filters, notNullCols)
-			// Update notNullCols based on null-rejecting filters to aid in
-			// finding subsequent redundant filters.
-			notNullCols.UnionWith(memo.NullColsRejectedByFilter(jb.ctx, jb.evalCtx, e.filters))
-			if redundant {
+			if areFiltersRedundant(&jb.equivs, e.filters) {
 				// Avoid adding redundant filters.
 				continue
 			}
@@ -715,13 +701,13 @@ func (jb *JoinOrderBuilder) addJoins(s1, s2 vertexSet) {
 func (jb *JoinOrderBuilder) makeInnerEdge(op *operator, filters memo.FiltersExpr) {
 	if len(filters) == 0 {
 		// This is a cross join. Create a single edge for the empty FiltersExpr.
-		jb.edges = append(jb.edges, jb.makeEdge(op, filters))
+		jb.edges = append(jb.edges, *jb.makeEdge(op, filters))
 		jb.innerEdges.Add(len(jb.edges) - 1)
 		return
 	}
 	for i := range filters {
 		// Create an edge for each conjunct.
-		jb.edges = append(jb.edges, jb.makeEdge(op, filters[i:i+1]))
+		jb.edges = append(jb.edges, *jb.makeEdge(op, filters[i:i+1]))
 		jb.innerEdges.Add(len(jb.edges) - 1)
 	}
 }
@@ -730,7 +716,7 @@ func (jb *JoinOrderBuilder) makeInnerEdge(op *operator, filters memo.FiltersExpr
 // join. For any given non-inner join, exactly one edge is constructed.
 func (jb *JoinOrderBuilder) makeNonInnerEdge(op *operator, filters memo.FiltersExpr) {
 	// Always create a single edge from a non-inner join.
-	jb.edges = append(jb.edges, jb.makeEdge(op, filters))
+	jb.edges = append(jb.edges, *jb.makeEdge(op, filters))
 	jb.nonInnerEdges.Add(len(jb.edges) - 1)
 }
 
@@ -782,13 +768,13 @@ func (jb *JoinOrderBuilder) makeTransitiveEdge(col1, col2 opt.ColumnID) {
 	filters := memo.FiltersExpr{jb.f.ConstructFiltersItem(condition)}
 
 	// Add the edge to the join graph.
-	jb.edges = append(jb.edges, jb.makeEdge(op, filters))
+	jb.edges = append(jb.edges, *jb.makeEdge(op, filters))
 	jb.innerEdges.Add(len(jb.edges) - 1)
 }
 
 // makeEdge returns a new edge given an operator and set of filters.
-func (jb *JoinOrderBuilder) makeEdge(op *operator, filters memo.FiltersExpr) (e edge) {
-	e = edge{op: op, filters: filters}
+func (jb *JoinOrderBuilder) makeEdge(op *operator, filters memo.FiltersExpr) (e *edge) {
+	e = &edge{op: op, filters: filters}
 	e.calcNullRejectedRels(jb)
 	e.calcSES(jb)
 	e.calcTES(jb.edges)
@@ -898,12 +884,8 @@ func (jb *JoinOrderBuilder) addJoin(
 }
 
 // areFiltersRedundant returns true if the given FiltersExpr contains a single
-// equality filter that is already represented by the given EquivGroups set.
-// notNullCols is the set of columns that are known to be non-null, either from
-// the logical properties of the join inputs, or from other filters.
-func areFiltersRedundant(
-	equivs *props.EquivGroups, filters memo.FiltersExpr, notNullCols opt.ColSet,
-) bool {
+// equality filter that is already represented by the given FuncDepSet.
+func areFiltersRedundant(equivs *props.EquivSet, filters memo.FiltersExpr) bool {
 	if len(filters) != 1 {
 		return false
 	}
@@ -914,13 +896,6 @@ func areFiltersRedundant(
 	var1, ok1 := eq.Left.(*memo.VariableExpr)
 	var2, ok2 := eq.Right.(*memo.VariableExpr)
 	if !ok1 || !ok2 {
-		return false
-	}
-	if !notNullCols.Contains(var1.Col) || !notNullCols.Contains(var2.Col) {
-		// An equality between columns is not redundant if either column is
-		// nullable because equality is null-rejecting. equivs allows for NULL
-		// values of equivalent columns, so we must check for nullable columns
-		// before checking for equivalence.
 		return false
 	}
 	return equivs.AreColsEquiv(var1.Col, var2.Col)
@@ -1256,7 +1231,7 @@ func (e *edge) calcNullRejectedRels(jb *JoinOrderBuilder) {
 	var nullRejectedCols opt.ColSet
 	for i := range e.filters {
 		if constraints := e.filters[i].ScalarProps().Constraints; constraints != nil {
-			nullRejectedCols.UnionWith(constraints.ExtractNotNullCols(jb.ctx, jb.evalCtx))
+			nullRejectedCols.UnionWith(constraints.ExtractNotNullCols(jb.evalCtx))
 		}
 	}
 	e.nullRejectedRels = jb.getRelations(nullRejectedCols)

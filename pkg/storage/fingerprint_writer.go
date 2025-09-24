@@ -6,9 +6,11 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"hash"
 	"hash/fnv"
+	"io"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -16,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/pebble/objstorage"
 )
 
 // fingerprintWriter hashes every key/timestamp and value for point keys, and
@@ -43,13 +44,13 @@ func makeFingerprintWriter(
 	ctx context.Context,
 	hasher hash.Hash64,
 	cs *cluster.Settings,
-	f objstorage.Writable,
+	f io.Writer,
 	opts MVCCExportFingerprintOptions,
 ) fingerprintWriter {
 	// TODO(adityamaru,dt): Once
 	// https://github.com/cockroachdb/cockroach/issues/90450 has been addressed we
 	// should write to a kvBuf instead of a Backup SST writer.
-	sstWriter := MakeTransportSSTWriter(ctx, cs, f)
+	sstWriter := MakeBackupSSTWriter(ctx, cs, f)
 	return fingerprintWriter{
 		sstWriter: &sstWriter,
 		hasher:    hasher,
@@ -264,7 +265,7 @@ func FingerprintRangekeys(
 	}
 	defer iter.Close()
 
-	var destFile objstorage.MemObj
+	var destFile bytes.Buffer
 	fw := makeFingerprintWriter(ctx, fnv.New64(), cs, &destFile, opts)
 	defer fw.Close()
 	fingerprintRangeKey := func(stack MVCCRangeKeyStack) (uint64, error) {
@@ -287,7 +288,10 @@ func FingerprintRangekeys(
 			if err := fw.hashTimestamp(v.Timestamp); err != nil {
 				return 0, err
 			}
-			mvccValue, err := decodeMVCCValueIgnoringHeader(v.Value)
+			mvccValue, ok, err := tryDecodeSimpleMVCCValue(v.Value)
+			if !ok && err == nil {
+				mvccValue, err = decodeExtendedMVCCValue(v.Value)
+			}
 			if err != nil {
 				return 0, errors.Wrapf(err, "decoding mvcc value %s", v.Value)
 			}
@@ -315,7 +319,7 @@ func FingerprintRangekeys(
 		fw.xorAgg.add(rangekeyFingerprint)
 	}
 
-	if len(destFile.Data()) != 0 {
+	if destFile.Len() != 0 {
 		return 0, errors.AssertionFailedf("unexpected data found in destFile")
 	}
 

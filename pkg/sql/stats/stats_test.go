@@ -49,7 +49,7 @@ func TestStatsAnyType(t *testing.T) {
 				// Casting random integers to REGTYPE might fail.
 				continue loop
 			}
-			if err := colinfo.ValidateColumnDefType(ctx, st, typ); err == nil {
+			if err := colinfo.ValidateColumnDefType(ctx, st.Version, typ); err == nil {
 				break
 			}
 		}

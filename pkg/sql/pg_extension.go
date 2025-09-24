@@ -36,10 +36,12 @@ func postgisColumnsTablePopulator(
 	matchingFamily types.Family,
 ) func(context.Context, *planner, catalog.DatabaseDescriptor, func(...tree.Datum) error) error {
 	return func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
-		opts := forEachTableDescOptions{virtualOpts: hideVirtual}
-		return forEachTableDesc(ctx, p, dbContext, opts,
-			func(ctx context.Context, descCtx tableDescContext) error {
-				db, sc, table := descCtx.database, descCtx.schema, descCtx.table
+		return forEachTableDesc(
+			ctx,
+			p,
+			dbContext,
+			hideVirtual,
+			func(db catalog.DatabaseDescriptor, sc catalog.SchemaDescriptor, table catalog.TableDescriptor) error {
 				if !table.IsPhysicalTable() {
 					return nil
 				}

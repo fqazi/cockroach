@@ -5,18 +5,14 @@
 
 import { PayloadAction } from "@reduxjs/toolkit";
 import { all, call, put, takeLatest } from "redux-saga/effects";
-
 import {
   ErrorWithKey,
   getStatementDetails,
   StatementDetailsRequest,
   StatementDetailsResponseWithKey,
 } from "src/api/statementsApi";
-import { generateStmtDetailsToID } from "src/util/appStats";
-
-import { maybeError } from "../../util";
-
 import { actions as sqlDetailsStatsActions } from "./statementDetails.reducer";
+import { generateStmtDetailsToID } from "src/util/appStats";
 
 export function* refreshSQLDetailsStatsSaga(
   action: PayloadAction<StatementDetailsRequest>,
@@ -44,7 +40,7 @@ export function* requestSQLDetailsStatsSaga(
     yield put(sqlDetailsStatsActions.received(resultWithKey));
   } catch (e) {
     const err: ErrorWithKey = {
-      err: maybeError(e),
+      err: e,
       key,
     };
     yield put(sqlDetailsStatsActions.failed(err));

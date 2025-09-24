@@ -3,10 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import React from "react";
+import { History } from "history";
 import { Button, commonStyles } from "@cockroachlabs/cluster-ui";
 import { ArrowLeft } from "@cockroachlabs/icons";
-import { History } from "history";
-import React from "react";
 
 interface backProps {
   history: History;

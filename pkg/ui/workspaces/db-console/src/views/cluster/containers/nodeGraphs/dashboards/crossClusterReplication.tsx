@@ -3,21 +3,47 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { AxisUnits, util } from "@cockroachlabs/cluster-ui";
 import React from "react";
 
-import { cockroach } from "src/js/protos";
 import LineGraph from "src/views/cluster/components/linegraph";
 import { Metric, Axis } from "src/views/shared/components/metricQuery";
-
+import { AxisUnits, util } from "@cockroachlabs/cluster-ui";
 import { GraphDashboardProps } from "./dashboardUtils";
-
+import { cockroach } from "src/js/protos";
 import TimeSeriesQueryAggregator = cockroach.ts.tspb.TimeSeriesQueryAggregator;
 
 export default function (props: GraphDashboardProps) {
   const { storeSources, tenantSource } = props;
 
   return [
+    <LineGraph
+      title="Logical Bytes"
+      sources={storeSources}
+      tenantSource={tenantSource}
+      tooltip={`Rate at which the logical bytes (sum of keys + values) are ingested by all replication jobs`}
+    >
+      <Axis units={AxisUnits.Bytes} label="bytes">
+        <Metric
+          name="cr.node.physical_replication.logical_bytes"
+          title="Logical Bytes"
+          nonNegativeRate
+        />
+      </Axis>
+    </LineGraph>,
+    <LineGraph
+      title="SST Bytes"
+      sources={storeSources}
+      tenantSource={tenantSource}
+      tooltip={`Rate at which the SST bytes (compressed) are sent to KV by all replication jobs`}
+    >
+      <Axis units={AxisUnits.Bytes} label="bytes">
+        <Metric
+          name="cr.node.physical_replication.sst_bytes"
+          title="SST Bytes"
+          nonNegativeRate
+        />
+      </Axis>
+    </LineGraph>,
     <LineGraph
       title="Replication Lag"
       sources={storeSources}
@@ -44,20 +70,6 @@ export default function (props: GraphDashboardProps) {
                   : d,
               )
           }
-        />
-      </Axis>
-    </LineGraph>,
-    <LineGraph
-      title="Logical Bytes"
-      sources={storeSources}
-      tenantSource={tenantSource}
-      tooltip={`Rate at which the logical bytes (sum of keys + values) are ingested by all replication jobs`}
-    >
-      <Axis units={AxisUnits.Bytes} label="bytes">
-        <Metric
-          name="cr.node.physical_replication.logical_bytes"
-          title="Logical Bytes"
-          nonNegativeRate
         />
       </Axis>
     </LineGraph>,

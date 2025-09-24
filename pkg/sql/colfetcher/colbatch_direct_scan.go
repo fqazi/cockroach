@@ -208,15 +208,12 @@ func NewColBatchDirectScan(
 		bsHeader,
 		&fetchSpec,
 		spec.Reverse,
-		tableArgs.RequiresRawMVCCValues(),
 		spec.LockingStrength,
 		spec.LockingWaitPolicy,
 		spec.LockingDurability,
 		flowCtx.EvalCtx.SessionData().LockTimeout,
-		flowCtx.EvalCtx.SessionData().DeadlockTimeout,
 		kvFetcherMemAcc,
 		flowCtx.EvalCtx.TestingKnobs.ForceProductionValues,
-		spec.FetchSpec.External,
 	)
 	var hasDatumVec bool
 	for _, t := range tableArgs.typs {

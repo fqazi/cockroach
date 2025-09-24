@@ -74,9 +74,6 @@ func (*tpcds) Meta() workload.Meta { return tpcdsMeta }
 // Flags implements the Flagser interface.
 func (w *tpcds) Flags() workload.Flags { return w.flags }
 
-// ConnFlags implements the ConnFlagser interface.
-func (w *tpcds) ConnFlags() *workload.ConnFlags { return w.connFlags }
-
 // Hooks implements the Hookser interface.
 func (w *tpcds) Hooks() workload.Hooks {
 	return workload.Hooks{
@@ -259,6 +256,10 @@ func (w *tpcds) Tables() []workload.Table {
 func (w *tpcds) Ops(
 	ctx context.Context, urls []string, reg *histogram.Registry,
 ) (workload.QueryLoad, error) {
+	sqlDatabase, err := workload.SanitizeUrls(w, w.connFlags.DBOverride, urls)
+	if err != nil {
+		return workload.QueryLoad{}, err
+	}
 	db, err := gosql.Open(`cockroach`, strings.Join(urls, ` `))
 	if err != nil {
 		return workload.QueryLoad{}, err
@@ -267,7 +268,7 @@ func (w *tpcds) Ops(
 	db.SetMaxOpenConns(w.connFlags.Concurrency + 1)
 	db.SetMaxIdleConns(w.connFlags.Concurrency + 1)
 
-	ql := workload.QueryLoad{}
+	ql := workload.QueryLoad{SQLDatabase: sqlDatabase}
 	for i := 0; i < w.connFlags.Concurrency; i++ {
 		worker := &worker{
 			config: w,
@@ -316,7 +317,7 @@ func (w *worker) run(ctx context.Context) error {
 		defer rows.Close()
 	}
 	if err != nil {
-		log.Dev.Infof(ctx, "[q%d] error: %s", queryNum, err)
+		log.Infof(ctx, "[q%d] error: %s", queryNum, err)
 		return err
 	}
 	var numRows int
@@ -324,14 +325,14 @@ func (w *worker) run(ctx context.Context) error {
 		numRows++
 	}
 	if err := rows.Err(); err != nil {
-		log.Dev.Infof(ctx, "[q%d] error: %s", queryNum, err)
+		log.Infof(ctx, "[q%d] error: %s", queryNum, err)
 		return err
 	}
 	elapsed := timeutil.Since(start)
 	// TODO(yuzefovich): at the moment, we're not printing out the histograms
 	// since that would just be too much noise; however, having the percentiles
 	// in the output would also be useful.
-	log.Dev.Infof(ctx, "[q%d] returned %d rows after %.2f seconds",
+	log.Infof(ctx, "[q%d] returned %d rows after %.2f seconds",
 		queryNum, numRows, elapsed.Seconds())
 	return nil
 }

@@ -3,22 +3,21 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
-import { History } from "history";
-import orderBy from "lodash/orderBy";
-import times from "lodash/times";
-import * as Long from "long";
-import { Moment } from "moment-timezone";
 import React from "react";
+import _ from "lodash";
+import * as Long from "long";
+import { History } from "history";
+import { Moment } from "moment-timezone";
 import { createSelector } from "reselect";
 
+import times from "lodash/times";
 import { EmptyPanel, EmptyPanelProps } from "../empty";
-
 import styles from "./sortedtable.module.scss";
+import classNames from "classnames/bind";
+import { TableSpinner } from "./tableSpinner";
 import { TableHead } from "./tableHead";
 import { TableRow } from "./tableRow";
-import { TableSpinner } from "./tableSpinner";
+import { Tooltip } from "@cockroachlabs/ui-components";
 
 export interface ISortedTablePagination {
   current: number;
@@ -141,7 +140,7 @@ export interface SortableColumn {
   // Unique key that identifies this column from others, for the purpose of
   // indicating sort order. If not provided, the column is not considered
   // sortable.
-  columnTitle?: string;
+  columnTitle?: any;
   // className is a classname to apply to the td elements
   className?: string;
   titleAlign?: "left" | "right" | "center";
@@ -185,8 +184,8 @@ export class SortedTable<T> extends React.Component<
   SortedTableProps<T>,
   SortedTableState
 > {
-  static defaultProps: Partial<SortedTableProps<unknown>> = {
-    rowClass: (_obj: unknown) => "",
+  static defaultProps: Partial<SortedTableProps<any>> = {
+    rowClass: (_obj: any) => "",
     columns: [],
     sortSetting: {
       ascending: false,
@@ -235,7 +234,11 @@ export class SortedTable<T> extends React.Component<
         return this.paginatedData();
       }
       return this.paginatedData(
-        orderBy(data, sortColumn.sort, sortSetting.ascending ? "asc" : "desc"),
+        _.orderBy(
+          data,
+          sortColumn.sort,
+          sortSetting.ascending ? "asc" : "desc",
+        ),
       );
     },
   );

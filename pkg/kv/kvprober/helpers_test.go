@@ -23,7 +23,6 @@ var (
 	QuarantineEnabled    = quarantineWriteEnabled
 	QuarantineInterval   = quarantineWriteInterval
 	NumStepsToPlanAtOnce = numStepsToPlanAtOnce
-	TracingEnabled       = tracingEnabled
 )
 
 func (p *Prober) ReadProbe(ctx context.Context, db *kv.DB) {

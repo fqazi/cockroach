@@ -39,7 +39,7 @@ func NewFirstValueOperator(
 	mainMemLimit := args.MemoryLimit - bufferMemLimit
 	buffer := colexecutils.NewSpillingBuffer(
 		args.BufferAllocator, bufferMemLimit, args.QueueCfg, args.FdSemaphore,
-		args.InputTypes, args.DiskAcc, args.DiskQueueMemAcc, colsToStore...,
+		args.InputTypes, args.DiskAcc, args.ConverterMemAcc, colsToStore...,
 	)
 	base := firstValueBase{
 		partitionSeekerBase: partitionSeekerBase{
@@ -122,7 +122,7 @@ func NewFirstValueOperator(
 			return newBufferedWindowOperator(args, windower, argType, mainMemLimit), nil
 		}
 	}
-	return nil, errors.AssertionFailedf("unsupported firstValue window operator type %s", argType.Name())
+	return nil, errors.Errorf("unsupported firstValue window operator type %s", argType.Name())
 }
 
 type firstValueBase struct {

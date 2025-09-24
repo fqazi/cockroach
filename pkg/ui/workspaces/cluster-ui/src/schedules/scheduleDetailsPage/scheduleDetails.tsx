@@ -4,22 +4,24 @@
 // included in the /LICENSE file.
 import { ArrowLeft } from "@cockroachlabs/icons";
 import { Col, Row } from "antd";
-import classNames from "classnames/bind";
+import "antd/lib/col/style";
+import "antd/lib/row/style";
 import Long from "long";
 import React, { useEffect } from "react";
 import Helmet from "react-helmet";
 import { RouteComponentProps } from "react-router-dom";
-
 import { Schedule } from "src/api/schedulesApi";
 import { Button } from "src/button";
-import { commonStyles } from "src/common";
 import { Loading } from "src/loading";
-import scheduleStyles from "src/schedules/schedules.module.scss";
 import { SqlBox, SqlBoxSize } from "src/sql";
 import { SummaryCard, SummaryCardItem } from "src/summaryCard";
-import summaryCardStyles from "src/summaryCard/summaryCard.module.scss";
 import { DATE_FORMAT_24_TZ, idAttr, getMatchParamByName } from "src/util";
 
+import { commonStyles } from "src/common";
+import summaryCardStyles from "src/summaryCard/summaryCard.module.scss";
+import scheduleStyles from "src/schedules/schedules.module.scss";
+
+import classNames from "classnames/bind";
 import { Timestamp } from "../../timestamp";
 
 const cardCx = classNames.bind(summaryCardStyles);
@@ -37,7 +39,7 @@ export interface ScheduleDetailsDispatchProps {
 
 export type ScheduleDetailsProps = ScheduleDetailsStateProps &
   ScheduleDetailsDispatchProps &
-  RouteComponentProps;
+  RouteComponentProps<unknown>;
 
 export const ScheduleDetails: React.FC<ScheduleDetailsProps> = props => {
   const idStr = getMatchParamByName(props.match, idAttr);
@@ -54,7 +56,7 @@ export const ScheduleDetails: React.FC<ScheduleDetailsProps> = props => {
       <>
         <Row gutter={24}>
           <Col className="gutter-row" span={24}>
-            <SqlBox value={schedule.command} size={SqlBoxSize.CUSTOM} />
+            <SqlBox value={schedule.command} size={SqlBoxSize.custom} />
           </Col>
         </Row>
         <Row gutter={24}>

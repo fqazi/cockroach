@@ -12,7 +12,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
-	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catprivilege"
@@ -266,21 +265,6 @@ func (desc *immutable) validateMultiRegion(vea catalog.ValidationErrorAccumulato
 	}
 }
 
-// Prior to 24.2, the SystemDatabaseSchemaBootstrapVersion for each release does
-// not match the final cluster version for that release; instead it matches the
-// internal version for the last upgrade which modified the system schema. This
-// constant holds the schema version for the clusterversion.MinSupported
-// release; it is the value of SystemDatabaseSchemaBootstrapVersion in the
-// corresponding branch.
-//
-// Note that the version here should never have a dev offset.
-//
-// TODO(radu): when we no longer support 24.1, this mechanism should not be
-// necessary anymore (in 24.2+ we do a final bump to the release version).
-var minSupportedDatabaseSchemaVersion = roachpb.Version{
-	Major: 23, Minor: 2, Internal: 14, // V24_1_SessionBasedLeasingUpgradeDescriptor
-}
-
 func (desc *immutable) maybeValidateSystemDatabaseSchemaVersion(
 	vea catalog.ValidationErrorAccumulator,
 ) {
@@ -297,20 +281,20 @@ func (desc *immutable) maybeValidateSystemDatabaseSchemaVersion(
 		))
 	}
 
-	if sv.Less(minSupportedDatabaseSchemaVersion) {
+	binaryMinSupportedVersion := clusterversion.RemoveDevOffset(clusterversion.MinSupported.Version())
+	if !binaryMinSupportedVersion.LessEq(sv) {
 		vea.Report(errors.AssertionFailedf(
-			`attempting to set system database schema version to version lower than the minimum supported version (%#v): %#v`,
-			minSupportedDatabaseSchemaVersion,
+			`attempting to set system database schema version to version lower than binary min supported version (%#v): %#v`,
+			binaryMinSupportedVersion,
 			sv,
 		))
 	}
 
-	// TODO(radu): this should really be SystemDatabaseSchemaBootstrapVersion.
-	latestVersion := clusterversion.RemoveDevOffset(clusterversion.Latest.Version())
-	if latestVersion.Less(sv) && !clusterversion.TestingExtraVersions {
+	binaryVersion := clusterversion.RemoveDevOffset(clusterversion.Latest.Version())
+	if !sv.LessEq(binaryVersion) {
 		vea.Report(errors.AssertionFailedf(
-			`attempting to set system database schema version to version higher than the latest version (%#v): %#v`,
-			latestVersion,
+			`attempting to set system database schema version to version higher than binary version (%#v): %#v`,
+			binaryVersion,
 			sv,
 		))
 	}
@@ -601,14 +585,6 @@ func (desc *immutable) GetRawBytesInStorage() []byte {
 // ForEachUDTDependentForHydration implements the catalog.Descriptor interface.
 func (desc *immutable) ForEachUDTDependentForHydration(fn func(t *types.T) error) error {
 	return nil
-}
-
-// MaybeRequiresTypeHydration implements the catalog.Descriptor interface.
-func (desc *immutable) MaybeRequiresTypeHydration() bool { return false }
-
-// GetReplicatedPCRVersion is a part of the catalog.Descriptor
-func (desc *immutable) GetReplicatedPCRVersion() descpb.DescriptorVersion {
-	return desc.ReplicatedPCRVersion
 }
 
 // maybeRemoveDroppedSelfEntryFromSchemas removes an entry in the Schemas map corresponding to the

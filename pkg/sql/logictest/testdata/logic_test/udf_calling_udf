@@ -1,3 +1,5 @@
+# LogicTest: !local-mixed-23.1 !local-mixed-23.2
+
 statement ok
 CREATE FUNCTION lower_hello() RETURNS STRING LANGUAGE SQL AS $$ SELECT lower('hello') $$;
 
@@ -55,15 +57,16 @@ statement error pgcode 42883 unknown function: recursion_check\(\)
 CREATE FUNCTION recursion_check() RETURNS STRING  LANGUAGE SQL AS $$ SELECT recursion_check() $$;
 
 # Validate that function renaming is blocked.
-statement error pgcode 0A000 cannot rename function \"lower_hello\" because other functions or views \(\[test.public.upper_hello, test.public.concat_hello\]\) still depend on it
+statement error pgcode 0A000 cannot rename function \"lower_hello\" because other functions \(\[test.public.upper_hello, test.public.concat_hello\]\) still depend on it
 ALTER FUNCTION lower_hello rename to lower_hello_new
 
 statement ok
 CREATE SCHEMA sc2;
 
 # Validate that function schema changes are blocked.
-statement error pgcode 0A000 cannot set schema for function \"lower_hello\" because other functions or views \(\[test.public.upper_hello, test.public.concat_hello\]\) still depend on it
+statement error pgcode 0A000 cannot set schema for function \"lower_hello\" because other functions \(\[test.public.upper_hello, test.public.concat_hello\]\) still depend on it
 ALTER FUNCTION lower_hello SET SCHEMA sc2;
+
 
 statement ok
 CREATE FUNCTION f() RETURNS INT LANGUAGE SQL AS $$
@@ -245,7 +248,6 @@ CREATE FUNCTION public.f131354()
   NOT LEAKPROOF
   CALLED ON NULL INPUT
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT public."fooBAR"();
 $$
@@ -255,7 +257,6 @@ SELECT create_statement FROM [SHOW CREATE PROCEDURE p131354];
 ----
 CREATE PROCEDURE public.p131354()
   LANGUAGE SQL
-  SECURITY INVOKER
   AS $$
   SELECT public."fooBAR"();
 $$

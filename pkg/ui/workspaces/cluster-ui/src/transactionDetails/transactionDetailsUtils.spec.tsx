@@ -3,17 +3,15 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import shuffle from "lodash/shuffle";
-import Long from "long";
-
-import { mockTxnStats, Txn, Stmt, mockStmtStats } from "../api/testUtils";
-import { unset } from "../util";
-
 import {
   getStatementsForTransaction,
   getTxnFromSqlStatsTxns,
   getTxnQueryString,
 } from "./transactionDetailsUtils";
+import { mockTxnStats, Txn, Stmt, mockStmtStats } from "../api/testUtils";
+import { shuffle } from "lodash";
+import Long from "long";
+import { unset } from "../util";
 
 describe("getTxnFromSqlStatsTxns", () => {
   // Each transaction will be mocked with an exec count of 1.
@@ -177,7 +175,7 @@ describe("getTxnQueryString", () => {
       stmtIDs: [3, 5, 7, 9],
       queries: ["a", "b", "c", "d"],
     },
-  ].map((tc): [Txn, Stmt[], string] => {
+  ].map(tc => {
     const txnID = Long.fromInt(tc.txnID);
 
     const txn = mockTxnStats({
@@ -281,7 +279,7 @@ describe("getStatementsForTransaction", () => {
       stmtIDs: [4, 5, 6],
       useArrayProp: true,
     },
-  ].map((tc): [Txn, string[], Stmt[]] => {
+  ].map(tc => {
     const txnID = Long.fromInt(tc.txnID);
 
     const txn = mockTxnStats({

@@ -6,12 +6,10 @@
 package tests
 
 import (
-	"cmp"
 	"context"
 	gosql "database/sql"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -27,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/slices"
 )
 
 func registerCDCFiltering(r registry.Registry) {
@@ -39,6 +38,7 @@ func registerCDCFiltering(r registry.Registry) {
 			Cluster:          r.MakeClusterSpec(3),
 			CompatibleClouds: registry.AllClouds,
 			Suites:           registry.Suites(registry.Nightly),
+			RequiresLicense:  true,
 			Run:              runCDCSessionFiltering(ignoreFiltering),
 		})
 		r.Add(registry.TestSpec{
@@ -47,6 +47,7 @@ func registerCDCFiltering(r registry.Registry) {
 			Cluster:          r.MakeClusterSpec(3),
 			CompatibleClouds: registry.AllClouds,
 			Suites:           registry.Suites(registry.Nightly),
+			RequiresLicense:  true,
 			Run:              runCDCTTLFiltering(ttlFilteringClusterSetting, ignoreFiltering),
 		})
 		r.Add(registry.TestSpec{
@@ -55,6 +56,7 @@ func registerCDCFiltering(r registry.Registry) {
 			Cluster:          r.MakeClusterSpec(3),
 			CompatibleClouds: registry.AllClouds,
 			Suites:           registry.Suites(registry.Nightly),
+			RequiresLicense:  true,
 			Run:              runCDCTTLFiltering(ttlFilteringTableStorageParam, ignoreFiltering),
 		})
 	}
@@ -399,9 +401,9 @@ func checkCDCEvents[S any](
 	t.L().Printf("waiting for changefeed watermark to reach current time (%s)",
 		now.Format(time.RFC3339))
 	_, err := waitForChangefeed(ctx, conn, jobID, t.L(), func(info changefeedInfo) (bool, error) {
-		switch jobs.State(info.status) {
-		case jobs.StatePending, jobs.StateRunning:
-			return info.GetHighWater().After(now), nil
+		switch jobs.Status(info.status) {
+		case jobs.StatusPending, jobs.StatusRunning:
+			return info.highwaterTime.After(now), nil
 		default:
 			return false, errors.Errorf("unexpected changefeed status %s", info.status)
 		}
@@ -425,16 +427,16 @@ func checkCDCEvents[S any](
 	}
 
 	// Sort the events by (updated, id) to yield a total ordering.
-	slices.SortFunc(events, func(a, b changefeedSinkEvent[S]) int {
+	slices.SortFunc(events, func(a, b changefeedSinkEvent[S]) bool {
 		idA, idB := a.Key[0], b.Key[0]
 		tsA, err := hlc.ParseHLC(a.Updated)
 		require.NoError(t, err)
 		tsB, err := hlc.ParseHLC(b.Updated)
 		require.NoError(t, err)
-		return cmp.Or(
-			tsA.Compare(tsB),
-			cmp.Compare(idA, idB),
-		)
+		if tsA.Equal(tsB) {
+			return idA < idB
+		}
+		return tsA.Less(tsB)
 	})
 
 	// Convert actual events to strings and compare to expected events.

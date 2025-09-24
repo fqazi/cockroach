@@ -10,7 +10,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/sql/lexbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 )
@@ -23,23 +22,15 @@ func (d *delegator) delegateShowSchemas(n *tree.ShowSchemas) (tree.Statement, er
 	if err != nil {
 		return nil, err
 	}
-
-	commentColumn, commentJoin := ``, ``
-	if n.WithComment {
-		commentTableName := name.String() + ".pg_catalog.pg_description"
-		commentColumn, commentJoin = d.getCommentQuery(commentTableName, catconstants.PgCatalogNamespaceTableID, "n.oid")
-
-	}
-
 	getSchemasQuery := fmt.Sprintf(`
-									SELECT n.nspname AS schema_name, r.rolname AS owner%[1]s
-FROM %[2]s.information_schema.schemata i
-INNER JOIN %[2]s.pg_catalog.pg_namespace n ON (n.nspname = i.schema_name)
-LEFT JOIN %[2]s.pg_catalog.pg_roles r ON (n.nspowner = r.oid)
-							%s
-WHERE catalog_name = %s
-ORDER BY schema_name`,
-		commentColumn, name.String(), commentJoin, lexbase.EscapeSQLString(string(name)),
+      SELECT nspname AS schema_name, rolname AS owner
+      FROM %[1]s.information_schema.schemata i
+      INNER JOIN %[1]s.pg_catalog.pg_namespace n ON (n.nspname = i.schema_name)
+      LEFT JOIN %[1]s.pg_catalog.pg_roles r ON (n.nspowner = r.oid)
+			WHERE catalog_name = %[2]s
+			ORDER BY schema_name`,
+		name.String(), // note: (tree.Name).String() != string(name)
+		lexbase.EscapeSQLString(string(name)),
 	)
 
 	return d.parse(getSchemasQuery)

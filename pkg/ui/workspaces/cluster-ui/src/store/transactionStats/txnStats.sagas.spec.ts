@@ -3,21 +3,20 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import Long from "long";
-import moment from "moment-timezone";
 import { expectSaga } from "redux-saga-test-plan";
-import * as matchers from "redux-saga-test-plan/matchers";
 import {
   EffectProviders,
   StaticProvider,
   throwError,
 } from "redux-saga-test-plan/providers";
+import * as matchers from "redux-saga-test-plan/matchers";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 
 import { getFlushedTxnStatsApi } from "src/api/statementsApi";
-
-import { actions, reducer, TxnStatsState } from "./txnStats.reducer";
 import { refreshTxnStatsSaga, requestTxnStatsSaga } from "./txnStats.sagas";
+import { actions, reducer, TxnStatsState } from "./txnStats.reducer";
+import Long from "long";
+import moment from "moment-timezone";
 
 const lastUpdated = moment();
 

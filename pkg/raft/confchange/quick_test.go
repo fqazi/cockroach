@@ -24,7 +24,6 @@ import (
 	"testing"
 	"testing/quick"
 
-	"github.com/cockroachdb/cockroach/pkg/raft/quorum"
 	pb "github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/raft/tracker"
 )
@@ -41,7 +40,7 @@ func TestConfChangeQuick(t *testing.T) {
 	const infoCount = 5
 
 	runWithJoint := func(c *Changer, ccs []pb.ConfChangeSingle) error {
-		cfg, progressMap, err := c.EnterJoint(false /* autoLeave */, ccs...)
+		cfg, trk, err := c.EnterJoint(false /* autoLeave */, ccs...)
 		if err != nil {
 			return err
 		}
@@ -52,29 +51,29 @@ func TestConfChangeQuick(t *testing.T) {
 			return err
 		}
 		cfg2a.AutoLeave = false
-		if !reflect.DeepEqual(cfg, cfg2a) || !reflect.DeepEqual(progressMap, trk2a) {
-			return fmt.Errorf("cfg: %+v\ncfg2a: %+v\nprogressMap: %+v\ntrk2a: %+v",
-				cfg, cfg2a, progressMap, trk2a)
+		if !reflect.DeepEqual(cfg, cfg2a) || !reflect.DeepEqual(trk, trk2a) {
+			return fmt.Errorf("cfg: %+v\ncfg2a: %+v\ntrk: %+v\ntrk2a: %+v",
+				cfg, cfg2a, trk, trk2a)
 		}
-		c.Config = cfg
-		c.ProgressMap = progressMap
+		c.Tracker.Config = cfg
+		c.Tracker.Progress = trk
 		cfg2b, trk2b, err := c.LeaveJoint()
 		if err != nil {
 			return err
 		}
 		// Reset back to the main branch with autoLeave=false.
-		c.Config = cfg
-		c.ProgressMap = progressMap
-		cfg, progressMap, err = c.LeaveJoint()
+		c.Tracker.Config = cfg
+		c.Tracker.Progress = trk
+		cfg, trk, err = c.LeaveJoint()
 		if err != nil {
 			return err
 		}
-		if !reflect.DeepEqual(cfg, cfg2b) || !reflect.DeepEqual(progressMap, trk2b) {
-			return fmt.Errorf("cfg: %+v\ncfg2b: %+v\nprogressMap: %+v\ntrk2b: %+v",
-				cfg, cfg2b, progressMap, trk2b)
+		if !reflect.DeepEqual(cfg, cfg2b) || !reflect.DeepEqual(trk, trk2b) {
+			return fmt.Errorf("cfg: %+v\ncfg2b: %+v\ntrk: %+v\ntrk2b: %+v",
+				cfg, cfg2b, trk, trk2b)
 		}
-		c.Config = cfg
-		c.ProgressMap = progressMap
+		c.Tracker.Config = cfg
+		c.Tracker.Progress = trk
 		return nil
 	}
 
@@ -84,7 +83,7 @@ func TestConfChangeQuick(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			c.Config, c.ProgressMap = cfg, trk
+			c.Tracker.Config, c.Tracker.Progress = cfg, trk
 		}
 		return nil
 	}
@@ -93,12 +92,10 @@ func TestConfChangeQuick(t *testing.T) {
 
 	wrapper := func(invoke testFunc) func(setup initialChanges, ccs confChanges) (*Changer, error) {
 		return func(setup initialChanges, ccs confChanges) (*Changer, error) {
+			tr := tracker.MakeProgressTracker(10, 0)
 			c := &Changer{
-				Config:           quorum.MakeEmptyConfig(),
-				ProgressMap:      tracker.MakeEmptyProgressMap(),
-				MaxInflight:      10,
-				MaxInflightBytes: 0,
-				LastIndex:        10,
+				Tracker:   tr,
+				LastIndex: 10,
 			}
 
 			if err := runWithSimple(c, setup); err != nil {
@@ -119,8 +116,8 @@ func TestConfChangeQuick(t *testing.T) {
 		if n < infoCount {
 			t.Log("initial setup:", Describe(setup...))
 			t.Log("changes:", Describe(ccs...))
-			t.Log(c.Config)
-			t.Log(c.ProgressMap)
+			t.Log(c.Tracker.Config)
+			t.Log(c.Tracker.Progress)
 		}
 		n++
 		return c
@@ -148,9 +145,7 @@ func TestConfChangeQuick(t *testing.T) {
 
 type confChanges []pb.ConfChangeSingle
 
-func genCC(
-	num func() int, id func() pb.PeerID, typ func() pb.ConfChangeType,
-) []pb.ConfChangeSingle {
+func genCC(num func() int, id func() uint64, typ func() pb.ConfChangeType) []pb.ConfChangeSingle {
 	var ccs []pb.ConfChangeSingle
 	n := num()
 	for i := 0; i < n; i++ {
@@ -163,11 +158,11 @@ func (confChanges) Generate(rand *rand.Rand, _ int) reflect.Value {
 	num := func() int {
 		return 1 + rand.Intn(9)
 	}
-	id := func() pb.PeerID {
+	id := func() uint64 {
 		// Note that num() >= 1, so we're never returning 1 from this method,
 		// meaning that we'll never touch NodeID one, which is special to avoid
 		// voterless configs altogether in this test.
-		return pb.PeerID(1 + num())
+		return 1 + uint64(num())
 	}
 	typ := func() pb.ConfChangeType {
 		return pb.ConfChangeType(rand.Intn(len(pb.ConfChangeType_name)))
@@ -181,7 +176,7 @@ func (initialChanges) Generate(rand *rand.Rand, _ int) reflect.Value {
 	num := func() int {
 		return 1 + rand.Intn(5)
 	}
-	id := func() pb.PeerID { return pb.PeerID(num()) }
+	id := func() uint64 { return uint64(num()) }
 	typ := func() pb.ConfChangeType {
 		return pb.ConfChangeAddNode
 	}

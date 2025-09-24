@@ -34,7 +34,7 @@ func NewCrossJoiner(
 	leftTypes []*types.T,
 	rightTypes []*types.T,
 	diskAcc *mon.BoundAccount,
-	diskQueueMemAcc *mon.BoundAccount,
+	converterMemAcc *mon.BoundAccount,
 ) colexecop.ClosableOperator {
 	c := &crossJoiner{
 		crossJoinerBase: newCrossJoinerBase(
@@ -46,7 +46,7 @@ func NewCrossJoiner(
 			diskQueueCfg,
 			fdSemaphore,
 			diskAcc,
-			diskQueueMemAcc,
+			converterMemAcc,
 		),
 		TwoInputInitHelper: colexecop.MakeTwoInputInitHelper(left, right),
 		outputTypes:        joinType.MakeOutputTypes(leftTypes, rightTypes),
@@ -299,7 +299,7 @@ func (c *crossJoiner) willEmit() int {
 
 // setAllNulls sets all tuples in vecs with indices in [0, length) range to
 // null.
-func setAllNulls(vecs []*coldata.Vec, length int) {
+func setAllNulls(vecs []coldata.Vec, length int) {
 	for i := range vecs {
 		vecs[i].Nulls().SetNullRange(0 /* startIdx */, length)
 	}
@@ -322,7 +322,7 @@ func newCrossJoinerBase(
 	cfg colcontainer.DiskQueueCfg,
 	fdSemaphore semaphore.Semaphore,
 	diskAcc *mon.BoundAccount,
-	diskQueueMemAcc *mon.BoundAccount,
+	converterMemAcc *mon.BoundAccount,
 ) *crossJoinerBase {
 	base := &crossJoinerBase{
 		joinType: joinType,
@@ -344,7 +344,7 @@ func newCrossJoinerBase(
 				DiskQueueCfg:       cfg,
 				FDSemaphore:        fdSemaphore,
 				DiskAcc:            diskAcc,
-				DiskQueueMemAcc:    diskQueueMemAcc,
+				ConverterMemAcc:    converterMemAcc,
 			},
 		),
 	}

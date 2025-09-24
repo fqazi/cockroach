@@ -14,8 +14,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/replicastats"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -115,7 +115,7 @@ func TestStorePoolUpdateLocalStore(t *testing.T) {
 
 	replica := Replica{RangeID: 1}
 	replica.mu.Lock()
-	replica.shMu.state.Stats = &enginepb.MVCCStats{
+	replica.mu.state.Stats = &enginepb.MVCCStats{
 		KeyBytes: 2,
 		ValBytes: 4,
 	}
@@ -242,7 +242,7 @@ func TestStorePoolUpdateLocalStoreBeforeGossip(t *testing.T) {
 	eng := storage.NewDefaultInMemForTesting()
 	stopper.AddCloser(eng)
 
-	cfg.Transport = NewDummyRaftTransport(cfg.AmbientCtx, cfg.Settings, cfg.Clock)
+	cfg.Transport = NewDummyRaftTransport(cfg.Settings, cfg.AmbientCtx.Tracer)
 	store := NewStore(ctx, cfg, eng, &node)
 	// Fake an ident because this test doesn't want to start the store
 	// but without an Ident there will be NPEs.
@@ -263,7 +263,7 @@ func TestStorePoolUpdateLocalStoreBeforeGossip(t *testing.T) {
 
 	const replicaID = 1
 	require.NoError(t,
-		stateloader.Make(rg.RangeID).SetRaftReplicaID(ctx, store.TODOEngine(), replicaID))
+		logstore.NewStateLoader(rg.RangeID).SetRaftReplicaID(ctx, store.TODOEngine(), replicaID))
 	replica, err := loadInitializedReplicaForTesting(ctx, store, &rg, replicaID)
 	if err != nil {
 		t.Fatalf("make replica error : %+v", err)

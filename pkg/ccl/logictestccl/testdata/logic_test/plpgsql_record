@@ -1,3 +1,5 @@
+# LogicTest: !local-mixed-23.1
+
 subtest simple_return
 
 # Infer return type for a single return statement.

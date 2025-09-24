@@ -3,10 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { storiesOf } from "@storybook/react";
-import cloneDeep from "lodash/cloneDeep";
 import React from "react";
+import { storiesOf } from "@storybook/react";
 import { MemoryRouter } from "react-router-dom";
+import { cloneDeep } from "lodash";
 
 import { StatementsPage } from "./statementsPage";
 import statementsPagePropsFixture, {

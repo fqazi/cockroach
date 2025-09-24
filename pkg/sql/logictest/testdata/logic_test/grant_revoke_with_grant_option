@@ -66,8 +66,6 @@ SHOW GRANTS FOR testuser2
 database_name  schema_name  object_name  object_type  grantee    privilege_type  is_grantable
 test           public       t            table        testuser2  INSERT          false
 test           public       t            table        testuser2  SELECT          false
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 
 user testuser2
 
@@ -80,8 +78,6 @@ query TTTTTTB colnames,rowsort
 SHOW GRANTS FOR testuser2
 ----
 database_name  schema_name  object_name  object_type  grantee    privilege_type  is_grantable
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 test           public       t            table        testuser2  INSERT          false
 test           public       t            table        testuser2  SELECT          false
 
@@ -115,12 +111,9 @@ query TTTTTTB colnames,rowsort
 SHOW GRANTS FOR testuser2
 ----
 database_name  schema_name  object_name  object_type  grantee    privilege_type  is_grantable
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 test           public       t            table        testuser2  DELETE          true
 test           public       t            table        testuser2  SELECT          true
 test           public       t            table        testuser2  UPDATE          true
-
 
 statement ok
 REVOKE GRANT OPTION FOR SELECT ON TABLE t FROM testuser2
@@ -130,8 +123,6 @@ query TTTTTTB colnames,rowsort
 SHOW GRANTS FOR testuser2
 ----
 database_name  schema_name  object_name  object_type  grantee    privilege_type  is_grantable
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 test           public       t            table        testuser2  DELETE          true
 test           public       t            table        testuser2  SELECT          false
 test           public       t            table        testuser2  UPDATE          true
@@ -171,12 +162,10 @@ REVOKE GRANT OPTION FOR ALL PRIVILEGES ON TABLE t FROM testuser2
 statement ok
 REVOKE GRANT OPTION FOR ALL PRIVILEGES ON TABLE t FROM testuser
 
-query TTTTTTB colnames,rowsort
+query TTTTTTB colnames
 SHOW GRANTS FOR testuser
 ----
 database_name  schema_name  object_name  object_type  grantee   privilege_type  is_grantable
-test           public       NULL         schema       public    CREATE          false
-test           public       NULL         schema       public    USAGE           false
 test           public       t            table        testuser  ALL             false
 
 user testuser
@@ -189,12 +178,10 @@ user root
 statement ok
 REVOKE ALL PRIVILEGES ON TABLE t FROM testuser
 
-query TTTTTTB colnames,rowsort
+query TTTTTTB colnames
 SHOW GRANTS FOR testuser
 ----
 database_name  schema_name  object_name  object_type  grantee  privilege_type  is_grantable
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 
 statement ok
 GRANT UPDATE, DELETE ON TABLE t to testuser WITH GRANT OPTION
@@ -203,8 +190,6 @@ query TTTTTTB colnames,rowsort
 SHOW GRANTS FOR testuser
 ----
 database_name  schema_name  object_name  object_type  grantee   privilege_type  is_grantable
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 test           public       t            table        testuser  DELETE          true
 test           public       t            table        testuser  UPDATE          true
 
@@ -212,12 +197,10 @@ test           public       t            table        testuser  UPDATE          
 statement ok
 GRANT ALL PRIVILEGES ON TABLE t to testuser WITH GRANT OPTION
 
-query TTTTTTB colnames,rowsort
+query TTTTTTB colnames
 SHOW GRANTS FOR testuser
 ----
 database_name  schema_name  object_name  object_type  grantee   privilege_type  is_grantable
-test           public       NULL         schema       public    CREATE          false
-test           public       NULL         schema       public    USAGE           false
 test           public       t            table        testuser  ALL             true
 
 user testuser
@@ -230,12 +213,10 @@ user root
 statement ok
 REVOKE GRANT OPTION FOR UPDATE, DELETE ON TABLE t FROM testuser
 
-query TTTTTTB colnames,rowsort
+query TTTTTTB colnames
 SHOW GRANTS FOR testuser
 ----
 database_name  schema_name  object_name  object_type  grantee   privilege_type  is_grantable
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 test           public       t            table        testuser  ALL             false
 
 user testuser
@@ -253,8 +234,6 @@ query TTTTTTB colnames,rowsort
 SHOW GRANTS FOR testuser2
 ----
 database_name  schema_name  object_name  object_type  grantee    privilege_type  is_grantable
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 test           public       t            table        testuser2  DELETE          false
 test           public       t            table        testuser2  SELECT          true
 test           public       t            table        testuser2  UPDATE          false
@@ -299,20 +278,15 @@ REVOKE DELETE ON TABLE t FROM testuser
 query TTTTTTB colnames,rowsort
 SHOW GRANTS FOR testuser
 ----
-database_name  schema_name  object_name  object_type  grantee   privilege_type     is_grantable
-test           public       NULL         schema       public    CREATE             false
-test           public       NULL         schema       public    USAGE              false
-test           public       t            table        testuser  BACKUP             true
-test           public       t            table        testuser  CHANGEFEED         true
-test           public       t            table        testuser  CREATE             true
-test           public       t            table        testuser  DROP               true
-test           public       t            table        testuser  INSERT             true
-test           public       t            table        testuser  REPLICATIONDEST    true
-test           public       t            table        testuser  REPLICATIONSOURCE  true
-test           public       t            table        testuser  SELECT             true
-test           public       t            table        testuser  TRIGGER            true
-test           public       t            table        testuser  UPDATE             true
-test           public       t            table        testuser  ZONECONFIG         true
+database_name  schema_name  object_name  object_type  grantee   privilege_type  is_grantable
+test           public       t            table        testuser  BACKUP          true
+test           public       t            table        testuser  CHANGEFEED      true
+test           public       t            table        testuser  CREATE          true
+test           public       t            table        testuser  DROP            true
+test           public       t            table        testuser  INSERT          true
+test           public       t            table        testuser  SELECT          true
+test           public       t            table        testuser  UPDATE          true
+test           public       t            table        testuser  ZONECONFIG      true
 
 statement ok
 GRANT SELECT ON TABLE t TO target
@@ -344,12 +318,10 @@ GRANT ALL PRIVILEGES ON TABLE t TO testuser WITH GRANT OPTION
 statement ok
 REVOKE ALL PRIVILEGES ON TABLE t FROM testuser
 
-query TTTTTTB colnames,rowsort
+query TTTTTTB colnames
 SHOW GRANTS FOR testuser
 ----
 database_name  schema_name  object_name  object_type  grantee  privilege_type  is_grantable
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 
 #
 # Wipe everything so far and briefly test databases, schemas, types
@@ -363,19 +335,15 @@ REVOKE ALL PRIVILEGES ON TABLE t FROM testuser
 statement ok
 REVOKE ALL PRIVILEGES ON TABLE t FROM testuser2
 
-query TTTTTTB colnames,rowsort
+query TTTTTTB colnames
 SHOW GRANTS FOR testuser
 ----
 database_name  schema_name  object_name  object_type  grantee  privilege_type  is_grantable
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 
-query TTTTTTB colnames,rowsort
+query TTTTTTB colnames
 SHOW GRANTS FOR testuser2
 ----
 database_name  schema_name  object_name  object_type  grantee  privilege_type  is_grantable
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 
 statement ok
 CREATE SCHEMA s
@@ -383,12 +351,10 @@ CREATE SCHEMA s
 statement ok
 GRANT ALL PRIVILEGES ON SCHEMA s TO testuser WITH GRANT OPTION
 
-query TTTTTTB colnames,rowsort
+query TTTTTTB colnames
 SHOW GRANTS FOR testuser
 ----
 database_name  schema_name  object_name  object_type  grantee   privilege_type  is_grantable
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 test           s            NULL         schema       testuser  ALL             true
 
 user testuser
@@ -398,23 +364,19 @@ GRANT CREATE ON SCHEMA s TO testuser2 WITH GRANT OPTION
 
 user root
 
-query TTTTTTB colnames,rowsort
+query TTTTTTB colnames
 SHOW GRANTS FOR testuser2
 ----
 database_name  schema_name  object_name  object_type  grantee    privilege_type  is_grantable
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 test           s            NULL         schema       testuser2  CREATE          true
 
 statement ok
 REVOKE GRANT OPTION FOR ALL PRIVILEGES ON SCHEMA s FROM testuser
 
-query TTTTTTB colnames,rowsort
+query TTTTTTB colnames
 SHOW GRANTS FOR testuser
 ----
 database_name  schema_name  object_name  object_type  grantee   privilege_type  is_grantable
-test           public       NULL         schema       public     CREATE          false
-test           public       NULL         schema       public     USAGE           false
 test           s            NULL         schema       testuser  ALL             false
 
 user testuser
@@ -569,14 +531,14 @@ statement ok
 GRANT SELECT ON TABLE t1 TO testuser2
 
 # Show a notice when revoking privileges from the owner.
-# Weak isolation levels emit extra notices, so skip them.
-skipif config weak-iso-level-configs
+# Read committed emits extra notices, so skip it.
+skipif config local-read-committed
 query T noticetrace
 REVOKE ALL PRIVILEGES ON TABLE t1 FROM testuser
 ----
 NOTICE: testuser is the owner of t1 and still has all privileges implicitly
 
-onlyif config weak-iso-level-configs
+onlyif config local-read-committed
 statement ok
 REVOKE ALL PRIVILEGES ON TABLE t1 FROM testuser
 
@@ -638,7 +600,7 @@ CREATE USER grant_ordering_user
 statement ok
 GRANT ALL ON TABLE grant_ordering_table TO grant_ordering_user WITH GRANT OPTION
 
-query TTTTTB colnames,rowsort
+query TTTTTB colnames
 SHOW GRANTS ON grant_ordering_table FOR grant_ordering_user
 ----
 database_name  schema_name  table_name            grantee              privilege_type  is_grantable
@@ -647,7 +609,7 @@ test           public       grant_ordering_table  grant_ordering_user  ALL      
 statement ok
 REVOKE GRANT OPTION FOR ALL ON TABLE grant_ordering_table FROM grant_ordering_user
 
-query TTTTTB colnames,rowsort
+query TTTTTB colnames
 SHOW GRANTS ON grant_ordering_table FOR grant_ordering_user
 ----
 database_name  schema_name  table_name            grantee              privilege_type  is_grantable
@@ -666,7 +628,7 @@ test           public       grant_ordering_table  grant_ordering_user  SELECT   
 statement ok
 REVOKE GRANT OPTION FOR ALL ON TABLE grant_ordering_table FROM grant_ordering_user
 
-query TTTTTB colnames,rowsort
+query TTTTTB colnames
 SHOW GRANTS ON grant_ordering_table FOR grant_ordering_user
 ----
 database_name  schema_name  table_name            grantee              privilege_type  is_grantable
@@ -677,7 +639,7 @@ test           public       grant_ordering_table  grant_ordering_user  ALL      
 statement ok
 CREATE USER owner_grant_option_child
 
-statement ok
+statement oko
 GRANT testuser to owner_grant_option_child
 
 user testuser
@@ -733,14 +695,8 @@ SHOW GRANTS FOR roach
 ----
 database_name  schema_name  object_name    object_type          grantee  privilege_type  is_grantable
 NULL           NULL         connection1    external_connection  roach    USAGE           true
-test           public       NULL           schema               public   CREATE          false
-test           public       NULL           schema               public   USAGE           false
-test           public       _mood          type                 public   USAGE           false
-test           public       _type1         type                 public   USAGE           false
-test           public       mood           type                 public   USAGE           false
 test           public       mood           type                 roach    USAGE           false
 test           public       test_sequence  sequence             roach    SELECT          false
-test           public       type1          type                 public   USAGE           false
 
 # Verify that only system grants appear in SHOW SYSTEM GRANTS. Previously,
 # there was a bug that would cause external connection privileges to appear

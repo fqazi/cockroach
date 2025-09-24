@@ -86,9 +86,9 @@ var (
 	ReadData              = List{SELECT}
 	ReadWriteData         = List{SELECT, INSERT, DELETE, UPDATE}
 	ReadWriteSequenceData = List{SELECT, UPDATE, USAGE}
-	DBPrivileges          = List{ALL, BACKUP, CHANGEFEED, CONNECT, CREATE, DROP, RESTORE, ZONECONFIG}
-	TablePrivileges       = List{ALL, BACKUP, CHANGEFEED, CREATE, DROP, SELECT, INSERT, DELETE, UPDATE, ZONECONFIG, TRIGGER, REPLICATIONDEST, REPLICATIONSOURCE}
-	SchemaPrivileges      = List{ALL, CREATE, CHANGEFEED, USAGE}
+	DBPrivileges          = List{ALL, BACKUP, CONNECT, CREATE, DROP, RESTORE, ZONECONFIG}
+	TablePrivileges       = List{ALL, BACKUP, CHANGEFEED, CREATE, DROP, SELECT, INSERT, DELETE, UPDATE, ZONECONFIG}
+	SchemaPrivileges      = List{ALL, CREATE, USAGE}
 	TypePrivileges        = List{ALL, USAGE}
 	RoutinePrivileges     = List{ALL, EXECUTE}
 	// SequencePrivileges is appended with TablePrivileges as well. This is because
@@ -100,10 +100,10 @@ var (
 		ALL, BACKUP, RESTORE, MODIFYCLUSTERSETTING, EXTERNALCONNECTION, VIEWACTIVITY, VIEWACTIVITYREDACTED,
 		VIEWCLUSTERSETTING, CANCELQUERY, NOSQLLOGIN, VIEWCLUSTERMETADATA, VIEWDEBUG, EXTERNALIOIMPLICITACCESS, VIEWJOB,
 		MODIFYSQLCLUSTERSETTING, REPLICATION, MANAGEVIRTUALCLUSTER, VIEWSYSTEMTABLE, CREATEROLE, CREATELOGIN, CREATEDB, CONTROLJOB,
-		REPAIRCLUSTER, BYPASSRLS, REPLICATIONDEST, REPLICATIONSOURCE, INSPECT,
+		REPAIRCLUSTER,
 	}
 	VirtualTablePrivileges       = List{ALL, SELECT}
-	ExternalConnectionPrivileges = List{ALL, USAGE, DROP, UPDATE}
+	ExternalConnectionPrivileges = List{ALL, USAGE, DROP}
 )
 
 // Mask returns the bitmask for a given privilege.
@@ -361,11 +361,10 @@ var privToACL = map[Kind]string{
 	USAGE:   "U",
 	CONNECT: "c",
 	EXECUTE: "X",
-	TRIGGER: "t",
 }
 
-// orderedPrivs is the list of privileges sorted in alphanumeric order based on the ACL character -> CUacdrtwX
-var orderedPrivs = List{CREATE, USAGE, INSERT, CONNECT, DELETE, SELECT, TRIGGER, UPDATE, EXECUTE}
+// orderedPrivs is the list of privileges sorted in alphanumeric order based on the ACL character -> CUacdrwX
+var orderedPrivs = List{CREATE, USAGE, INSERT, CONNECT, DELETE, SELECT, UPDATE, EXECUTE}
 
 // ListToACL converts a list of privileges to a list of Postgres
 // ACL items.

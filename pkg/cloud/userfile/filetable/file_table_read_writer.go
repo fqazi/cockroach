@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/ioctx"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 // ChunkDefaultSize is the default size of each chunk a file will be broken into
@@ -43,10 +42,10 @@ type FileToTableExecutorRows struct {
 // FileToTableSystemExecutor is the interface which defines the methods for the
 // SQL query executor used by the FileToTableSystem
 type FileToTableSystemExecutor interface {
-	Query(ctx context.Context, opName redact.RedactableString, query string,
+	Query(ctx context.Context, opName, query string,
 		user username.SQLUsername,
 		qargs ...interface{}) (*FileToTableExecutorRows, error)
-	Exec(ctx context.Context, opName redact.RedactableString, query string,
+	Exec(ctx context.Context, opName, query string,
 		user username.SQLUsername,
 		qargs ...interface{}) error
 }
@@ -68,11 +67,7 @@ func MakeInternalFileToTableExecutor(db isql.DB) *InternalFileToTableExecutor {
 
 // Query implements the FileToTableSystemExecutor interface.
 func (i *InternalFileToTableExecutor) Query(
-	ctx context.Context,
-	opName redact.RedactableString,
-	query string,
-	user username.SQLUsername,
-	qargs ...interface{},
+	ctx context.Context, opName, query string, user username.SQLUsername, qargs ...interface{},
 ) (*FileToTableExecutorRows, error) {
 	result := FileToTableExecutorRows{}
 	var err error
@@ -86,11 +81,7 @@ func (i *InternalFileToTableExecutor) Query(
 
 // Exec implements the FileToTableSystemExecutor interface.
 func (i *InternalFileToTableExecutor) Exec(
-	ctx context.Context,
-	opName redact.RedactableString,
-	query string,
-	user username.SQLUsername,
-	qargs ...interface{},
+	ctx context.Context, opName, query string, user username.SQLUsername, qargs ...interface{},
 ) error {
 	_, err := i.ie.ExecEx(ctx, opName, nil,
 		sessiondata.InternalExecutorOverride{User: user}, query, qargs...)
@@ -113,11 +104,7 @@ func MakeSQLConnFileToTableExecutor(executor cloud.SQLConnI) *SQLConnFileToTable
 
 // Query implements the FileToTableSystemExecutor interface.
 func (i *SQLConnFileToTableExecutor) Query(
-	ctx context.Context,
-	_ redact.RedactableString,
-	query string,
-	_ username.SQLUsername,
-	qargs ...interface{},
+	ctx context.Context, _, query string, _ username.SQLUsername, qargs ...interface{},
 ) (*FileToTableExecutorRows, error) {
 	result := FileToTableExecutorRows{}
 
@@ -131,11 +118,7 @@ func (i *SQLConnFileToTableExecutor) Query(
 
 // Exec implements the FileToTableSystemExecutor interface.
 func (i *SQLConnFileToTableExecutor) Exec(
-	ctx context.Context,
-	_ redact.RedactableString,
-	query string,
-	_ username.SQLUsername,
-	qargs ...interface{},
+	ctx context.Context, _, query string, _ username.SQLUsername, qargs ...interface{},
 ) error {
 	return i.executor.Exec(ctx, query, qargs...)
 }
@@ -331,7 +314,7 @@ filename`, f.GetFQFileTableName())
 		defer func() {
 			if err := it.Close(); err != nil {
 				retErr = errors.CombineErrors(retErr, err)
-				log.Dev.Warningf(ctx, "failed to close %+v", err)
+				log.Warningf(ctx, "failed to close %+v", err)
 			}
 		}()
 		var ok bool
@@ -345,7 +328,7 @@ filename`, f.GetFQFileTableName())
 		defer func() {
 			if err := rows.sqlConnExecResults.Close(); err != nil {
 				retErr = errors.CombineErrors(retErr, err)
-				log.Dev.Warningf(ctx, "failed to close %+v", err)
+				log.Warningf(ctx, "failed to close %+v", err)
 			}
 		}()
 		vals := make([]driver.Value, 1)
@@ -671,7 +654,7 @@ func newFileTableReader(
 		defer func() {
 			if err := it.Close(); err != nil {
 				retErr = errors.CombineErrors(retErr, err)
-				log.Dev.Warningf(ctx, "failed to close %+v", err)
+				log.Warningf(ctx, "failed to close %+v", err)
 			}
 		}()
 		ok, err := it.Next(ctx)
@@ -689,7 +672,7 @@ func newFileTableReader(
 		defer func() {
 			if err := metaRows.sqlConnExecResults.Close(); err != nil {
 				retErr = errors.CombineErrors(retErr, err)
-				log.Dev.Warningf(ctx, "failed to close %+v", err)
+				log.Warningf(ctx, "failed to close %+v", err)
 			}
 		}()
 		vals := make([]driver.Value, 2)
@@ -736,7 +719,7 @@ func newFileTableReader(
 			defer func() {
 				if err := it.Close(); err != nil {
 					retErr = errors.CombineErrors(retErr, err)
-					log.Dev.Warningf(ctx, "failed to close %+v", err)
+					log.Warningf(ctx, "failed to close %+v", err)
 				}
 			}()
 			ok, err := it.Next(ctx)
@@ -751,7 +734,7 @@ func newFileTableReader(
 			defer func() {
 				if err := rows.sqlConnExecResults.Close(); err != nil {
 					retErr = errors.CombineErrors(retErr, err)
-					log.Dev.Warningf(ctx, "failed to close %+v", err)
+					log.Warningf(ctx, "failed to close %+v", err)
 				}
 			}()
 			vals := make([]driver.Value, 1)
