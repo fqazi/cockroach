@@ -50,8 +50,7 @@ type Registry struct {
 	// computedLabels get filled in by GetLabels().
 	// We hold onto the slice to avoid a re-allocation every
 	// time the metrics get scraped.
-	computedLabels  []*prometheusgo.LabelPair
-	labelSliceCache *LabelSliceCache
+	computedLabels []*prometheusgo.LabelPair
 }
 
 type labelPair struct {
@@ -68,10 +67,9 @@ type Struct interface {
 // NewRegistry creates a new Registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		labels:          []labelPair{},
-		computedLabels:  []*prometheusgo.LabelPair{},
-		tracked:         map[string]Iterable{},
-		labelSliceCache: NewLabelSliceCache(),
+		labels:         []labelPair{},
+		computedLabels: []*prometheusgo.LabelPair{},
+		tracked:        map[string]Iterable{},
 	}
 }
 
@@ -98,11 +96,8 @@ func (r *Registry) AddMetric(metric Iterable) {
 	r.Lock()
 	defer r.Unlock()
 	r.tracked[metric.GetName(false /* useStaticLabels */)] = metric
-	if m, ok := metric.(PrometheusEvictable); ok {
-		m.InitializeMetrics(r.labelSliceCache)
-	}
 	if log.V(2) {
-		log.Dev.Infof(context.TODO(), "added metric: %s (%T)", metric.GetName(false /* useStaticLabels */), metric)
+		log.Infof(context.TODO(), "added metric: %s (%T)", metric.GetName(false /* useStaticLabels */), metric)
 	}
 }
 
@@ -127,7 +122,7 @@ func (r *Registry) RemoveMetric(metric Iterable) {
 	defer r.Unlock()
 	delete(r.tracked, metric.GetName(false /* useStaticLabels */))
 	if log.V(2) {
-		log.Dev.Infof(context.TODO(), "removed metric: %s (%T)", metric.GetName(false /* useStaticLabels */), metric)
+		log.Infof(context.TODO(), "removed metric: %s (%T)", metric.GetName(false /* useStaticLabels */), metric)
 	}
 }
 
@@ -183,10 +178,10 @@ func (r *Registry) addMetricValue(
 	if val.Kind() == reflect.Ptr && val.IsNil() {
 		if skipNil {
 			if log.V(2) {
-				log.Dev.Infof(ctx, "skipping nil metric field %s", name)
+				log.Infof(ctx, "skipping nil metric field %s", name)
 			}
 		} else {
-			log.Dev.Fatalf(ctx, "found nil metric field %s", name)
+			log.Fatalf(ctx, "found nil metric field %s", name)
 		}
 		return
 	}
@@ -283,8 +278,8 @@ var (
 	prometheusLabelReplaceRE = regexp.MustCompile("^[^a-zA-Z_]|[^a-zA-Z0-9_]")
 )
 
-// ExportedName takes a metric name and generates a valid prometheus name.
-func ExportedName(name string) string {
+// exportedName takes a metric name and generates a valid prometheus name.
+func exportedName(name string) string {
 	return prometheusNameReplaceRE.ReplaceAllString(name, "_")
 }
 
@@ -293,11 +288,11 @@ func exportedLabel(name string) string {
 	return prometheusLabelReplaceRE.ReplaceAllString(name, "_")
 }
 
-var panicHandler = log.Dev.Fatalf
+var panicHandler = log.Fatalf
 
 func testingSetPanicHandler(h func(ctx context.Context, msg string, args ...interface{})) func() {
 	panicHandler = h
-	return func() { panicHandler = log.Dev.Fatalf }
+	return func() { panicHandler = log.Fatalf }
 }
 
 // checkFieldCanBeSkipped detects common mis-use patterns with metrics registry
@@ -307,7 +302,7 @@ func checkFieldCanBeSkipped(
 ) {
 	if !buildutil.CrdbTestBuild {
 		if log.V(2) {
-			log.Dev.Infof(context.Background(), "skipping %s field %s", skipReason, fieldName)
+			log.Infof(context.Background(), "skipping %s field %s", skipReason, fieldName)
 		}
 		return
 	}

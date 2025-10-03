@@ -100,8 +100,6 @@ func planOpaque(ctx context.Context, p *planner, stmt tree.Statement) (planNode,
 		return p.AlterDatabaseSetZoneConfigExtension(ctx, n)
 	case *tree.AlterDefaultPrivileges:
 		return p.alterDefaultPrivileges(ctx, n)
-	case *tree.AlterExternalConnection:
-		return p.AlterExternalConnection(ctx, n)
 	case *tree.AlterFunctionOptions:
 		return p.AlterFunctionOptions(ctx, n)
 	case *tree.AlterRoutineRename:
@@ -128,8 +126,6 @@ func planOpaque(ctx context.Context, p *planner, stmt tree.Statement) (planNode,
 		return p.AlterTableLocality(ctx, n)
 	case *tree.AlterTableOwner:
 		return p.AlterTableOwner(ctx, n)
-	case *tree.AlterTableSetLogged:
-		return p.AlterTableSetLogged(ctx, n)
 	case *tree.AlterTableSetSchema:
 		return p.AlterTableSetSchema(ctx, n)
 	case *tree.AlterTenantCapability:
@@ -235,8 +231,6 @@ func planOpaque(ctx context.Context, p *planner, stmt tree.Statement) (planNode,
 		return p.Grant(ctx, n)
 	case *tree.GrantRole:
 		return p.GrantRole(ctx, n)
-	case *tree.Inspect:
-		return p.Inspect(ctx, n)
 	case *tree.MoveCursor:
 		return p.FetchCursor(ctx, &n.CursorStmt)
 	case *tree.ReassignOwnedBy:
@@ -352,7 +346,6 @@ func init() {
 		&tree.AlterTable{},
 		&tree.AlterTableLocality{},
 		&tree.AlterTableOwner{},
-		&tree.AlterTableSetLogged{},
 		&tree.AlterTableSetSchema{},
 		&tree.AlterTenantCapability{},
 		&tree.AlterTenantRename{},
@@ -375,7 +368,6 @@ func init() {
 		&tree.CreateDatabase{},
 		&tree.CreateExtension{},
 		&tree.CreateExternalConnection{},
-		&tree.AlterExternalConnection{},
 		&tree.CreateTenant{},
 		&tree.CreateIndex{},
 		&tree.CreatePolicy{},
@@ -404,7 +396,6 @@ func init() {
 		&tree.FetchCursor{},
 		&tree.Grant{},
 		&tree.GrantRole{},
-		&tree.Inspect{},
 		&tree.MoveCursor{},
 		&tree.ReassignOwnedBy{},
 		&tree.RefreshMaterializedView{},
@@ -430,7 +421,6 @@ func init() {
 		&tree.ShowCreateExternalConnections{},
 		&tree.ShowExternalConnections{},
 		&tree.ShowHistogram{},
-		&tree.ShowInspectErrors{},
 		&tree.ShowTableStats{},
 		&tree.ShowTenant{},
 		&tree.ShowTraceForSession{},

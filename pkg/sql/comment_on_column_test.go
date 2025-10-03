@@ -26,7 +26,7 @@ func TestCommentOnColumn(t *testing.T) {
 		if _, err := db.Exec(`
 		CREATE DATABASE d;
 		SET DATABASE = d;
-		CREATE TABLE t (c1 INT, c2 INT, c3 INT) WITH (schema_locked=false);
+		CREATE TABLE t (c1 INT, c2 INT, c3 INT);
 	`); err != nil {
 			t.Fatal(err)
 		}
@@ -213,8 +213,7 @@ func TestCommentOnAlteredColumn(t *testing.T) {
 func runCommentOnTests(t *testing.T, testFunc func(db *gosql.DB)) {
 	for _, setupQuery := range []string{
 		`SET use_declarative_schema_changer = 'on'`,
-		`SET create_table_with_schema_locked=false;
-		 SET use_declarative_schema_changer = 'off';`,
+		`SET use_declarative_schema_changer = 'off'`,
 	} {
 		runOneCommentOnTest(t, setupQuery, testFunc)
 	}

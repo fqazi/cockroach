@@ -148,24 +148,29 @@ func (h *testHelper) clearSchedules(t *testing.T) {
 	h.sqlDB.Exec(t, "DELETE FROM system.scheduled_jobs WHERE true")
 }
 
-func (h *testHelper) waitForSuccessfulScheduledJob(t *testing.T, scheduleID jobspb.ScheduleID) {
-	t.Helper()
+func (h *testHelper) waitForScheduledJobState(
+	t *testing.T, scheduleID jobspb.ScheduleID, state jobs.State,
+) {
 	query := "SELECT status FROM " + h.env.SystemJobsTableName() +
 		" WHERE created_by_type=$1 AND created_by_id=$2 ORDER BY created DESC LIMIT 1"
 
 	testutils.SucceedsSoon(t, func() error {
-		// Force newly created job to be adopted and verify it succeeds.
 		h.server.JobRegistry().(*jobs.Registry).TestingNudgeAdoptionQueue()
 		var status string
 		err := h.sqlDB.DB.QueryRowContext(context.Background(),
 			query, jobs.CreatedByScheduledJobs, scheduleID).Scan(&status)
 		if err != nil {
 			return err
-		} else if status != string(jobs.StateSucceeded) {
-			return errors.Newf("expected job to succeed; found %s", status)
+		} else if status != string(state) {
+			return errors.Newf("expected job in %s; found %s", state, status)
 		}
 		return nil
 	})
+}
+
+func (h *testHelper) waitForSuccessfulScheduledJob(t *testing.T, scheduleID jobspb.ScheduleID) {
+	t.Helper()
+	h.waitForScheduledJobState(t, scheduleID, jobs.StateSucceeded)
 }
 
 func (h *testHelper) waitForSuccessfulScheduledJobCount(
@@ -1432,6 +1437,7 @@ func TestCreateScheduledBackupTelemetry(t *testing.T) {
 
 	th, cleanup := newTestHelper(t)
 	defer cleanup()
+	var asOfInterval int64
 
 	// We'll be manipulating schedule time via th.env, but we can't fool actual backup
 	// when it comes to AsOf time.  So, override AsOf backup clause to be the current time.
@@ -1439,6 +1445,7 @@ func TestCreateScheduledBackupTelemetry(t *testing.T) {
 		knobs := th.cfg.TestingKnobs.(*jobs.TestingKnobs)
 		knobs.OverrideAsOfClause = func(clause *tree.AsOfClause, stmtTimestamp time.Time) {
 			expr, err := tree.MakeDTimestampTZ(th.cfg.DB.KV().Clock().PhysicalTime(), time.Microsecond)
+			asOfInterval = expr.Time.UnixNano() - stmtTimestamp.UnixNano()
 			require.NoError(t, err)
 			clause.Expr = expr
 		}
@@ -1470,11 +1477,15 @@ WITH SCHEDULE OPTIONS on_execution_failure = 'pause', ignore_existing_backups, f
 		RecoveryType:            createdScheduleEventType,
 		TargetScope:             clusterScope.String(),
 		TargetCount:             1,
+		DestinationSubdirType:   standardSubdirType,
 		DestinationStorageTypes: []string{"userfile"},
 		DestinationAuthTypes:    []string{"specified"},
+		AsOfInterval:            asOfInterval,
 		Options:                 []string{telemetryOptionDetached},
 		RecurringCron:           "@hourly",
 		FullBackupCron:          "@daily",
+		OnExecutionFailure:      "PAUSE_SCHED",
+		OnPreviousRunning:       "WAIT",
 		IgnoreExistingBackup:    true,
 		CustomFirstRunTime:      firstRun.UnixNano(),
 		ApplicationName:         "backup_test",
@@ -1495,8 +1506,10 @@ WITH SCHEDULE OPTIONS on_execution_failure = 'pause', ignore_existing_backups, f
 		RecoveryType:            scheduledBackupEventType,
 		TargetScope:             clusterScope.String(),
 		TargetCount:             1,
+		DestinationSubdirType:   standardSubdirType,
 		DestinationStorageTypes: []string{"userfile"},
 		DestinationAuthTypes:    []string{"specified"},
+		AsOfInterval:            asOfInterval,
 		Options:                 []string{telemetryOptionDetached},
 	}
 	requireRecoveryEvent(t, beforeBackup.UnixNano(), scheduledBackupEventType, expectedScheduledBackup)

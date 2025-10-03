@@ -328,10 +328,10 @@ func (u Updater) FractionProgressed(ctx context.Context, progressedFn FractionPr
 
 		// Clamp to [0.0, 1.0].
 		if fractionCompleted > 1.0 {
-			log.Dev.VInfof(ctx, 1, "clamping fraction completed %f to [0.0, 1.0]", fractionCompleted)
+			log.VInfof(ctx, 1, "clamping fraction completed %f to [0.0, 1.0]", fractionCompleted)
 			fractionCompleted = 1.0
 		} else if fractionCompleted < 0.0 {
-			log.Dev.VInfof(ctx, 1, "clamping fraction completed %f to [0.0, 1.0]", fractionCompleted)
+			log.VInfof(ctx, 1, "clamping fraction completed %f to [0.0, 1.0]", fractionCompleted)
 			fractionCompleted = 0
 		}
 
@@ -459,16 +459,7 @@ func (u Updater) failed(ctx context.Context, err error) error {
 			jobErrMaxRuneCount    = 1024
 			jobErrTruncatedMarker = " -- TRUNCATED"
 		)
-		hints := errors.FlattenHints(err)
-		details := errors.FlattenDetails(err)
 		errStr := err.Error()
-		if hints != "" {
-			errStr += "\nHINT: " + hints
-		}
-		if details != "" {
-			errStr += "\nDETAIL: " + details
-		}
-
 		if len(errStr) > jobErrMaxRuneCount {
 			errStr = util.TruncateString(errStr, jobErrMaxRuneCount) + jobErrTruncatedMarker
 		}

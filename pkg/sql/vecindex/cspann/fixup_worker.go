@@ -9,11 +9,8 @@ import (
 	"context"
 	"math/rand"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/cspann/utils"
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/cspann/workspace"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/num32"
 	"github.com/cockroachdb/cockroach/pkg/util/vector"
 	"github.com/cockroachdb/errors"
 )
@@ -96,9 +93,6 @@ type fixupWorker struct {
 	tempVectorsWithKeys []VectorWithKey
 	tempChildKey        [1]ChildKey
 	tempValueBytes      [1]ValueBytes
-	tempMetadataToGet   []PartitionMetadataToGet
-	tempIndexCtx        Context
-	tempPartitionKeys   [3]PartitionKey
 }
 
 // ewFixupWorker returns a new worker for the given processor.
@@ -135,10 +129,6 @@ func (fw *fixupWorker) Start(ctx context.Context) {
 			}
 
 		case mergeFixup:
-			err = fw.mergePartition(ctx, next.ParentPartitionKey, next.PartitionKey)
-			if err != nil {
-				err = errors.Wrapf(err, "merging partition %d", next.PartitionKey)
-			}
 
 		case vectorDeleteFixup:
 			err = fw.deleteVector(ctx, next.PartitionKey, next.VectorKey)
@@ -154,43 +144,13 @@ func (fw *fixupWorker) Start(ctx context.Context) {
 			// This is a background goroutine, so just log error and continue.
 			// TODO(andyk): Create a backoff mechanism so that bugs don't cause
 			// rapid retries.
-			log.Dev.Errorf(ctx, "%v", err)
+			log.Errorf(ctx, "%v", err)
 		}
 
 		// Delete already-processed fixup from its pending map, even if the fixup
 		// failed, in order to avoid looping over the same fixup.
-		fw.fp.removeFixup(ctx, next)
+		fw.fp.removeFixup(next)
 	}
-}
-
-// removeFromPartition removes the given child from the given partition, so long
-// as the partition's metadata matches the expected value. If another agent has
-// modified the partition, the attempt to remove the child aborts.
-func (fw *fixupWorker) removeFromPartition(
-	ctx context.Context, partitionKey PartitionKey, childKey ChildKey, expected PartitionMetadata,
-) error {
-	// Remove the partition from its parent.
-	fw.tempChildKey[0] = childKey
-	removed, err := fw.index.store.TryRemoveFromPartition(
-		ctx, fw.treeKey, partitionKey, fw.tempChildKey[:1], expected)
-	if err != nil {
-		_, err = suppressRaceErrors(err)
-		if err == nil {
-			// Another worker raced and updated the metadata, so abort.
-			return errFixupAborted
-		}
-		return errors.Wrapf(err, "removing child from partition %d", partitionKey)
-	}
-
-	if removed {
-		log.VEventf(ctx, 2, "removed child from partition %d", partitionKey)
-
-		if fw.singleStep {
-			return errFixupAborted
-		}
-	}
-
-	return nil
 }
 
 // deleteVector deletes a vector from the store that has had its primary key
@@ -206,7 +166,7 @@ func (fw *fixupWorker) deleteVector(
 		// against a race condition where a row is created and deleted repeatedly with
 		// the same primary key.
 		childKey := ChildKey{KeyBytes: vectorKey}
-		fw.tempVectorsWithKeys = utils.EnsureSliceLen(fw.tempVectorsWithKeys, 1)
+		fw.tempVectorsWithKeys = ensureSliceLen(fw.tempVectorsWithKeys, 1)
 		fw.tempVectorsWithKeys[0] = VectorWithKey{Key: childKey}
 		if err = txn.GetFullVectors(ctx, fw.treeKey, fw.tempVectorsWithKeys); err != nil {
 			return errors.Wrap(err, "getting full vector")
@@ -225,18 +185,9 @@ func (fw *fixupWorker) deleteVector(
 	})
 }
 
-// getFullVectorsForPartition fetches the full-size vectors that are quantized
-// by the given partition.
-//
-// For a leaf partition:
-//  1. Fetch the original vectors from the primary index.
-//  2. Randomize the vectors.
-//  3. For the Cosine distance metric, normalize the vectors.
-//
-// For an interior partition:
-//  1. Fetch the centroids for the child partitions.
-//  2. For the Cosine and InnerProduct distance metrics, convert the mean
-//     centroids to spherical centroids.
+// getFullVectorsForPartition fetches the full-size vectors (potentially
+// randomized by the quantizer) that are quantized by the given partition.
+// Discard any dangling vectors in the partition.
 func (fw *fixupWorker) getFullVectorsForPartition(
 	ctx context.Context, partitionKey PartitionKey, partition *Partition,
 ) (vectors vector.Set, err error) {
@@ -250,7 +201,7 @@ func (fw *fixupWorker) getFullVectorsForPartition(
 
 	err = fw.index.store.RunTransaction(ctx, func(txn Txn) error {
 		childKeys := partition.ChildKeys()
-		fw.tempVectorsWithKeys = utils.EnsureSliceLen(fw.tempVectorsWithKeys, len(childKeys))
+		fw.tempVectorsWithKeys = ensureSliceLen(fw.tempVectorsWithKeys, len(childKeys))
 		for i := range childKeys {
 			fw.tempVectorsWithKeys[i] = VectorWithKey{Key: childKeys[i]}
 		}
@@ -276,33 +227,16 @@ func (fw *fixupWorker) getFullVectorsForPartition(
 		vectors = vector.MakeSet(fw.index.quantizer.GetDims())
 		vectors.AddUndefined(len(fw.tempVectorsWithKeys))
 		for i := range fw.tempVectorsWithKeys {
-			fw.transformFullVector(partition.Level(), fw.tempVectorsWithKeys[i].Vector, vectors.At(i))
+			// Leaf vectors from the primary index need to be randomized.
+			if partition.Level() == LeafLevel {
+				fw.index.RandomizeVector(fw.tempVectorsWithKeys[i].Vector, vectors.At(i))
+			} else {
+				copy(vectors.At(i), fw.tempVectorsWithKeys[i].Vector)
+			}
 		}
 
 		return nil
 	})
 
 	return vectors, err
-}
-
-// transformFullVector ensures that the full vector fetched from a partition at
-// the given level has been properly randomized and normalized. It copies the
-// randomized, normalized vector into "transformed", which must be allocated by
-// the caller with the same length as the input vector.
-func (fw *fixupWorker) transformFullVector(level Level, vec, transformed vector.T) {
-	if level == LeafLevel {
-		// Leaf vectors from the primary index need to be randomized and possibly
-		// normalized.
-		fw.index.TransformVector(vec, transformed)
-	} else {
-		// This is an interior level, which means the vector is a partition
-		// centroid that's already randomized. However, it's a mean centroid, and
-		// needs to be converted into a spherical centroid for the Cosine and
-		// InnerProduct distance metrics.
-		copy(transformed, vec)
-		switch fw.index.quantizer.GetDistanceMetric() {
-		case vecpb.CosineDistance, vecpb.InnerProductDistance:
-			num32.Normalize(transformed)
-		}
-	}
 }

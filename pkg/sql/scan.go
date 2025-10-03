@@ -52,7 +52,7 @@ type scanNode struct {
 	// if non-zero, softLimit is an estimation that only this many rows might be
 	// needed. It is a (potentially optimistic) "hint". If hardLimit is set
 	// (non-zero), softLimit must be unset (zero).
-	softLimit uint64
+	softLimit int64
 
 	// See exec.Factory.ConstructScan.
 	parallelize bool
@@ -224,43 +224,6 @@ func (n *scanNode) initDescSpecificCol(colCfg scanColumnsConfig, prefixCol catal
 		return pgerror.Newf(pgcode.InvalidColumnReference,
 			"table %s does not contain a non-partial forward index with %s as a prefix column",
 			n.desc.GetName(),
-			prefixCol.GetName())
-	}
-	var err error
-	n.catalogCols, err = initColsForScan(n.desc, n.colCfg)
-	if err != nil {
-		return err
-	}
-	// Set up the rest of the scanNode.
-	n.columns = colinfo.ResultColumnsFromColumns(n.desc.GetID(), n.catalogCols)
-	return nil
-}
-
-// initDescSpecificIndex initializes the column structures with the provided
-// index that must have prefixCol as the prefix column.
-func (n *scanNode) initDescSpecificIndex(
-	colCfg scanColumnsConfig, prefixCol catalog.Column, indexID descpb.IndexID,
-) error {
-	n.colCfg = colCfg
-	indexes := n.desc.ActiveIndexes()
-	prefixColID := prefixCol.GetID()
-
-	foundIndex := false
-	for _, idx := range indexes {
-		if idx.GetID() == indexID {
-			columns := n.desc.IndexKeyColumns(idx)
-			if len(columns) > 0 && columns[0].GetID() == prefixColID {
-				n.index = idx
-				foundIndex = true
-				break
-			}
-		}
-	}
-	if !foundIndex {
-		return pgerror.Newf(pgcode.InvalidColumnReference,
-			"table %s does not contain an index with ID %d and with %s as a prefix column",
-			n.desc.GetName(),
-			indexID,
 			prefixCol.GetName())
 	}
 	var err error

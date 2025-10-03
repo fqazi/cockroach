@@ -29,6 +29,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
+	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/dbdesc"
@@ -47,6 +48,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/ioctx"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -82,6 +84,17 @@ const (
 	// CHECKPOINT files will be stored as we no longer want to overwrite
 	// them.
 	BackupProgressDirectory = "progress"
+)
+
+// WriteMetadataWithExternalSSTsEnabled controls if we write a `BACKUP_METADATA`
+// file along with external SSTs containing lists of `BackupManifest_Files` and
+// descriptors. This new format of metadata is written in addition to the
+// `BACKUP_MANIFEST` file, and is expected to be its replacement in the future.
+var WriteMetadataWithExternalSSTsEnabled = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"backup.write_metadata_with_external_ssts.enabled",
+	"write BACKUP metadata along with supporting SST files",
+	metamorphic.ConstantWithTestBool("backup.write_metadata_with_external_ssts.enabled", true),
 )
 
 // IsGZipped detects whether the given bytes represent GZipped data. This check
@@ -154,37 +167,44 @@ func ReadBackupManifestFromStore(
 		// If we did not find `BACKUP_METADATA` we look for the
 		// `BACKUP_MANIFEST` file as it is possible the backup was created by a
 		// pre-23.1 node.
-		log.Dev.VInfof(ctx, 2, "could not find BACKUP_METADATA, falling back to BACKUP_MANIFEST")
+		log.VInfof(ctx, 2, "could not find BACKUP_METADATA, falling back to BACKUP_MANIFEST")
 		backupManifest, backupManifestMemSize, backupManifestErr := ReadBackupManifest(ctx, mem, exportStore,
-			backupbase.DeprecatedBackupManifestName, encryption, kmsEnv)
+			backupbase.BackupManifestName, encryption, kmsEnv)
 		if backupManifestErr != nil {
-			return backuppb.BackupManifest{}, 0, backupManifestErr
+			if !errors.Is(backupManifestErr, cloud.ErrFileDoesNotExist) {
+				return backuppb.BackupManifest{}, 0, backupManifestErr
+			}
+
+			// If we did not find a `BACKUP_MANIFEST` we look for a `BACKUP` file as
+			// it is possible the backup was created by a pre-20.1 node.
+			//
+			// TODO(adityamaru): Remove this logic once we disallow restores beyond
+			// the binary upgrade compatibility window.
+			log.VInfof(ctx, 2, "could not find BACKUP_MANIFEST, falling back to BACKUP")
+			oldBackupManifest, oldBackupManifestMemSize, oldBackupManifestErr := ReadBackupManifest(ctx, mem, exportStore,
+				backupbase.BackupOldManifestName, encryption, kmsEnv)
+			if oldBackupManifestErr != nil {
+				if errors.Is(oldBackupManifestErr, cloud.ErrFileDoesNotExist) {
+					log.VInfof(ctx, 2, "could not find any of the supported backup metadata files")
+					return backuppb.BackupManifest{}, 0,
+						errors.Wrapf(oldBackupManifestErr, "could not find BACKUP manifest file in any of the known locations: %s, %s, %s",
+							backupbase.BackupMetadataName, backupbase.BackupManifestName, backupbase.BackupOldManifestName)
+				}
+				return backuppb.BackupManifest{}, 0, oldBackupManifestErr
+			} else {
+				// We found a `BACKUP` manifest file.
+				manifest = oldBackupManifest
+				memSize = oldBackupManifestMemSize
+			}
+		} else {
+			// We found a `BACKUP_MANIFEST` file.
+			manifest = backupManifest
+			memSize = backupManifestMemSize
 		}
-		manifest = backupManifest
-		memSize = backupManifestMemSize
 	}
 	manifest.Dir = exportStore.Conf()
 	manifest.Dir.URI = storeURI
 	return manifest, memSize, nil
-}
-
-func ContainsManifest(ctx context.Context, exportStore cloud.ExternalStorage) (bool, error) {
-	containsManifestWithFilename := func(filename string) (bool, error) {
-		r, _, err := exportStore.ReadFile(ctx, filename, cloud.ReadOptions{NoFileSize: true})
-		if err != nil {
-			if errors.Is(err, cloud.ErrFileDoesNotExist) {
-				return false, nil
-			}
-			return false, err
-		}
-		r.Close(ctx)
-		return true, nil
-	}
-	exists, err := containsManifestWithFilename(backupbase.BackupMetadataName)
-	if exists || err != nil {
-		return exists, err
-	}
-	return containsManifestWithFilename(backupbase.DeprecatedBackupManifestName)
 }
 
 // compressData compresses data buffer and returns compressed
@@ -216,19 +236,18 @@ func DecompressData(ctx context.Context, mem *mon.BoundAccount, descBytes []byte
 
 // ReadBackupCheckpointManifest reads and unmarshals a BACKUP-CHECKPOINT
 // manifest from filename in the provided export store.
-//
-// NB: a checkpoint file should always get written before this is called.
 func ReadBackupCheckpointManifest(
 	ctx context.Context,
 	mem *mon.BoundAccount,
 	exportStore cloud.ExternalStorage,
+	filename string,
 	encryption *jobspb.BackupEncryptionOptions,
 	kmsEnv cloud.KMSEnv,
 ) (backuppb.BackupManifest, int64, error) {
 	ctx, sp := tracing.ChildSpan(ctx, "backupinfo.ReadBackupCheckpointManifest")
 	defer sp.Finish()
 
-	checkpointFile, err := readLatestCheckpointFile(ctx, exportStore, BackupManifestCheckpointName)
+	checkpointFile, err := readLatestCheckpointFile(ctx, exportStore, filename)
 	if err != nil {
 		return backuppb.BackupManifest{}, 0, err
 	}
@@ -236,7 +255,7 @@ func ReadBackupCheckpointManifest(
 
 	// Look for a checksum, if one is not found it could be an older backup,
 	// but we want to continue anyway.
-	checksumFile, err := readLatestCheckpointFile(ctx, exportStore, BackupManifestCheckpointName+BackupManifestChecksumSuffix)
+	checksumFile, err := readLatestCheckpointFile(ctx, exportStore, filename+BackupManifestChecksumSuffix)
 	if err != nil {
 		if !errors.Is(err, cloud.ErrFileDoesNotExist) {
 			return backuppb.BackupManifest{}, 0, err
@@ -856,141 +875,58 @@ func GetLocalityInfo(
 	return info, nil
 }
 
-// TODO (kev-cao): Remove in v26.2
-type BackupTreeEntry struct {
-	// The URI to the backup manifest.
-	Uri string
-	// The contents of the backup Manifest.
-	Manifest backuppb.BackupManifest
-	// The locality information for the backup.
-	LocalityInfo jobspb.RestoreDetails_BackupLocalityInfo
-}
-
-func (b BackupTreeEntry) Start() hlc.Timestamp {
-	return b.Manifest.StartTime
-}
-
-func (b BackupTreeEntry) End() hlc.Timestamp {
-	return b.Manifest.EndTime
-}
-
-func (b BackupTreeEntry) Compacted() bool {
-	return b.Manifest.IsCompacted
-}
-
-func (b BackupTreeEntry) MVCC() backuppb.MVCCFilter {
-	return b.Manifest.MVCCFilter
-}
-
-func (b BackupTreeEntry) RevisionStart() hlc.Timestamp {
-	return b.Manifest.RevisionStartTime
-}
-
-// This interface is used as a stop-gap during the transitional period where
-// some restorable backups will not have backup indexes and some will.
-// Afterwards, we can remove this interface and replace instances of
-// ManifestLike with BackupIndexMetadata.
-// TODO (kev-cao): Remove in v26.2
-type ManifestLike interface {
-	Start() hlc.Timestamp
-	End() hlc.Timestamp
-	Compacted() bool
-	MVCC() backuppb.MVCCFilter
-	RevisionStart() hlc.Timestamp
-}
-
-// ZipBackupTreeEntries zips the default URIs, main backup manifests, and
-// locality information into a slice of backupChainEntry structs. It assumes
-// that the passed in slices are of the same length and that each entry at the
-// same index in each slice corresponds to the same backup.
-// TODO (kev-cao): Remove in v26.2
-func ZipBackupTreeEntries(
-	defaultURIs []string,
-	mainBackupManifests []backuppb.BackupManifest,
-	localityInfo []jobspb.RestoreDetails_BackupLocalityInfo,
-) ([]BackupTreeEntry, error) {
-	if len(defaultURIs) != len(mainBackupManifests) || len(defaultURIs) != len(localityInfo) {
-		return nil, errors.AssertionFailedf(
-			"length mismatch: defaultURIs %d, mainBackupManifests %d, localityInfo %d",
-			len(defaultURIs), len(mainBackupManifests), len(localityInfo),
-		)
-	}
-
-	entries := make([]BackupTreeEntry, len(mainBackupManifests))
-	for i := range mainBackupManifests {
-		entries[i] = BackupTreeEntry{
-			Uri:          defaultURIs[i],
-			Manifest:     mainBackupManifests[i],
-			LocalityInfo: localityInfo[i],
-		}
-	}
-
-	return entries, nil
-}
-
-// UnzipBackupTreeEntries unzips a slice of backupChainEntry structs into
-// slices of their constituent parts: default URIs, main backup manifests, and
-// locality info and returns the individual slices.
-// TODO (kev-cao): Remove in v26.2
-func UnzipBackupTreeEntries(
-	entries []BackupTreeEntry,
-) ([]string, []backuppb.BackupManifest, []jobspb.RestoreDetails_BackupLocalityInfo) {
-	defaultURIs := make([]string, len(entries))
-	mainBackupManifests := make([]backuppb.BackupManifest, len(entries))
-	localityInfo := make([]jobspb.RestoreDetails_BackupLocalityInfo, len(entries))
-	for i := range entries {
-		defaultURIs[i] = entries[i].Uri
-		mainBackupManifests[i] = entries[i].Manifest
-		localityInfo[i] = entries[i].LocalityInfo
-	}
-	return defaultURIs, mainBackupManifests, localityInfo
-}
-
 // ValidateEndTimeAndTruncate checks that the requested target time, if
 // specified, is valid for the list of incremental backups resolved, truncating
 // the results to the backup that contains the target time.
 // The method also performs additional sanity checks to ensure the backups cover
 // the requested time.
-//
-// Note: This function assumes that the manifests in the chain are sorted by end
-// time in ascending order and ties are broken by start time in ascending order.
-func ValidateEndTimeAndTruncate[E ManifestLike](
-	manifests []E, endTime hlc.Timestamp, includeSkipped bool, includeCompacted bool,
-) ([]E, error) {
+func ValidateEndTimeAndTruncate(
+	defaultURIs []string,
+	mainBackupManifests []backuppb.BackupManifest,
+	localityInfo []jobspb.RestoreDetails_BackupLocalityInfo,
+	endTime hlc.Timestamp,
+	includeSkipped bool,
+	includeCompacted bool,
+) ([]string, []backuppb.BackupManifest, []jobspb.RestoreDetails_BackupLocalityInfo, error) {
 	if !includeCompacted {
-		manifests = skipCompactedBackups(manifests)
+		defaultURIs, mainBackupManifests, localityInfo = skipCompactedBackups(
+			defaultURIs, mainBackupManifests, localityInfo,
+		)
 	}
 
 	if endTime.IsEmpty() {
 		if includeSkipped {
-			return manifests, nil
+			return defaultURIs, mainBackupManifests, localityInfo, nil
 		}
-		manifests = elideSkippedLayers(manifests)
+		uris, manifests, locality, err := ElideSkippedLayers(defaultURIs, mainBackupManifests, localityInfo)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 		if err := validateContinuity(manifests); err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
-		return manifests, nil
+		return uris, manifests, locality, nil
 	}
-	for i, b := range manifests {
+	for i, b := range mainBackupManifests {
 		// Find the backup that covers the requested time.
-		if !(b.Start().Less(endTime) && endTime.LessEq(b.End())) {
+		if !(b.StartTime.Less(endTime) && endTime.LessEq(b.EndTime)) {
 			continue
 		}
 
 		// Ensure that the backup actually has revision history.
-		if !endTime.Equal(b.End()) {
-			if b.MVCC() != backuppb.MVCCFilter_All {
+		if !endTime.Equal(b.EndTime) {
+			if b.MVCCFilter != backuppb.MVCCFilter_All {
 				const errPrefix = "invalid RESTORE timestamp: restoring to arbitrary time requires that BACKUP for requested time be created with 'revision_history' option."
 				if i == 0 {
-					return nil, errors.Errorf(
+					return nil, nil, nil, errors.Errorf(
 						errPrefix+" nearest backup time is %s",
-						timeutil.Unix(0, b.End().WallTime).UTC(),
+						timeutil.Unix(0, b.EndTime.WallTime).UTC(),
 					)
 				}
-				return nil, errors.Errorf(
+				return nil, nil, nil, errors.Errorf(
 					errPrefix+" nearest BACKUP times are %s or %s",
-					timeutil.Unix(0, manifests[i-1].End().WallTime).UTC(),
-					timeutil.Unix(0, b.End().WallTime).UTC(),
+					timeutil.Unix(0, mainBackupManifests[i-1].EndTime.WallTime).UTC(),
+					timeutil.Unix(0, b.EndTime.WallTime).UTC(),
 				)
 			}
 			// Ensure that the revision history actually covers the requested time -
@@ -998,112 +934,124 @@ func ValidateEndTimeAndTruncate[E ManifestLike](
 			// example if start time is 0 (full backup), the revision history was
 			// only captured since the GC window. Note that the RevisionStartTime is
 			// the latest for ranges backed up.
-			if endTime.LessEq(b.RevisionStart()) {
-				return nil, errors.Errorf(
+			if endTime.LessEq(b.RevisionStartTime) {
+				return nil, nil, nil, errors.Errorf(
 					"invalid RESTORE timestamp: BACKUP for requested time only has revision history"+
-						" from %v", timeutil.Unix(0, b.RevisionStart().WallTime).UTC(),
+						" from %v", timeutil.Unix(0, b.RevisionStartTime.WallTime).UTC(),
 				)
 			}
 		}
 		if includeSkipped {
-			return manifests[:i+1], nil
+			return defaultURIs[:i+1], mainBackupManifests[:i+1], localityInfo[:i+1], nil
 		}
-		manifests = elideSkippedLayers(manifests[:i+1])
+		uris, manifests, locality, err := ElideSkippedLayers(
+			defaultURIs[:i+1], mainBackupManifests[:i+1], localityInfo[:i+1],
+		)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 		if err := validateContinuity(manifests); err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
-		return manifests, nil
+		return uris, manifests, locality, nil
 	}
 
-	return nil, errors.Errorf(
+	return nil, nil, nil, errors.Errorf(
 		"invalid RESTORE timestamp: supplied backups do not cover requested time",
 	)
 }
 
 // skipCompactedBackups removes any compacted backups from the list of
-// backups and returns the updated list backup entries.
+// backups and returns the updated list of URIs, manifests, and locality info.
 //
 // NOTE: This function modifies the underlying memory of the slices passed in.
-func skipCompactedBackups[E ManifestLike](manifests []E) []E {
+func skipCompactedBackups(
+	defaultURIs []string,
+	manifests []backuppb.BackupManifest,
+	localityInfo []jobspb.RestoreDetails_BackupLocalityInfo,
+) ([]string, []backuppb.BackupManifest, []jobspb.RestoreDetails_BackupLocalityInfo) {
 	for i := len(manifests) - 1; i >= 0; i-- {
-		if manifests[i].Compacted() {
+		if manifests[i].IsCompacted {
+			defaultURIs = slices.Delete(defaultURIs, i, i+1)
 			manifests = slices.Delete(manifests, i, i+1)
+			localityInfo = slices.Delete(localityInfo, i, i+1)
 		}
 	}
-	return manifests
+	return defaultURIs, manifests, localityInfo
 }
 
 // validateContinuity checks that the backups are continuous.
-//
-// Note: This fucntion assumes the backups are sorted by end time in ascending
-// order.
-func validateContinuity[E ManifestLike](manifests []E) error {
+func validateContinuity(manifests []backuppb.BackupManifest) error {
 	if len(manifests) == 0 {
 		return errors.AssertionFailedf("an empty chain of backups cannot cover an end time")
 	}
 	for i := range len(manifests) - 1 {
-		end := manifests[i].End()
-		if !end.Equal(manifests[i+1].Start()) {
+		if !manifests[i].EndTime.Equal(manifests[i+1].StartTime) {
 			return errors.AssertionFailedf(
 				"backups are not continuous: %dth backup ends at %+v, %dth backup starts at %+v",
-				i, manifests[i].End(),
-				i+1, manifests[i+1].Start(),
+				i, manifests[i].EndTime,
+				i+1, manifests[i+1].StartTime,
 			)
 		}
 	}
 	return nil
 }
 
-// elideSkippedLayers removes backups that are skipped in the backup chain and
+// ElideSkippedLayers removes backups that are skipped in the backup chain and
 // ensures only backups that will be used in the restore are returned.
 //
-// Note: This function assumes that the manifests in the chain are sorted by end
-// time in ascending order and ties are broken by start time in ascending order.
-func elideSkippedLayers[E ManifestLike](manifests []E) []E {
-	manifests = elideDuplicateEndTimes(manifests)
-	i := len(manifests) - 1
+// Note: This assumes that the provided backups are sorted in increasing order
+// by end time, and then sorted in increasing order by start time to break ties.
+func ElideSkippedLayers(
+	uris []string, backups []backuppb.BackupManifest, loc []jobspb.RestoreDetails_BackupLocalityInfo,
+) ([]string, []backuppb.BackupManifest, []jobspb.RestoreDetails_BackupLocalityInfo, error) {
+	uris, backups, loc = elideDuplicateEndTimes(uris, backups, loc)
+	i := len(backups) - 1
 	for i > 0 {
 		// Find j such that backups[j] is parent of backups[i].
 		j := i - 1
-		start := manifests[i].Start()
-		for j >= 0 && !start.Equal(manifests[j].End()) {
+		for j >= 0 && !backups[i].StartTime.Equal(backups[j].EndTime) {
 			j--
 		}
 		// If there are backups between i and j, remove them.
 		// If j is less than 0, then no parent was found so nothing to skip.
 		if j != i-1 && j >= 0 {
-			manifests = slices.Delete(manifests, j+1, i)
+			uris = slices.Delete(uris, j+1, i)
+			backups = slices.Delete(backups, j+1, i)
+			loc = slices.Delete(loc, j+1, i)
 		}
 		// Move up to check the chain from j now.
 		i = j
 	}
-	return manifests
+	return uris, backups, loc, nil
 }
 
 // elideDuplicateEndTimes ensures that backups in a list of backups are
 // functionally unique by removing any duplicates that have the same end time,
 // choosing backups with earlier start times and eliding the rest.
 //
-// Note: This function assumes that the manifests in the chain are sorted by end
-// time in ascending order and ties are broken by start time in ascending order.
-func elideDuplicateEndTimes[E ManifestLike](manifests []E) []E {
-	for i := range len(manifests) - 1 {
-		if i >= len(manifests) {
-			break
-		}
+// Note: This assumes that the provided backups are sorted in increasing order
+// by end time, and then sorted in increasing order by start time to break ties.
+// This is the case for backups being returned by storage clients due to us
+// encoding backup paths in a way that ensures this order.
+func elideDuplicateEndTimes(
+	uris []string, backups []backuppb.BackupManifest, loc []jobspb.RestoreDetails_BackupLocalityInfo,
+) ([]string, []backuppb.BackupManifest, []jobspb.RestoreDetails_BackupLocalityInfo) {
+	for i := range len(backups) - 1 {
 		j := i + 1
 		// Find j such that backups[j] no longer shares the same end time as
 		// backups[i].
-		end := manifests[i].End()
-		for j < len(manifests) && end.Equal(manifests[j].End()) {
+		for j < len(backups) && backups[i].EndTime.Equal(backups[j].EndTime) {
 			j++
 		}
 		// If there exists backups between i and j, remove them.
 		if j > i+1 {
-			manifests = slices.Delete(manifests, i+1, j)
+			uris = slices.Delete(uris, i+1, j)
+			backups = slices.Delete(backups, i+1, j)
+			loc = slices.Delete(loc, i+1, j)
 		}
 	}
-	return manifests
+	return uris, backups, loc
 }
 
 // GetBackupIndexAtTime returns the index of the latest backup in
@@ -1298,6 +1246,17 @@ func CheckForBackupLock(
 // 2) BACKUP-LOCK: Written by the coordinator node to lay claim on a backup
 // location. This file is suffixed with the ID of the backup job to prevent a
 // node from reading its own lock file on job resumption.
+//
+// 3) BACKUP-CHECKPOINT: Prior to 22.1.1, nodes would use the BACKUP-CHECKPOINT
+// to lay claim on a backup location. To account for a mixed-version cluster
+// where an older coordinator node may be running a concurrent backup to the
+// same location, we must continue to check for a BACKUP-CHECKPOINT file.
+//
+// NB: The node will continue to write a BACKUP-CHECKPOINT file later in its
+// execution, but we do not have to worry about reading our own
+// BACKUP-CHECKPOINT file (and locking ourselves out) since
+// `checkForPreviousBackup` is invoked as the first step on job resumption, and
+// is not called again.
 func CheckForPreviousBackup(
 	ctx context.Context,
 	execCfg *sql.ExecutorConfig,
@@ -1314,16 +1273,18 @@ func CheckForPreviousBackup(
 	defer defaultStore.Close()
 
 	redactedURI := backuputils.RedactURIForErrorMessage(defaultURI)
-	exists, err := ContainsManifest(ctx, defaultStore)
-	if err != nil {
-		return errors.Wrapf(err,
-			"%s returned an unexpected error when checking for the existence of manifest",
-			redactedURI)
-	}
-	if exists {
+	r, _, err := defaultStore.ReadFile(ctx, backupbase.BackupManifestName, cloud.ReadOptions{NoFileSize: true})
+	if err == nil {
+		r.Close(ctx)
 		return pgerror.Newf(pgcode.FileAlreadyExists,
-			"%s already contains a manifest",
-			redactedURI)
+			"%s already contains a %s file",
+			redactedURI, backupbase.BackupManifestName)
+	}
+
+	if !errors.Is(err, cloud.ErrFileDoesNotExist) {
+		return errors.Wrapf(err,
+			"%s returned an unexpected error when checking for the existence of %s file",
+			redactedURI, backupbase.BackupManifestName)
 	}
 
 	// Check for the presence of a BACKUP-LOCK file with a job ID different from
@@ -1348,9 +1309,35 @@ func CheckForPreviousBackup(
 		if !errors.Is(err, cloud.ErrListingUnsupported) {
 			return errors.Wrap(err, "checking for BACKUP-LOCK file")
 		}
-		log.Dev.Warningf(ctx, "external storage %s does not support listing: skip checking for BACKUP_LOCK", redactedURI)
+		log.Warningf(ctx, "external storage %s does not support listing: skip checking for BACKUP_LOCK", redactedURI)
 	}
+
+	// Check for a BACKUP-CHECKPOINT that might have been written by a node
+	// running a pre-22.1.1 binary.
+	//
+	// TODO(adityamaru): Delete in 23.1 since we will no longer need to check for
+	// BACKUP-CHECKPOINT files as all backups will rely on BACKUP-LOCK to lock a
+	// location.
+	r, err = readLatestCheckpointFile(ctx, defaultStore, BackupManifestCheckpointName)
+	if err == nil {
+		r.Close(ctx)
+		return pgerror.Newf(pgcode.FileAlreadyExists,
+			"%s already contains a %s file (is another operation already in progress?)",
+			redactedURI, BackupManifestCheckpointName)
+	}
+
+	if !errors.Is(err, cloud.ErrFileDoesNotExist) {
+		return errors.Wrapf(err,
+			"%s returned an unexpected error when checking for the existence of %s file",
+			redactedURI, BackupManifestCheckpointName)
+	}
+
 	return nil
+}
+
+// TempCheckpointFileNameForJob returns temporary filename for backup manifest checkpoint.
+func TempCheckpointFileNameForJob(jobID jobspb.JobID) string {
+	return fmt.Sprintf("%s-%d", BackupManifestCheckpointName, jobID)
 }
 
 // BackupManifestDescriptors returns the descriptors encoded in the manifest as
@@ -1421,8 +1408,11 @@ func newDescriptorBuilder(
 	return nil
 }
 
-// WriteBackupManifestCheckpoint writes a BACKUP-CHECKPOINT file and CHECKSUM
-// file.
+// WriteBackupManifestCheckpoint writes a new BACKUP-CHECKPOINT MANIFEST and
+// CHECKSUM file. If it is a pure v22.1 cluster or later, it will write a
+// timestamped BACKUP-CHECKPOINT to the /progress directory. If it is a mixed
+// cluster version, it will write a non timestamped BACKUP-CHECKPOINT to the
+// base directory in order to not break backup jobs that resume on a v21.2 node.
 func WriteBackupManifestCheckpoint(
 	ctx context.Context,
 	storageURI string,
@@ -1523,9 +1513,12 @@ func readLatestCheckpointFile(
 	ctx context.Context, exportStore cloud.ExternalStorage, filename string,
 ) (ioctx.ReadCloserCtx, error) {
 	filename = strings.TrimPrefix(filename, "/")
-
+	// First try reading from the progress directory. If the backup is from
+	// an older version, it may not exist there yet so try reading
+	// in the base directory if the first attempt fails.
 	var checkpoint string
 	var checkpointFound bool
+	var r ioctx.ReadCloserCtx
 	var err error
 
 	// We name files such that the most recent checkpoint will always
@@ -1546,7 +1539,7 @@ func readLatestCheckpointFile(
 	// directly. This can still fail if it is a mixed cluster and the
 	// checkpoint was written in the base directory.
 	if errors.Is(err, cloud.ErrListingUnsupported) {
-		r, _, err := exportStore.ReadFile(ctx, BackupProgressDirectory+"/"+filename, cloud.ReadOptions{NoFileSize: true})
+		r, _, err = exportStore.ReadFile(ctx, BackupProgressDirectory+"/"+filename, cloud.ReadOptions{NoFileSize: true})
 		// If we found the checkpoint in progress, then don't bother reading
 		// from base, just return the reader.
 		if err == nil {
@@ -1556,18 +1549,26 @@ func readLatestCheckpointFile(
 		return nil, err
 	}
 
-	if !checkpointFound {
-		return nil, errors.Newf("latest file %s not found", filename)
+	if checkpointFound {
+		var name string
+		if strings.HasSuffix(filename, BackupManifestChecksumSuffix) {
+			name = BackupProgressDirectory + "/" + checkpoint + BackupManifestChecksumSuffix
+		} else {
+			name = BackupProgressDirectory + "/" + checkpoint
+		}
+		r, _, err = exportStore.ReadFile(ctx, name, cloud.ReadOptions{NoFileSize: true})
+		return r, err
 	}
 
-	var name string
-	if strings.HasSuffix(filename, BackupManifestChecksumSuffix) {
-		name = BackupProgressDirectory + "/" + checkpoint + BackupManifestChecksumSuffix
-	} else {
-		name = BackupProgressDirectory + "/" + checkpoint
+	// If the checkpoint wasn't found in the progress directory, then try
+	// reading from the base directory instead.
+	r, _, err = exportStore.ReadFile(ctx, filename, cloud.ReadOptions{NoFileSize: true})
+
+	if err != nil {
+		return nil, errors.Wrapf(err, "%s could not be read in the base or progress directory", filename)
 	}
-	r, _, err := exportStore.ReadFile(ctx, name, cloud.ReadOptions{NoFileSize: true})
-	return r, err
+	return r, nil
+
 }
 
 // NewTimestampedCheckpointFileName returns a string of a new checkpoint filename

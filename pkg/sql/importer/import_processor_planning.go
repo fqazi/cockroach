@@ -47,10 +47,6 @@ var replanFrequency = settings.RegisterDurationSetting(
 	settings.PositiveDuration,
 )
 
-// importProgressDebugName is used to mark the transaction for updating
-// import job progress.
-const importProgressDebugName = `import_progress`
-
 // distImport is used by IMPORT to run a DistSQL flow to ingest data by starting
 // reader processes on many nodes that each read and ingest their assigned files
 // and then send back a summary of what they ingested. The combined summary is
@@ -59,7 +55,7 @@ func distImport(
 	ctx context.Context,
 	execCtx sql.JobExecContext,
 	job *jobs.Job,
-	table *execinfrapb.ReadImportDataSpec_ImportTable,
+	tables map[string]*execinfrapb.ReadImportDataSpec_ImportTable,
 	typeDescs []*descpb.TypeDescriptor,
 	from []string,
 	format roachpb.IOFileFormat,
@@ -92,7 +88,7 @@ func distImport(
 		})
 
 		inputSpecs := makeImportReaderSpecs(
-			job, table, typeDescs, from, format, len(sqlInstanceIDs), /* numSQLInstances */
+			job, tables, typeDescs, from, format, len(sqlInstanceIDs), /* numSQLInstances */
 			walltime, execCtx.User(), procsPerNode, initialSplitsPerProc,
 		)
 
@@ -125,7 +121,8 @@ func distImport(
 	}
 
 	// accumulatedBulkSummary accumulates the BulkOpSummary returned from each
-	// processor in their progress updates. It is used to update the job progress.
+	// processor in their progress updates. It stores stats about the amount of
+	// data written since the last time we update the job progress.
 	accumulatedBulkSummary := struct {
 		syncutil.Mutex
 		kvpb.BulkOpSummary
@@ -161,7 +158,7 @@ func distImport(
 	fractionProgress := make([]uint32, len(from))
 
 	updateJobProgress := func() error {
-		return job.DebugNameNoTxn(importProgressDebugName).FractionProgressed(ctx, func(
+		return job.NoTxn().FractionProgressed(ctx, func(
 			ctx context.Context, details jobspb.ProgressDetails,
 		) float32 {
 			var overall float32
@@ -176,7 +173,8 @@ func distImport(
 			}
 
 			accumulatedBulkSummary.Lock()
-			prog.Summary = accumulatedBulkSummary.BulkOpSummary
+			prog.Summary.Add(accumulatedBulkSummary.BulkOpSummary)
+			accumulatedBulkSummary.Reset()
 			accumulatedBulkSummary.Unlock()
 			return overall / float32(len(from))
 		},
@@ -214,7 +212,7 @@ func distImport(
 	})
 
 	if planCtx.ExtendedEvalCtx.Codec.ForSystemTenant() {
-		if err := presplitTableBoundaries(ctx, execCtx.ExecCfg(), table); err != nil {
+		if err := presplitTableBoundaries(ctx, execCtx.ExecCfg(), tables); err != nil {
 			return kvpb.BulkOpSummary{}, err
 		}
 	}
@@ -294,7 +292,7 @@ func getLastImportSummary(job *jobs.Job) kvpb.BulkOpSummary {
 
 func makeImportReaderSpecs(
 	job *jobs.Job,
-	table *execinfrapb.ReadImportDataSpec_ImportTable,
+	tables map[string]*execinfrapb.ReadImportDataSpec_ImportTable,
 	typeDescs []*descpb.TypeDescriptor,
 	from []string,
 	format roachpb.IOFileFormat,
@@ -315,8 +313,7 @@ func makeImportReaderSpecs(
 		if i < cap(inputSpecs) {
 			spec := &execinfrapb.ReadImportDataSpec{
 				JobID:  int64(job.ID()),
-				Table:  table,
-				Tables: map[string]*execinfrapb.ReadImportDataSpec_ImportTable{"": table},
+				Tables: tables,
 				Types:  typeDescs,
 				Format: format,
 				Progress: execinfrapb.JobProgress{
@@ -348,17 +345,21 @@ func makeImportReaderSpecs(
 }
 
 func presplitTableBoundaries(
-	ctx context.Context, cfg *sql.ExecutorConfig, table *execinfrapb.ReadImportDataSpec_ImportTable,
+	ctx context.Context,
+	cfg *sql.ExecutorConfig,
+	tables map[string]*execinfrapb.ReadImportDataSpec_ImportTable,
 ) error {
 	var span *tracing.Span
 	ctx, span = tracing.ChildSpan(ctx, "import-pre-splitting-table-boundaries")
 	defer span.Finish()
 	expirationTime := cfg.DB.Clock().Now().Add(time.Hour.Nanoseconds(), 0)
-	// TODO(ajwerner): Consider passing in the wrapped descriptors.
-	tblDesc := tabledesc.NewBuilder(table.Desc).BuildImmutableTable()
-	for _, span := range tblDesc.AllIndexSpans(cfg.Codec) {
-		if err := cfg.DB.AdminSplit(ctx, span.Key, expirationTime); err != nil {
-			return err
+	for _, tbl := range tables {
+		// TODO(ajwerner): Consider passing in the wrapped descriptors.
+		tblDesc := tabledesc.NewBuilder(tbl.Desc).BuildImmutableTable()
+		for _, span := range tblDesc.AllIndexSpans(cfg.Codec) {
+			if err := cfg.DB.AdminSplit(ctx, span.Key, expirationTime); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

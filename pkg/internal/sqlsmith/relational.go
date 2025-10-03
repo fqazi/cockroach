@@ -200,17 +200,6 @@ func makeJoinExpr(s *Smither, refs colRefs, forJoin bool) (tree.TableExpr, colRe
 		Left:     left,
 		Right:    right,
 	}
-	switch s.rnd.Intn(10) {
-	// INVERTED is unlikely to work unless we get very lucky, so skip it for now.
-	case 0:
-		joinExpr.Hint = "HASH"
-	case 1:
-		joinExpr.Hint = "LOOKUP"
-	case 2:
-		joinExpr.Hint = "MERGE"
-	case 3:
-		joinExpr.Hint = "STRAIGHT"
-	}
 
 	if s.disableCrossJoins {
 		if available, ok := getAvailablePairedColsForJoinPreds(s, leftRefs, rightRefs); ok {
@@ -1801,19 +1790,12 @@ func (s *Smither) makeHaving(refs colRefs) *tree.Where {
 }
 
 func (s *Smither) isOrderable(typ *types.T) bool {
-	if typ.Family() == types.ArrayFamily {
-		typ = typ.ArrayContents()
-	}
-	if typ.Family() == types.RefCursorFamily || typ.Family() == types.JsonpathFamily {
-		// These types don't define an ordering function in PG.
-		return false
-	}
 	if s.postgres {
 		// PostGIS cannot order box2d types.
 		return typ.Family() != types.Box2DFamily
 	}
 	switch typ.Family() {
-	case types.TSQueryFamily, types.TSVectorFamily, types.PGVectorFamily:
+	case types.TSQueryFamily, types.TSVectorFamily:
 		// We can't order by these types - see #92165.
 		return false
 	default:
@@ -1951,9 +1933,7 @@ func makeCreateStats(s *Smither) (tree.Statement, bool) {
 		s.rnd.Shuffle(len(columns), func(i, j int) {
 			columns[i], columns[j] = columns[j], columns[i]
 		})
-		if len(columns) > 0 {
-			columns = columns[0 : s.rnd.Intn(len(columns))+1]
-		}
+		columns = columns[0:s.rnd.Intn(len(columns))]
 	}
 
 	var options tree.CreateStatsOptions

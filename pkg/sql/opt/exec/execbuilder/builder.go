@@ -314,7 +314,7 @@ func (b *Builder) wrapFunctionImpl(
 	if lookup != nil {
 		unresolved := tree.MakeUnresolvedName(fnName)
 		fnDef, err := lookup(
-			b.ctx,
+			context.Background(),
 			tree.MakeUnresolvedFunctionName(&unresolved),
 			&b.evalCtx.SessionData().SearchPath,
 		)

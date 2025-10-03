@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/errors"
@@ -39,11 +40,8 @@ type ArtificialLatency struct {
 	Delay       time.Duration
 }
 
-// FilterName returns the unique name for each filter. Note that the filter name maps
-// many source nodes to single destination node. Each node to node latency needs its
-// own filter, but we can inject the same rule on multiple source nodes in one shot.
-func (l *ArtificialLatency) FilterName(destNode install.Node) string {
-	return fmt.Sprintf("%d-%d-%s", l.Source, destNode, l.Delay)
+func (l *ArtificialLatency) String() string {
+	return fmt.Sprintf("%d-%d-%s", l.Source, l.Destination, l.Delay)
 }
 
 type NetworkLatencyArgs struct {
@@ -55,14 +53,16 @@ func registerNetworkLatencyFailure(r *FailureRegistry) {
 }
 
 func MakeNetworkLatencyFailure(
-	clusterName string, l *logger.Logger, clusterOpts ClusterOptions,
+	clusterName string, l *logger.Logger, secure bool,
 ) (FailureMode, error) {
-	genericFailure, err := makeGenericFailure(clusterName, l, clusterOpts, NetworkLatencyName)
+	c, err := roachprod.GetClusterFromCache(l, clusterName, install.SecureOption(secure))
 	if err != nil {
 		return nil, err
 	}
+
+	genericFailure := GenericFailure{c: c, runTitle: "latency"}
 	return &NetworkLatency{
-		GenericFailure:       *genericFailure,
+		GenericFailure:       genericFailure,
 		classesInUse:         make(map[int]struct{}),
 		nextAvailableClass:   1,
 		filterNameToClassMap: make(map[string]int),
@@ -182,10 +182,10 @@ func (f *NetworkLatency) Inject(ctx context.Context, l *logger.Logger, args Fail
 			// Enforce we don't have duplicate rules, as it complicates the removal process of filters
 			// and is something the user likely didn't intend.
 			class := f.findNextOpenClass()
-			if _, ok := f.filterNameToClassMap[latency.FilterName(dest)]; ok {
+			if _, ok := f.filterNameToClassMap[latency.String()]; ok {
 				return errors.Newf("failed trying to inject ArtificialLatency, rule already exists: %+v", latency)
 			}
-			f.filterNameToClassMap[latency.FilterName(dest)] = class
+			f.filterNameToClassMap[latency.String()] = class
 			handle := 10 * class
 
 			cmd := failScriptEarlyCmd
@@ -213,7 +213,7 @@ func (f *NetworkLatency) Recover(ctx context.Context, l *logger.Logger, args Fai
 				return err
 			}
 
-			class, ok := f.filterNameToClassMap[latency.FilterName(dest)]
+			class, ok := f.filterNameToClassMap[latency.String()]
 			if !ok {
 				return errors.New("failed trying to recover latency failure, ArtificialLatency rule was not found: %+v")
 			}
@@ -232,7 +232,7 @@ func (f *NetworkLatency) Recover(ctx context.Context, l *logger.Logger, args Fai
 			if class < f.nextAvailableClass {
 				f.nextAvailableClass = class
 			}
-			delete(f.filterNameToClassMap, latency.FilterName(dest))
+			delete(f.filterNameToClassMap, latency.String())
 		}
 	}
 	return nil

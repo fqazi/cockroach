@@ -376,11 +376,7 @@ func TestCopyFromTransaction(t *testing.T) {
 						lastts = vals[0]
 					}
 				})
-				err := tconn.Exec(ctx, "ALTER TABLE lineitem SET (schema_locked=false)")
-				require.NoError(t, err)
-				err = tconn.Exec(ctx, "TRUNCATE TABLE lineitem")
-				require.NoError(t, err)
-				err = tconn.Exec(ctx, "ALTER TABLE lineitem SET (schema_locked=true)")
+				err := tconn.Exec(ctx, "TRUNCATE TABLE lineitem")
 				require.NoError(t, err)
 			})
 		}

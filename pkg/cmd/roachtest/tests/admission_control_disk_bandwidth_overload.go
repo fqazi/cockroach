@@ -32,12 +32,10 @@ import (
 // paces the traffic at the set bandwidth limit.
 func registerDiskBandwidthOverload(r registry.Registry) {
 	r.Add(registry.TestSpec{
-		Name:      "admission-control/disk-bandwidth-limiter",
-		Owner:     registry.OwnerAdmissionControl,
-		Timeout:   3 * time.Hour,
-		Benchmark: true,
-		// Disabled on IBM only because the Azure test suite was used as a base
-		// for IBM tests, and this test was disabled on Azure as of 05/2025.
+		Name:             "admission-control/disk-bandwidth-limiter",
+		Owner:            registry.OwnerAdmissionControl,
+		Timeout:          3 * time.Hour,
+		Benchmark:        true,
 		CompatibleClouds: registry.AllExceptAzure,
 		// TODO(aaditya): change to weekly once the test stabilizes.
 		Suites:  registry.Suites(registry.Nightly),
@@ -72,9 +70,9 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 			const provisionedBandwidth = 128 << 20 // 128 MiB
 			t.Status(fmt.Sprintf("limiting disk bandwidth to %d bytes/s", provisionedBandwidth))
 			staller := roachtestutil.MakeCgroupDiskStaller(t, c,
-				false /* readsToo */, false /* logsToo */, false /* disableStateValidation */)
+				false /* readsToo */, false /* logsToo */)
 			staller.Setup(ctx)
-			staller.Slow(ctx, c.CRDBNodes(), provisionedBandwidth /* bytesPerSecond */)
+			staller.Slow(ctx, c.CRDBNodes(), provisionedBandwidth)
 
 			// TODO(aaditya): Extend this test to also limit reads once we have a
 			// mechanism to pace read traffic in AC.
@@ -95,7 +93,7 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 
 			// Run foreground kv workload, QoS="regular".
 			duration := 90 * time.Minute
-			m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+			m := c.NewMonitor(ctx, c.CRDBNodes())
 			m.Go(func(ctx context.Context) error {
 				t.Status(fmt.Sprintf("starting foreground kv workload thread (<%s)", time.Minute))
 				dur := " --duration=" + duration.String()
@@ -135,11 +133,11 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 			db := c.Conn(ctx, t.L(), len(c.CRDBNodes()))
 			defer db.Close()
 
-			const bandwidthLimitMbs = 75
+			const bandwidthLimit = 75
 			if _, err := db.ExecContext(
 				// We intentionally set this to much lower than the provisioned value
 				// above to clearly show that the bandwidth limiter works.
-				ctx, fmt.Sprintf("SET CLUSTER SETTING kvadmission.store.provisioned_bandwidth = '%dMiB'", bandwidthLimitMbs)); err != nil {
+				ctx, fmt.Sprintf("SET CLUSTER SETTING kvadmission.store.provisioned_bandwidth = '%dMiB'", bandwidthLimit)); err != nil {
 				t.Fatalf("failed to set kvadmission.store.provisioned_bandwidth: %v", err)
 			}
 
@@ -172,7 +170,7 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 				}
 
 				// Allow a 5% room for error.
-				const bandwidthThreshold = bandwidthLimitMbs * 1.05
+				const bandwidthThreshold = bandwidthLimit * 1.05
 				const sampleCountForBW = 12
 				const collectionIntervalSeconds = 10.0
 				// Loop for ~20 minutes.

@@ -55,11 +55,13 @@ var defaultKVBatchSize = rowinfra.KeyLimit(metamorphic.ConstantWithTestValue(
 	1,                                   /* metamorphicValue */
 ))
 
+var logAdmissionPacerErr = log.Every(100 * time.Millisecond)
+
 // elasticCPUDurationPerLowPriReadResponse controls how many CPU tokens are allotted
 // each time we seek admission for response handling during internally submitted
 // low priority reads (like row-level TTL selects).
 var elasticCPUDurationPerLowPriReadResponse = settings.RegisterDurationSetting(
-	settings.ApplicationLevel,
+	settings.SystemOnly,
 	"sqladmission.elastic_cpu.duration_per_low_pri_read_response",
 	"controls how many CPU tokens are allotted for handling responses for internally submitted low priority reads",
 	// NB: Experimentally, during TTL reads, we observed cumulative on-CPU time
@@ -73,7 +75,7 @@ var elasticCPUDurationPerLowPriReadResponse = settings.RegisterDurationSetting(
 // internally submitted low-priority reads (like row-level TTL selects)
 // integrate with elastic CPU control.
 var internalLowPriReadElasticControlEnabled = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
+	settings.SystemOnly,
 	"sqladmission.low_pri_read_response_elastic_control.enabled",
 	"determines whether the sql portion of internally submitted reads integrate with elastic CPU controller",
 	true,
@@ -752,7 +754,12 @@ func (f *txnKVFetcher) maybeAdmitBatchResponse(ctx context.Context, br *kvpb.Bat
 		// to ensure that they have local plans with a single TableReader
 		// processor in multi-node clusters.
 		if err := f.admissionPacer.Pace(ctx); err != nil {
-			return err
+			// We're unable to pace things automatically -- shout loudly
+			// semi-infrequently but don't fail the kv fetcher itself. At
+			// worst we'd be over-admitting.
+			if logAdmissionPacerErr.ShouldLog() {
+				log.Errorf(ctx, "automatic pacing: %v", err)
+			}
 		}
 	} else if f.responseAdmissionQ != nil {
 		responseAdmission := admission.WorkInfo{

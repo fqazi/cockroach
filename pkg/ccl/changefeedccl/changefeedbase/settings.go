@@ -23,6 +23,7 @@ var TableDescriptorPollInterval = settings.RegisterDurationSetting(
 	"changefeed.experimental_poll_interval",
 	"polling interval for the table descriptors",
 	1*time.Second,
+	settings.NonNegativeDuration,
 )
 
 // DefaultMinCheckpointFrequency is the default frequency to flush sink.
@@ -52,6 +53,7 @@ var SlowSpanLogThreshold = settings.RegisterDurationSetting(
 	"changefeed.slow_span_log_threshold",
 	"a changefeed will log spans with resolved timestamps this far behind the current wall-clock time; if 0, a default value is calculated based on other cluster settings",
 	0,
+	settings.NonNegativeDuration,
 )
 
 // IdleTimeout controls how long the changefeed will wait for a new KV being
@@ -61,6 +63,7 @@ var IdleTimeout = settings.RegisterDurationSetting(
 	"changefeed.idle_timeout",
 	"a changefeed will mark itself idle if no changes have been emitted for greater than this duration; if 0, the changefeed will never be marked idle",
 	10*time.Minute,
+	settings.NonNegativeDuration,
 	settings.WithName("changefeed.auto_idle.timeout"),
 )
 
@@ -72,6 +75,7 @@ var SpanCheckpointInterval = settings.RegisterDurationSetting(
 	"interval at which span-level checkpoints will be written; "+
 		"if 0, span-level checkpoints are disabled",
 	10*time.Minute,
+	settings.NonNegativeDuration,
 	settings.WithName("changefeed.span_checkpoint.interval"),
 )
 
@@ -86,6 +90,7 @@ var SpanCheckpointLagThreshold = settings.RegisterDurationSetting(
 		"to save leading span progress is written; if 0, span-level checkpoints "+
 		"due to lagging spans is disabled",
 	10*time.Minute,
+	settings.NonNegativeDuration,
 	settings.WithPublic,
 	settings.WithName("changefeed.span_checkpoint.lag_threshold"),
 )
@@ -180,6 +185,7 @@ var ResolvedTimestampMinUpdateInterval = settings.RegisterDurationSetting(
 		"updated again; default of 0 means no minimum interval is enforced but "+
 		"updating will still be limited by the average time it takes to checkpoint progress",
 	0,
+	settings.NonNegativeDuration,
 	settings.WithPublic,
 	settings.WithName("changefeed.resolved_timestamp.min_update_interval"),
 )
@@ -215,21 +221,13 @@ var ProtectTimestampLag = settings.RegisterDurationSetting(
 	10*time.Minute,
 	settings.PositiveDuration)
 
-// PerTableProtectedTimestamps enables per-table protected timestamp records
-// instead of a single record for all tables in a changefeed.
-var PerTableProtectedTimestamps = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"changefeed.protect_timestamp.per_table.enabled",
-	"if true, creates separate protected timestamp records for each table in a changefeed; "+
-		"if false, uses a single protected timestamp record for all tables",
-	metamorphic.ConstantWithTestBool("changefeed.protect_timestamp.per_table.enabled", false))
-
 // MaxProtectedTimestampAge controls the frequency of protected timestamp record updates
 var MaxProtectedTimestampAge = settings.RegisterDurationSetting(
 	settings.ApplicationLevel,
 	"changefeed.protect_timestamp.max_age",
 	"fail the changefeed if the protected timestamp age exceeds this threshold; 0 disables expiration",
 	4*24*time.Hour,
+	settings.NonNegativeDuration,
 	settings.WithPublic)
 
 // BatchReductionRetryEnabled enables the temporary reduction of batch sizes upon kafka message too large errors
@@ -330,7 +328,7 @@ var UsageMetricsReportingInterval = settings.RegisterDurationSetting(
 	"changefeed.usage.reporting_interval",
 	"the interval at which the changefeed calculates and updates its usage metric",
 	5*time.Minute,
-	settings.DurationInRange(2*time.Minute, 50*time.Minute),
+	settings.PositiveDuration, settings.DurationInRange(2*time.Minute, 50*time.Minute),
 )
 
 // UsageMetricsReportingTimeoutPercent is the percent of
@@ -354,9 +352,9 @@ var DefaultLaggingRangesPollingInterval = 1 * time.Minute
 var Quantize = settings.RegisterDurationSettingWithExplicitUnit(
 	settings.ApplicationLevel,
 	"changefeed.resolved_timestamp.granularity",
-	"the granularity at which changefeed progress is quantized to make tracking more efficient",
-	time.Duration(metamorphic.ConstantWithTestRange("changefeed.resolved_timestamp.granularity", 1, 0, 10))*time.Second,
-	settings.DurationWithMinimum(0),
+	"the granularity at which changefeed progress are quantized to make tracking more efficient",
+	0,
+	settings.NonNegativeDuration,
 )
 
 // MaxRetryBackoff is the maximum time a changefeed will backoff when in
@@ -387,38 +385,5 @@ var KafkaV2ErrorDetailsEnabled = settings.RegisterBoolSetting(
 	"changefeed.kafka_v2_error_details.enabled",
 	"if enabled, Kafka v2 sinks will include the message key, size, and MVCC timestamp in message too large errors",
 	true,
-	settings.WithPublic,
-)
-
-// UseBareTableNames is used to enable and disable the use of bare table names
-// in changefeed topics.
-var UseBareTableNames = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"changefeed.bare_table_names.enabled",
-	"set to true to use bare table names in changefeed topics, false to use quoted table names; default is true",
-	true)
-
-// TrackPerTableProgress controls whether a changefeed's in-memory frontiers
-// should track span progress on a per-table basis (via partitioning into
-// one sub-frontier per table). Enabling this is necessary for any other
-// per-table progress features (e.g. per-table PTS) to work.
-var TrackPerTableProgress = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"changefeed.progress.per_table_tracking.enabled",
-	"track progress on a per-table basis in-memory; enabling this will enable more "+
-		"granular saving/restoring of progress, which will reduce duplicates during restarts, "+
-		"but doing so may incur additional overhead during ordinary changefeed execution",
-	metamorphic.ConstantWithTestBool("changefeed.progress.per_table_tracking.enabled", true),
-)
-
-// FrontierPersistenceInterval configures the minimum amount of time that must
-// elapse before a changefeed will persist its entire span frontier again.
-var FrontierPersistenceInterval = settings.RegisterDurationSettingWithExplicitUnit(
-	settings.ApplicationLevel,
-	"changefeed.progress.frontier_persistence.interval",
-	"minimum amount of time that must elapse before a changefeed "+
-		"will persist its entire span frontier again",
-	30*time.Second, /* defaultValue */
-	settings.DurationInRange(5*time.Second, 10*time.Minute),
 	settings.WithPublic,
 )

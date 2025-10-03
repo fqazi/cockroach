@@ -31,26 +31,23 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/allocatorimpl"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/load"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/mmaprototype"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/ctpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/policyrefresher"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/sidetransport"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/idalloc"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/intentresolver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvadmission"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowhandle"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/node_rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/replica_rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage/snaprecv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness"
-	loadmonitor "github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/mmaintegration"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/multiqueue"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftentry"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rangefeed"
@@ -298,6 +295,7 @@ var LeaseTransferPerIterationTimeout = settings.RegisterDurationSetting(
 		"after changing this setting)",
 	5*time.Second,
 	settings.WithName("server.shutdown.lease_transfer_iteration.timeout"),
+	settings.NonNegativeDuration,
 	settings.WithPublic,
 )
 
@@ -567,7 +565,7 @@ func (rs *storeReplicaVisitor) Visit(visitor func(*Replica) bool) {
 		// can still happen with this code.
 		rs.visited++
 		repl.mu.RLock()
-		destroyed := repl.shMu.destroyStatus
+		destroyed := repl.mu.destroyStatus
 		initialized := repl.IsInitialized()
 		repl.mu.RUnlock()
 		if initialized && destroyed.IsAlive() && !visitor(repl) {
@@ -754,7 +752,7 @@ prose below, and the source .dot file is in store_doc_replica_lifecycle.dot.
 	                              +---------------------+
 	          +------------------ |       Absent        | ---------------------------------------------------------------------------------------------------+
 	          |                   +---------------------+                                                                                                    |
-	          |                     |                        Subsume              Crash          applySnapshotRaftMuLocked                                   |
+	          |                     |                        Subsume              Crash          applySnapshot                                               |
 	          |                     | Store.Start          +---------------+    +---------+    +---------------+                                             |
 	          |                     v                      v               |    v         |    v               |                                             |
 	          |                   +-----------------------------------------------------------------------------------------------------------------------+  |
@@ -765,7 +763,7 @@ prose below, and the source .dot file is in store_doc_replica_lifecycle.dot.
 	|    |    |                   +-----------------------------------------------------------------------------------------------------------------------+  |    |
 	|    |    |                     |                      ^                    ^                                   |              |                    |    |    |
 	|    |    | Raft msg            | Crash                | applySnapshot      | post-split                        |              |                    |    |    |
-	|    |    |                     v                      |   RaftMuLocked     |                                   |              |                    |    |    |
+	|    |    |                     v                      |                    |                                   |              |                    |    |    |
 	|    |    |                   +---------------------------------------------------------+  pre-split            |              |                    |    |    |
 	|    |    +-----------------> |                                                         | <---------------------+--------------+--------------------+----+    |
 	|    |                        |                                                         |                       |              |                    |         |
@@ -890,7 +888,6 @@ type Store struct {
 	replRankings         *ReplicaRankings
 	replRankingsByTenant *ReplicaRankingMap
 	storeRebalancer      *StoreRebalancer
-	mmaStoreRebalancer   *mmaStoreRebalancer
 	rangeIDAlloc         *idalloc.Allocator // Range ID allocator
 	leaseQueue           *leaseQueue        // Lease queue
 	mvccGCQueue          *mvccGCQueue       // MVCC GC queue
@@ -901,28 +898,31 @@ type Store struct {
 	raftLogQueue         *raftLogQueue      // Raft log truncation queue
 	// Carries out truncations proposed by the raft log queue, and "replicated"
 	// via raft, when they are safe. Created in Store.Start.
-	raftTruncator        *raftLogTruncator
-	raftSnapshotQueue    *raftSnapshotQueue          // Raft repair queue
-	tsMaintenanceQueue   *timeSeriesMaintenanceQueue // Time series maintenance queue
-	scanner              *replicaScanner             // Replica scanner
-	consistencyQueue     *consistencyQueue           // Replica consistency check queue
-	consistencyLimiter   *quotapool.RateLimiter      // Rate limits consistency checks
-	metrics              *StoreMetrics
-	intentResolver       *intentresolver.IntentResolver
-	recoveryMgr          txnrecovery.Manager
-	storeLiveness        storeliveness.Fabric
-	syncWaiters          []*logstore.SyncWaiterLoop
-	raftEntryCache       *raftentry.Cache
-	limiters             batcheval.Limiters
-	txnWaitMetrics       *txnwait.Metrics
-	raftMetrics          *raft.Metrics
-	sstSnapshotStorage   snaprecv.SSTSnapshotStorage
-	protectedtsReader    spanconfig.ProtectedTSReader
-	ctSender             *sidetransport.Sender
-	policyRefresher      *policyrefresher.PolicyRefresher
-	nodeCapacityProvider *loadmonitor.NodeCapacityProvider
-	storeGossip          *StoreGossip
-	rebalanceObjManager  *RebalanceObjectiveManager
+	raftTruncator       *raftLogTruncator
+	raftSnapshotQueue   *raftSnapshotQueue          // Raft repair queue
+	tsMaintenanceQueue  *timeSeriesMaintenanceQueue // Time series maintenance queue
+	scanner             *replicaScanner             // Replica scanner
+	consistencyQueue    *consistencyQueue           // Replica consistency check queue
+	consistencyLimiter  *quotapool.RateLimiter      // Rate limits consistency checks
+	metrics             *StoreMetrics
+	intentResolver      *intentresolver.IntentResolver
+	recoveryMgr         txnrecovery.Manager
+	storeLiveness       storeliveness.Fabric
+	syncWaiters         []*logstore.SyncWaiterLoop
+	raftEntryCache      *raftentry.Cache
+	limiters            batcheval.Limiters
+	txnWaitMetrics      *txnwait.Metrics
+	raftMetrics         *raft.Metrics
+	sstSnapshotStorage  SSTSnapshotStorage
+	protectedtsReader   spanconfig.ProtectedTSReader
+	ctSender            *sidetransport.Sender
+	policyRefresher     *policyrefresher.PolicyRefresher
+	storeGossip         *StoreGossip
+	rebalanceObjManager *RebalanceObjectiveManager
+	// raftTransportForFlowControl exposes the set of (remote) stores the raft
+	// transport is connected to, and is used by the canonical
+	// replicaFlowControlIntegration implementation.
+	raftTransportForFlowControl raftTransportForFlowControl
 
 	// kvflowRangeControllerFactory is used for replication AC (flow control) V2
 	// to create new range controllers which mediate the flow of requests to
@@ -1174,19 +1174,14 @@ type StoreConfig struct {
 	AmbientCtx log.AmbientContext
 	base.RaftConfig
 
-	DefaultSpanConfig roachpb.SpanConfig
-	Settings          *cluster.Settings
-	Clock             *hlc.Clock
-	Gossip            *gossip.Gossip
-	DB                *kv.DB
-	NodeLiveness      *liveness.NodeLiveness
-	StoreLiveness     *storeliveness.NodeContainer
-	StorePool         *storepool.StorePool
-	// One MMAllocator per node which guides mma store rebalancer to make
-	// allocation changes when
-	// LBRebalancingMultiMetricOnly/LBRebalancingMultiMetricAndCount is enabled.
-	MMAllocator          mmaprototype.Allocator
-	AllocatorSync        *mmaintegration.AllocatorSync
+	DefaultSpanConfig    roachpb.SpanConfig
+	Settings             *cluster.Settings
+	Clock                *hlc.Clock
+	Gossip               *gossip.Gossip
+	DB                   *kv.DB
+	NodeLiveness         *liveness.NodeLiveness
+	StoreLiveness        *storeliveness.NodeContainer
+	StorePool            *storepool.StorePool
 	Transport            *RaftTransport
 	NodeDialer           *nodedialer.Dialer
 	RPCContext           *rpc.Context
@@ -1198,10 +1193,6 @@ type StoreConfig struct {
 	// PolicyRefresher periodically refreshes the closed timestamp policies for
 	// leaseholder replicas. One per node.
 	PolicyRefresher *policyrefresher.PolicyRefresher
-
-	// NodeCapacityProvider is used to provide node capacity information for
-	// store.Descriptor.
-	NodeCapacityProvider *loadmonitor.NodeCapacityProvider
 
 	// TimeSeriesDataStore is an interface used by the store's time series
 	// maintenance queue to dispatch individual maintenance tasks.
@@ -1303,6 +1294,13 @@ type StoreConfig struct {
 
 	// KVAdmissionController is used for admission control.
 	KVAdmissionController kvadmission.Controller
+	// KVFlowController is used for replication admission control.
+	KVFlowController kvflowcontrol.Controller
+	// KVFlowHandles is used for replication admission control.
+	KVFlowHandles kvflowcontrol.Handles
+	// KVFlowHandleMetrics is a shared metrics struct for all
+	// kvflowcontrol.Handles.
+	KVFlowHandleMetrics *kvflowhandle.Metrics
 	// KVFlowAdmittedPiggybacker is used for replication AC (flow control) v2.
 	KVFlowAdmittedPiggybacker replica_rac2.AdmittedPiggybacker
 	// KVFlowStreamTokenProvider is used for replication AC (flow control) v2 to
@@ -1371,7 +1369,7 @@ var logRangeAndNodeEventsEnabled = settings.RegisterBoolSetting(
 // behavior of the consistency checker for tests.
 type ConsistencyTestingKnobs struct {
 	// If non-nil, OnBadChecksumFatal is called on a replica with a mismatching
-	// checksum, instead of log.KvExec.Fatal.
+	// checksum, instead of log.Fatal.
 	OnBadChecksumFatal func(roachpb.StoreIdent)
 
 	ConsistencyQueueResultHook func(response kvpb.CheckConsistencyResponse)
@@ -1479,7 +1477,7 @@ func NewStore(
 	ctx context.Context, cfg StoreConfig, eng storage.Engine, nodeDesc *roachpb.NodeDescriptor,
 ) *Store {
 	if !cfg.Valid() {
-		log.KvExec.Fatalf(ctx, "invalid store configuration: %+v", &cfg)
+		log.Fatalf(ctx, "invalid store configuration: %+v", &cfg)
 	}
 	iot := ioThresholds{}
 	iot.Replace(nil, 1.0) // init as empty
@@ -1499,7 +1497,6 @@ func NewStore(
 		metrics:                           newStoreMetrics(cfg.HistogramWindowInterval),
 		ctSender:                          cfg.ClosedTimestampSender,
 		policyRefresher:                   cfg.PolicyRefresher,
-		nodeCapacityProvider:              cfg.NodeCapacityProvider,
 		ioThresholds:                      &iot,
 		rangeFeedSlowClosedTimestampNudge: singleflight.NewGroup("rangfeed-ct-nudge", "range"),
 	}
@@ -1674,11 +1671,12 @@ func NewStore(
 	// we use them now is because we want snapshot apply to be completely atomic but that
 	// is out the window with two engines, so we may as well break the atomicity in the
 	// common case and do something more effective.
-	s.sstSnapshotStorage = snaprecv.NewSSTSnapshotStorage(s.TODOEngine(), s.limiters.BulkIOWriteRate)
+	s.sstSnapshotStorage = NewSSTSnapshotStorage(s.TODOEngine(), s.limiters.BulkIOWriteRate)
 	if err := s.sstSnapshotStorage.Clear(); err != nil {
-		log.KvDistribution.Warningf(ctx, "failed to clear snapshot storage: %v", err)
+		log.Warningf(ctx, "failed to clear snapshot storage: %v", err)
 	}
 	s.protectedtsReader = cfg.ProtectedTimestampReader
+	s.raftTransportForFlowControl = cfg.Transport
 
 	// On low-CPU instances, a default limit value may still allow ExportRequests
 	// to tie up all cores so cap limiter at cores-1 when setting value is higher.
@@ -1720,7 +1718,7 @@ func NewStore(
 		authorizer = cfg.RPCContext.TenantRPCAuthorizer
 	}
 	if authorizer == nil {
-		log.KvDistribution.Fatalf(ctx, "programming error: missing authorizer from config")
+		log.Fatalf(ctx, "programming error: missing authorizer from config")
 	}
 
 	s.tenantRateLimiters = tenantrate.NewLimiterFactory(&cfg.Settings.SV, &cfg.TestingKnobs.TenantRateKnobs, authorizer)
@@ -1741,13 +1739,8 @@ func NewStore(
 		updateSystemConfigUpdateQueueLimits)
 
 	if s.cfg.Gossip != nil {
-		s.storeGossip = NewStoreGossip(
-			cfg.Gossip,
-			s,
-			cfg.TestingKnobs.GossipTestingKnobs,
-			&cfg.Settings.SV,
-			timeutil.DefaultTimeSource{},
-		)
+		s.storeGossip = NewStoreGossip(cfg.Gossip,
+			s, cfg.TestingKnobs.GossipTestingKnobs, &cfg.Settings.SV, timeutil.DefaultTimeSource{})
 
 		// Add range scanner and configure with queues.
 		s.scanner = newReplicaScanner(
@@ -1760,7 +1753,6 @@ func NewStore(
 		s.splitQueue = newSplitQueue(s, s.db)
 		s.replicateQueue = newReplicateQueue(s, s.allocator)
 		s.replicaGCQueue = newReplicaGCQueue(s, s.db)
-		s.mmaStoreRebalancer = newMMAStoreRebalancer(s, s.cfg.MMAllocator, s.cfg.Settings, s.cfg.StorePool)
 		s.raftLogQueue = newRaftLogQueue(s, s.db)
 		s.raftSnapshotQueue = newRaftSnapshotQueue(s)
 		s.consistencyQueue = newConsistencyQueue(s)
@@ -1924,7 +1916,7 @@ func (s *Store) SetDraining(drain bool, reporter func(int, redact.SafeString), v
 						// transferAllAway() traverses all stores/replicas without
 						// checking for the timeout otherwise.
 						if verbose || log.V(1) {
-							log.KvDistribution.Infof(ctx, "lease transfer aborted due to exceeded timeout")
+							log.Infof(ctx, "lease transfer aborted due to exceeded timeout")
 						}
 						return
 					default:
@@ -1980,7 +1972,7 @@ func (s *Store) SetDraining(drain bool, reporter func(int, redact.SafeString), v
 						desc := r.Desc()
 						if verbose || log.V(1) {
 							// This logging is useful to troubleshoot incomplete drains.
-							log.KvExec.Infof(ctx, "attempting to acquire proscribed lease %v for range %s",
+							log.Infof(ctx, "attempting to acquire proscribed lease %v for range %s",
 								drainingLeaseStatus.Lease, desc)
 						}
 
@@ -1989,7 +1981,7 @@ func (s *Store) SetDraining(drain bool, reporter func(int, redact.SafeString), v
 							const failFormat = "failed to acquire proscribed lease %s for range %s when draining: %v"
 							infoArgs := []interface{}{drainingLeaseStatus.Lease, desc, pErr}
 							if verbose {
-								log.KvDistribution.Infof(ctx, failFormat, infoArgs...)
+								log.Dev.Infof(ctx, failFormat, infoArgs...)
 							} else {
 								log.VErrEventf(ctx, 1 /* level */, failFormat, infoArgs...)
 							}
@@ -2012,7 +2004,7 @@ func (s *Store) SetDraining(drain bool, reporter func(int, redact.SafeString), v
 
 					if verbose || log.V(1) {
 						// This logging is useful to troubleshoot incomplete drains.
-						log.KvDistribution.Infof(ctx, "attempting to transfer lease %v for range %s", drainingLeaseStatus.Lease, desc)
+						log.Infof(ctx, "attempting to transfer lease %v for range %s", drainingLeaseStatus.Lease, desc)
 					}
 
 					start := timeutil.Now()
@@ -2040,8 +2032,8 @@ func (s *Store) SetDraining(drain bool, reporter func(int, redact.SafeString), v
 						}
 
 						if verbose {
-							log.KvDistribution.Infof(ctx, failFormat, infoArgs...)
-							log.KvDistribution.Infof(ctx, durationFailFormat, duration)
+							log.Dev.Infof(ctx, failFormat, infoArgs...)
+							log.Dev.Infof(ctx, durationFailFormat, duration)
 						} else {
 							log.VErrEventf(ctx, 1 /* level */, failFormat, infoArgs...)
 							log.VErrEventf(ctx, 1 /* level */, durationFailFormat, duration)
@@ -2049,7 +2041,7 @@ func (s *Store) SetDraining(drain bool, reporter func(int, redact.SafeString), v
 					}
 				}); err != nil {
 				if verbose || log.V(1) {
-					log.KvDistribution.Errorf(ctx, "error running draining task: %+v", err)
+					log.Errorf(ctx, "error running draining task: %+v", err)
 				}
 				wg.Done()
 				return false
@@ -2099,7 +2091,7 @@ func (s *Store) SetDraining(drain bool, reporter func(int, redact.SafeString), v
 					}
 					err = errors.Errorf("waiting for %d replicas to transfer their lease away", numRemaining)
 					if everySecond.ShouldLog() {
-						log.KvDistribution.Infof(ctx, "%v", err)
+						log.Infof(ctx, "%v", err)
 					}
 				}
 				if err == nil {
@@ -2115,11 +2107,11 @@ func (s *Store) SetDraining(drain bool, reporter func(int, redact.SafeString), v
 			// You expect this message when shutting down a server in an unhealthy
 			// cluster, or when draining all nodes with replicas for some range at the
 			// same time. If we see it on healthy ones, there's likely something to fix.
-			log.KvDistribution.Warningf(ctx, "unable to drain cleanly within %s (cluster setting %s), "+
+			log.Warningf(ctx, "unable to drain cleanly within %s (cluster setting %s), "+
 				"service might briefly deteriorate if the node is terminated: %s",
 				transferTimeout, LeaseTransferPerIterationTimeout.Name(), tErr.Cause())
 		} else {
-			log.KvDistribution.Warningf(ctx, "drain error: %+v", err)
+			log.Warningf(ctx, "drain error: %+v", err)
 		}
 	}
 }
@@ -2318,7 +2310,7 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 		// Log progress regularly, but not for the first replica (we only want to
 		// log when this is slow). The last replica is logged after iteration.
 		if logEvery.ShouldLog() && i > 0 {
-			log.KvExec.Infof(ctx, "initialized %d/%d replicas", i, len(repls))
+			log.Infof(ctx, "initialized %d/%d replicas", i, len(repls))
 		}
 
 		if repl.Desc == nil {
@@ -2368,13 +2360,13 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 		// acquiring the new lease, which will wake them up.
 		//
 		// NB: cluster settings haven't propagated yet, so we have to check the last
-		// known lease instead of desiredLeaseType. We also check Sequence >
+		// known lease instead of desiredLeaseTypeRLocked. We also check Sequence >
 		// 0 to omit ranges that haven't seen a lease yet.
 		if l, _ := rep.GetLease(); !l.SupportsQuiescence() && l.Sequence > 0 {
 			rep.maybeUnquiesce(ctx, true /* wakeLeader */, true /* mayCampaign */)
 		}
 	}
-	log.KvExec.Infof(ctx, "initialized %d/%d replicas", len(repls), len(repls))
+	log.Infof(ctx, "initialized %d/%d replicas", len(repls), len(repls))
 
 	// Register a callback to unquiesce any ranges with replicas on a
 	// node transitioning from non-live to live.
@@ -2449,8 +2441,6 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 			s.cfg.AmbientCtx, s.cfg.Settings, s.replicateQueue, s.replRankings, s.rebalanceObjManager)
 		s.storeRebalancer.Start(ctx, s.stopper)
 	}
-
-	s.mmaStoreRebalancer.start(ctx, s.stopper)
 
 	// Set the started flag (for unittests).
 	atomic.StoreInt32(&s.started, 1)
@@ -2546,6 +2536,7 @@ func (s *Store) startRangefeedUpdater(ctx context.Context) {
 			timer.Reset(until.Sub(now))
 			select {
 			case <-timer.C:
+				timer.Read = true
 				return nil
 			case <-interrupt:
 				return errInterrupted
@@ -2711,7 +2702,7 @@ func (s *Store) removeReplicaWithRangefeed(rangeID roachpb.RangeID) {
 func (s *Store) onSpanConfigUpdate(ctx context.Context, updated roachpb.Span) {
 	sp, err := keys.SpanAddr(updated)
 	if err != nil {
-		log.KvDistribution.Errorf(ctx, "skipped applying update (%s), unexpected error resolving span address: %v",
+		log.Errorf(ctx, "skipped applying update (%s), unexpected error resolving span address: %v",
 			updated, err)
 		return
 	}
@@ -2747,7 +2738,7 @@ func (s *Store) onSpanConfigUpdate(ctx context.Context, updated roachpb.Span) {
 
 				conf, sp, err := s.cfg.SpanConfigSubscriber.GetSpanConfigForKey(replCtx, startKey)
 				if err != nil {
-					log.KvDistribution.Errorf(replCtx, "skipped applying update, unexpected error reading from subscriber: %v", err)
+					log.Errorf(replCtx, "skipped applying update, unexpected error reading from subscriber: %v", err)
 					return err
 				}
 				changed = repl.SetSpanConfig(conf, sp)
@@ -2759,7 +2750,7 @@ func (s *Store) onSpanConfigUpdate(ctx context.Context, updated roachpb.Span) {
 		},
 	); err != nil {
 		// Errors here should not be possible, but if there is one, log loudly.
-		log.KvDistribution.Errorf(ctx, "unexpected error visiting replicas: %v", err)
+		log.Errorf(ctx, "unexpected error visiting replicas: %v", err)
 	}
 }
 
@@ -2772,7 +2763,7 @@ func (s *Store) applyAllFromSpanConfigStore(ctx context.Context) {
 		key := repl.Desc().StartKey
 		conf, confSpan, err := s.cfg.SpanConfigSubscriber.GetSpanConfigForKey(replCtx, key)
 		if err != nil {
-			log.KvDistribution.Errorf(ctx, "skipped applying config update, unexpected error reading from subscriber: %v", err)
+			log.Errorf(ctx, "skipped applying config update, unexpected error reading from subscriber: %v", err)
 			return true // more
 		}
 
@@ -3073,7 +3064,7 @@ func (s *Store) getOverlappingKeyRangeLocked(
 			it = iit
 			return iterutil.StopIteration()
 		}); err != nil {
-		log.KvExec.Fatalf(context.Background(), "%v", err)
+		log.Fatalf(context.Background(), "%v", err)
 	}
 
 	return it
@@ -3176,7 +3167,6 @@ func (s *Store) Capacity(ctx context.Context, useCached bool) (roachpb.StoreCapa
 	var logicalBytes int64
 	var totalQueriesPerSecond float64
 	var totalWritesPerSecond float64
-	var totalWriteBytesPerSecond float64
 	var totalStoreCPUTimePerSecond float64
 	replicaCount := s.metrics.ReplicaCount.Value()
 	bytesPerReplica := make([]float64, 0, replicaCount)
@@ -3205,7 +3195,6 @@ func (s *Store) Capacity(ctx context.Context, useCached bool) (roachpb.StoreCapa
 		totalStoreCPUTimePerSecond += usage.RequestCPUNanosPerSecond + usage.RaftCPUNanosPerSecond
 		totalQueriesPerSecond += usage.QueriesPerSecond
 		totalWritesPerSecond += usage.WritesPerSecond
-		totalWriteBytesPerSecond += usage.WriteBytesPerSecond
 		writesPerReplica = append(writesPerReplica, usage.WritesPerSecond)
 		cr := candidateReplica{
 			Replica: r,
@@ -3234,7 +3223,6 @@ func (s *Store) Capacity(ctx context.Context, useCached bool) (roachpb.StoreCapa
 	capacity.CPUPerSecond = totalStoreCPUTimePerSecond
 	capacity.QueriesPerSecond = totalQueriesPerSecond
 	capacity.WritesPerSecond = totalWritesPerSecond
-	capacity.WriteBytesPerSecond = totalWriteBytesPerSecond
 	goNow := now.ToTimestamp().GoTime()
 	{
 		s.ioThreshold.Lock()
@@ -3250,9 +3238,7 @@ func (s *Store) Capacity(ctx context.Context, useCached bool) (roachpb.StoreCapa
 	}
 	capacity.BytesPerReplica = roachpb.PercentilesFromData(bytesPerReplica)
 	capacity.WritesPerReplica = roachpb.PercentilesFromData(writesPerReplica)
-	// TODO(wenyihu6): call RecordNewPerSecondStats with write bytes here
-	s.storeGossip.RecordNewPerSecondStats(totalQueriesPerSecond, totalWritesPerSecond,
-		totalWriteBytesPerSecond, totalStoreCPUTimePerSecond)
+	s.storeGossip.RecordNewPerSecondStats(totalQueriesPerSecond, totalWritesPerSecond)
 	s.replRankings.Update(rankingsAccumulator)
 	s.replRankingsByTenant.Update(rankingsByTenantAccumulator)
 
@@ -3296,19 +3282,13 @@ func (s *Store) Descriptor(ctx context.Context, useCached bool) (*roachpb.StoreD
 		return nil, err
 	}
 
-	nc, err := s.nodeCapacityProvider.GetNodeCapacity(useCached)
-	if err != nil {
-		return nil, err
-	}
-
 	// Initialize the store descriptor.
 	return &roachpb.StoreDescriptor{
-		StoreID:      s.Ident.StoreID,
-		Attrs:        s.Attrs(),
-		Node:         *s.nodeDesc,
-		Capacity:     capacity,
-		Properties:   s.Properties(),
-		NodeCapacity: nc,
+		StoreID:    s.Ident.StoreID,
+		Attrs:      s.Attrs(),
+		Node:       *s.nodeDesc,
+		Capacity:   capacity,
+		Properties: s.Properties(),
 	}, nil
 }
 
@@ -3382,18 +3362,17 @@ func (s *Store) updateReplicationGauges(ctx context.Context) error {
 		totalRaftLogSize int64
 		maxRaftLogSize   int64
 
-		rangeCount                  int64
-		unavailableRangeCount       int64
-		underreplicatedRangeCount   int64
-		overreplicatedRangeCount    int64
-		decommissioningRangeCount   int64
-		behindCount                 int64
-		pausedFollowerCount         int64
-		ioOverload                  float64
-		pendingRaftProposalCount    int64
-		slowRaftProposalCount       int64
-		raftFlowStateCounts         [tracker.StateCount]int64
-		closedTimestampPolicyCounts [ctpb.MAX_CLOSED_TIMESTAMP_POLICY]int64
+		rangeCount                int64
+		unavailableRangeCount     int64
+		underreplicatedRangeCount int64
+		overreplicatedRangeCount  int64
+		decommissioningRangeCount int64
+		behindCount               int64
+		pausedFollowerCount       int64
+		ioOverload                float64
+		pendingRaftProposalCount  int64
+		slowRaftProposalCount     int64
+		raftFlowStateCounts       [tracker.StateCount]int64
 
 		locks                          int64
 		totalLockHoldDurationNanos     int64
@@ -3424,12 +3403,6 @@ func (s *Store) updateReplicationGauges(ctx context.Context) error {
 	ioOverload, _ = s.ioThreshold.t.Score()
 	s.ioThreshold.Unlock()
 
-	// TODO(wenyihu6): it would be nicer if we can sort the replicas so that we
-	// can always get the nudger story on the same set of replicas, will this
-	// introduce a lot of overhead? For now, it seems fine since we usually see <
-	// 15 ranges on decommission stall.
-	var logBudgetOnDecommissioningNudger = 15
-
 	// We want to avoid having to read this multiple times during the replica
 	// visiting, so load it once up front for all nodes.
 	livenessMap := s.cfg.NodeLiveness.ScanNodeVitalityFromCache()
@@ -3458,7 +3431,6 @@ func (s *Store) updateReplicationGauges(ctx context.Context) error {
 		}
 		if metrics.Leaseholder {
 			s.metrics.RaftQuotaPoolPercentUsed.RecordValue(metrics.QuotaPoolPercentUsed)
-			closedTimestampPolicyCounts[metrics.ClosedTimestampPolicy] += 1
 			leaseHolderCount++
 			switch metrics.LeaseType {
 			case roachpb.LeaseNone:
@@ -3500,11 +3472,7 @@ func (s *Store) updateReplicationGauges(ctx context.Context) error {
 			if metrics.Decommissioning {
 				// NB: Enqueue is disabled by default from here and throttled async if
 				// enabled.
-				maybeLog := logBudgetOnDecommissioningNudger > 0
-				if maybeLog {
-					logBudgetOnDecommissioningNudger--
-				}
-				rep.maybeEnqueueProblemRange(ctx, goNow, metrics.LeaseValid, metrics.Leaseholder, maybeLog)
+				rep.maybeEnqueueProblemRange(ctx, goNow, metrics.LeaseValid, metrics.Leaseholder)
 				decommissioningRangeCount++
 			}
 		}
@@ -3565,9 +3533,6 @@ func (s *Store) updateReplicationGauges(ctx context.Context) error {
 	for state, cnt := range raftFlowStateCounts {
 		s.metrics.RaftFlowStateCounts[state].Update(cnt)
 	}
-	for policy, count := range closedTimestampPolicyCounts {
-		s.metrics.RangeClosedTimestampPolicyCount[policy].Update(count)
-	}
 	s.metrics.RaftLogTotalSize.Update(totalRaftLogSize)
 	s.metrics.RaftLogMaxSize.Update(maxRaftLogSize)
 	s.metrics.AverageQueriesPerSecond.Update(averageQueriesPerSecond)
@@ -3577,9 +3542,7 @@ func (s *Store) updateReplicationGauges(ctx context.Context) error {
 	s.metrics.AverageReadBytesPerSecond.Update(averageReadBytesPerSecond)
 	s.metrics.AverageWriteBytesPerSecond.Update(averageWriteBytesPerSecond)
 	s.metrics.AverageCPUNanosPerSecond.Update(averageCPUNanosPerSecond)
-	// TODO(wenyihu6): call RecordNewPerSecondStats with write bytes here
-	s.storeGossip.RecordNewPerSecondStats(averageQueriesPerSecond, averageWritesPerSecond,
-		averageWriteBytesPerSecond, averageCPUNanosPerSecond)
+	s.storeGossip.RecordNewPerSecondStats(averageQueriesPerSecond, averageWritesPerSecond)
 
 	s.metrics.RangeCount.Update(rangeCount)
 	s.metrics.UnavailableRangeCount.Update(unavailableRangeCount)
@@ -3688,14 +3651,7 @@ func (s *Store) checkpointSpans(desc *roachpb.RangeDescriptor) []roachpb.Span {
 	}
 	// Include replicated user key span containing ranges left, desc, and right.
 	// TODO(tbg): rangeID is ignored here, make a rangeID-agnostic helper.
-	spans = append(spans, rditer.Select(0, rditer.SelectOpts{
-		Ranged: rditer.SelectRangedOptions{
-			RSpan:      userKeys,
-			SystemKeys: true,
-			UserKeys:   true,
-			LockTable:  true,
-		},
-	})...)
+	spans = append(spans, rditer.Select(0, rditer.SelectOpts{ReplicatedBySpan: userKeys})...)
 
 	return spans
 }
@@ -3941,7 +3897,7 @@ func (s *Store) ReplicateQueueDryRun(
 		return collectAndFinish(), nil
 	}
 	_, err = s.replicateQueue.processOneChange(
-		ctx, repl, desc, conf, false /* scatter */, true /* dryRun */, -1, /*priorityAtEnqueue*/
+		ctx, repl, desc, conf, false /* scatter */, true, /* dryRun */
 	)
 	if err != nil {
 		log.Eventf(ctx, "error simulating allocator on replica %s: %s", repl, err)
@@ -4120,7 +4076,7 @@ func (s *Store) Enqueue(
 	}
 
 	log.Eventf(ctx, "running %s.process", queueName)
-	processed, processErr := qImpl.process(ctx, repl, confReader, -1 /*priorityAtEnqueue*/)
+	processed, processErr := qImpl.process(ctx, repl, confReader)
 	log.Eventf(ctx, "processed: %t (err: %v)", processed, processErr)
 	return processErr, nil
 }
@@ -4157,7 +4113,7 @@ func (s *Store) PurgeOutdatedReplicas(ctx context.Context, version roachpb.Versi
 		g.GoCtx(func(ctx context.Context) error {
 			defer alloc.Release()
 
-			processed, err := s.replicaGCQueue.process(ctx, repl, nil, -1 /*priorityAtEnqueue*/)
+			processed, err := s.replicaGCQueue.process(ctx, repl, nil)
 			if err != nil {
 				return errors.Wrapf(err, "on %s", repl.Desc())
 			}
@@ -4192,7 +4148,7 @@ func (s *Store) WaitForSpanConfigSubscription(ctx context.Context) error {
 			return nil
 		}
 
-		log.KvDistribution.Warningf(ctx, "waiting for span config subscription...")
+		log.Warningf(ctx, "waiting for span config subscription...")
 		continue
 	}
 
@@ -4266,7 +4222,7 @@ func (s *storeForTruncatorImpl) acquireReplicaForTruncator(
 	if isAlive := func() bool {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		return r.shMu.destroyStatus.IsAlive()
+		return r.mu.destroyStatus.IsAlive()
 	}(); !isAlive {
 		r.raftMu.Unlock()
 		return nil

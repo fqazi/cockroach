@@ -1943,9 +1943,6 @@ func (expr *Array) TypeCheck(
 		return nil, err
 	}
 
-	if typ.Family() == types.VoidFamily {
-		return nil, pgerror.Newf(pgcode.UndefinedObject, "array of type VOID is not supported")
-	}
 	expr.typ = types.MakeArray(typ)
 	for i := range typedSubExprs {
 		expr.Exprs[i] = typedSubExprs[i]
@@ -2202,12 +2199,6 @@ func (d *DTSVector) TypeCheck(_ context.Context, _ *SemaContext, _ *types.T) (Ty
 
 // TypeCheck implements the Expr interface. It is implemented as an idempotent
 // identity function for Datum.
-func (d *DLTree) TypeCheck(_ context.Context, _ *SemaContext, _ *types.T) (TypedExpr, error) {
-	return d, nil
-}
-
-// TypeCheck implements the Expr interface. It is implemented as an idempotent
-// identity function for Datum.
 func (d *DTuple) TypeCheck(_ context.Context, _ *SemaContext, _ *types.T) (TypedExpr, error) {
 	return d, nil
 }
@@ -2229,7 +2220,7 @@ func (d *DArray) TypeCheck(_ context.Context, _ *SemaContext, desired *types.T) 
 	// ARRAY[]
 	// ARRAY[NULL, NULL]
 	if (d.ParamTyp.Family() == types.UnknownFamily || d.ParamTyp.Family() == types.AnyFamily) &&
-		(!d.HasNonNulls()) {
+		(!d.HasNonNulls) {
 		if desired.Family() != types.ArrayFamily {
 			// We can't desire a non-array type here.
 			return d, nil
@@ -3806,8 +3797,6 @@ var CannotAcceptTriggerErr = pgerror.New(pgcode.FeatureNotSupported,
 // given family, which is invalid for comparison. We don't simply remove
 // the relevant comparison overloads because we rely on their existence in
 // various locations throughout the codebase.
-// TODO(yuzefovich): audit callers of this method to see whether Jsonpath family
-// should be handled in the same way as RefCursor family is.
 func checkComparison(
 	op treecmp.ComparisonOperatorSymbol, left, right *types.T, family types.Family,
 ) error {

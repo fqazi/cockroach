@@ -21,6 +21,7 @@ import (
 )
 
 func constructPlan(
+	planner *planner,
 	root exec.Node,
 	subqueries []exec.Subquery,
 	cascades, triggers []exec.PostQuery,
@@ -268,7 +269,7 @@ func constructVirtualScan(
 	}
 	idx := index.(*optVirtualIndex).idx
 	columns, constructor := virtual.getPlanInfo(
-		table.(*optVirtualTable).desc, idx, params, p.execCfg.Stopper,
+		table.(*optVirtualTable).desc, idx, params.IndexConstraint, p.execCfg.Stopper,
 	)
 
 	n, err := delayedNodeCallback(&delayedNode{

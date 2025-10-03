@@ -113,16 +113,6 @@ func (r Row) ForEachUDTColumn() Iterator {
 	return iter{r: r, cols: r.udtCols}
 }
 
-// NumKeyColumns returns the number of primary key columns in the row.
-func (r Row) NumKeyColumns() int {
-	return len(r.keyCols)
-}
-
-// NumValueColumns returns the number of value columns in the row.
-func (r Row) NumValueColumns() int {
-	return len(r.valueCols)
-}
-
 // DatumNamed returns the datum with the specified column name, in the form of an Iterator.
 func (r Row) DatumNamed(n string) (Iterator, error) {
 	idx, ok := r.EventDescriptor.colsByName[n]
@@ -612,7 +602,7 @@ func (d *eventDecoder) DecodeKV(
 	err = changefeedbase.WithTerminalError(errors.Wrapf(err,
 		"error decoding key %s@%s (hex_kv: %x)",
 		keys.PrettyPrint(nil, kv.Key), kv.Value.Timestamp, kvBytes))
-	log.Changefeed.Errorf(ctx, "terminal error decoding KV: %v", err)
+	log.Errorf(ctx, "terminal error decoding KV: %v", err)
 	return Row{}, err
 }
 
@@ -844,7 +834,7 @@ func MakeRowFromTuple(ctx context.Context, evalCtx *eval.Context, t *tree.DTuple
 		r.AddValueColumn(name, d.ResolvedType())
 		if err := r.SetValueDatumAt(i, d); err != nil {
 			if build.IsRelease() {
-				log.Changefeed.Warningf(ctx, "failed to set row value from tuple due to error %v", err)
+				log.Warningf(ctx, "failed to set row value from tuple due to error %v", err)
 				_ = r.SetValueDatumAt(i, tree.DNull)
 			} else {
 				panic(err)

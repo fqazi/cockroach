@@ -86,7 +86,6 @@ func init() {
 		scgraph.Precedence,
 		"index", "index-name",
 		func(from, to NodeVars) rel.Clauses {
-			oldIndex := MkNodeVars("old-index")
 			return rel.Clauses{
 				to.Type((*scpb.IndexName)(nil)),
 				from.Type(
@@ -94,7 +93,7 @@ func init() {
 				),
 				JoinOnIndexID(from, to, "table-id", "index-id"),
 				StatusesToPublicOrTransient(from, scpb.Status_VALIDATED, to, scpb.Status_PUBLIC),
-				rel.And(IsPotentialSecondaryIndexSwapWithNodeVars(oldIndex, from, "index-id", "table-id")...),
+				rel.And(IsPotentialSecondaryIndexSwap("index-id", "table-id")...),
 			}
 		},
 	)

@@ -119,7 +119,9 @@ func newTestTxnFactory(
 			}
 			if ba.Txn != nil && br.Txn == nil {
 				br.Txn = ba.Txn.Clone()
-				br.Txn.Status = status
+				if pErr == nil {
+					br.Txn.Status = status
+				}
 				// Update the MockTxnSender's proto.
 				*txn = *br.Txn
 			}
@@ -432,7 +434,7 @@ func TestWrongTxnRetry(t *testing.T) {
 
 	var retries int
 	txnClosure := func(ctx context.Context, outerTxn *Txn) error {
-		log.Dev.Infof(ctx, "outer retry")
+		log.Infof(ctx, "outer retry")
 		retries++
 		// Ensure the KV transaction is created.
 		if err := outerTxn.Put(ctx, "a", "b"); err != nil {

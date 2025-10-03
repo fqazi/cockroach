@@ -900,7 +900,7 @@ func encodeContainingArrayInvertedIndexSpans(
 		return invertedExpr, nil
 	}
 
-	if val.HasNulls() {
+	if val.HasNulls {
 		// If there are any nulls, return empty spans. This is needed to ensure
 		// that `SELECT ARRAY[NULL, 2] @> ARRAY[NULL, 2]` is false.
 		return &inverted.SpanExpression{Tight: true, Unique: true}, nil
@@ -981,7 +981,7 @@ func encodeOverlapsArrayInvertedIndexSpans(
 	// we cannot generate an inverted expression.
 
 	// TODO: This should be a contradiction which is treated as a no-op.
-	if val.Array.Len() == 0 || !val.HasNonNulls() {
+	if val.Array.Len() == 0 || !val.HasNonNulls {
 		return inverted.NonInvertedColExpression{}, nil
 	}
 
@@ -1651,7 +1651,7 @@ func encodeSecondaryIndexNoFamilies(
 		// Vector index values begin with the quantized and encoded vector. It is
 		// possible that it is not supplied here (e.g. for an index delete).
 		if encVector := vh.QuantizedVecs[index.GetID()]; encVector != nil {
-			encVectorBytes, ok := encVector.(*tree.DBytes)
+			encVectorBytes, ok := tree.AsDBytes(encVector)
 			if !ok {
 				return IndexEntry{}, errors.AssertionFailedf(
 					"unexpected type for vector index value: %T", encVector)

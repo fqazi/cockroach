@@ -242,7 +242,7 @@ func TestLint(t *testing.T) {
 				continue
 			}
 			switch name {
-			case "extract", "trim", "overlay", "position", "substring", "st_x", "st_y", "index":
+			case "extract", "trim", "overlay", "position", "substring", "st_x", "st_y":
 				// Exempt special forms: EXTRACT(... FROM ...), etc.
 			default:
 				names = append(names, strings.ToUpper(name))
@@ -1242,7 +1242,6 @@ func TestLint(t *testing.T) {
 			":!rpc/context.go",
 			":!rpc/nodedialer/nodedialer_test.go",
 			":!util/grpcutil/grpc_util_test.go",
-			":!util/log/otlp_client_test.go",
 			":!server/server_obs_service.go",
 			":!server/testserver.go",
 			":!util/tracing/*_test.go",
@@ -1395,7 +1394,6 @@ func TestLint(t *testing.T) {
 			"--",
 			"*.go",
 			":!testutils/skip/skip.go",
-			":!util/randutil/rand.go",
 			":!cmd/roachtest/*.go",
 			":!acceptance/compose/*.go",
 			":!util/syncutil/*.go",
@@ -1444,7 +1442,6 @@ func TestLint(t *testing.T) {
 			":!sql/types/types_jsonpb.go",
 			":!sql/schemachanger/scplan/scviz/maps.go",
 			":!workload/schemachange/tracing.go",
-			":!util/log/otlp_client.go",
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1457,7 +1454,6 @@ func TestLint(t *testing.T) {
 		if err := stream.ForEach(stream.Sequence(
 			filter,
 			stream.GrepNot(`(json|jsonpb|yaml|protoutil|xml|\.Field|ewkb|wkb|wkt|asn1)\.Marshal\(`),
-			stream.GrepNot(`nolint:protomarshal`),
 		), func(s string) {
 			t.Errorf("\n%s <- forbidden; use 'protoutil.Marshal' instead", s)
 		}); err != nil {
@@ -1494,7 +1490,6 @@ func TestLint(t *testing.T) {
 			":!storage/mvcc_value.go",
 			":!roachpb/data.go",
 			":!sql/types/types_jsonpb.go",
-			":!util/log/otlp_client_test.go",
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2398,7 +2393,6 @@ func TestLint(t *testing.T) {
 				filter,
 				stream.GrepNot("sql/colexec/execgen/cmd/execgen/*"),
 				stream.GrepNot("sql/colexec/execgen/testdata/*"),
-				stream.GrepNot("sql/lexbase/allkeywords/main.go"),
 				stream.GrepNot("testutils/lint/lint_test.go"),
 			), func(s string) {
 				// s here is of the form
@@ -2598,49 +2592,6 @@ func TestLint(t *testing.T) {
 		}
 	})
 
-	// This linter prohibits ignoring the context.CancelFunc that is returned on
-	// stop.Stopper.WithCancelOnQuiesce call (which can result in a memory
-	// leak).
-	//
-	// If the context is derived for a server singleton and has the same
-	// lifetime as the server, this linter can be ignored with
-	// 'nolint:quiesce' comment.
-	t.Run("TestWithCancelOnQuiesce", func(t *testing.T) {
-		t.Parallel()
-		cmd, stderr, filter, err := dirCmd(
-			pkgDir,
-			"git",
-			"grep",
-			"-nE",
-			`_.*WithCancelOnQuiesce`,
-			"--",
-			"*",
-			":!*_test.go",
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if err := cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
-
-		if err := stream.ForEach(stream.Sequence(
-			filter,
-			stream.GrepNot(`nolint:quiesce`),
-		), func(s string) {
-			t.Errorf("\n%s <- forbidden; ensure the cancellation function is called", s)
-		}); err != nil {
-			t.Error(err)
-		}
-
-		if err := cmd.Wait(); err != nil {
-			if out := stderr.String(); len(out) > 0 {
-				t.Fatalf("err=%s, stderr=%s", err, out)
-			}
-		}
-	})
-
 	// RoachVet is expensive memory-wise and thus should not run with t.Parallel().
 	// RoachVet includes all of the passes of `go vet` plus first-party additions.
 	// See pkg/cmd/roachvet.
@@ -2735,7 +2686,7 @@ func TestLint(t *testing.T) {
 			stream.GrepNot(`pkg/util/timeutil/timeout_error\.go:.*invalid direct cast on error object`),
 			// Direct error cast OK in this case for a low-dependency helper binary.
 			stream.GrepNot(`pkg/cmd/github-pull-request-make/main\.go:.*invalid direct cast on error object`),
-			// The logging package translates log.Dev.Fatal calls into errors.
+			// The logging package translates log.Fatal calls into errors.
 			// We can't use the regular exception mechanism via functions.go
 			// because addStructured takes its positional argument as []interface{},
 			// instead of ...interface{}.
@@ -2852,21 +2803,17 @@ func TestLint(t *testing.T) {
 	t.Run("TestNoEnumeratingAllTables", func(t *testing.T) {
 		t.Parallel()
 		const (
-			// sysTableExample and virtTableExample are the names of a system
-			// and virtual tables respectively, that have been chosen to serve
-			// as indicators, if they are detected in a test, that that test may
-			// be enumerating *all* system or virtual tables which is generally
-			// undesirable outside of a few specific allow-listed cases. There
-			// is nothing special about these two tables other than that they
-			// are not directly referenced in tests other than those
-			// deliberately enumerating all tables, so they're well-suited for
-			// this purpose. We could add others here as well if needed, and add
-			// exemptions if one of these is intentionally used in a test.
-			//
-			// Use of `SELECT crdb_internal.generate_test_objects(...)` in tests
-			// may trip this in which case it may be simplest to use a new
-			// table.
-			sysTableExample  = "span_stats_unique_keys"
+			// sysTableExample and virtTableExample are the names of a system and
+			// virtual tables respectively, that have been chosen to serve as
+			// indicators, if they are detected in a test, that that test may be
+			// enumerating *all* system or virtual tables which is generally
+			// undesirable outside of a few specific allow-listed cases. There is
+			// nothing special about these two tables other than that they are not
+			// directly referenced in tests other than those deliberately enumerating
+			// all tables, so they're well-suited for this purpose. We could add
+			// others here as well if needed, and add exemptions if one of these is
+			// intentionally used in a test.
+			sysTableExample  = "span_stats_buckets"
 			virtTableExample = "logical_replication_node_processors"
 		)
 		cmd, stderr, filter, err := dirCmd(
@@ -2879,9 +2826,8 @@ func TestLint(t *testing.T) {
 			"--",
 			"**testdata**",
 			"**/*_test.go",
-			":!testutils/lint/lint_test.go", // false-positive: the lint itself.
-			":!sql/logictest/testdata/logic_test/gen_test_objects", // exempt: randomly generated table names.
-			":!sql/tests/testdata/initial_keys",                    // exempt: deliberate test of bootstrap catalog
+			":!testutils/lint/lint_test.go",     // false-positive: the lint itself.
+			":!sql/tests/testdata/initial_keys", // exempt: deliberate test of bootstrap catalog
 			":!sql/catalog/systemschema_test/testdata/bootstrap*",  // exempt: deliberate test of bootstrap catalog.
 			":!sql/catalog/internal/catkv/testdata/",               // TODO(foundations): #137029.
 			":!cli/testdata/doctor/",                               // TODO(foundations): #137030.
@@ -2909,8 +2855,7 @@ func TestLint(t *testing.T) {
 		}
 	})
 
-	// Test forbidden roachtest imports. The mixedversion and task packages are
-	// allowed because they are part of the roachtest framework.
+	// Test forbidden roachtest imports.
 	t.Run("TestRoachtestForbiddenImports", func(t *testing.T) {
 		t.Parallel()
 
@@ -2946,8 +2891,7 @@ func TestLint(t *testing.T) {
 			filter,
 			stream.Sort(),
 			stream.Uniq(),
-			stream.Grep(`cockroach/pkg/cmd/roachtest/.*: `),
-			stream.GrepNot(`cockroach/pkg/cmd/roachtest/roachtestutil/(mixedversion|task): `),
+			stream.Grep(`cockroach/pkg/cmd/roachtest/(tests|operations): `),
 		), func(s string) {
 			pkgStr := strings.Split(s, ": ")
 			_, importedPkg := pkgStr[0], pkgStr[1]

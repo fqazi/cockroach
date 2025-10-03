@@ -289,17 +289,7 @@ const (
 	extendedPreludeSize    = extendedMVCCValLenSize + 1
 )
 
-var _ redact.SafeFormatter = new(ValueType)
-var _ redact.SafeFormatter = new(LockStateInfo)
-var _ redact.SafeFormatter = new(RKey)
-var _ redact.SafeFormatter = new(Key)
-var _ redact.SafeFormatter = new(StoreProperties)
-var _ redact.SafeFormatter = new(Transaction)
-var _ redact.SafeFormatter = new(ChangeReplicasTrigger)
-var _ redact.SafeFormatter = new(Lease)
-var _ redact.SafeFormatter = new(Span)
-var _ redact.SafeFormatter = new(RSpan)
-var _ redact.SafeFormatter = new(LockAcquisition)
+var _ redact.SafeFormatter = ValueType(0)
 
 // Safeformat implements the redact.SafeFormatter interface.
 func (t ValueType) SafeFormat(w redact.SafePrinter, _ rune) {
@@ -1198,7 +1188,7 @@ func (t Transaction) Clone() *Transaction {
 // AssertInitialized crashes if the transaction is not initialized.
 func (t *Transaction) AssertInitialized(ctx context.Context) {
 	if t.ID == (uuid.UUID{}) || t.WriteTimestamp.IsEmpty() {
-		log.Dev.Fatalf(ctx, "uninitialized txn: %s", *t)
+		log.Fatalf(ctx, "uninitialized txn: %s", *t)
 	}
 }
 
@@ -1336,6 +1326,7 @@ func (t *Transaction) Restart(
 	t.UpgradePriority(upgradePriority)
 	// Reset all epoch-scoped state.
 	t.Sequence = 0
+	t.WriteTooOld = false
 	t.ReadTimestampFixed = false
 	t.LockSpans = nil
 	t.InFlightWrites = nil
@@ -1376,6 +1367,8 @@ func (t *Transaction) BumpEpoch() {
 func (t *Transaction) BumpReadTimestamp(timestamp hlc.Timestamp) {
 	t.ReadTimestamp.Forward(timestamp)
 	t.WriteTimestamp.Forward(t.ReadTimestamp)
+	// TODO(nvanbenschoten): remove this when the WriteTooOld flag is removed.
+	t.WriteTooOld = false
 }
 
 // Update ratchets priority, timestamp and original timestamp values (among
@@ -1391,7 +1384,7 @@ func (t *Transaction) Update(o *Transaction) {
 		*t = *o
 		return
 	} else if t.ID != o.ID {
-		log.Dev.Fatalf(ctx, "updating txn %s with different txn %s", t.String(), o.String())
+		log.Fatalf(ctx, "updating txn %s with different txn %s", t.String(), o.String())
 		return
 	}
 	if len(t.Key) == 0 {
@@ -1406,10 +1399,11 @@ func (t *Transaction) Update(o *Transaction) {
 		if !t.Status.IsFinalized() {
 			t.Status = o.Status
 		} else if t.Status == COMMITTED {
-			log.Dev.Warningf(ctx, "updating COMMITTED txn %s with txn at later epoch %s", t.String(), o.String())
+			log.Warningf(ctx, "updating COMMITTED txn %s with txn at later epoch %s", t.String(), o.String())
 		}
 		// Replace all epoch-scoped state.
 		t.Epoch = o.Epoch
+		t.WriteTooOld = o.WriteTooOld
 		t.ReadTimestampFixed = o.ReadTimestampFixed
 		t.Sequence = o.Sequence
 		t.LockSpans = o.LockSpans
@@ -1430,19 +1424,30 @@ func (t *Transaction) Update(o *Transaction) {
 			}
 		case ABORTED:
 			if o.Status == COMMITTED {
-				log.Dev.Warningf(ctx, "updating ABORTED txn %s with COMMITTED txn %s", t.String(), o.String())
+				log.Warningf(ctx, "updating ABORTED txn %s with COMMITTED txn %s", t.String(), o.String())
 			}
 		case COMMITTED:
 			// Nothing to do.
 		default:
-			log.Dev.Fatalf(ctx, "unexpected txn status: %s", t.Status)
+			log.Fatalf(ctx, "unexpected txn status: %s", t.Status)
 		}
 
 		if t.ReadTimestamp == o.ReadTimestamp {
+			// If neither of the transactions has a bumped ReadTimestamp, then the
+			// WriteTooOld flag is cumulative.
+			t.WriteTooOld = t.WriteTooOld || o.WriteTooOld
 			t.ReadTimestampFixed = t.ReadTimestampFixed || o.ReadTimestampFixed
 		} else if t.ReadTimestamp.Less(o.ReadTimestamp) {
+			// If `o` has a higher ReadTimestamp (i.e. it's the result of a refresh,
+			// which refresh generally clears the WriteTooOld field), then it dictates
+			// the WriteTooOld field. This relies on refreshes not being performed
+			// concurrently with any requests whose response's WriteTooOld field
+			// matters.
+			t.WriteTooOld = o.WriteTooOld
 			t.ReadTimestampFixed = o.ReadTimestampFixed
 		}
+		// If t has a higher ReadTimestamp, than it gets to dictate the
+		// WriteTooOld field - so there's nothing to update.
 
 		if t.Sequence < o.Sequence {
 			t.Sequence = o.Sequence
@@ -1466,7 +1471,7 @@ func (t *Transaction) Update(o *Transaction) {
 			// aborted.
 			t.Status = ABORTED
 		case PREPARED, COMMITTED:
-			log.Dev.Warningf(ctx, "updating txn %s with %s txn at earlier epoch %s", t.String(), o.Status, o.String())
+			log.Warningf(ctx, "updating txn %s with %s txn at earlier epoch %s", t.String(), o.Status, o.String())
 		}
 	}
 
@@ -1547,8 +1552,8 @@ func (t Transaction) SafeFormat(w redact.SafePrinter, _ rune) {
 	if len(t.Name) > 0 {
 		w.Printf("%q ", redact.SafeString(t.Name))
 	}
-	w.Printf("meta={%s} lock=%t stat=%s rts=%s gul=%s",
-		t.TxnMeta, t.IsLocking(), t.Status, t.ReadTimestamp, t.GlobalUncertaintyLimit)
+	w.Printf("meta={%s} lock=%t stat=%s rts=%s wto=%t gul=%s",
+		t.TxnMeta, t.IsLocking(), t.Status, t.ReadTimestamp, t.WriteTooOld, t.GlobalUncertaintyLimit)
 
 	// Print observed timestamps (limited to 5 for readability).
 	if obsCount := len(t.ObservedTimestamps); obsCount > 0 {
@@ -2372,11 +2377,6 @@ func (m *LockAcquisition) Empty() bool {
 	return m.Span.Equal(Span{})
 }
 
-func (m LockAcquisition) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Printf("{span=%v %v durability=%v strength=%v ignored=%v}",
-		m.Span, m.Txn, m.Durability, m.Strength, m.IgnoredSeqNums)
-}
-
 // MakeLockUpdate makes a lock update from the given txn and span.
 //
 // See also txn.LocksAsLockUpdates().
@@ -2600,13 +2600,8 @@ func (s Span) AsRange() interval.Range {
 }
 
 func (s Span) String() string {
-	return redact.StringWithoutMarkers(s)
-}
-
-// SafeFormat implements the redact.SafeFormatter interface.
-func (s Span) SafeFormat(w redact.SafePrinter, _ rune) {
 	const maxChars = math.MaxInt32
-	w.Print(PrettyPrintRange(s.Key, s.EndKey, maxChars))
+	return PrettyPrintRange(s.Key, s.EndKey, maxChars).StripMarkers()
 }
 
 // SplitOnKey returns two spans where the left span has EndKey and right span
@@ -2802,12 +2797,8 @@ func (rs RSpan) ContainsKeyRange(start, end RKey) bool {
 }
 
 func (rs RSpan) String() string {
-	return redact.StringWithoutMarkers(rs)
-}
-
-func (rs RSpan) SafeFormat(w redact.SafePrinter, r rune) {
 	const maxChars = math.MaxInt32
-	w.Print(PrettyPrintRange(Key(rs.Key), Key(rs.EndKey), maxChars))
+	return PrettyPrintRange(Key(rs.Key), Key(rs.EndKey), maxChars).StripMarkers()
 }
 
 // Intersect returns the intersection of the current span and the

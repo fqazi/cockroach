@@ -47,7 +47,7 @@ func WaitForNoIngestingNodes(
 		if err == nil {
 			break
 		}
-		log.Dev.Infof(ctx, "failed to verify job no longer importing on all nodes: %+v", err)
+		log.Infof(ctx, "failed to verify job no longer importing on all nodes: %+v", err)
 
 		if timeutil.Since(started) > maxWait {
 			return err
@@ -56,7 +56,7 @@ func WaitForNoIngestingNodes(
 		if timeutil.Since(lastStatusUpdate) > statusUpdateFrequency {
 			status := jobs.StatusMessage(fmt.Sprintf("waiting for all nodes to finish ingesting writing before proceeding: %s", err))
 			if statusErr := job.NoTxn().UpdateStatusMessage(ctx, status); statusErr != nil {
-				log.Dev.Warningf(ctx, "failed to update running status of job %d: %s", job.ID(), statusErr)
+				log.Warningf(ctx, "failed to update running status of job %d: %s", job.ID(), statusErr)
 			} else {
 				lastStatusUpdate = timeutil.Now()
 			}
@@ -92,7 +92,7 @@ func checkAllNodesForIngestingJob(
 	)
 	sql.FinalizePlan(ctx, planCtx, p)
 
-	res := sql.NewMetadataOnlyMetadataCallbackWriter(func(context.Context, *execinfrapb.ProducerMetadata) error { return nil })
+	res := sql.NewMetadataOnlyMetadataCallbackWriter()
 
 	recv := sql.MakeDistSQLReceiver(
 		ctx,

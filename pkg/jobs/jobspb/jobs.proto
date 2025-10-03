@@ -22,7 +22,6 @@ import "clusterversion/cluster_version.proto";
 import "google/protobuf/timestamp.proto";
 import "util/tracing/tracingpb/recorded_span.proto";
 import "sql/catalog/externalcatalog/externalpb/external.proto";
-import "google/protobuf/empty.proto";
 
 enum EncryptionMode {
   Passphrase = 0;
@@ -273,19 +272,19 @@ message LogicalReplicationDetails {
   }
 
   Discard discard = 11;
-
+  
   // CreateTable is true if the job should create the table(s) in the
   // destination.
   bool create_table = 12;
-
+  
   // IngestedExternalCatalog is the catalog written to the destination cluster
   // when CreateTable is true.
   sql.catalog.externalcatalog.externalpb.ExternalCatalog ingested_external_catalog = 13  [(gogoproto.nullable) = false];
-
+  
   // ReverseStreamCommand is CREATE LDR command the coordinator will issue once
   // the offline initial scan completes, but before the tables are made public.
   string reverse_stream_command = 14;
-
+  
   // ParentID is set on the reverse stream job in automatic bidirectional
   // replication, and is equal to the job ID that issued the reverse stream
   // command.
@@ -377,7 +376,7 @@ message BackupDetails {
   // sub-paths of it based on date and time, etc. The actual path -- which is
   // derived from this destination -- is then captured in the field "URI" below.
   message Destination {
-    // To is a collection path
+    // To is a collection path 
     repeated string to = 1;
     // Subdir is the path within the collection path in to to backup to.
     string subdir = 2;
@@ -402,7 +401,7 @@ message BackupDetails {
 
   // EncryptionOptions contains user inputed data initially, but once
   // ResolveDest is called at the beginning of resumption, this field will
-  // contain the encryption key.
+  // contain the encryption key. 
   //
   // TODO(msbutler): use seperate job info key to persist hydrated encryption
   // keys so encrypted backup logic becomes easier to reason about. This
@@ -411,7 +410,7 @@ message BackupDetails {
 
   // EncryptionInfo should only ever get set on the first encrypted backup in
   // the chain because it persists the salt that each key in the chain must
-  // have.
+  // have. 
   //
   // TODO(msbutler): understand if only the full ever sets EncryptionInfo.
   EncryptionInfo encryption_info = 9;
@@ -684,21 +683,27 @@ message ImportDetails {
     sqlbase.TableDescriptor desc = 1;
     string name = 18;
     int64 seq_val = 19;
+    bool is_new = 20;
     bool was_empty = 22;
     repeated string target_cols = 21;
-    reserved 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 20;
+    reserved 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17;
+  }
+  message Schema {
+    sqlbase.SchemaDescriptor desc = 1;
   }
   message Type {
     sqlbase.TypeDescriptor desc = 1;
   }
-  Table table = 28 [(gogoproto.nullable) = false];
-  // TODO(yuzefovich): remove Tables field once compatibility with 25.3 is no
-  // longer needed.
-  repeated Table tables = 1 [(gogoproto.nullable) = false, deprecated = true];
+  repeated Table tables = 1 [(gogoproto.nullable) = false];
+  repeated Schema schemas = 23 [(gogoproto.nullable) = false];
   repeated Type types = 26 [(gogoproto.nullable) = false];
 
   repeated string uris = 2 [(gogoproto.customname) = "URIs"];
   roachpb.IOFileFormat format = 3 [(gogoproto.nullable) = false];
+
+  int64 sst_size = 4 [(gogoproto.customname) = "SSTSize"];
+  int64 oversample = 9;
+  bool skip_fks = 10 [(gogoproto.customname) = "SkipFKs"];
 
   // walltime is the time at which an import job will write KVs.
   int64 walltime = 5;
@@ -706,9 +711,40 @@ message ImportDetails {
     (gogoproto.customname) = "ParentID",
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb.ID"
   ];
+  string backup_path = 7;
+
+  // samples is a sampling of cockroach KV keys generated from the input data.
+  // It is populated with the sampling phase's results. These must be
+  // used if a job is resumed to guarantee that AddSSTable will not attempt
+  // to add ranges with an old split point within them.
+  repeated bytes samples = 8;
+
+  // ingest_directly means the Import job directly ingests the data as readers
+  // produce it instead of sampling it and then setting up a distsql shuffle and
+  // sort that produced sorted, non-overlapping data to ingest. When ingesting
+  // directly, many other fields like samples, oversample, sst_size are ignored.
+  bool ingest_directly = 11;
 
   bool prepare_complete = 12;
-  bool table_published = 13;
+  bool schemas_published = 24;
+  bool tables_published = 13;
+
+  bool parse_bundle_schema = 14;
+
+  // ProtectedTimestampRecord is the ID of the protected timestamp record
+  // corresponding to this job. While the job ought to clean up the record
+  // when it enters a terminal state, there may be cases where it cannot or
+  // does not run the code to do so. To deal with this there is a background
+  // reconciliation loop to ensure that protected timestamps are cleaned up.
+  bytes protected_timestamp_record = 22 [
+    (gogoproto.customname) = "ProtectedTimestampRecord",
+    (gogoproto.customtype) = "github.com/cockroachdb/cockroach/pkg/util/uuid.UUID"
+  ];
+
+  // DefaultIntSize is the integer type that a "naked" int will be resolved
+  // to during the import. This is set based on the session variable DefaultIntSize
+  // when the import is planned.
+  int32 default_int_size = 25;
 
   // If the database being imported into is a multi-region database, then this
   // field stores the databases' primary region.
@@ -716,9 +752,7 @@ message ImportDetails {
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb.RegionName"
   ];
 
-  reserved 4, 7, 8, 9, 10, 11, 14, 22, 23, 24, 25;
-
-  // next val: 29
+  // next val: 28
 }
 
 // SequenceValChunks represents a single chunk of sequence values allocated
@@ -1100,24 +1134,16 @@ message ChangefeedTargetSpecification {
     // Column family family_name of table table_id.
     COLUMN_FAMILY = 2;
 
-    DATABASE = 3;
-     // Add TargetTypes for schema, secondary index, etc. when implemented
+    // Add TargetTypes for database, secondary index, etc. when implemented
+
   }
 
   TargetType type = 1;
-  uint32 descriptor_id = 2 [(gogoproto.customname) = "DescID",
+  uint32 table_id = 2 [(gogoproto.customname) = "TableID",
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb.ID"];
   string family_name = 3;
   string statement_time_name = 4;
-  FilterList filter_list = 5;
-}
 
-message FilterList {
-  enum FilterType {
-    EXCLUDE_TABLES = 0;
-  }
-  FilterType filter_type = 1;
-  map<string, google.protobuf.Empty> tables = 2 [(gogoproto.nullable) = false];
 }
 
 message ChangefeedDetails {
@@ -1206,7 +1232,33 @@ message TimestampSpansMap {
 }
 
 message ChangefeedProgress {
-  reserved 1, 2, 4;
+  reserved 1;
+
+  // Checkpoint describes a list of spans that the changefeed has progressed to
+  // at or above the specified timestamp.  This is used for situations where
+  // some spans are significantly behind the rest, such as during backfills or
+  // if specific spans are having issues progressing.  On restart, the
+  // changefeed will forward the specified spans to the specified timestamp.
+  // TODO(#139734): Delete this nested message type.
+  message Checkpoint {
+    option deprecated = true;
+    repeated roachpb.Span spans = 1 [(gogoproto.nullable) = false];
+    util.hlc.Timestamp timestamp = 2 [(gogoproto.nullable) = false];
+
+    // NOTE: When adding fields to this message, make sure to also update IsEmpty.
+  }
+
+  reserved 2;
+  // Checkpoint is the deprecated span-level checkpoint for a
+  // changefeed. It consists of a list of spans and a single timestamp
+  // representing the minimum resolved timestamp of the spans.
+  // It is now deprecated in favor of SpanLevelCheckpoint.
+  //
+  // Invariant: At most one of Checkpoint and SpanLevelCheckpoint should be
+  // non-nil at any time.
+  //
+  // TODO(#139734): Delete this field and mark field number as reserved.
+  Checkpoint checkpoint = 4 [deprecated=true];
 
   // ProtectedTimestampRecord is the ID of the protected timestamp record
   // corresponding to this job. While the job ought to clean up the record
@@ -1274,21 +1326,6 @@ message CreateStatsDetails {
 
   // If true, will collect partial table statistics at extreme values.
   bool using_extremes = 9;
-
-  // WHERE clause for partial statistics collection. This field is only used
-  // to populate the predicate in the system.table_statistics table and to
-  // determine if this is a constrained stats collection. The actual constrained
-  // scan is done over the spans in the where_spans field.
-  string where_clause = 10;
-
-  // Spans over which to collect partial statistics with a WHERE clause.
-  repeated roachpb.Span where_spans = 11 [(gogoproto.nullable) = false];
-
-  // The ID of the index used to collect partial statistics with a WHERE clause.
-  int64 where_index_id = 12 [
-    (gogoproto.customname) = "WhereIndexID",
-    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb.IndexID"
-  ];
 }
 
 message CreateStatsProgress {
@@ -1331,10 +1368,8 @@ message RowLevelTTLDetails {
 }
 
 message RowLevelTTLProgress {
-  // JobDeletedRowCount is the number of rows deleted by TTL job so far. If
-  // UseCheckpointing is true, then this is the deleted row count across all
-  // restarts of the job. If that is false, this is the delete row count in
-  // the current running of the job.
+
+  // JobDeletedRowCount is the number of rows deleted by TTL job so far.
   int64 job_deleted_row_count = 1;
 
   // ProcessorProgresses is the progress per DistSQL processor.
@@ -1343,18 +1378,12 @@ message RowLevelTTLProgress {
   // UseDistSQL is no longer used in v23.1+ as all TTL jobs are using DistSQL.
   reserved 3;
 
-  // JobTotalSpanCount is the number of spans for the entire TTL job. This is
-  // deprecated and not used if UseCheckpointing is true.
-  int64 job_total_span_count = 4 [deprecated = true];
+  // JobTotalSpanCount is the number of spans for the entire TTL job.
+  int64 job_total_span_count = 4;
 
   // JobProcessedSpanCount is the number of spans that have been processed by
-  // the TTL job so far. This is deprecated and not used if UseCheckpointing is
-  // true.
-  int64 job_processed_span_count = 5 [deprecated = true];
-
-  // UseCheckpointing is true if the TTL job will use checkpointing for progress
-  // tracking.
-  bool use_checkpointing = 6;
+  // the TTL job so far.
+  int64 job_processed_span_count = 5;
 }
 
 message RowLevelTTLProcessorProgress {
@@ -1369,21 +1398,14 @@ message RowLevelTTLProcessorProgress {
     (gogoproto.nullable) = false
   ];
 
-  // DeletedRowCount is the number of rows deleted by this DistSQL processor.
-  int64 deleted_row_count = 3;
+  // ProcessorRowCount is the row count of the DistSQL processor.
+  int64 processor_row_count = 3;
 
-  // TotalSpanCount is the total number of spans assigned to the DistSQL
-  // processor. This is deprecated and not used if using checkpointing.
-  int64 total_span_count = 4 [deprecated = true];
-
-  // ProcessedSpanCount is the number of spans already processed. This is
-  // deprecated when using checkpointing.
-  int64 processed_span_count = 6 [deprecated = true];
+  // ProcessorSpanCount is the number of spans of the DistSQL processor;
+  int64 processor_span_count = 4;
 
   // ProcessorConcurrency is the number parallel tasks the processor will do at once.
   int64 processor_concurrency = 5;
-
-  // NEXT ID: 7
 }
 
 message SchemaTelemetryDetails {
@@ -1444,57 +1466,6 @@ message HotRangesLoggerDetails {
 
 }
 
-message InspectDetails {
-  // Check represents a single validation task to perform as part of an INSPECT
-  // job. Each check targets a specific table or index and is associated with a
-  // validation type.
-  message Check {
-    enum InspectCheckType {
-      option (gogoproto.goproto_enum_prefix) = false;
-      option (gogoproto.goproto_enum_stringer) = false;
-
-      // UNSPECIFIED indicates an unset check type. This is invalid.
-      INSPECT_CHECK_UNSPECIFIED = 0 [(gogoproto.enumvalue_customname) = "InspectCheckUnspecified"];
-
-      // INDEX_CONSISTENCY performs validation between primary and secondary indexes
-      // to detect missing or dangling index entries.
-      INSPECT_CHECK_INDEX_CONSISTENCY = 1 [(gogoproto.enumvalue_customname) = "InspectCheckIndexConsistency"];
-    }
-
-    // Type is the kind of validation to perform.
-    InspectCheckType type = 1;
-
-    // TableID identifies the table this check applies to.
-    uint32 table_id = 2 [
-      (gogoproto.customname) = "TableID",
-      (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb.ID"
-    ];
-
-    // IndexID identifies the specific index to check, if applicable. Only
-    // relevant for check types that operate at the index level. Should be unset
-    // or ignored for table-level checks.
-    uint32 index_id = 3 [
-      (gogoproto.customname) = "IndexID",
-      (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb.IndexID"
-    ];
-  }
-
-  // Checks is the list of individual checks this job will perform.
-  repeated Check checks = 1;
-
-  // AsOf specifies the timestamp at which the inspect checks should be performed.
-  // If empty, the current timestamp will be used for each span processed.
-  util.hlc.Timestamp as_of = 2 [(gogoproto.nullable) = false];
-
-  // ProtectedTimestampRecord is the id of the protected timestamp record that
-  // prevents garbage collection of data at the AsOf timestamp. This is only
-  // set if a fixed timestamp was used for INSPECT (e.g. AsOf timestamp is non-empty).
-  bytes protected_timestamp_record = 3 [
-    (gogoproto.customname) = "ProtectedTimestampRecord",
-    (gogoproto.customtype) = "github.com/cockroachdb/cockroach/pkg/util/uuid.UUID"
-  ];
-}
-
 message UpdateTableMetadataCacheDetails {}
 message UpdateTableMetadataCacheProgress {
   enum Status {
@@ -1534,10 +1505,6 @@ message SqlActivityFlushProgress {
 }
 
 message HotRangesLoggerProgress {
-
-}
-
-message InspectProgress {
 
 }
 
@@ -1613,7 +1580,6 @@ message Payload {
     StandbyReadTSPollerDetails standby_read_ts_poller_details = 50;
     SqlActivityFlushDetails sql_activity_flush_details = 51;
     HotRangesLoggerDetails hot_ranges_logger_details = 52;
-    InspectDetails inspect_details = 53;
   }
   reserved 26;
   // PauseReason is used to describe the reason that the job is currently paused
@@ -1621,7 +1587,7 @@ message Payload {
   string pause_reason = 28;
 
   reserved 32;
-
+  
   // CreationClusterID is populated at creation with the ClusterID, in case a
   // job resuming later, needs to use this information, e.g. to determine if it
   // has been restored into a different cluster, which might mean it should
@@ -1638,7 +1604,7 @@ message Payload {
   // specifies how old such record could get before this job is canceled.
   int64 maximum_pts_age = 40 [(gogoproto.casttype) = "time.Duration",  (gogoproto.customname) = "MaximumPTSAge"];
 
-  // NEXT ID: 54
+  // NEXT ID: 51
 }
 
 message Progress {
@@ -1651,7 +1617,6 @@ message Progress {
   // StatusMessage contains the human readible status of a job (e.g. "running
   // initial scan"), which is distinct from the state of a job (e.g. PAUSED).
   // The status of a job is also stored in the system.job_status table.
-  // TODO(150233): Should use redactable type.
   string status_message = 4;
 
   //                ------ COMPLIANCE NOTE ------
@@ -1697,12 +1662,9 @@ message Progress {
     StandbyReadTSPollerProgress standby_read_ts_poller = 38;
     SqlActivityFlushProgress sql_activity_flush = 39;
     HotRangesLoggerProgress hot_ranges_logger = 40;
-    InspectProgress inspect = 41;
   }
 
   uint64 trace_id = 21 [(gogoproto.nullable) = false, (gogoproto.customname) = "TraceID", (gogoproto.customtype) = "github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb.TraceID"];
-
-  // NEXT ID: 42
 }
 
 enum Type {
@@ -1744,7 +1706,6 @@ enum Type {
   STANDBY_READ_TS_POLLER = 30 [(gogoproto.enumvalue_customname) = "TypeStandbyReadTSPoller"];
   SQL_ACTIVITY_FLUSH = 31 [(gogoproto.enumvalue_customname) = "TypeSQLActivityFlush"];
   HOT_RANGES_LOGGER = 32 [(gogoproto.enumvalue_customname) = "TypeHotRangesLogger"];
-  INSPECT = 33 [(gogoproto.enumvalue_customname) = "TypeInspect"];
 }
 
 message Job {

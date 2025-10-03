@@ -69,7 +69,7 @@ func (p *planner) DeclareCursor(ctx context.Context, s *tree.DeclareCursor) (pla
 
 			// Try to plan the cursor query to make sure that it's valid.
 			stmt := makeStatement(statements.Statement[tree.Statement]{AST: s.Select}, clusterunique.ID{},
-				tree.FmtFlags(tree.QueryFormattingForFingerprintsMask.Get(&p.execCfg.Settings.SV)))
+				tree.FmtFlags(queryFormattingForFingerprintsMask.Get(&p.execCfg.Settings.SV)))
 			pt := planTop{}
 			pt.init(&stmt, &p.instrumentation)
 			opc := &p.optPlanningCtx
@@ -280,7 +280,7 @@ func (f fetchNode) Close(ctx context.Context) {
 		// fetch began, so that subsequent reads in the transaction can still see
 		// writes from that transaction.
 		if err := f.cursor.txn.SetReadSeqNum(f.origTxnSeqNum); err != nil {
-			log.Dev.Warningf(ctx, "error resetting transaction read seq num after CURSOR operation: %v", err)
+			log.Warningf(ctx, "error resetting transaction read seq num after CURSOR operation: %v", err)
 		}
 	}
 }

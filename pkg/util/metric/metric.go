@@ -42,12 +42,8 @@ const (
 // Maintaining a list of static label names here to avoid duplication and
 // encourage reuse of label names across the codebase.
 const (
-	LabelQueryType       = "query_type"
-	LabelQueryInternal   = "query_internal"
-	LabelStatus          = "status"
-	LabelCertificateType = "certificate_type"
-	LabelName            = "name"
-	LabelType            = "type"
+	LabelQueryType     = "query_type"
+	LabelQueryInternal = "query_internal"
 )
 
 type LabelConfig uint64
@@ -131,17 +127,6 @@ type PrometheusReinitialisable interface {
 	PrometheusIterable
 
 	ReinitialiseChildMetrics(labelConfig LabelConfig)
-}
-
-// PrometheusEvictable is an extension of PrometheusIterable to indicate that
-// this metric uses cache as a storage and children metric can be evicted
-// based on eviction policy.
-// The InitializeMetrics method accepts a reference of LabelSliceCache which is
-// initialised at metric registry and settings values for configurable eviction policy.
-type PrometheusEvictable interface {
-	PrometheusIterable
-
-	InitializeMetrics(*LabelSliceCache)
 }
 
 // WindowedHistogram represents a histogram with data over recent window of
@@ -977,10 +962,25 @@ func (c *CounterFloat64) Inc(i float64) {
 	c.count.Add(i)
 }
 
+// Update atomically sets the current value of the counter. The value must not
+// be smaller than the existing value.
+//
+// Update is intended to be used when the counter itself is not the source of
+// truth; instead it is a (periodically updated) copy of a counter that is
+// maintained elsewhere.
+func (c *CounterFloat64) Update(val float64) {
+	if buildutil.CrdbTestBuild {
+		if prev := c.count.Load(); val < prev {
+			panic(fmt.Sprintf("Counters should not decrease, prev: %f, new: %f.", prev, val))
+		}
+	}
+	c.count.Store(val)
+}
+
 // UpdateIfHigher atomically sets the current value of the counter, unless the
 // current value is already greater.
-func (c *CounterFloat64) UpdateIfHigher(i float64) (old float64, updated bool) {
-	return c.count.StoreIfHigher(i)
+func (c *CounterFloat64) UpdateIfHigher(i float64) {
+	c.count.StoreIfHigher(i)
 }
 
 func (c *CounterFloat64) Snapshot() *CounterFloat64 {
@@ -1579,7 +1579,7 @@ func (hv *HistogramVec) ToPrometheusMetrics() []*prometheusgo.Metric {
 		o := hv.promVec.WithLabelValues(labels...)
 		histogram, ok := o.(prometheus.Histogram)
 		if !ok {
-			log.Dev.Errorf(context.TODO(), "Unable to convert Observer to prometheus.Histogram. Metric name=%s", hv.Name)
+			log.Errorf(context.TODO(), "Unable to convert Observer to prometheus.Histogram. Metric name=%s", hv.Name)
 			continue
 		}
 		if err := histogram.Write(m); err != nil {
@@ -1590,18 +1590,4 @@ func (hv *HistogramVec) ToPrometheusMetrics() []*prometheusgo.Metric {
 	}
 
 	return metrics
-}
-
-func MakeLabelPairs(labelNamesAndValues ...string) []*LabelPair {
-	if len(labelNamesAndValues)%2 != 0 {
-		panic("labelNamesAndValues must be a list with even length of label names and values")
-	}
-	labelPairs := make([]*LabelPair, 0, len(labelNamesAndValues)/2)
-	for i := 0; i < len(labelNamesAndValues); i += 2 {
-		labelPairs = append(labelPairs, &LabelPair{
-			Name:  &labelNamesAndValues[i],
-			Value: &labelNamesAndValues[i+1],
-		})
-	}
-	return labelPairs
 }

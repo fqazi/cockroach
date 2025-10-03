@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/cancelchecker"
-	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/ring"
@@ -199,29 +198,9 @@ func (mc *MemRowContainer) InitWithMon(
 	mc.evalCtx = evalCtx
 }
 
-// compareDatums compares two datum rows according to a column ordering. Returns:
-//   - 0 if lhs and rhs are equal on the ordering columns;
-//   - less than 0 if lhs comes first;
-//   - greater than 0 if rhs comes first.
-func compareDatums(
-	ctx context.Context, ordering colinfo.ColumnOrdering, evalCtx *eval.Context, lhs, rhs tree.Datums,
-) int {
-	for _, c := range ordering {
-		if cmp, err := lhs[c.ColIdx].Compare(ctx, evalCtx, rhs[c.ColIdx]); err != nil {
-			panic(err)
-		} else if cmp != 0 {
-			if c.Direction == encoding.Descending {
-				cmp = -cmp
-			}
-			return cmp
-		}
-	}
-	return 0
-}
-
 // Less is part of heap.Interface and is only meant to be used internally.
 func (mc *MemRowContainer) Less(i, j int) bool {
-	cmp := compareDatums(mc.ctx, mc.ordering, mc.evalCtx, mc.At(i), mc.At(j))
+	cmp := colinfo.CompareDatums(mc.ctx, mc.ordering, mc.evalCtx, mc.At(i), mc.At(j))
 	if mc.invertSorting {
 		cmp = -cmp
 	}
@@ -241,7 +220,7 @@ func (mc *MemRowContainer) getEncRow(encRow rowenc.EncDatumRow, idx int) {
 // AddRow adds a row to the container.
 func (mc *MemRowContainer) AddRow(ctx context.Context, row rowenc.EncDatumRow) error {
 	if len(row) != len(mc.types) {
-		log.Dev.Fatalf(ctx, "invalid row length %d, expected %d", len(row), len(mc.types))
+		log.Fatalf(ctx, "invalid row length %d, expected %d", len(row), len(mc.types))
 	}
 	for i := range row {
 		err := row[i].EnsureDecoded(mc.types[i], &mc.datumAlloc)
@@ -550,7 +529,7 @@ func (f *DiskBackedRowContainer) AddRowWithDeDup(
 
 func (f *DiskBackedRowContainer) encodeKey(ctx context.Context, row rowenc.EncDatumRow) error {
 	if len(row) != len(f.mrc.types) {
-		log.Dev.Fatalf(ctx, "invalid row length %d, expected %d", len(row), len(f.mrc.types))
+		log.Fatalf(ctx, "invalid row length %d, expected %d", len(row), len(f.mrc.types))
 	}
 	f.scratchKey = f.scratchKey[:0]
 	for i, orderInfo := range f.mrc.ordering {

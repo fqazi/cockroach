@@ -68,10 +68,6 @@ type ManagerTestingKnobs struct {
 	// has been reset.
 	RangeFeedResetChannel chan struct{}
 
-	// TestingOnRangeFeedCheckPoint is invoked when a range feed checkpoint is
-	// hit.
-	TestingOnRangeFeedCheckPoint func()
-
 	LeaseStoreTestingKnobs StorageTestingKnobs
 }
 
@@ -92,7 +88,7 @@ func (m *Manager) TestingAcquireAndAssertMinVersion(
 	if err := ensureVersion(ctx, id, minVersion, m); err != nil {
 		return nil, err
 	}
-	desc, _, err := t.findForTimestamp(ctx, TimestampToReadTimestamp(timestamp))
+	desc, _, err := t.findForTimestamp(ctx, timestamp)
 	if err != nil {
 		return nil, err
 	}

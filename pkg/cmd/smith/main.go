@@ -236,8 +236,7 @@ func parseSchemaDefinition(schemaPath string) (opts []sqlsmith.SmitherOption, _ 
 		case *tree.CreateTable:
 			tableID := descpb.ID(int(parentID) + i + 1)
 			desc, err := importer.MakeTestingSimpleTableDescriptor(
-				context.Background(), &semaCtx, st, t, parentID, keys.PublicSchemaID, tableID, wall,
-			)
+				context.Background(), &semaCtx, st, t, parentID, keys.PublicSchemaID, tableID, importer.NoFKs, wall)
 			if err != nil {
 				return nil, errors.Wrapf(err, "failed to create table descriptor for statement %s", t)
 			}

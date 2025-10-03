@@ -87,8 +87,15 @@ func (ex *connExecutor) maybeAdjustTxnForDDL(ctx context.Context, stmt Statement
 				return txnSchemaChangeErr
 			}
 		}
+	}
+	// For buffered writes, we need to check for DDL statements as well as EXPLAIN
+	// with DDL statements to avoid errors with the declarative schema changer
+	// (see #144274).
+	ast := tree.UnwrapExplain(stmt.AST)
+	if tree.CanModifySchema(ast) {
 		if ex.state.mu.txn.BufferedWritesEnabled() {
 			ex.state.mu.txn.SetBufferedWritesEnabled(false /* enabled */)
+			p.BufferClientNotice(ctx, pgnotice.Newf("disabling buffered writes on the current txn due to schema change"))
 		}
 	}
 	return nil
@@ -124,7 +131,7 @@ func (ex *connExecutor) runPreCommitStages(ctx context.Context) error {
 	scs.jobID = jobID
 	if jobID != jobspb.InvalidJobID {
 		ex.extraTxnState.jobs.addCreatedJobID(jobID)
-		log.Dev.Infof(ctx, "queued new schema change job %d using the new schema changer", jobID)
+		log.Infof(ctx, "queued new schema change job %d using the new schema changer", jobID)
 	}
 	return nil
 }

@@ -23,7 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/testutils/release"
 	"github.com/cockroachdb/cockroach/pkg/ts/tspb"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -281,7 +281,7 @@ func makeVersionFixtureAndFatal(
 	// #54761.
 	c.Run(ctx, option.WithNodes(c.Node(1)), "cp", "{store-dir}/cluster-bootstrapped", "{store-dir}/"+name)
 	// Similar to the above - newer versions require the min version file to open a store.
-	c.Run(ctx, option.WithNodes(c.All()), "cp", fmt.Sprintf("{store-dir}/%s", fs.MinVersionFilename), "{store-dir}/"+name)
+	c.Run(ctx, option.WithNodes(c.All()), "cp", fmt.Sprintf("{store-dir}/%s", storage.MinVersionFilename), "{store-dir}/"+name)
 	c.Run(ctx, option.WithNodes(c.All()), "tar", "-C", "{store-dir}/"+name, "-czf", "{log-dir}/"+name+".tgz", ".")
 	t.Fatalf(`successfully created checkpoints; failing test on purpose.
 
@@ -302,15 +302,12 @@ done
 // did not initialize the cluster version in time.
 func registerHTTPRestart(r registry.Registry) {
 	r.Add(registry.TestSpec{
-		Name:    "http-register-routes/mixed-version",
-		Owner:   registry.OwnerObservability,
-		Cluster: r.MakeClusterSpec(4),
-		// Disabled on IBM because s390x is only built on master
-		// and version upgrade is impossible to test as of 05/2025.
-		CompatibleClouds: registry.AllClouds.NoIBM(),
+		Name:             "http-register-routes/mixed-version",
+		Owner:            registry.OwnerObservability,
+		Cluster:          r.MakeClusterSpec(4),
+		CompatibleClouds: registry.AllClouds,
 		Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
 		Randomized:       true,
-		Monitor:          true,
 		Run:              runHTTPRestart,
 		Timeout:          1 * time.Hour,
 	})

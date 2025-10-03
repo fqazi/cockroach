@@ -517,7 +517,6 @@ ElementState:
     constraintId: 0
     embeddedExpr: null
     geoConfig: null
-    hideForPrimaryKeyRecreated: false
     indexId: 2
     invisibility: 0
     isConcurrently: false
@@ -544,9 +543,6 @@ ElementState:
   Status: PUBLIC
 - TableData:
     databaseId: 100
-    tableId: 104
-  Status: PUBLIC
-- TableSchemaLocked:
     tableId: 104
   Status: PUBLIC
 - UserPrivileges:
@@ -957,7 +953,6 @@ ElementState:
     constraintId: 1
     embeddedExpr: null
     geoConfig: null
-    hideForPrimaryKeyRecreated: false
     indexId: 2
     invisibility: 0
     isConcurrently: false
@@ -980,9 +975,6 @@ ElementState:
   Status: PUBLIC
 - TableData:
     databaseId: 100
-    tableId: 105
-  Status: PUBLIC
-- TableSchemaLocked:
     tableId: 105
   Status: PUBLIC
 - UserPrivileges:

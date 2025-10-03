@@ -389,7 +389,11 @@ func TestFormatExpr2(t *testing.T) {
 			tree.FmtParsable,
 			`(NULL, 'foo':::STRING)`,
 		},
-		{tree.NewDArrayFromDatums(types.Int, tree.Datums{tree.DNull, tree.DNull}),
+		{&tree.DArray{
+			ParamTyp: types.Int,
+			Array:    tree.Datums{tree.DNull, tree.DNull},
+			HasNulls: true,
+		},
 			tree.FmtParsable,
 			`ARRAY[NULL,NULL]:::INT8[]`,
 		},

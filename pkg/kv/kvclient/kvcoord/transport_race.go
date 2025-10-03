@@ -94,7 +94,7 @@ func GRPCTransportFactory(nodeDialer *nodedialer.Dialer) TransportFactory {
 					var curIdx int
 					defer func() {
 						atomic.StoreInt32(&running, 0)
-						log.Dev.Infof(
+						log.Infof(
 							ctx,
 							"transport race promotion: ran %d iterations on up to %d requests",
 							iters, curIdx+1,

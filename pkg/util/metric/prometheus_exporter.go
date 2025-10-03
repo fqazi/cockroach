@@ -56,7 +56,7 @@ func MakePrometheusExporterForSelectedMetrics(selection map[string]struct{}) Pro
 func (pm *PrometheusExporter) findOrCreateFamily(
 	prom PrometheusCompatible, options *scrapeOptions,
 ) *prometheusgo.MetricFamily {
-	familyName := ExportedName(prom.GetName(options.useStaticLabels))
+	familyName := exportedName(prom.GetName(options.useStaticLabels))
 	if family, ok := pm.families[familyName]; ok {
 		return family
 	}
@@ -197,7 +197,7 @@ func (pm *PrometheusExporter) ScrapeRegistry(registry *Registry, options ...Scra
 			family.Metric = append(family.Metric, m)
 
 		default:
-			log.Dev.Infof(context.Background(), "metric %s is not compatible with any prometheus metric type", name)
+			log.Infof(context.Background(), "metric %s is not compatible with any prometheus metric type", name)
 			return
 		}
 	}

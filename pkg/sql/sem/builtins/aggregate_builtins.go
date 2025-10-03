@@ -1867,7 +1867,7 @@ func mergeStatsMetadataHelper(
 		return nil
 	}
 
-	metadataJSON, ok := metadataDatum.(*tree.DJSON)
+	metadataJSON, ok := tree.AsDJSON(metadataDatum)
 	if !ok {
 		return nil
 	}
@@ -1899,7 +1899,7 @@ func mergeStatementStatsHelper(
 		return nil
 	}
 
-	statsJSON, ok := statsDatum.(*tree.DJSON)
+	statsJSON, ok := tree.AsDJSON(statsDatum)
 	if !ok {
 		return nil
 	}
@@ -1920,7 +1920,7 @@ func mergeTransactionStatsHelper(
 		return nil
 	}
 
-	statsJSON, ok := statsDatum.(*tree.DJSON)
+	statsJSON, ok := tree.AsDJSON(statsDatum)
 	if !ok {
 		return nil
 	}
@@ -1948,7 +1948,7 @@ func mergeAggregatedMetadataHelper(
 		return nil
 	}
 
-	metadataJSON, ok := datum.(*tree.DJSON)
+	metadataJSON, ok := tree.AsDJSON(datum)
 	if !ok {
 		return nil
 	}
@@ -1996,7 +1996,7 @@ type arrayCatAggregate struct {
 	acc mon.BoundAccount
 	// seenNonNull tracks whether at least one non-NULL datum was added. This is
 	// needed to handle a case of only empty arrays added correctly (we want to
-	// return an empty array too rather than NULL).
+	// return an empty array too rather that NULL).
 	seenNonNull bool
 }
 

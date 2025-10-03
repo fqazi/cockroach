@@ -254,11 +254,6 @@ type LockManager interface {
 	// acquired a new lock or re-acquired an existing lock that it already held.
 	OnLockAcquired(context.Context, *roachpb.LockAcquisition)
 
-	// OnLockMissing informs the concurrency manager that a lock has been reported
-	// missing to a client via QueryIntent. Such locks cannot later be
-	// materialized via a lock table flush.
-	OnLockMissing(context.Context, *roachpb.LockAcquisition)
-
 	// OnLockUpdated informs the concurrency manager that a transaction has
 	// updated or released a lock or range of locks that it previously held.
 	// The Durability field of the lock update struct is ignored.
@@ -267,10 +262,6 @@ type LockManager interface {
 	// QueryLockTableState gathers detailed metadata on locks tracked in the lock
 	// table that are part of the provided span and key scope, up to provided limits.
 	QueryLockTableState(ctx context.Context, span roachpb.Span, opts QueryLockTableOptions) ([]roachpb.LockStateInfo, QueryLockTableResumeState)
-
-	// ExportUnreplicatedLocks runs exporter on each held, unreplicated lock
-	// in the given span until the exporter returns false.
-	ExportUnreplicatedLocks(span roachpb.Span, exporter func(*roachpb.LockAcquisition) bool)
 }
 
 // TransactionManager is concerned with tracking transactions that have their
@@ -706,11 +697,6 @@ type lockTable interface {
 	// intent has been applied to the replicated state machine.
 	AcquireLock(*roachpb.LockAcquisition) error
 
-	// MarkIneligibleForExport marks any locks held by this transaction on the
-	// same key as ineligible for export from the lock table for replication since
-	// doing so could result in a transaction being erroneously committed.
-	MarkIneligibleForExport(*roachpb.LockAcquisition) error
-
 	// UpdateLocks informs the lockTable that an existing lock or range of locks
 	// was either updated or released.
 	//
@@ -776,12 +762,12 @@ type lockTable interface {
 	QueryLockTableState(span roachpb.Span, opts QueryLockTableOptions) ([]roachpb.LockStateInfo, QueryLockTableResumeState)
 
 	// ExportUnreplicatedLocks runs exporter on each held, unreplicated lock
-	// in the given span until the exporter returns false.
+	// in the given span.
 	//
 	// Note that the caller is responsible for acquiring latches across the span
 	// it is exporting if it needs to be sure that the exported locks won't be
 	// updated in the lock table while it is still referencing them.
-	ExportUnreplicatedLocks(span roachpb.Span, exporter func(*roachpb.LockAcquisition) bool)
+	ExportUnreplicatedLocks(span roachpb.Span, exporter func(*roachpb.LockAcquisition))
 
 	// Metrics returns information about the state of the lockTable.
 	Metrics() LockTableMetrics

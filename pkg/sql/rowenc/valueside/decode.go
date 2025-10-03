@@ -9,7 +9,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/geo"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/oidext"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgrepl/lsn"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
@@ -71,13 +70,7 @@ func DecodeUntaggedDatum(
 		if err != nil {
 			return nil, b, err
 		}
-		var d tree.Datum
-		switch t.Oid() {
-		case oidext.T_citext:
-			d, err = a.NewDCIText(string(data))
-		default:
-			d, err = a.NewDCollatedString(string(data), t.Locale())
-		}
+		d, err := a.NewDCollatedString(string(data), t.Locale())
 		return d, b, err
 	case types.BitFamily:
 		b, data, err := encoding.DecodeUntaggedBitArrayValue(buf)
@@ -244,9 +237,6 @@ func DecodeUntaggedDatum(
 		// the loss of variable length encoding.
 		b, data, err := encoding.DecodeUntaggedIntValue(buf)
 		return a.NewDOid(tree.MakeDOid(oid.Oid(data), t)), b, err
-	case types.LTreeFamily:
-		b, l, err := encoding.DecodeUntaggedLTreeValue(buf)
-		return tree.NewDLTree(l), b, err
 	case types.ArrayFamily:
 		// Skip the encoded data length.
 		b, _, _, err := encoding.DecodeNonsortingUvarint(buf)

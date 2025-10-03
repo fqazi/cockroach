@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 )
 
 type unsupportedTypeChecker struct {
@@ -25,20 +24,8 @@ type unsupportedTypeChecker struct {
 // NewUnsupportedTypeChecker returns a new tree.UnsupportedTypeChecker that can
 // be used to check whether a type is allowed by the current cluster version.
 func NewUnsupportedTypeChecker(handle clusterversion.Handle) tree.UnsupportedTypeChecker {
+	// There are currently no types to check. Uncomment this code if a new type is introduced.
 	return &unsupportedTypeChecker{version: handle}
-}
-
-// ResetUnsupportedTypeChecker is similar to NewUnsupportedTypeChecker, but
-// reuses an existing, non-nil tree.UnsupportedTypeChecker if one is given,
-// instead of allocating a new one.
-func ResetUnsupportedTypeChecker(
-	handle clusterversion.Handle, existing tree.UnsupportedTypeChecker,
-) tree.UnsupportedTypeChecker {
-	if u, ok := existing.(*unsupportedTypeChecker); ok && u != nil {
-		u.version = handle
-		return existing
-	}
-	return NewUnsupportedTypeChecker(handle)
 }
 
 var _ tree.UnsupportedTypeChecker = (*unsupportedTypeChecker)(nil)
@@ -52,24 +39,6 @@ func (tc *unsupportedTypeChecker) CheckType(ctx context.Context, typ *types.T) e
 		return pgerror.Newf(pgcode.FeatureNotSupported,
 			"%s not supported until version 25.2", typ.String(),
 		)
-	}
-	if (typ.Oid() == oidext.T_citext || typ.Oid() == oidext.T__citext) &&
-		!tc.version.IsActive(ctx, clusterversion.V25_3) {
-		return pgerror.Newf(pgcode.FeatureNotSupported,
-			"%s not supported until version 25.3", typ.String(),
-		)
-	}
-	if (typ.Oid() == oidext.T_ltree || typ.Oid() == oidext.T__ltree) &&
-		!tc.version.IsActive(ctx, clusterversion.V25_4) {
-		return pgerror.Newf(pgcode.FeatureNotSupported,
-			"%s not supported until version 25.4", typ.String(),
-		)
-	}
-	if buildutil.CrdbTestBuild {
-		latestTypeFamily := types.LTreeFamily
-		if typ.Family() > latestTypeFamily && typ.Family() != types.AnyFamily {
-			panic("mark the new type as unsupported above for previous versions and advance the latest type family")
-		}
 	}
 	return nil
 }

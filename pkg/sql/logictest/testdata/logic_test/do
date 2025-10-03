@@ -1,4 +1,5 @@
-# LogicTest: !local-prepared
+# LogicTest: !local-mixed-24.3
+
 statement ok
 CREATE TABLE t (x INT);
 
@@ -283,26 +284,6 @@ BEGIN
     CREATE TYPE mood AS ENUM ('happy', 'sad', 'neutral');
   END IF;
 END
-$$;
-
-subtest end
-
-subtest regression_151848
-
-statement error pgcode 42704 type \"bar\" does not exist
-DO $$
-DECLARE
-  foo bar;
-BEGIN
-END;
-$$;
-
-statement error pgcode 42704 type \"_\" does not exist
-DO $$
-DECLARE
-  foo _[];
-BEGIN
-END;
 $$;
 
 subtest end

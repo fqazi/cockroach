@@ -49,21 +49,11 @@ type upsertRun struct {
 
 	// traceKV caches the current KV tracing flag.
 	traceKV bool
-
-	originTimestampCPutHelper row.OriginTimestampCPutHelper
-}
-
-func (r *upsertRun) init(params runParams) {
-	if ots := params.extendedEvalCtx.SessionData().OriginTimestampForLogicalDataReplication; ots.IsSet() {
-		r.originTimestampCPutHelper.OriginTimestamp = ots
-	}
 }
 
 func (n *upsertNode) startExec(params runParams) error {
 	// cache traceKV during execution, to avoid re-evaluating it for every row.
 	n.run.traceKV = params.p.ExtendedEvalContext().Tracing.KVTracingEnabled()
-
-	n.run.init(params)
 
 	return n.run.tw.init(params.ctx, params.p.txn, params.EvalContext())
 }
@@ -133,9 +123,10 @@ func (n *upsertNode) BatchedNext(params runParams) (bool, error) {
 		}
 		// Remember we're done for the next call to BatchedNext().
 		n.run.done = true
-		// Possibly initiate a run of CREATE STATISTICS.
-		params.ExecCfg().StatsRefresher.NotifyMutation(n.run.tw.tableDesc(), int(n.run.tw.rowsWritten))
 	}
+
+	// Possibly initiate a run of CREATE STATISTICS.
+	params.ExecCfg().StatsRefresher.NotifyMutation(n.run.tw.tableDesc(), n.run.tw.lastBatchSize)
 
 	return n.run.tw.lastBatchSize > 0, nil
 }
@@ -207,13 +198,13 @@ func (r *upsertRun) processSourceRow(params runParams, rowVals tree.Datums) erro
 	if buildutil.CrdbTestBuild {
 		// This testing knob allows us to suspend execution to force a race condition.
 		if fn := params.ExecCfg().TestingKnobs.AfterArbiterRead; fn != nil {
-			fn(params.p.stmt.SQL)
+			fn()
 		}
 	}
 
 	// Process the row. This is also where the tableWriter will accumulate
 	// the row for later.
-	return r.tw.row(params.ctx, upsertVals, pm, vh, r.originTimestampCPutHelper, r.traceKV)
+	return r.tw.row(params.ctx, upsertVals, pm, vh, r.traceKV)
 }
 
 // BatchedCount implements the batchedPlanNode interface.

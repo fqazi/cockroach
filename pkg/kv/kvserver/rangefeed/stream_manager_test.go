@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -176,13 +175,12 @@ func TestStreamManagerErrorHandling(t *testing.T) {
 	testutils.RunValues(t, "feed type", testTypes, func(t *testing.T, rt rangefeedTestType) {
 		testServerStream := newTestServerStream()
 		smMetrics := NewStreamManagerMetrics()
-		st := cluster.MakeTestingClusterSettings()
 		var s sender
 		switch rt {
 		case scheduledProcessorWithUnbufferedSender:
 			s = NewUnbufferedSender(testServerStream)
 		case scheduledProcessorWithBufferedSender:
-			s = NewBufferedSender(testServerStream, st, NewBufferedSenderMetrics())
+			s = NewBufferedSender(testServerStream, NewBufferedSenderMetrics())
 		default:
 			t.Fatalf("unknown rangefeed test type %v", rt)
 		}
@@ -224,7 +222,7 @@ func TestStreamManagerErrorHandling(t *testing.T) {
 				defer stopper.Stop(ctx)
 				stream := sm.NewStream(sID, rID)
 				registered, d, _ := p.Register(ctx, h.span, hlc.Timestamp{}, nil, /* catchUpIter */
-					false /* withDiff */, false /* withFiltering */, false /* withOmitRemote */, noBulkDelivery,
+					false /* withDiff */, false /* withFiltering */, false, /* withOmitRemote */
 					stream)
 				require.True(t, registered)
 				go p.StopWithErr(disconnectErr)
@@ -238,7 +236,7 @@ func TestStreamManagerErrorHandling(t *testing.T) {
 			p, h, stopper := newTestProcessor(t, withRangefeedTestType(rt))
 			defer stopper.Stop(ctx)
 			registered, d, _ := p.Register(ctx, h.span, hlc.Timestamp{}, nil, /* catchUpIter */
-				false /* withDiff */, false /* withFiltering */, false /* withOmitRemote */, noBulkDelivery,
+				false /* withDiff */, false /* withFiltering */, false, /* withOmitRemote */
 				stream)
 			require.True(t, registered)
 			sm.AddStream(sID, d)
@@ -253,7 +251,7 @@ func TestStreamManagerErrorHandling(t *testing.T) {
 			p, h, stopper := newTestProcessor(t, withRangefeedTestType(rt))
 			defer stopper.Stop(ctx)
 			registered, d, _ := p.Register(ctx, h.span, hlc.Timestamp{}, nil, /* catchUpIter */
-				false /* withDiff */, false /* withFiltering */, false /* withOmitRemote */, noBulkDelivery,
+				false /* withDiff */, false /* withFiltering */, false, /* withOmitRemote */
 				stream)
 			require.True(t, registered)
 			sm.AddStream(sID, d)

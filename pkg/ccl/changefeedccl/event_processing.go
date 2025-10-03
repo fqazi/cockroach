@@ -33,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -301,7 +300,7 @@ func newEvaluator(
 				"error upgrading changefeed expression.  Please recreate changefeed manually"))
 		}
 		if newExpr != sc {
-			log.Changefeed.Warningf(ctx,
+			log.Warningf(ctx,
 				"changefeed expression %s (job %d) created prior to 22.2-30 rewritten as %s",
 				tree.AsString(sc), spec.JobID,
 				tree.AsString(newExpr))
@@ -453,14 +452,14 @@ func (c *kvEventToRowConsumer) encodeAndEmit(
 	if err != nil {
 		return err
 	}
-	c.scratch, keyCopy = c.scratch.Copy(encodedKey)
+	c.scratch, keyCopy = c.scratch.Copy(encodedKey, 0 /* extraCap */)
 	// TODO(yevgeniy): Some refactoring is needed in the encoder: namely, prevRow
 	// might not be available at all when working with changefeed expressions.
 	encodedValue, err := c.encoder.EncodeValue(ctx, evCtx, updatedRow, prevRow)
 	if err != nil {
 		return err
 	}
-	c.scratch, valueCopy = c.scratch.Copy(encodedValue)
+	c.scratch, valueCopy = c.scratch.Copy(encodedValue, 0 /* extraCap */)
 
 	// Since we're done processing/converting this event, and will not use much more
 	// than len(key)+len(bytes) worth of resources, adjust allocation to match.
@@ -479,13 +478,13 @@ func (c *kvEventToRowConsumer) encodeAndEmit(
 	})
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
-			log.Changefeed.Warningf(ctx, `sink failed to emit row: %v`, err)
+			log.Warningf(ctx, `sink failed to emit row: %v`, err)
 			c.metrics.SinkErrors.Inc(1)
 		}
 		return err
 	}
 	if log.V(3) {
-		log.Changefeed.Infof(ctx, `r %s: %s(%+v) -> %s`, updatedRow.TableName, keyCopy, headers, valueCopy)
+		log.Infof(ctx, `r %s: %s(%+v) -> %s`, updatedRow.TableName, keyCopy, headers, valueCopy)
 	}
 	return nil
 }
@@ -518,7 +517,7 @@ func (c *kvEventToRowConsumer) makeRowHeaders(
 	}
 	if objIt == nil {
 		if jsonHeaderWrongTypeLogLim.ShouldLog() || log.V(2) {
-			log.Changefeed.Warningf(ctx, "headers column %s must be a JSON object, was %s, in: %s", c.encodingOpts.HeadersJSONColName, redact.SafeString(headersJSON.Type().String()), updatedRow.DebugString())
+			log.Warningf(ctx, "headers column %s must be a JSON object, was %s, in: %s", c.encodingOpts.HeadersJSONColName, redact.SafeString(headersJSON.Type().String()), updatedRow.DebugString())
 		}
 		return nil, nil
 	}
@@ -536,7 +535,7 @@ func (c *kvEventToRowConsumer) makeRowHeaders(
 			headers[objIt.Key()] = []byte(objIt.Value().String())
 		default:
 			if jsonHeaderWrongValTypeLogLim.ShouldLog() || log.V(2) {
-				log.Changefeed.Warningf(ctx, "headers column %s must be a JSON object with primitive values, got %s - %s, in: %s",
+				log.Warningf(ctx, "headers column %s must be a JSON object with primitive values, got %s - %s, in: %s",
 					c.encodingOpts.HeadersJSONColName, redact.SafeString(objIt.Value().Type().String()), objIt.Value(), updatedRow.DebugString())
 			}
 		}
@@ -686,9 +685,6 @@ func (c *parallelEventConsumer) startWorkers() error {
 		id := i
 		consumer := consumers[i]
 		workerClosure := func(ctx2 context.Context) error {
-			ctx2, sp := tracing.ChildSpan(ctx2, "changefeed.parallel_event_consumer.worker")
-			defer sp.Finish()
-
 			return c.workerLoop(ctx2, consumer, id)
 		}
 		c.g.GoCtx(workerClosure)
@@ -702,7 +698,7 @@ func (c *parallelEventConsumer) workerLoop(
 	defer func() {
 		err := consumer.Close()
 		if err != nil {
-			log.Changefeed.Errorf(ctx, "closing consumer: %v", err)
+			log.Errorf(ctx, "closing consumer: %v", err)
 		}
 	}()
 
@@ -825,7 +821,7 @@ func readOneJSONValue(row cdcevent.Row, colName string) (*tree.DJSON, error) {
 		if d == tree.DNull {
 			return nil
 		}
-		if valJSON, ok = d.(*tree.DJSON); !ok {
+		if valJSON, ok = tree.AsDJSON(d); !ok {
 			return errors.Newf("expected a JSON object, got %s", d.ResolvedType())
 		}
 		return nil

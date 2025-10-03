@@ -70,7 +70,7 @@ var maxTimestampAge = settings.RegisterDurationSetting(
 	"sql.stats.max_timestamp_age",
 	"maximum age of timestamp during table statistics collection",
 	5*time.Minute,
-	settings.PositiveDuration,
+	// TODO(yuzefovich): we should add non-negative duration validation.
 )
 
 // minAutoHistogramSamples and maxAutoHistogramSamples are the bounds used by
@@ -127,7 +127,7 @@ func computeNumberSamples(ctx context.Context, numRows uint64, st *cluster.Setti
 	minSampleSize := minAutoHistogramSamples.Get(&st.SV)
 
 	if maxSampleSize < minSampleSize {
-		log.Dev.Infof(
+		log.Infof(
 			ctx,
 			"using default sample size bounds since max sample size %d is less than min sample size %d",
 			maxSampleSize,
@@ -205,7 +205,7 @@ func (dsp *DistSQLPlanner) createAndAttachSamplers(
 					rowsExpected,
 					dsp.st,
 				)
-				log.Dev.Infof(ctx, "using computed sample size of %d for histogram construction", histogramSamplesCount)
+				log.Infof(ctx, "using computed sample size of %d for histogram construction", histogramSamplesCount)
 			}
 			sampler.SampleSize = histogramSamplesCount
 			// This could be anything >= 2 to produce a histogram, but the max number
@@ -329,11 +329,7 @@ func (dsp *DistSQLPlanner) createPartialStatsPlan(
 	// Initialize a dummy scanNode for the requested statistic.
 	var scan scanNode
 	scan.desc = desc
-	if details.UsingExtremes {
-		err = scan.initDescSpecificCol(colCfg, column)
-	} else if details.WhereClause != "" {
-		err = scan.initDescSpecificIndex(colCfg, column, details.WhereIndexID)
-	}
+	err = scan.initDescSpecificCol(colCfg, column)
 	if err != nil {
 		return nil, err
 	}
@@ -345,6 +341,11 @@ func (dsp *DistSQLPlanner) createPartialStatsPlan(
 	for i, c := range scan.catalogCols {
 		colIdxMap.Set(c.GetID(), i)
 	}
+
+	var sb span.Builder
+	sb.InitAllowingExternalRowData(
+		planCtx.EvalContext(), planCtx.ExtendedEvalCtx.Codec, desc, scan.index,
+	)
 
 	var stat *stats.TableStatistic
 	// Find the statistic from the newest table statistic for our column that is
@@ -378,47 +379,27 @@ func (dsp *DistSQLPlanner) createPartialStatsPlan(
 			"column %s does not have a prior statistic",
 			column.GetName())
 	}
-
-	var predicate string
-	var prevLowerBound tree.Datum
-	if details.UsingExtremes {
-		var sb span.Builder
-		sb.InitAllowingExternalRowData(
-			planCtx.EvalContext(), planCtx.ExtendedEvalCtx.Codec, desc, scan.index,
+	lowerBound, upperBound, err := bounds.GetUsingExtremesBounds(ctx, planCtx.EvalContext(), stat.Histogram)
+	if err != nil {
+		return nil, err
+	}
+	if lowerBound == nil {
+		return nil, pgerror.Newf(
+			pgcode.ObjectNotInPrerequisiteState,
+			"only outer or NULL bounded buckets exist in %s@%s (table ID %d, column IDs %v), "+
+				"so partial stats cannot be collected",
+			scan.desc.GetName(), scan.index.GetName(), stat.TableID, stat.ColumnIDs,
 		)
-
-		lowerBound, upperBound, err := bounds.GetUsingExtremesBounds(ctx,
-			planCtx.EvalContext(), stat.Histogram)
-		if err != nil {
-			return nil, err
-		}
-		if lowerBound == nil {
-			return nil, pgerror.Newf(
-				pgcode.ObjectNotInPrerequisiteState,
-				"only outer or NULL bounded buckets exist in %s@%s (table ID %d, column IDs %v), "+
-					"so partial stats cannot be collected",
-				scan.desc.GetName(), scan.index.GetName(), stat.TableID, stat.ColumnIDs,
-			)
-		}
-		prevLowerBound = lowerBound
-
-		extremesSpans, err := bounds.ConstructUsingExtremesSpans(lowerBound,
-			upperBound, scan.index)
-		if err != nil {
-			return nil, err
-		}
-		predicate = bounds.ConstructUsingExtremesPredicate(lowerBound, upperBound, column.GetName())
-		// Get roachpb.Spans from constraint.Spans
-		scan.spans, err = sb.SpansFromConstraintSpan(&extremesSpans, span.NoopSplitter())
-		if err != nil {
-			return nil, err
-		}
-	} else if details.WhereClause != "" {
-		predicate = details.WhereClause
-		scan.spans = details.WhereSpans
-	} else {
-		return nil, errors.AssertionFailedf(
-			"partial stats require either USING EXTREMES or a WHERE clause")
+	}
+	extremesSpans, err := bounds.ConstructUsingExtremesSpans(lowerBound, upperBound, scan.index)
+	if err != nil {
+		return nil, err
+	}
+	extremesPredicate := bounds.ConstructUsingExtremesPredicate(lowerBound, upperBound, column.GetName())
+	// Get roachpb.Spans from constraint.Spans
+	scan.spans, err = sb.SpansFromConstraintSpan(&extremesSpans, span.NoopSplitter())
+	if err != nil {
+		return nil, err
 	}
 	p, err := dsp.createTableReaders(ctx, planCtx, &scan)
 	if err != nil {
@@ -434,17 +415,15 @@ func (dsp *DistSQLPlanner) createPartialStatsPlan(
 
 	sampledColumnIDs := make([]descpb.ColumnID, len(scan.catalogCols))
 	spec := execinfrapb.SketchSpec{
+		SketchType:          execinfrapb.SketchType_HLL_PLUS_PLUS_V1,
 		GenerateHistogram:   reqStat.histogram,
 		HistogramMaxBuckets: reqStat.histogramMaxBuckets,
 		Columns:             make([]uint32, len(reqStat.columns)),
 		StatName:            reqStat.name,
-		PartialPredicate:    predicate,
+		PartialPredicate:    extremesPredicate,
+		FullStatisticID:     stat.StatisticID,
+		PrevLowerBound:      tree.Serialize(lowerBound),
 	}
-	if details.UsingExtremes && prevLowerBound != nil {
-		spec.PrevLowerBound = tree.Serialize(prevLowerBound)
-		spec.FullStatisticID = stat.StatisticID
-	}
-
 	// For now, this loop should iterate only once, as we only
 	// handle single-column partial statistics.
 	// TODO(faizaanmadhani): Add support for multi-column partial stats next
@@ -682,6 +661,7 @@ func (dsp *DistSQLPlanner) createStatsPlan(
 	sampledColumnIDs := make([]descpb.ColumnID, len(requestedCols))
 	for _, s := range reqStats {
 		spec := execinfrapb.SketchSpec{
+			SketchType:          execinfrapb.SketchType_HLL_PLUS_PLUS_V1,
 			GenerateHistogram:   s.histogram,
 			HistogramMaxBuckets: s.histogramMaxBuckets,
 			Columns:             make([]uint32, len(s.columns)),
@@ -789,7 +769,7 @@ func (dsp *DistSQLPlanner) createPlanForCreateStats(
 		return nil, errors.New("no stats requested")
 	}
 
-	if details.UsingExtremes || details.WhereClause != "" {
+	if details.UsingExtremes {
 		return dsp.createPartialStatsPlan(ctx, planCtx, tableDesc, reqStats, jobID, details, numIndexes, curIndex)
 	}
 	return dsp.createStatsPlan(ctx, planCtx, semaCtx, tableDesc, reqStats, jobID, details, numIndexes, curIndex)
@@ -819,7 +799,7 @@ func (dsp *DistSQLPlanner) planAndRunCreateStats(
 			// trade-off than having auto partial stats fail repeatedly due to
 			// expected conditions (like a lower bound doesn't exist) raising
 			// concerns for users. See #149279 for more discussion.
-			log.Dev.Infof(ctx, "job %d: stats collection is swallowing benign error %v", jobId, err)
+			log.Infof(ctx, "job %d: stats collection is swallowing benign error %v", jobId, err)
 			return nil
 		}
 		return err

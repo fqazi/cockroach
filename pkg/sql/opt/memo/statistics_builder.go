@@ -56,6 +56,10 @@ const (
 	// for nullable columns, which is used in the absence of any real statistics.
 	UnknownNullCountRatio = 0.01
 
+	// UnknownAvgRowSize is the average size of a row in bytes, which is used in
+	// the absence of any real statistics.
+	UnknownAvgRowSize = 8
+
 	// Use a small row count for generator functions; this allows use of lookup
 	// join in cases like using json_array_elements with a small constant array.
 	unknownGeneratorRowCount = 10
@@ -617,19 +621,12 @@ func (sb *statisticsBuilder) colStatLeaf(
 // | Table |
 // +-------+
 
-// GetTableStats returns the statistics for the given table if already available
-// in the metadata.
-func GetTableStats(md *opt.Metadata, tabID opt.TableID) (*props.Statistics, bool) {
-	stats, ok := md.TableAnnotation(tabID, statsAnnID).(*props.Statistics)
-	return stats, ok
-}
-
 // makeTableStatistics returns the available statistics for the given table.
 // Statistics are derived lazily and are cached in the metadata, since they may
 // be accessed multiple times during query optimization. For more details, see
 // props.Statistics.
 func (sb *statisticsBuilder) makeTableStatistics(tabID opt.TableID) *props.Statistics {
-	stats, ok := GetTableStats(sb.md, tabID)
+	stats, ok := sb.md.TableAnnotation(tabID, statsAnnID).(*props.Statistics)
 	if ok {
 		// Already made.
 		return stats
@@ -5170,7 +5167,7 @@ func (sb *statisticsBuilder) buildStatsFromCheckConstraints(
 				if distinctVals <= maxValuesForFullHistogramFromCheckConstraint {
 					values, hasNullValue, _ = filterConstraint.CollectFirstColumnValues(sb.ctx, sb.evalCtx)
 					if hasNullValue {
-						log.Dev.Infof(
+						log.Infof(
 							sb.ctx, "null value seen in histogram built from check constraint: %s", filterConstraint.String(),
 						)
 					}
@@ -5223,7 +5220,7 @@ func (sb *statisticsBuilder) buildStatsFromCheckConstraints(
 					histogram = unencodedBuckets
 				} else {
 					useHistogram = false
-					log.Dev.Infof(
+					log.Infof(
 						sb.ctx, "histogram could not be generated from check constraint due to error: %v", err,
 					)
 				}

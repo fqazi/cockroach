@@ -10,7 +10,6 @@ import (
 	gosql "database/sql"
 	"fmt"
 	"net/url"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -21,17 +20,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
-	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/log/logtestutils"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
-	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/stretchr/testify/require"
 )
@@ -338,10 +333,10 @@ func TestTraceFieldDecomposition(t *testing.T) {
 						// We need to check a tag containing brackets (e.g. an
 						// IPv6 address).  See #18558.
 						taggedCtx := logtags.AddTag(ctx, "hello", "[::666]")
-						// We use log.Dev.Infof here (instead of log.Event) to ensure
+						// We use log.Infof here (instead of log.Event) to ensure
 						// the trace message contains also a file name prefix. See
 						// #19453/#20085.
-						log.Dev.Infof(taggedCtx, "world")
+						log.Infof(taggedCtx, "world")
 					}
 				},
 			},
@@ -588,139 +583,4 @@ func TestStatementThreshold(t *testing.T) {
 	r := sqlutils.MakeSQLRunner(db)
 	r.Exec(t, "select 1")
 	// TODO(andrei): check the logs for traces somehow.
-}
-
-func TestTraceTxnSampleRateAndThreshold(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	settings := cluster.MakeTestingClusterSettings()
-
-	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
-		Settings: settings,
-	})
-	defer s.Stopper().Stop(ctx)
-
-	appLogsSpy := logtestutils.NewLogSpy(
-		t,
-		// This string match is constructed from the log.SqlExec.Infof format
-		// string found in conn_executor_exec.go:logTraceAboveThreshold
-		logtestutils.MatchesF("exceeding threshold of"),
-	)
-	cleanup := log.InterceptWith(ctx, appLogsSpy)
-	defer cleanup()
-
-	for _, tc := range []struct {
-		name                  string
-		sampleRate            float64
-		threshold             time.Duration
-		exptToTraceEventually bool
-		checkJaegerOutput     bool
-		checkExcludeInternal  bool
-	}{
-		{
-			name:                  "no sample rate and no threshold",
-			sampleRate:            0.0,
-			threshold:             0 * time.Nanosecond,
-			exptToTraceEventually: false,
-		},
-		{
-			name:                  "sample rate 1.0 and threshold 1ns should trace",
-			sampleRate:            1.0,
-			threshold:             1 * time.Nanosecond,
-			exptToTraceEventually: true,
-		},
-		{
-			name:                  "sample rate 0.0 and threshold 1ns should not trace",
-			sampleRate:            0.0,
-			threshold:             1 * time.Nanosecond,
-			exptToTraceEventually: false,
-		},
-		{
-			name:                  "sample rate 1.0 and threshold 0ns should not trace",
-			sampleRate:            1.0,
-			threshold:             0 * time.Nanosecond,
-			exptToTraceEventually: false,
-		},
-		{
-			name:                  "sample rate 0.5 and threshold 1ns should trace eventually",
-			sampleRate:            0.5,
-			threshold:             1 * time.Nanosecond,
-			exptToTraceEventually: true,
-		},
-		{
-			name:                  "jaeger output with sample rate 1.0 and threshold 1ns should trace",
-			sampleRate:            1.0,
-			threshold:             1 * time.Nanosecond,
-			exptToTraceEventually: true,
-			checkJaegerOutput:     true,
-		},
-		{
-			name:                  "internal queries omitted with cluster setting",
-			sampleRate:            1.0,
-			threshold:             1 * time.Nanosecond,
-			exptToTraceEventually: true,
-			checkExcludeInternal:  true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			sql.TraceTxnThreshold.Override(ctx, &settings.SV, tc.threshold)
-			sql.TraceTxnSampleRate.Override(ctx, &settings.SV, tc.sampleRate)
-			log.FlushAllSync()
-			appLogsSpy.Reset()
-			r := sqlutils.MakeSQLRunner(db)
-
-			if tc.exptToTraceEventually {
-				if tc.checkJaegerOutput {
-					sql.TraceTxnOutputJaegerJSON.Override(ctx, &settings.SV, true)
-					testutils.SucceedsSoon(t, func() error {
-						r.Exec(t, "SELECT pg_sleep(0.01)")
-						log.FlushAllSync()
-						if !appLogsSpy.Has(logtestutils.MatchesF(regexp.QuoteMeta("ExecStmt: SELECT pg_sleep(0.01)"))) {
-							return errors.New("no sql txn log found (tracing did not happen)")
-						}
-						if !appLogsSpy.Has(logtestutils.MatchesF(regexp.QuoteMeta("{\"refType\":\"CHILD_OF\",\"traceID\":\""))) {
-							return errors.New("no Jaeger JSON found")
-						}
-						return nil
-					})
-				} else if tc.checkExcludeInternal {
-					sql.TraceTxnIncludeInternal.Override(ctx, &settings.SV, false)
-					log.FlushAllSync()
-					appLogsSpy.Reset() // Clear logs after setting the cluster setting
-
-					// Use the internal executor directly to create actual internal transactions
-					ie := s.InternalExecutor().(*sql.InternalExecutor)
-					_, err := ie.ExecEx(ctx, "test-internal-query", nil, /* txn */
-						sessiondata.NodeUserSessionDataOverride,
-						"SELECT pg_sleep(0.01)")
-					if err != nil {
-						t.Fatal(err)
-					}
-					log.FlushAllSync()
-					if appLogsSpy.Has(logtestutils.MatchesF(regexp.QuoteMeta("ExecStmt: SELECT pg_sleep(0.01)"))) {
-						t.Fatal("internal sql txn log found when internal transactions should be excluded from tracing")
-					}
-				} else {
-					testutils.SucceedsSoon(t, func() error {
-						r.Exec(t, "SELECT pg_sleep(0.01)")
-						log.FlushAllSync()
-						if !appLogsSpy.Has(logtestutils.MatchesF(regexp.QuoteMeta("ExecStmt: SELECT pg_sleep(0.01)"))) {
-							return errors.New("no sql txn log found (tracing did not happen)")
-						}
-						return nil
-					})
-				}
-			} else {
-				r.Exec(t, "SELECT pg_sleep(0.01)")
-				log.FlushAllSync()
-
-				spyLogs := appLogsSpy.ReadAll()
-				if appLogsSpy.Has(logtestutils.MatchesF(regexp.QuoteMeta("ExecStmt: SELECT pg_sleep(0.01)"))) {
-					t.Fatalf("sql txn log found (tracing happened when it should not have): %v", spyLogs)
-				}
-			}
-		})
-	}
 }

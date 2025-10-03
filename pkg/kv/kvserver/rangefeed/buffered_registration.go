@@ -78,7 +78,6 @@ func newBufferedRegistration(
 	withDiff bool,
 	withFiltering bool,
 	withOmitRemote bool,
-	withBulkDelivery int,
 	bufferSz int,
 	blockWhenFull bool,
 	metrics *Metrics,
@@ -94,7 +93,6 @@ func newBufferedRegistration(
 			withFiltering:          withFiltering,
 			withOmitRemote:         withOmitRemote,
 			removeRegFromProcessor: removeRegFromProcessor,
-			bulkDelivery:           withBulkDelivery,
 		},
 		metrics:       metrics,
 		stream:        stream,
@@ -197,7 +195,7 @@ func (br *bufferedRegistration) outputLoop(ctx context.Context) error {
 	// If the registration has a catch-up scan, run it.
 	if err := br.maybeRunCatchUpScan(ctx); err != nil {
 		err = errors.Wrap(err, "catch-up scan failed")
-		log.KvDistribution.Errorf(ctx, "%v", err)
+		log.Errorf(ctx, "%v", err)
 		return err
 	}
 
@@ -230,7 +228,7 @@ func (br *bufferedRegistration) outputLoop(ctx context.Context) error {
 
 		if overflowed {
 			if wasOverflowedOnFirstIteration && br.shouldLogOverflow(oneCheckpointWithTimestampSent) {
-				log.KvDistribution.Warningf(ctx, "rangefeed %s overflowed during catch up scan from %s (useful checkpoint sent: %v)",
+				log.Warningf(ctx, "rangefeed %s overflowed during catch up scan from %s (useful checkpoint sent: %v)",
 					br.span, br.catchUpTimestamp, oneCheckpointWithTimestampSent)
 			}
 
@@ -310,7 +308,7 @@ func (br *bufferedRegistration) maybeRunCatchUpScan(ctx context.Context) error {
 		br.metrics.RangeFeedCatchUpScanNanos.Inc(timeutil.Since(start).Nanoseconds())
 	}()
 
-	return catchUpIter.CatchUpScan(ctx, br.stream.SendUnbuffered, br.withDiff, br.withFiltering, br.withOmitRemote, br.bulkDelivery)
+	return catchUpIter.CatchUpScan(ctx, br.stream.SendUnbuffered, br.withDiff, br.withFiltering, br.withOmitRemote)
 }
 
 // Wait for this registration to completely process its internal

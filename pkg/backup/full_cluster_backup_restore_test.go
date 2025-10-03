@@ -192,9 +192,6 @@ CREATE TABLE data2.foo (a int);
 		sqlDB.Exec(t, `CREATE SCHEDULE FOR BACKUP data.bank INTO $1 RECURRING '@hourly' FULL BACKUP ALWAYS WITH SCHEDULE OPTIONS first_run = $2`, localFoo, firstRun)
 		sqlDB.Exec(t, `PAUSE SCHEDULES SELECT id FROM [SHOW SCHEDULES FOR BACKUP]`)
 
-		// Populate system.statement_hints with a dummy row.
-		sqlDB.Exec(t, `INSERT INTO system.statement_hints (fingerprint, hint) VALUES ('FOO BAR _', '0xDEADBEEF'::BYTES)`)
-
 		injectStats(t, sqlDB, "data.bank", "id")
 		sqlDB.Exec(t, `BACKUP INTO $1`, localFoo)
 
@@ -297,7 +294,6 @@ CREATE TABLE data2.foo (a int);
 				systemschema.UITable.GetName(),
 				systemschema.UsersTable.GetName(),
 				systemschema.ScheduledJobsTable.GetName(),
-				systemschema.StatementHintsTable.GetName(),
 			}
 
 			verificationQueries := make([]string, len(systemTablesToVerify))
@@ -674,7 +670,7 @@ func TestClusterRestoreFailCleanup(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if d.Name() == backupbase.DeprecatedBackupManifestName ||
+		if d.Name() == backupbase.BackupManifestName ||
 			!strings.HasSuffix(path, ".sst") ||
 			d.Name() == backupinfo.BackupMetadataDescriptorsListPath ||
 			d.Name() == backupinfo.BackupMetadataFilesListPath {
@@ -693,13 +689,19 @@ func TestClusterRestoreFailCleanup(t *testing.T) {
 	sqlDB.Exec(t, `BACKUP data.bank INTO 'nodelocal://1/throwawayjob'`)
 	sqlDB.Exec(t, `BACKUP INTO $1`, localFoo)
 
+	waitForJobPauseCancel := func(db *sqlutils.SQLRunner, jobID jobspb.JobID) {
+		db.Exec(t, `USE system;`)
+		jobutils.WaitForJobToPause(t, db, jobID)
+		db.Exec(t, `CANCEL JOB $1`, jobID)
+		jobutils.WaitForJobToCancel(t, db, jobID)
+	}
+
 	t.Run("during restoration of data", func(t *testing.T) {
 		_, sqlDBRestore, cleanupEmptyCluster := backupRestoreTestSetupEmpty(t, singleNode, tempDir, InitManualReplication, base.TestClusterArgs{})
 		defer cleanupEmptyCluster()
 		var jobID jobspb.JobID
 		sqlDBRestore.QueryRow(t, `RESTORE FROM LATEST IN 'nodelocal://1/missing-ssts' WITH detached`).Scan(&jobID)
-		sqlDBRestore.Exec(t, "USE system")
-		jobutils.WaitForJobToFail(t, sqlDBRestore, jobID)
+		waitForJobPauseCancel(sqlDBRestore, jobID)
 		// Verify the failed RESTORE added some DROP tables.
 		// Note that the system tables here correspond to the temporary tables
 		// imported, not the system tables themselves.
@@ -717,7 +719,6 @@ func TestClusterRestoreFailCleanup(t *testing.T) {
 				{"role_options"},
 				{"scheduled_jobs"},
 				{"settings"},
-				{"statement_hints"},
 				{"tenant_settings"},
 				{"ui"},
 				{"users"},
@@ -812,7 +813,6 @@ func TestClusterRestoreFailCleanup(t *testing.T) {
 				{"role_options"},
 				{"scheduled_jobs"},
 				{"settings"},
-				{"statement_hints"},
 				{"tenant_settings"},
 				{"ui"},
 				{"users"},
@@ -1189,7 +1189,7 @@ func TestFullClusterRestoreWithUserIDs(t *testing.T) {
 	sqlDB.Exec(t, `CREATE USER test2`)
 	sqlDB.Exec(t, `BACKUP INTO $1`, localFoo)
 
-	sqlDB.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole", user_id FROM system.users ORDER BY user_id`, [][]string{
+	sqlDB.CheckQueryResults(t, `SELECT * FROM system.users ORDER BY user_id`, [][]string{
 		{"root", "", "false", "1"},
 		{"admin", "", "true", "2"},
 		{"test1", "NULL", "false", "100"},
@@ -1198,7 +1198,7 @@ func TestFullClusterRestoreWithUserIDs(t *testing.T) {
 	// Ensure that the new backup succeeds.
 	sqlDBRestore.Exec(t, `RESTORE FROM LATEST IN $1`, localFoo)
 
-	sqlDBRestore.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole", user_id FROM system.users ORDER BY user_id`, [][]string{
+	sqlDBRestore.CheckQueryResults(t, `SELECT * FROM system.users ORDER BY user_id`, [][]string{
 		{"root", "", "false", "1"},
 		{"admin", "", "true", "2"},
 		{"test1", "NULL", "false", "100"},
@@ -1207,7 +1207,7 @@ func TestFullClusterRestoreWithUserIDs(t *testing.T) {
 
 	sqlDBRestore.Exec(t, `CREATE USER test3`)
 
-	sqlDBRestore.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole", user_id FROM system.users ORDER BY user_id`, [][]string{
+	sqlDBRestore.CheckQueryResults(t, `SELECT * FROM system.users ORDER BY user_id`, [][]string{
 		{"root", "", "false", "1"},
 		{"admin", "", "true", "2"},
 		{"test1", "NULL", "false", "100"},

@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/interval"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
@@ -406,7 +405,7 @@ func (txn *Txn) TestingSetPriority(priority enginepb.TxnPriority) {
 	// non-randomized, priority for the transaction.
 	txn.mu.userPriority = roachpb.UserPriority(-priority)
 	if err := txn.mu.sender.SetUserPriority(txn.mu.userPriority); err != nil {
-		log.Dev.Fatalf(context.TODO(), "%+v", err)
+		log.Fatalf(context.TODO(), "%+v", err)
 	}
 	txn.mu.Unlock()
 }
@@ -1045,7 +1044,7 @@ func (txn *Txn) rollback(ctx context.Context) *kvpb.Error {
 						// already committed. We don't spam the logs with those.
 						log.VEventf(ctx, 2, "async rollback failed: %s", pErr)
 					} else {
-						log.Dev.Infof(ctx, "async rollback failed: %s", pErr)
+						log.Infof(ctx, "async rollback failed: %s", pErr)
 					}
 				}
 				return nil
@@ -1161,7 +1160,7 @@ func (txn *Txn) exec(ctx context.Context, fn func(context.Context, *Txn) error) 
 					// We sent transactional requests, so the TxnCoordSender was supposed to
 					// turn retryable errors into TransactionRetryWithProtoRefreshError. Note that this
 					// applies only in the case where this is the root transaction.
-					log.Dev.Fatalf(ctx, "unexpected UnhandledRetryableError at the txn.exec() level: %s", err)
+					log.Fatalf(ctx, "unexpected UnhandledRetryableError at the txn.exec() level: %s", err)
 				}
 			} else if t := (*kvpb.TransactionRetryWithProtoRefreshError)(nil); errors.As(err, &t) {
 				if txn.ID() != t.PrevTxnID {
@@ -1208,13 +1207,13 @@ func (txn *Txn) exec(ctx context.Context, fn func(context.Context, *Txn) error) 
 					txn.DebugName(), attempt, err, maxRetries, rollbackErr,
 				),
 				ErrAutoRetryLimitExhausted)
-			log.Dev.Warningf(ctx, "%v", err)
+			log.Warningf(ctx, "%v", err)
 			break
 		}
 
 		const warnEvery = 10
 		if attempt%warnEvery == 0 {
-			log.Dev.Warningf(ctx, "have retried transaction: %s %d times, most recently because of the "+
+			log.Warningf(ctx, "have retried transaction: %s %d times, most recently because of the "+
 				"retryable error: %s. Is the transaction stuck in a retry loop?", txn.DebugName(), attempt, err)
 		}
 
@@ -1384,7 +1383,7 @@ func (txn *Txn) Send(
 		if requestTxnID != retryErr.PrevTxnID {
 			// KV should not return errors for transactions other than the one that sent
 			// the request.
-			log.Dev.Fatalf(ctx, "retryable error for the wrong txn. "+
+			log.Fatalf(ctx, "retryable error for the wrong txn. "+
 				"requestTxnID: %s, retryErr.PrevTxnID: %s. retryErr: %s",
 				requestTxnID, retryErr.PrevTxnID, retryErr)
 		}
@@ -1547,19 +1546,12 @@ func (txn *Txn) applyDeadlineToBoundedStaleness(
 // transaction for use with NewLeafTxn(), when distributing the state of the
 // current transaction to multiple distributed transaction coordinators.
 //
-// readsTree, when non-nil, specifies an interval tree of key spans that will be
-// read by the caller. As such, any non-overlapping writes could be ignored when
-// populating the LeafTxnInputState. If readsTree is nil, then all writes should
-// be included.
-//
 // If the transaction is already aborted or otherwise in a state that cannot
 // make progress, it returns an error. If the transaction is aborted, the error
 // returned will be a retryable one. In such cases, the caller is responsible
 // for handling the error before another attempt by calling PrepareForRetry. Use
 // of the transaction before doing so will continue to be rejected.
-func (txn *Txn) GetLeafTxnInputState(
-	ctx context.Context, readsTree interval.Tree,
-) (*roachpb.LeafTxnInputState, error) {
+func (txn *Txn) GetLeafTxnInputState(ctx context.Context) (*roachpb.LeafTxnInputState, error) {
 	if txn.typ != RootTxn {
 		return nil, errors.WithContextTags(
 			errors.AssertionFailedf("GetLeafTxnInputState() called on leaf txn"), ctx)
@@ -1567,7 +1559,7 @@ func (txn *Txn) GetLeafTxnInputState(
 
 	txn.mu.Lock()
 	defer txn.mu.Unlock()
-	return txn.mu.sender.GetLeafTxnInputState(ctx, readsTree)
+	return txn.mu.sender.GetLeafTxnInputState(ctx)
 }
 
 // GetLeafTxnFinalState returns the LeafTxnFinalState information for this
@@ -1618,7 +1610,7 @@ func (txn *Txn) UpdateStateOnRemoteRetryableErr(ctx context.Context, pErr *kvpb.
 	defer txn.mu.Unlock()
 
 	if pErr.TransactionRestart() == kvpb.TransactionRestart_NONE {
-		log.Dev.Fatalf(ctx, "unexpected non-retryable error: %s", pErr)
+		log.Fatalf(ctx, "unexpected non-retryable error: %s", pErr)
 	}
 
 	// If the transaction has been reset since this request was sent,
@@ -1852,14 +1844,6 @@ func (txn *Txn) DeferCommitWait(ctx context.Context) func(context.Context) error
 	txn.mu.Lock()
 	defer txn.mu.Unlock()
 	return txn.mu.sender.DeferCommitWait(ctx)
-}
-
-// HasPerformedWrites returns true if a write has been performed in the
-// transaction's current epoch.
-func (txn *Txn) HasPerformedWrites() bool {
-	txn.mu.Lock()
-	defer txn.mu.Unlock()
-	return txn.mu.sender.HasPerformedWrites()
 }
 
 // AdmissionHeader returns the admission header for work done in the context

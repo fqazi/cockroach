@@ -24,8 +24,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/ctpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/policyrefresher"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
@@ -35,6 +35,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
+	"google.golang.org/grpc"
 )
 
 // Sender represents the sending-side of the closed timestamps "side-transport".
@@ -256,6 +257,7 @@ func (s *Sender) Run(ctx context.Context, nodeID roachpb.NodeID) {
 				}
 				select {
 				case <-timer.C:
+					timer.Read = true
 					s.publish(ctx)
 				case <-confCh:
 					// Loop around to use the updated timer.
@@ -575,7 +577,7 @@ func (b *updatesBuf) Push(ctx context.Context, update *ctpb.Update) {
 	if b.sizeLocked() != 0 {
 		lastIdx := b.lastIdxLocked()
 		if prevSeq := b.mu.data[lastIdx].SeqNum; prevSeq != update.SeqNum-1 {
-			log.KvDistribution.Fatalf(ctx, "bad sequence number; expected %d, got %d", prevSeq+1, update.SeqNum)
+			log.Fatalf(ctx, "bad sequence number; expected %d, got %d", prevSeq+1, update.SeqNum)
 		}
 	}
 
@@ -634,7 +636,7 @@ func (b *updatesBuf) GetBySeq(ctx context.Context, seqNum ctpb.SeqNum) (*ctpb.Up
 			continue
 		}
 		if seqNum > lastSeq+1 {
-			log.KvDistribution.Fatalf(ctx, "skipping sequence numbers; requested: %d, last: %d", seqNum, lastSeq)
+			log.Fatalf(ctx, "skipping sequence numbers; requested: %d, last: %d", seqNum, lastSeq)
 		}
 		idx := (b.mu.head + (int)(seqNum-firstSeq)) % len(b.mu.data)
 		return b.mu.data[idx], true
@@ -685,11 +687,11 @@ type conn interface {
 // rpcConnFactory is an implementation of connFactory that establishes
 // connections to other nodes using gRPC.
 type rpcConnFactory struct {
-	dialer       rpcbase.NodeDialer
+	dialer       nodeDialer
 	testingKnobs connTestingKnobs
 }
 
-func newRPCConnFactory(dialer rpcbase.NodeDialer, testingKnobs connTestingKnobs) connFactory {
+func newRPCConnFactory(dialer nodeDialer, testingKnobs connTestingKnobs) connFactory {
 	return &rpcConnFactory{
 		dialer:       dialer,
 		testingKnobs: testingKnobs,
@@ -699,6 +701,11 @@ func newRPCConnFactory(dialer rpcbase.NodeDialer, testingKnobs connTestingKnobs)
 // new implements the connFactory interface.
 func (f *rpcConnFactory) new(s *Sender, nodeID roachpb.NodeID) conn {
 	return newRPCConn(f.dialer, s, nodeID, f.testingKnobs)
+}
+
+// nodeDialer abstracts *nodedialer.Dialer.
+type nodeDialer interface {
+	Dial(ctx context.Context, nodeID roachpb.NodeID, class rpc.ConnectionClass) (_ *grpc.ClientConn, err error)
 }
 
 // On sending errors, we sleep a bit as to not spin on a tripped
@@ -712,12 +719,12 @@ const sleepOnErr = time.Second
 // snapshot before we can resume sending regular messages.
 type rpcConn struct {
 	log.AmbientContext
-	dialer       rpcbase.NodeDialer
+	dialer       nodeDialer
 	producer     *Sender
 	nodeID       roachpb.NodeID
 	testingKnobs connTestingKnobs
 
-	stream   ctpb.RPCSideTransport_PushUpdatesClient
+	stream   ctpb.SideTransport_PushUpdatesClient
 	lastSent ctpb.SeqNum
 	// cancelStreamCtx cleans up the resources (goroutine) associated with stream.
 	// It needs to be called whenever stream is discarded.
@@ -731,7 +738,7 @@ type rpcConn struct {
 }
 
 func newRPCConn(
-	dialer rpcbase.NodeDialer, producer *Sender, nodeID roachpb.NodeID, testingKnobs connTestingKnobs,
+	dialer nodeDialer, producer *Sender, nodeID roachpb.NodeID, testingKnobs connTestingKnobs,
 ) conn {
 	r := &rpcConn{
 		dialer:       dialer,
@@ -777,18 +784,18 @@ func (r *rpcConn) close() {
 	atomic.StoreInt32(&r.closed, 1)
 }
 
-func (r *rpcConn) maybeConnect(ctx context.Context, _ *stop.Stopper) error {
+func (r *rpcConn) maybeConnect(ctx context.Context, stopper *stop.Stopper) error {
 	if r.stream != nil {
 		// Already connected.
 		return nil
 	}
 
-	client, err := ctpb.DialSideTransportClient(r.dialer, ctx, r.nodeID, rpcbase.SystemClass, r.producer.st)
+	conn, err := r.dialer.Dial(ctx, r.nodeID, rpc.SystemClass)
 	if err != nil {
 		return err
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
-	stream, err := client.PushUpdates(streamCtx)
+	stream, err := ctpb.NewSideTransportClient(conn).PushUpdates(streamCtx)
 	if err != nil {
 		cancel()
 		return err
@@ -826,7 +833,7 @@ func (r *rpcConn) run(ctx context.Context, stopper *stop.Stopper) {
 				}
 				if err := r.maybeConnect(ctx, stopper); err != nil {
 					if !errors.HasType(err, (*netutil.InitialHeartbeatFailedError)(nil)) && everyN.ShouldLog() {
-						log.KvDistribution.Infof(ctx, "side-transport failed to connect to n%d: %s", r.nodeID, err)
+						log.Infof(ctx, "side-transport failed to connect to n%d: %s", r.nodeID, err)
 					}
 					time.Sleep(errSleepTime)
 					continue
@@ -856,7 +863,7 @@ func (r *rpcConn) run(ctx context.Context, stopper *stop.Stopper) {
 				}
 				if err := r.stream.Send(msg); err != nil {
 					if err != io.EOF && everyN.ShouldLog() {
-						log.KvDistribution.Warningf(ctx, "failed to send closed timestamp message %d to n%d: %s",
+						log.Warningf(ctx, "failed to send closed timestamp message %d to n%d: %s",
 							r.lastSent, r.nodeID, err)
 					}
 					// Keep track of the fact that we need a new connection.

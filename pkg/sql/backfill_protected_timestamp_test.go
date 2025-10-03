@@ -99,7 +99,7 @@ func TestValidationWithProtectedTS(t *testing.T) {
 			t,
 			spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, asOf),
 		)
-		require.NoError(t, repl.TestingReadProtectedTimestamps(ctx))
+		require.NoError(t, repl.ReadProtectedTimestampsForTesting(ctx))
 	}
 	// Refresh forces the PTS cache to update to at least asOf.
 	refreshPTSCacheTo := func(t *testing.T, asOf hlc.Timestamp) {
@@ -315,7 +315,7 @@ func TestBackfillQueryWithProtectedTS(t *testing.T) {
 		if err := spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, asOf); err != nil {
 			return err
 		}
-		return repl.TestingReadProtectedTimestamps(ctx)
+		return repl.ReadProtectedTimestampsForTesting(ctx)
 	}
 	// Refresh forces the PTS cache to update to at least asOf.
 	refreshPTSCacheTo := func(ctx context.Context, asOf hlc.Timestamp) error {
@@ -324,7 +324,6 @@ func TestBackfillQueryWithProtectedTS(t *testing.T) {
 	}
 
 	for _, sql := range []string{
-		"SET create_table_with_schema_locked=false",
 		"SET CLUSTER SETTING kv.closed_timestamp.target_duration = '10ms'",
 		"SET CLUSTER SETTING kv.closed_timestamp.side_transport_interval ='10ms'",
 		"SET CLUSTER SETTING kv.rangefeed.closed_timestamp_refresh_interval ='10ms'",
@@ -332,7 +331,6 @@ func TestBackfillQueryWithProtectedTS(t *testing.T) {
 		rSys.Exec(t, sql)
 	}
 	for _, sql := range []string{
-		"SET create_table_with_schema_locked=false",
 		"SET CLUSTER SETTING sql.stats.automatic_collection.enabled = false",
 		"ALTER DATABASE defaultdb CONFIGURE ZONE USING gc.ttlseconds = 5",
 	} {

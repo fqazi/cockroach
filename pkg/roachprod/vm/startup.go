@@ -35,13 +35,6 @@ const (
 	// EbpfExporterMetricsPath is the path that EbpfExporter serves metrics on.
 	EbpfExporterMetricsPath = "/metrics"
 
-	// WorkloadMetricsPortMin and WorkloadMetricsPortMax are the range of ports
-	// used by workload to expose metrics.
-	WorkloadMetricsPortMin = 2112
-	WorkloadMetricsPortMax = 2120
-	// WorkloadMetricsPath is the path that workload serves metrics on.
-	WorkloadMetricsPath = "/metrics"
-
 	// DefaultSharedUser is the default user that is shared across all VMs.
 	DefaultSharedUser = "ubuntu"
 	// InitializedFile is the base name of the initialization paths defined below.
@@ -172,6 +165,11 @@ echo "kernel.core_pattern=$CORE_PATTERN" >> /etc/sysctl.conf
 sysctl --system  # reload sysctl settings`
 
 const startupScriptCron = `
+# Uninstall some packages to prevent them running cronjobs and similar jobs in parallel
+systemctl stop unattended-upgrades
+sudo rm -rf /var/log/unattended-upgrades
+apt-get purge -y unattended-upgrades
+
 {{ if not .EnableCron }}
 systemctl stop cron
 systemctl mask cron
@@ -181,8 +179,7 @@ const startupScriptFIPS = `
 {{ if .EnableFIPS }}
 sudo apt-get install -yq ubuntu-advantage-tools jq
 # Enable FIPS (in practice, it's often already enabled at this point).
-fips_status=$(sudo pro status --format json | jq '.services[] | select(.name == "fips") | .status')
-if [ "$fips_status" != '"enabled"' ]; then
+if [ $(sudo pro status --format json | jq '.services[] | select(.name == "fips") | .status') != '"enabled"' ]; then
 	sudo ua enable fips --assume-yes
 fi
 {{ end }}`
@@ -200,16 +197,6 @@ echo "startup script starting: $(date -u)"
 if [ -e {{ .DisksInitializedFile }} ]; then
 	echo "Already initialized, exiting."
 	exit 0
-fi
-
-# Uninstall some packages to prevent them running cronjobs and similar jobs in
-# parallel Check if the service exists before trying to stop it, because it may
-# have been removed during a previous invocation of this script.
-if systemctl list-unit-files | grep -q '^unattended-upgrades.service'; then
-    echo "unattended-upgrades service exists. Proceeding with uninstallation."
-    systemctl stop unattended-upgrades
-    sudo rm -rf /var/log/unattended-upgrades
-    apt-get purge -y unattended-upgrades
 fi`
 
 const startupScriptHostname = `
@@ -299,7 +286,6 @@ sudo sh -c 'echo "PubkeyAcceptedAlgorithms +ssh-rsa" >> /etc/ssh/sshd_config'
 {{ end }}
 
 sudo sed -i 's/#LoginGraceTime .*/LoginGraceTime 0/g' /etc/ssh/sshd_config
-sudo sed -i 's/TCPKeepAlive no/TCPKeepAlive yes/g' /etc/ssh/sshd_config
 
 sudo service sshd restart
 sudo service ssh restart`

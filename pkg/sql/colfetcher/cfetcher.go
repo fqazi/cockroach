@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
@@ -39,8 +38,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/util/admission"
-	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
@@ -181,19 +178,6 @@ func (m colIdxMap) Swap(i, j int) {
 	m.ords[i], m.ords[j] = m.ords[j], m.ords[i]
 }
 
-// Get returns the ordinal for the given column ID, returning -1 if the column
-// ID is not in the map.
-func (m colIdxMap) Get(id descpb.ColumnID) int {
-	// Binary search for the column id.
-	idx := sort.Search(len(m.vals), func(i int) bool {
-		return m.vals[i] >= id
-	})
-	if idx < len(m.vals) && m.vals[idx] == id {
-		return m.ords[idx]
-	}
-	return -1
-}
-
 type cFetcherArgs struct {
 	// memoryLimit determines the maximum memory footprint of the output batch.
 	memoryLimit int64
@@ -221,9 +205,6 @@ type cFetcherArgs struct {
 	alwaysReallocate bool
 	// Txn is the txn for the fetch. It might be nil.
 	txn *kv.Txn
-
-	// tenantID is required in some places for AC/bookkeeping.
-	tenantID roachpb.TenantID
 }
 
 // noOutputColumn is a sentinel value to denote that a system column is not
@@ -285,7 +266,6 @@ type cFetcher struct {
 	// cpuStopWatch tracks the CPU time spent by this cFetcher while fulfilling KV
 	// requests *in the current goroutine*.
 	cpuStopWatch *timeutil.CPUStopWatch
-	pacer        *admission.Pacer
 
 	// machine contains fields that get updated during the run of the fetcher.
 	machine struct {
@@ -407,7 +387,7 @@ func (cf *cFetcher) Init(
 		return errors.AssertionFailedf("unsupported IndexFetchSpec version %d", tableArgs.spec.Version)
 	}
 	table := newCTableInfo()
-	nCols := len(tableArgs.spec.FetchedColumns)
+	nCols := tableArgs.ColIdxMap.Len()
 	if cap(table.orderedColIdxMap.vals) < nCols {
 		table.orderedColIdxMap.vals = make(descpb.ColumnIDs, 0, nCols)
 		table.orderedColIdxMap.ords = make([]int, 0, nCols)
@@ -415,7 +395,7 @@ func (cf *cFetcher) Init(
 	for i := range tableArgs.spec.FetchedColumns {
 		id := tableArgs.spec.FetchedColumns[i].ColumnID
 		table.orderedColIdxMap.vals = append(table.orderedColIdxMap.vals, id)
-		table.orderedColIdxMap.ords = append(table.orderedColIdxMap.ords, i)
+		table.orderedColIdxMap.ords = append(table.orderedColIdxMap.ords, tableArgs.ColIdxMap.GetDefault(id))
 	}
 	sort.Sort(table.orderedColIdxMap)
 	*table = cTableInfo{
@@ -484,9 +464,10 @@ func (cf *cFetcher) Init(
 	needToDecodeDecimalKey := false
 	for i := range fullColumns {
 		col := &fullColumns[i]
-		//gcassert:bce
-		indexColOrdinals[i] = table.orderedColIdxMap.Get(col.ColumnID)
-		if colIdx := indexColOrdinals[i]; colIdx >= 0 {
+		colIdx, ok := tableArgs.ColIdxMap.Get(col.ColumnID)
+		if ok {
+			//gcassert:bce
+			indexColOrdinals[i] = colIdx
 			cf.mustDecodeIndexKey = true
 			needToDecodeDecimalKey = needToDecodeDecimalKey || tableArgs.spec.FetchedColumns[colIdx].Type.Family() == types.DecimalFamily
 			// A composite column might also have a value encoding which must be
@@ -496,6 +477,9 @@ func (cf *cFetcher) Init(
 			} else {
 				table.neededValueColsByIdx.Remove(colIdx)
 			}
+		} else {
+			//gcassert:bce
+			indexColOrdinals[i] = -1
 		}
 	}
 	if needToDecodeDecimalKey && cap(cf.scratch.decoding) < 64 {
@@ -512,7 +496,8 @@ func (cf *cFetcher) Init(
 		suffixCols := table.spec.KeySuffixColumns()
 		for i := range suffixCols {
 			id := suffixCols[i].ColumnID
-			if colIdx := table.orderedColIdxMap.Get(id); colIdx >= 0 {
+			colIdx, ok := tableArgs.ColIdxMap.Get(id)
+			if ok {
 				if suffixCols[i].IsComposite {
 					table.compositeIndexColOrdinals.Add(colIdx)
 					// Note: we account for these composite columns separately: we add
@@ -536,8 +521,14 @@ func (cf *cFetcher) Init(
 		extraValColOrdinals := table.extraValColOrdinals
 		_ = extraValColOrdinals[len(suffixCols)-1]
 		for i := range suffixCols {
-			//gcassert:bce
-			extraValColOrdinals[i] = table.orderedColIdxMap.Get(suffixCols[i].ColumnID)
+			idx, ok := tableArgs.ColIdxMap.Get(suffixCols[i].ColumnID)
+			if ok {
+				//gcassert:bce
+				extraValColOrdinals[i] = idx
+			} else {
+				//gcassert:bce
+				extraValColOrdinals[i] = -1
+			}
 		}
 	}
 
@@ -551,17 +542,6 @@ func (cf *cFetcher) Init(
 	if cf.cFetcherArgs.collectStats {
 		cf.cpuStopWatch = timeutil.NewCPUStopWatch()
 	}
-	if cf.txn != nil {
-		if pri := admissionpb.WorkPriority(cf.txn.AdmissionHeader().Priority); pri <= admissionpb.BulkNormalPri {
-			cf.pacer = cf.txn.DB().AdmissionPacerFactory.NewPacer(
-				50*time.Millisecond, // Request a realistic per-batch amount.
-				admission.WorkInfo{
-					TenantID: cf.tenantID, Priority: pri, CreateTime: timeutil.Now().UnixNano(),
-				},
-			)
-		}
-	}
-
 	cf.machine.state[0] = stateResetBatch
 	cf.machine.state[1] = stateInitFetch
 
@@ -606,15 +586,15 @@ func cFetcherFirstBatchLimit(limitHint rowinfra.RowLimit, maxKeysPerRow uint32) 
 func (cf *cFetcher) StartScan(
 	ctx context.Context,
 	spans roachpb.Spans,
-	parallelize bool,
+	limitBatches bool,
 	batchBytesLimit rowinfra.BytesLimit,
 	limitHint rowinfra.RowLimit,
 ) error {
 	if len(spans) == 0 {
 		return errors.AssertionFailedf("no spans")
 	}
-	if parallelize && batchBytesLimit != rowinfra.NoBytesLimit {
-		return errors.AssertionFailedf("TargetBytes limit requested with parallelize=true")
+	if !limitBatches && batchBytesLimit != rowinfra.NoBytesLimit {
+		return errors.AssertionFailedf("batchBytesLimit set without limitBatches")
 	}
 
 	firstBatchLimit := cFetcherFirstBatchLimit(limitHint, cf.table.spec.MaxKeysPerRow)
@@ -742,11 +722,8 @@ func (cf *cFetcher) setNextKV(kv roachpb.KeyValue) {
 // rows, the Batch.Length is 0.
 func (cf *cFetcher) NextBatch(ctx context.Context) (coldata.Batch, error) {
 	for {
-		if err := cf.pacer.Pace(ctx); err != nil {
-			return nil, err
-		}
 		if debugState {
-			log.Dev.Infof(ctx, "State %s", cf.machine.state[0])
+			log.Infof(ctx, "State %s", cf.machine.state[0])
 		}
 		switch cf.machine.state[0] {
 		case stateInvalid:
@@ -808,7 +785,7 @@ func (cf *cFetcher) NextBatch(ctx context.Context) (coldata.Batch, error) {
 			var foundNull bool
 			if cf.mustDecodeIndexKey {
 				if debugState {
-					log.Dev.Infof(ctx, "decoding first key %s", cf.machine.nextKV.Key)
+					log.Infof(ctx, "decoding first key %s", cf.machine.nextKV.Key)
 				}
 				var (
 					key []byte
@@ -946,7 +923,7 @@ func (cf *cFetcher) NextBatch(ctx context.Context) (coldata.Batch, error) {
 				continue
 			}
 			if debugState {
-				log.Dev.Infof(ctx, "decoding next key %s", kv.Key)
+				log.Infof(ctx, "decoding next key %s", kv.Key)
 			}
 
 			// TODO(yuzefovich): optimize this prefix check by skipping logical
@@ -1173,23 +1150,21 @@ func (cf *cFetcher) processValue(ctx context.Context, familyID descpb.FamilyID) 
 			if familyID == 0 {
 				break
 			}
-			// Find the default column for the family.
-			var defaultColumnIdx int
-			found := false
+			// Find the default column ID for the family.
+			var defaultColumnID descpb.ColumnID
 			for _, f := range table.spec.FamilyDefaultColumns {
 				if f.FamilyID == familyID {
-					defaultColumnIdx = table.orderedColIdxMap.Get(f.DefaultColumnID)
-					found = true
+					defaultColumnID = f.DefaultColumnID
 					break
 				}
 			}
-			if !found {
+			if defaultColumnID == 0 {
 				return scrub.WrapError(
 					scrub.IndexKeyDecodingError,
-					errors.AssertionFailedf("single entry value with no default column"),
+					errors.AssertionFailedf("single entry value with no default column id"),
 				)
 			}
-			prettyKey, prettyValue, err = cf.processValueSingle(table, defaultColumnIdx, prettyKey)
+			prettyKey, prettyValue, err = cf.processValueSingle(table, defaultColumnID, prettyKey)
 		}
 		if err != nil {
 			return scrub.WrapError(scrub.IndexValueDecodingError, err)
@@ -1257,35 +1232,35 @@ func (cf *cFetcher) processValue(ctx context.Context, familyID descpb.FamilyID) 
 // value in cf.machine.colvecs accordingly.
 // The key is only used for logging.
 func (cf *cFetcher) processValueSingle(
-	table *cTableInfo, idx int, prettyKeyPrefix string,
+	table *cTableInfo, colID descpb.ColumnID, prettyKeyPrefix string,
 ) (prettyKey string, prettyValue string, err error) {
 	prettyKey = prettyKeyPrefix
 
-	if idx < 0 {
-		// No need to unmarshal the column value. Either the column was part of
-		// the index key or it isn't needed.
+	if idx, ok := table.ColIdxMap.Get(colID); ok {
+		if cf.traceKV {
+			prettyKey = fmt.Sprintf("%s/%s", prettyKey, table.spec.FetchedColumns[idx].Name)
+		}
+		val := cf.machine.nextKV.Value
+		if !val.IsPresent() {
+			return prettyKey, "", nil
+		}
+		typ := cf.table.spec.FetchedColumns[idx].Type
+		err := colencoding.UnmarshalColumnValueToCol(
+			&table.da, &cf.machine.colvecs, idx, cf.machine.rowIdx, typ, val,
+		)
+		if err != nil {
+			return "", "", err
+		}
+		cf.machine.remainingValueColsByIdx.Remove(idx)
+
+		if cf.traceKV {
+			prettyValue = cf.getDatumAt(idx, cf.machine.rowIdx).String()
+		}
 		return prettyKey, prettyValue, nil
 	}
 
-	if cf.traceKV {
-		prettyKey = fmt.Sprintf("%s/%s", prettyKey, table.spec.FetchedColumns[idx].Name)
-	}
-	val := cf.machine.nextKV.Value
-	if !val.IsPresent() {
-		return prettyKey, "", nil
-	}
-	typ := cf.table.spec.FetchedColumns[idx].Type
-	err = colencoding.UnmarshalColumnValueToCol(
-		&table.da, &cf.machine.colvecs, idx, cf.machine.rowIdx, typ, val,
-	)
-	if err != nil {
-		return "", "", err
-	}
-	cf.machine.remainingValueColsByIdx.Remove(idx)
-
-	if cf.traceKV {
-		prettyValue = cf.getDatumAt(idx, cf.machine.rowIdx).String()
-	}
+	// No need to unmarshal the column value. Either the column was part of
+	// the index key or it isn't needed.
 	return prettyKey, prettyValue, nil
 }
 
@@ -1501,8 +1476,6 @@ func (cf *cFetcher) Release() {
 
 func (cf *cFetcher) Close(ctx context.Context) {
 	if cf != nil {
-		cf.pacer.Close()
-		cf.pacer = nil
 		cf.nextKVer = nil
 		if cf.fetcher != nil {
 			cf.bytesRead = cf.fetcher.GetBytesRead()

@@ -343,7 +343,11 @@ func (f *rowBasedFlow) setupInputSyncs(
 				var returnErrorFunc func() error
 				if is.EnforceHomeRegionError != nil {
 					returnErrorFunc = func() error {
-						return is.EnforceHomeRegionError.ErrorDetail(ctx)
+						enforceHomeRegionError := is.EnforceHomeRegionError.ErrorDetail(ctx)
+						if f.FlowCtx.EvalCtx.SessionData().EnforceHomeRegionFollowerReadsEnabled {
+							enforceHomeRegionError = execinfra.NewDynamicQueryHasNoHomeRegionError(enforceHomeRegionError)
+						}
+						return enforceHomeRegionError
 					}
 				}
 				sync, err = makeSerialSync(ordering, f.EvalCtx, streams,
@@ -378,7 +382,7 @@ func (f *rowBasedFlow) setupInboundStream(
 			return err
 		}
 		if log.V(2) {
-			log.Dev.Infof(ctx, "set up inbound stream %d", sid)
+			log.Infof(ctx, "set up inbound stream %d", sid)
 		}
 		f.AddRemoteStream(sid, flowinfra.NewInboundStreamInfo(
 			flowinfra.RowInboundStreamHandler{

@@ -55,6 +55,7 @@ var RangeFeedRefreshInterval = settings.RegisterDurationSetting(
 	"the interval at which closed-timestamp updates"+
 		"are delivered to rangefeeds; set to 0 to use kv.closed_timestamp.side_transport_interval",
 	3*time.Second,
+	settings.NonNegativeDuration,
 	settings.WithPublic,
 )
 
@@ -68,6 +69,7 @@ var RangeFeedSmearInterval = settings.RegisterDurationSetting(
 		"set to 0 to use kv.rangefeed.closed_timestamp_refresh_interval"+
 		"capped at kv.rangefeed.closed_timestamp_refresh_interval",
 	1*time.Millisecond,
+	settings.NonNegativeDuration,
 )
 
 // RangeFeedUseScheduler controls type of rangefeed processor is used to process
@@ -90,13 +92,26 @@ var RangefeedUseBufferedSender = settings.RegisterBoolSetting(
 	"kv.rangefeed.buffered_sender.enabled",
 	"use buffered sender for all range feeds instead of buffering events "+
 		"separately per client per range",
-	metamorphic.ConstantWithTestBool("kv.rangefeed.buffered_sender.enabled", true),
+	metamorphic.ConstantWithTestBool("kv.rangefeed.buffered_sender.enabled", false),
 )
 
 func init() {
 	// Inject into kvserverbase to allow usage from kvcoord.
 	kvserverbase.RangeFeedRefreshInterval = RangeFeedRefreshInterval
 }
+
+// defaultEventChanCap is the channel capacity of the rangefeed processor and
+// each registration.
+//
+// The size of an event is 72 bytes, so this will result in an allocation on the
+// order of ~300KB per RangeFeed. That's probably ok given the number of ranges
+// on a node that we'd like to support with active rangefeeds, but it's
+// certainly on the upper end of the range.
+//
+// TODO(dan): Everyone seems to agree that this memory limit would be better set
+// at a store-wide level, but there doesn't seem to be an easy way to accomplish
+// that.
+const defaultEventChanCap = 4096
 
 // defaultEventChanTimeout is the send timeout for events published to a
 // rangefeed processor or rangefeed client channels. When exceeded, the
@@ -207,13 +222,6 @@ func (tp *rangefeedTxnPusher) Barrier(ctx context.Context) error {
 
 	return nil
 }
-
-var rangeFeedBulkDeliverySize = settings.RegisterIntSetting(
-	settings.SystemOnly,
-	"kv.rangefeed.bulk_delivery.size",
-	"approx size up to which rangefeeds may buffer events to be delivered in bulk during scans (0=disabled)",
-	int64(metamorphic.ConstantWithTestRange("rangefeed-bulk_delivery", 2<<20, 0, 4<<20)),
-)
 
 // RangeFeed registers a rangefeed over the specified span. It sends updates to
 // the provided stream and returns with a future error when the rangefeed is
@@ -327,12 +335,8 @@ func (r *Replica) RangeFeed(
 		}
 	}
 
-	bulkDeliverySize := 0
-	if args.WithBulkDelivery {
-		bulkDeliverySize = int(rangeFeedBulkDeliverySize.Get(&r.store.ClusterSettings().SV))
-	}
 	p, disconnector, err := r.registerWithRangefeedRaftMuLocked(
-		streamCtx, rSpan, args.Timestamp, catchUpIter, args.WithDiff, args.WithFiltering, omitRemote, bulkDeliverySize, stream,
+		streamCtx, rSpan, args.Timestamp, catchUpIter, args.WithDiff, args.WithFiltering, omitRemote, stream,
 	)
 	r.raftMu.Unlock()
 
@@ -418,7 +422,7 @@ func logSlowRangefeedRegistration(ctx context.Context) func() {
 	return func() {
 		elapsed := timeutil.Since(start)
 		if elapsed >= slowRaftMuWarnThreshold {
-			log.KvDistribution.Warningf(ctx, "rangefeed registration took %s", elapsed)
+			log.Warningf(ctx, "rangefeed registration took %s", elapsed)
 		}
 	}
 }
@@ -440,7 +444,6 @@ func (r *Replica) registerWithRangefeedRaftMuLocked(
 	withDiff bool,
 	withFiltering bool,
 	withOmitRemote bool,
-	bulkDeliverySize int,
 	stream rangefeed.Stream,
 ) (rangefeed.Processor, rangefeed.Disconnector, error) {
 	defer logSlowRangefeedRegistration(streamCtx)()
@@ -461,7 +464,7 @@ func (r *Replica) registerWithRangefeedRaftMuLocked(
 	p := r.rangefeedMu.proc
 
 	if p != nil {
-		reg, disconnector, filter := p.Register(streamCtx, span, startTS, catchUpIter, withDiff, withFiltering, withOmitRemote, bulkDeliverySize,
+		reg, disconnector, filter := p.Register(streamCtx, span, startTS, catchUpIter, withDiff, withFiltering, withOmitRemote,
 			stream)
 		if reg {
 			// Registered successfully with an existing processor.
@@ -503,7 +506,7 @@ func (r *Replica) registerWithRangefeedRaftMuLocked(
 		Span:             desc.RSpan(),
 		TxnPusher:        &tp,
 		PushTxnsAge:      r.store.TestingKnobs().RangeFeedPushTxnsAge,
-		EventChanCap:     kvserverbase.DefaultRangefeedEventCap,
+		EventChanCap:     defaultEventChanCap,
 		EventChanTimeout: defaultEventChanTimeout,
 		Metrics:          r.store.metrics.RangeFeedMetrics,
 		MemBudget:        feedBudget,
@@ -543,7 +546,7 @@ func (r *Replica) registerWithRangefeedRaftMuLocked(
 	// this ensures that the only time the registration fails is during
 	// server shutdown.
 	reg, disconnector, filter := p.Register(streamCtx, span, startTS, catchUpIter, withDiff,
-		withFiltering, withOmitRemote, bulkDeliverySize, stream)
+		withFiltering, withOmitRemote, stream)
 	if !reg {
 		select {
 		case <-r.store.Stopper().ShouldQuiesce():
@@ -876,9 +879,9 @@ func (r *Replica) handleClosedTimestampUpdateRaftMuLocked(
 		expensiveLog := m.RangeFeedSlowClosedTimestampLogN.ShouldLog()
 		if expensiveLog {
 			if closedTS.IsEmpty() {
-				log.KvDistribution.Infof(ctx, "RangeFeed closed timestamp is empty")
+				log.Infof(ctx, "RangeFeed closed timestamp is empty")
 			} else {
-				log.KvDistribution.Infof(ctx, "RangeFeed closed timestamp %s is behind by %s (%v)",
+				log.Infof(ctx, "RangeFeed closed timestamp %s is behind by %s (%v)",
 					closedTS, signal.lag, signal)
 			}
 		}
@@ -906,7 +909,7 @@ func (r *Replica) handleClosedTimestampUpdateRaftMuLocked(
 				}
 				defer func() { <-m.RangeFeedSlowClosedTimestampNudgeSem }()
 				if err := r.ensureClosedTimestampStarted(ctx); err != nil {
-					log.KvDistribution.Infof(ctx, `RangeFeed failed to nudge: %s`, err)
+					log.Infof(ctx, `RangeFeed failed to nudge: %s`, err)
 				} else if signal.exceedsCancelLagThreshold {
 					// We have successfully nudged the leaseholder to make progress on
 					// the closed timestamp. If the lag was already persistently too
@@ -920,7 +923,7 @@ func (r *Replica) handleClosedTimestampUpdateRaftMuLocked(
 					// prohibit us from cancelling the rangefeed in the current version,
 					// due to mixed version compatibility.
 					if expensiveLog {
-						log.KvDistribution.Infof(ctx,
+						log.Infof(ctx,
 							`RangeFeed is too far behind, cancelling for replanning [%v]`, signal)
 					}
 					r.disconnectRangefeedWithReason(kvpb.RangeFeedRetryError_REASON_RANGEFEED_CLOSED)

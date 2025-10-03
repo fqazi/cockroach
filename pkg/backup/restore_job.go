@@ -22,6 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cloud/cloudpb"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
+	"github.com/cockroachdb/cockroach/pkg/jobs/joberror"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobsprotectedts"
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -37,7 +38,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/dbdesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descidgen"
@@ -63,7 +63,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
-	"github.com/cockroachdb/cockroach/pkg/util"
 	bulkutil "github.com/cockroachdb/cockroach/pkg/util/bulk"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -80,43 +79,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/pebble"
 )
 
-var (
-	restoreRetryMaxDuration = settings.RegisterDurationSetting(
-		settings.ApplicationLevel,
-		"restore.retry_max_duration",
-		"maximum duration a restore job will retry before terminating",
-		72*time.Hour,
-		settings.WithVisibility(settings.Reserved),
-		settings.PositiveDuration,
-	)
-
-	restoreRetryLogRate = settings.RegisterDurationSetting(
-		settings.ApplicationLevel,
-		"restore.retry_log_rate",
-		"maximum rate at which retryable restore errors are logged to the job messages table",
-		5*time.Minute,
-		settings.WithVisibility(settings.Reserved),
-		settings.PositiveDuration,
-	)
-)
-
-const (
-	// restoreStatsInsertBatchSize is an arbitrarily chosen value of the number of
-	// tables we process in a single txn when restoring their table statistics.
-	restoreStatsInsertBatchSize = 10
-
-	// maxRestoreRetryFastFail is the maximum number of times we will retry before
-	// exceeding the restoreRetryProgressThreshold.
-	maxRestoreRetryFastFail = 5
-
-	// restoreRetryProgressThreshold is the fraction of the job that must
-	// be _exceeded_ before we no longer fast fail the restore job after hitting the
-	// maxRestoreRetryFastFail threshold.
-	restoreRetryProgressThreshold = 0
-)
+// restoreStatsInsertBatchSize is an arbitrarily chosen value of the number of
+// tables we process in a single txn when restoring their table statistics.
+const restoreStatsInsertBatchSize = 10
 
 var restoreStatsInsertionConcurrency = settings.RegisterIntSetting(
 	settings.ApplicationLevel,
@@ -187,39 +154,42 @@ func rewriteBackupSpanKey(
 	return newKey, nil
 }
 
-var permanentRestoreError = errors.New("permanent restore error")
-
-func shouldFastFailRestore(err error) bool {
-	return errors.Is(err, permanentRestoreError) ||
-		pebble.IsCorruptionError(err) && errors.Is(err, backupFileReadError)
-}
-
-// restoreWithRetry attempts to run restore with retry logic and logs retries
-// accordingly.
 func restoreWithRetry(
-	ctx context.Context,
+	restoreCtx context.Context,
 	execCtx sql.JobExecContext,
-	resumer *restoreResumer,
 	backupManifests []backuppb.BackupManifest,
 	backupLocalityInfo []jobspb.RestoreDetails_BackupLocalityInfo,
 	endTime hlc.Timestamp,
 	dataToRestore restorationData,
+	resumer *restoreResumer,
 	encryption *jobspb.BackupEncryptionOptions,
 	kmsEnv cloud.KMSEnv,
 ) (roachpb.RowCount, error) {
+
+	// We retry on pretty generic failures -- any rpc error. If a worker node were
+	// to restart, it would produce this kind of error, but there may be other
+	// errors that are also rpc errors. Don't retry to aggressively.
+	retryOpts := retry.Options{
+		MaxBackoff: 1 * time.Second,
+		MaxRetries: 5,
+	}
+	if execCtx.ExecCfg().BackupRestoreTestingKnobs != nil &&
+		execCtx.ExecCfg().BackupRestoreTestingKnobs.RestoreDistSQLRetryPolicy != nil {
+		retryOpts = *execCtx.ExecCfg().BackupRestoreTestingKnobs.RestoreDistSQLRetryPolicy
+	}
+
 	// We want to retry a restore if there are transient failures (i.e. worker nodes
-	// dying), so if we receive a retryable error, re-plan and retry the restore.
-	retryOpts, progThreshold := getRetryOptionsAndProgressThreshold(execCtx)
-	logRate := restoreRetryLogRate.Get(&execCtx.ExecCfg().Settings.SV)
-	logThrottler := util.Every(logRate)
+	// dying), so if we receive a retryable error, re-plan and retry the backup.
 	var (
-		res                roachpb.RowCount
-		err                error
-		prevPersistedSpans jobspb.RestoreFrontierEntries
+		res                    roachpb.RowCount
+		err                    error
+		previousPersistedSpans jobspb.RestoreFrontierEntries
+		currentPersistedSpans  jobspb.RestoreFrontierEntries
 	)
-	for r := retry.StartWithCtx(ctx, retryOpts); r.Next(); {
+
+	for r := retry.StartWithCtx(restoreCtx, retryOpts); r.Next(); {
 		res, err = restore(
-			ctx,
+			restoreCtx,
 			execCtx,
 			backupManifests,
 			backupLocalityInfo,
@@ -234,12 +204,12 @@ func restoreWithRetry(
 			break
 		}
 
-		if errors.HasType(err, &kvpb.InsufficientSpaceError{}) {
+		if errors.HasType(err, &kvpb.InsufficientSpaceError{}) || errors.Is(err, restoreProcError) {
 			return roachpb.RowCount{}, jobs.MarkPauseRequestError(errors.UnwrapAll(err))
 		}
 
-		if shouldFastFailRestore(err) {
-			return roachpb.RowCount{}, jobs.MarkAsPermanentJobError(err)
+		if joberror.IsPermanentBulkJobError(err) && !errors.Is(err, retryableRestoreProcError) {
+			return roachpb.RowCount{}, err
 		}
 
 		// If we are draining, it is unlikely we can start a
@@ -249,27 +219,15 @@ func restoreWithRetry(
 			return roachpb.RowCount{}, jobs.MarkAsRetryJobError(errors.Wrapf(err, "job encountered retryable error on draining node"))
 		}
 
-		log.Dev.Warningf(ctx, "encountered retryable error: %+v", err)
-
-		if logThrottler.ShouldProcess(timeutil.Now()) {
-			// We throttle the logging of errors to the jobs messages table to avoid
-			// flooding the table during the hot loop of a retry.
-			if err := execCtx.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-				return resumer.job.Messages().Record(
-					ctx, txn, "error", fmt.Sprintf("restore encountered error: %v", err),
-				)
-			}); err != nil {
-				log.Dev.Warningf(ctx, "failed to record job error message: %v", err)
-			}
+		log.Warningf(restoreCtx, "encountered retryable error: %+v", err)
+		currentPersistedSpans = resumer.job.Progress().Details.(*jobspb.Progress_Restore).Restore.Checkpoint
+		if !currentPersistedSpans.Equal(previousPersistedSpans) {
+			// If the previous persisted spans are different than the current, it
+			// implies that further progress has been persisted.
+			r.Reset()
+			log.Infof(restoreCtx, "restored frontier has advanced since last retry, resetting retry counter")
 		}
-
-		prevPersistedSpans = maybeResetRetry(ctx, resumer, &r, prevPersistedSpans)
-
-		// Fail fast if no progress has been made after a certain number of retries.
-		if r.CurrentAttempt() >= maxRestoreRetryFastFail &&
-			resumer.job.FractionCompleted() <= progThreshold {
-			return roachpb.RowCount{}, errors.Wrap(err, "restore job exhausted max retries without making progress")
-		}
+		previousPersistedSpans = currentPersistedSpans
 
 		testingKnobs := execCtx.ExecCfg().BackupRestoreTestingKnobs
 		if testingKnobs != nil && testingKnobs.RunAfterRetryIteration != nil {
@@ -279,60 +237,16 @@ func restoreWithRetry(
 		}
 	}
 
-	// Since the restore was able to make some progress before exhausting the
-	// retry counter, we will pause the job and allow the user to determine
-	// whether or not to resume the job or disccard all progress and cancel.
+	// We have exhausted retries, but we have not seen a "PermanentBulkJobError" so
+	// it is possible that this is a transient error that is taking longer than
+	// our configured retry to go away.
+	//
+	// Let's pause the job instead of failing it so that the user can decide
+	// whether to resume it or cancel it.
 	if err != nil {
 		return res, jobs.MarkPauseRequestError(errors.Wrap(err, "exhausted retries"))
 	}
 	return res, nil
-}
-
-// getRetryOptionsAndProgressThreshold returns the restore retry options and
-// progress threshold for fast failure, taking into consideration any testing
-// knobs and cluster settings.
-func getRetryOptionsAndProgressThreshold(execCtx sql.JobExecContext) (retry.Options, float32) {
-	// In the event that the job is failing early without any progress, we will
-	// manually quit out of the retry loop prematurely. As such, we set a long max
-	// duration and backoff to allow for the job to retry for a long time in the
-	// event that some progress has been made.
-	maxDuration := restoreRetryMaxDuration.Get(&execCtx.ExecCfg().Settings.SV)
-	retryOpts := retry.Options{
-		InitialBackoff: 50 * time.Millisecond,
-		MaxBackoff:     5 * time.Minute,
-		MaxDuration:    maxDuration,
-	}
-	var progThreshold float32 = restoreRetryProgressThreshold
-	if knobs := execCtx.ExecCfg().BackupRestoreTestingKnobs; knobs != nil {
-		if knobs.RestoreDistSQLRetryPolicy != nil {
-			retryOpts = *knobs.RestoreDistSQLRetryPolicy
-		}
-		if knobs.RestoreRetryProgressThreshold > 0 {
-			progThreshold = knobs.RestoreRetryProgressThreshold
-		}
-	}
-
-	return retryOpts, progThreshold
-}
-
-// maybeResetRetry checks on the progress of the restore job and resets the
-// retry loop if progress has been made. It returns the latest progress.
-func maybeResetRetry(
-	ctx context.Context,
-	resumer *restoreResumer,
-	rt *retry.Retry,
-	prevProgress jobspb.RestoreFrontierEntries,
-) jobspb.RestoreFrontierEntries {
-	// Check if retry counter should be reset if progress was made.
-	var currProgress jobspb.RestoreFrontierEntries = resumer.job.
-		Progress().Details.(*jobspb.Progress_Restore).Restore.Checkpoint
-	if !currProgress.Equal(prevProgress) {
-		// If the previous persisted spans are different than the current, it
-		// implies that further progress has been persisted.
-		rt.Reset()
-		log.Dev.Infof(ctx, "restored frontier has advanced since last retry, resetting retry counter")
-	}
-	return currProgress
 }
 
 type storeByLocalityKV map[string]cloudpb.ExternalStorage
@@ -396,7 +310,7 @@ func restore(
 			linkPhaseComplete = ok
 			return err
 		}); err != nil {
-			log.Dev.Warningf(restoreCtx, "failed to get checkpoint for link phase %v", err)
+			log.Warningf(restoreCtx, "failed to get checkpoint for link phase %v", err)
 		}
 		if linkPhaseComplete {
 			return emptyRowCount, nil
@@ -425,8 +339,7 @@ func restore(
 		requiredSpans,
 		restoreCheckpoint,
 		restoreCheckpointMaxBytes.Get(&execCtx.ExecCfg().Settings.SV),
-		endTime,
-	)
+		endTime)
 	if err != nil {
 		return emptyRowCount, err
 	}
@@ -575,9 +488,10 @@ func restore(
 				}
 				timer.Reset(replanFrequency.Get(&execCtx.ExecCfg().Settings.SV))
 			case <-timer.C:
+				timer.Read = true
 				// Replan the restore job if it has been 10 minutes since the last
 				// processor completed working.
-				return laggingRestoreProcErr
+				return errors.Mark(laggingRestoreProcErr, retryableRestoreProcError)
 			}
 		}
 	}
@@ -611,7 +525,7 @@ func restore(
 
 	runRestore := func(ctx context.Context) error {
 		if details.OnlineImpl() {
-			log.Dev.Warningf(ctx, "EXPERIMENTAL ONLINE RESTORE being used")
+			log.Warningf(ctx, "EXPERIMENTAL ONLINE RESTORE being used")
 			approxRows, approxDataSize, err := sendAddRemoteSSTs(
 				ctx,
 				execCtx,
@@ -759,11 +673,10 @@ func loadBackupSQLDescs(
 type restoreResumer struct {
 	job *jobs.Job
 
-	settings        *cluster.Settings
-	execCfg         *sql.ExecutorConfig
-	restoreStats    roachpb.RowCount
-	downloadJobID   jobspb.JobID
-	downloadJobProg float32
+	settings      *cluster.Settings
+	execCfg       *sql.ExecutorConfig
+	restoreStats  roachpb.RowCount
+	downloadJobID jobspb.JobID
 
 	mu struct {
 		syncutil.Mutex
@@ -853,7 +766,7 @@ func remapAndFilterRelevantStatistics(
 	// backup.
 	for _, desc := range tableDescs {
 		if _, ok := tableHasStatsInBackup[desc.GetID()]; !ok {
-			log.Dev.Warningf(ctx, "statistics for table: %s, table ID: %d not found in the backup. "+
+			log.Warningf(ctx, "statistics for table: %s, table ID: %d not found in the backup. "+
 				"Query performance on this table could suffer until statistics are recomputed.",
 				desc.GetName(), desc.GetID())
 		}
@@ -1075,8 +988,9 @@ func createImportingDescriptors(
 	for _, desc := range sqlDescs {
 		// Decide which offline tables to include in the restore:
 		//
-		// - An offline table created by RESTORE is fully discarded. The table
-		//   will not exist in the restoring cluster.
+		// - An offline table created by RESTORE or IMPORT PGDUMP is
+		//   fully discarded.  The table will not exist in the restoring
+		//   cluster.
 		//
 		// - An offline table undergoing an IMPORT INTO in traditional
 		//   restore has all importing data elided in the restore
@@ -1201,10 +1115,9 @@ func createImportingDescriptors(
 
 	// Assign new IDs and privileges to the tables, and update all references to
 	// use the new IDs.
-	typeBackrefsToRemove, err := rewrite.TableDescs(
+	if err := rewrite.TableDescs(
 		mutableTables, details.DescriptorRewrites, details.OverrideDB,
-	)
-	if err != nil {
+	); err != nil {
 		return nil, nil, nil, err
 	}
 	tableDescs := make([]*descpb.TableDescriptor, len(mutableTables))
@@ -1242,19 +1155,18 @@ func createImportingDescriptors(
 	// the ID the descriptor had when it was backed up. Changes to existing type
 	// descriptors will not be written to disk, and is only for accurate,
 	// in-memory resolution hereon out.
-	if err := rewrite.TypeDescs(types, details.DescriptorRewrites, typeBackrefsToRemove); err != nil {
+	if err := rewrite.TypeDescs(types, details.DescriptorRewrites); err != nil {
 		return nil, nil, nil, err
 	}
 
-	// Functions are only restored as part of full database restores and are not
-	// yet referenced by other object types in ways that would require remapping.
-	// This avoids the need for collision resolution between restored functions
-	// and existing ones in the target database.
-	//
-	// For table-level restores, function dependencies are handled by existing
-	// safeguards: if the target DB already has the function, the dependent table
-	// must be dropped before restore; if the function is missing, restore fails
-	// unless skip_missing_udfs is set, in which case the function is omitted.
+	// TODO(chengxiong): for now, we know that functions are not referenced by any
+	// other objects, so that function descriptors are only restored when
+	// restoring databases. This means that all function descriptors are not
+	// remaps. Which means that we don't need resolve collisions between functions
+	// being restored and existing functions in target DB However, this won't be
+	// true when we start supporting udf references from other objects. For
+	// example, we need extra logic to handle remaps for udfs used by a table when
+	// backup/restore is on table level.
 	functionsToWrite := make([]*funcdesc.Mutable, len(functions))
 	writtenFunctions := make([]catalog.FunctionDescriptor, len(functions))
 	for i, fn := range functions {
@@ -1382,7 +1294,7 @@ func createImportingDescriptors(
 					// If we're not in a cluster restore, rebuild the database-level zone
 					// configuration.
 					if details.DescriptorCoverage != tree.AllDescriptors {
-						log.Dev.Infof(ctx, "restoring zone configuration for database %d", desc.ID)
+						log.Infof(ctx, "restoring zone configuration for database %d", desc.ID)
 						var regionNames []catpb.RegionName
 						_ = regionTypeDesc.ForEachPublicRegion(func(name catpb.RegionName) error {
 							regionNames = append(regionNames, name)
@@ -1444,7 +1356,7 @@ func createImportingDescriptors(
 			}
 			// Write the updated databases.
 			for dbID, schemas := range existingDBsWithNewSchemas {
-				log.Dev.Infof(ctx, "writing %d schema entries to database %d", len(schemas), dbID)
+				log.Infof(ctx, "writing %d schema entries to database %d", len(schemas), dbID)
 				desc, err := descsCol.MutableByID(txn.KV()).Desc(ctx, dbID)
 				if err != nil {
 					return err
@@ -1881,7 +1793,7 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 		if err := p.ExecCfg().JobRegistry.CheckPausepoint("restore.before_do_download_files"); err != nil {
 			return err
 		}
-		return r.doDownloadFilesWithRetry(ctx, p)
+		return r.doDownloadFiles(ctx, p)
 	}
 
 	if err := p.ExecCfg().JobRegistry.CheckPausepoint("restore.before_load_descriptors_from_backup"); err != nil {
@@ -1962,7 +1874,7 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 		// We don't want to fail the restore if we are unable to resolve statistics
 		// from the backup, since they can be recomputed after the restore has
 		// completed.
-		log.Dev.Warningf(ctx, "failed to resolve table statistics from backup during restore: %+v",
+		log.Warningf(ctx, "failed to resolve table statistics from backup during restore: %+v",
 			err.Error())
 	}
 
@@ -1970,7 +1882,7 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 		// We have no tables to restore (we are restoring an empty DB).
 		// Since we have already created any new databases that we needed,
 		// we can return without importing any data.
-		log.Dev.Warning(ctx, "nothing to restore")
+		log.Warning(ctx, "nothing to restore")
 		// The database was created in the offline state and needs to be made
 		// public.
 		// TODO (lucy): Ideally we'd just create the database in the public state in
@@ -2017,11 +1929,11 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 		res, err := restoreWithRetry(
 			ctx,
 			p,
-			r,
 			backupManifests,
 			details.BackupLocalityInfo,
 			details.EndTime,
 			preData,
+			r,
 			details.Encryption,
 			&kmsEnv,
 		)
@@ -2046,7 +1958,7 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 				return err
 			}
 		}
-		log.Dev.Infof(ctx, "finished restoring the pre-data bundle")
+		log.Infof(ctx, "finished restoring the pre-data bundle")
 	}
 
 	if err := p.ExecCfg().JobRegistry.CheckPausepoint("restore.after_pre_data"); err != nil {
@@ -2057,11 +1969,11 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 		res, err := restoreWithRetry(
 			ctx,
 			p,
-			r,
 			backupManifests,
 			details.BackupLocalityInfo,
 			details.EndTime,
 			preValidateData,
+			r,
 			details.Encryption,
 			&kmsEnv,
 		)
@@ -2070,7 +1982,7 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 		}
 
 		resTotal.Add(res)
-		log.Dev.Infof(ctx, "finished restoring the validate data bundle")
+		log.Infof(ctx, "finished restoring the validate data bundle")
 	}
 	{
 		// Restore the main data bundle. We notably only restore the system tables
@@ -2078,11 +1990,11 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 		res, err := restoreWithRetry(
 			ctx,
 			p,
-			r,
 			backupManifests,
 			details.BackupLocalityInfo,
 			details.EndTime,
 			mainData,
+			r,
 			details.Encryption,
 			&kmsEnv,
 		)
@@ -2091,7 +2003,7 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 		}
 
 		resTotal.Add(res)
-		log.Dev.Infof(ctx, "finished restoring the main data bundle")
+		log.Infof(ctx, "finished restoring the main data bundle")
 	}
 
 	if err := insertStats(ctx, r.job, p.ExecCfg(), remappedStats); err != nil {
@@ -2103,7 +2015,7 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 			jobInfo := jobs.InfoStorageForJob(txn, r.job.ID())
 			return jobInfo.Write(ctx, linkCompleteKey, []byte{})
 		}); err != nil {
-			log.Dev.Warningf(ctx, "failed to checkpoint link flow %v", err)
+			log.Warningf(ctx, "failed to checkpoint link flow %v", err)
 		}
 	}
 
@@ -2114,7 +2026,7 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 		// TODO(msbutler): ideally doDownloadFiles would not depend on job details
 		// and is instead passed an execCfg and the download spans and anything else
 		// it needs. If that occured, we would not need to update details above.
-		if err := r.doDownloadFilesWithRetry(ctx, p); err != nil {
+		if err := r.doDownloadFiles(ctx, p); err != nil {
 			return err
 		}
 	}
@@ -2199,7 +2111,7 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 	}
 
 	if err := r.execCfg.ProtectedTimestampManager.Unprotect(ctx, r.job); err != nil {
-		log.Dev.Errorf(ctx, "failed to release protected timestamp: %v", err)
+		log.Errorf(ctx, "failed to release protected timestamp: %v", err)
 	}
 	if !details.OnlineImpl() {
 		r.notifyStatsRefresherOfNewTables()
@@ -2395,7 +2307,7 @@ func insertStats(
 	if len(latestStats)%batchSize != 0 {
 		totalNumBatches += 1
 	}
-	log.Dev.Infof(ctx, "restore will insert %d TableStatistics in %d batches", len(latestStats), totalNumBatches)
+	log.Infof(ctx, "restore will insert %d TableStatistics in %d batches", len(latestStats), totalNumBatches)
 	insertStatsProgress := log.Every(10 * time.Second)
 
 	startingStatsInsertion := timeutil.Now()
@@ -2422,7 +2334,7 @@ func insertStats(
 			rate := completedBatches / timeSinceStart
 			msg = fmt.Sprintf("%s; ingesting at the rate of %d batches/sec", msg, rate)
 		}
-		log.Dev.Infof(ctx, "%s", msg)
+		log.Infof(ctx, "%s", msg)
 	}
 
 	mu := struct {
@@ -2625,7 +2537,7 @@ func (r *restoreResumer) publishDescriptors(
 	if err := all.ForEachDescriptor(func(desc catalog.Descriptor) error {
 		d := desc.(catalog.MutableDescriptor)
 		if details.OnlineImpl() && epochBasedInProgressImport(desc) {
-			log.Dev.Infof(ctx, "table %q (%d) with in-progress IMPORT remaining offline", desc.GetName(), desc.GetID())
+			log.Infof(ctx, "table %q (%d) with in-progress IMPORT remaining offline", desc.GetName(), desc.GetID())
 		} else {
 			d.SetPublic()
 		}
@@ -2737,7 +2649,7 @@ func emitRestoreJobEvent(
 		return sql.LogEventForJobs(ctx, p.ExecCfg(), txn, &restoreEvent, int64(job.ID()),
 			job.Payload(), p.User(), state)
 	}); err != nil {
-		log.Dev.Warningf(ctx, "failed to log event: %v", err)
+		log.Warningf(ctx, "failed to log event: %v", err)
 	}
 }
 
@@ -2767,7 +2679,7 @@ func (r *restoreResumer) OnFailOrCancel(
 	if err := r.execCfg.ProtectedTimestampManager.Unprotect(ctx, r.job); errors.Is(err, protectedts.ErrNotExists) {
 		// No reason to return an error which might cause problems if it doesn't
 		// seem to exist.
-		log.Dev.Warningf(ctx, "failed to release protected which seems not to exist: %v", err)
+		log.Warningf(ctx, "failed to release protected which seems not to exist: %v", err)
 		err = nil
 	} else if err != nil {
 		return err
@@ -2874,7 +2786,7 @@ func (r *restoreResumer) dropDescriptors(
 	// about so we only do this check if they have not been published.
 	if !details.DescriptorsPublished {
 		if err := checkRestoredTableDescriptorVersions(details, mutableTables); err != nil {
-			log.Dev.Errorf(ctx, "table version mismatch during drop: %v", err)
+			log.Errorf(ctx, "table version mismatch during drop: %v", err)
 		}
 	}
 
@@ -2896,10 +2808,6 @@ func (r *restoreResumer) dropDescriptors(
 		tableToDrop := mutableTables[i]
 		tablesToGC = append(tablesToGC, tableToDrop.ID)
 		tableToDrop.SetDropped()
-
-		if err := descsCol.DeleteTableComments(ctx, kvTrace, b, tableToDrop.ID); err != nil {
-			return err
-		}
 
 		// Drop any schedules we may have implicitly created.
 		if tableToDrop.HasRowLevelTTL() {
@@ -2925,10 +2833,10 @@ func (r *restoreResumer) dropDescriptors(
 			if err := externalcatalog.SetGCTTLForDroppingTable(
 				ctx, txn, descsCol, tableToDrop,
 			); err != nil {
-				log.Dev.Warningf(ctx, "setting low GC TTL for table %q failed: %s", tableToDrop.GetName(), err.Error())
+				log.Warningf(ctx, "setting low GC TTL for table %q failed: %s", tableToDrop.GetName(), err.Error())
 			}
 		} else {
-			log.Dev.Infof(ctx, "cannot lower GC TTL for table %q", tableToDrop.GetName())
+			log.Infof(ctx, "cannot lower GC TTL for table %q", tableToDrop.GetName())
 		}
 
 		// In the legacy GC job, setting DropTime ensures a table uses RangeClear
@@ -2955,14 +2863,6 @@ func (r *restoreResumer) dropDescriptors(
 			return err
 		}
 		mutType.SetDropped()
-
-		if err := descsCol.DeleteCommentInBatch(
-			ctx,
-			kvTrace,
-			b,
-			catalogkeys.MakeCommentKey(uint32(typDesc.ID), 0, catalogkeys.TypeCommentType)); err != nil {
-			return err
-		}
 
 		if err := descsCol.DeleteNamespaceEntryToBatch(ctx, kvTrace, typDesc, b); err != nil {
 			return err
@@ -3042,7 +2942,7 @@ func (r *restoreResumer) dropDescriptors(
 		}
 
 		if !isSchemaEmpty {
-			log.Dev.Warningf(ctx, "preserving schema %s on restore failure because it contains new child objects", schemaDesc.GetName())
+			log.Warningf(ctx, "preserving schema %s on restore failure because it contains new child objects", schemaDesc.GetName())
 			continue
 		}
 
@@ -3057,14 +2957,6 @@ func (r *restoreResumer) dropDescriptors(
 				return err
 			}
 			entry.db = mutParent.(*dbdesc.Mutable)
-		}
-
-		if err := descsCol.DeleteCommentInBatch(
-			ctx,
-			kvTrace,
-			b,
-			catalogkeys.MakeCommentKey(uint32(schemaDesc.GetID()), 0, catalogkeys.SchemaCommentType)); err != nil {
-			return err
 		}
 
 		// Delete schema entries in descriptor and namespace system tables.
@@ -3083,10 +2975,10 @@ func (r *restoreResumer) dropDescriptors(
 
 		// Remove the back-reference to the deleted schema in the parent database.
 		if schemaInfo, ok := entry.db.Schemas[schemaDesc.GetName()]; !ok {
-			log.Dev.Warningf(ctx, "unexpected missing schema entry for %s from db %d; skipping deletion",
+			log.Warningf(ctx, "unexpected missing schema entry for %s from db %d; skipping deletion",
 				schemaDesc.GetName(), entry.db.GetID())
 		} else if schemaInfo.ID != schemaDesc.GetID() {
-			log.Dev.Warningf(ctx, "unexpected schema entry %d for %s from db %d, expecting %d; skipping deletion",
+			log.Warningf(ctx, "unexpected schema entry %d for %s from db %d, expecting %d; skipping deletion",
 				schemaInfo.ID, schemaDesc.GetName(), entry.db.GetID(), schemaDesc.GetID())
 		} else {
 			delete(entry.db.Schemas, schemaDesc.GetName())
@@ -3105,7 +2997,7 @@ func (r *restoreResumer) dropDescriptors(
 	// loop below so that we do not accidentally `b.Put` the descriptor with the
 	// modified schema slice after we have issued a `b.Del` to drop it.
 	for dbID, entry := range dbsWithDeletedSchemas {
-		log.Dev.Infof(ctx, "deleting %d schema entries from database %d", len(entry.schemas), dbID)
+		log.Infof(ctx, "deleting %d schema entries from database %d", len(entry.schemas), dbID)
 		if err := descsCol.WriteDescToBatch(
 			ctx, kvTrace, entry.db, b,
 		); err != nil {
@@ -3127,7 +3019,7 @@ func (r *restoreResumer) dropDescriptors(
 			return errors.Wrapf(err, "checking if database %s is empty during restore cleanup", dbDesc.GetName())
 		}
 		if !isDBEmpty {
-			log.Dev.Warningf(ctx, "preserving database %s on restore failure because it contains new child objects or schemas", dbDesc.GetName())
+			log.Warningf(ctx, "preserving database %s on restore failure because it contains new child objects or schemas", dbDesc.GetName())
 			continue
 		}
 
@@ -3150,14 +3042,6 @@ func (r *restoreResumer) dropDescriptors(
 				return err
 			}
 		}
-		if err := descsCol.DeleteCommentInBatch(
-			ctx,
-			kvTrace,
-			b,
-			catalogkeys.MakeCommentKey(uint32(dbDesc.GetID()), 0, catalogkeys.DatabaseCommentType)); err != nil {
-			return err
-		}
-
 		if err := descsCol.DeleteNamespaceEntryToBatch(ctx, kvTrace, db, b); err != nil {
 			return err
 		}
@@ -3386,7 +3270,7 @@ func (r *restoreResumer) restoreSystemTables(
 
 		config, ok := systemTableBackupConfiguration[systemTableName]
 		if !ok {
-			log.Dev.Warningf(ctx, "no configuration specified for table %s... skipping restoration",
+			log.Warningf(ctx, "no configuration specified for table %s... skipping restoration",
 				systemTableName)
 		}
 		systemTablesToRestore = append(systemTablesToRestore, systemTableNameWithConfig{
@@ -3474,7 +3358,7 @@ func (r *restoreResumer) cleanupTempSystemTables(ctx context.Context) error {
 	// system tables.
 	gcTTLQuery := fmt.Sprintf("ALTER DATABASE %s CONFIGURE ZONE USING gc.ttlseconds=1", restoreTempSystemDB)
 	if _, err := executor.Exec(ctx, "altering-gc-ttl-temp-system" /* opName */, nil /* txn */, gcTTLQuery); err != nil {
-		log.Dev.Errorf(ctx, "failed to update the GC TTL of %q: %+v", restoreTempSystemDB, err)
+		log.Errorf(ctx, "failed to update the GC TTL of %q: %+v", restoreTempSystemDB, err)
 	}
 	dropTableQuery := fmt.Sprintf("DROP DATABASE %s CASCADE", restoreTempSystemDB)
 	if _, err := executor.Exec(ctx, "drop-temp-system-db" /* opName */, nil /* txn */, dropTableQuery); err != nil {

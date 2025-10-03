@@ -998,7 +998,7 @@ func TestTenantStatementTimeoutAdmissionQueueCancellation(t *testing.T) {
 			scan, ok := req.Requests[0].GetInner().(*kvpb.GetRequest)
 			if ok {
 				if tableSpan.ContainsKey(scan.Key) {
-					log.Dev.Infof(ctx, "matchBatch %d", goid.Get())
+					log.Infof(ctx, "matchBatch %d", goid.Get())
 					return true
 				}
 			}
@@ -1022,11 +1022,11 @@ func TestTenantStatementTimeoutAdmissionQueueCancellation(t *testing.T) {
 						m := atomic.AddInt64(&matches, 1)
 						// If any of the blockers get retried just ignore.
 						if m > int64(numBlockers) {
-							log.Dev.Infof(ctx, "ignoring extra blocker %d", goid.Get())
+							log.Infof(ctx, "ignoring extra blocker %d", goid.Get())
 							return nil
 						}
 						// Notify we're blocking.
-						log.Dev.Infof(ctx, "blocking %d", goid.Get())
+						log.Infof(ctx, "blocking %d", goid.Get())
 						unblockClientCh <- struct{}{}
 						<-qBlockersCh
 					}
@@ -1036,10 +1036,10 @@ func TestTenantStatementTimeoutAdmissionQueueCancellation(t *testing.T) {
 					tid, ok := roachpb.ClientTenantFromContext(ctx)
 					if ok && tid == tenantID && len(req.Requests) > 0 {
 						scan, ok := req.Requests[0].GetInner().(*kvpb.ScanRequest)
-						log.Dev.Infof(ctx, "%s %d", scan, goid.Get())
+						log.Infof(ctx, "%s %d", scan, goid.Get())
 						if ok {
 							if tableSpan.ContainsKey(scan.Key) && atomic.CompareAndSwapUint64(&hitMainQuery, 0, 1) {
-								log.Dev.Infof(ctx, "got scan request error %d", goid.Get())
+								log.Infof(ctx, "got scan request error %d", goid.Get())
 								cancel()
 								wg.Done()
 							}
@@ -1082,18 +1082,18 @@ func TestTenantStatementTimeoutAdmissionQueueCancellation(t *testing.T) {
 	for i := 0; i < numBlockers; i++ {
 		<-unblockClientCh
 	}
-	log.Dev.Infof(ctx, "blockers parked")
+	log.Infof(ctx, "blockers parked")
 	// Because we don't know when statement timeout will happen we have to repeat
 	// till we get one into the KV layer.
 	for atomic.LoadUint64(&hitMainQuery) == 0 {
 		_, err := client.DB.ExecContext(context.Background(), `SELECT * FROM foo`)
 		require.Error(t, err)
-		log.Dev.Infof(ctx, "main req finished: %v", err)
+		log.Infof(ctx, "main req finished: %v", err)
 	}
 	for i := 0; i < numBlockers; i++ {
 		qBlockersCh <- struct{}{}
 	}
-	log.Dev.Infof(ctx, "unblocked blockers")
+	log.Infof(ctx, "unblocked blockers")
 	wg.Wait()
 	require.ErrorIs(t, ctx.Err(), context.Canceled)
 }
@@ -1140,7 +1140,6 @@ func TestStatementTimeoutForSchemaChangeCommit(t *testing.T) {
 				dbWithHandler := gosql.OpenDB(connector)
 				defer dbWithHandler.Close()
 				conn := sqlutils.MakeSQLRunner(dbWithHandler)
-				conn.Exec(t, "SET create_table_with_schema_locked=false")
 				conn.Exec(t, "CREATE TABLE t1 (n int primary key)")
 				conn.Exec(t, `SET statement_timeout = '1s'`)
 				require.NoError(t, err)

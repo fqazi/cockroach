@@ -312,7 +312,6 @@ func TestLockTableBasic(t *testing.T) {
 				if d.HasArg("skip-locked") {
 					waitPolicy = lock.WaitPolicy_SkipLocked
 				}
-				updateRetainedTxn := !d.HasArg("no-update-retained-txn")
 				var maxLockWaitQueueLength int
 				if d.HasArg("max-lock-wait-queue-length") {
 					d.ScanArgs(t, "max-lock-wait-queue-length", &maxLockWaitQueueLength)
@@ -332,17 +331,11 @@ func TestLockTableBasic(t *testing.T) {
 				if txnMeta != nil {
 					// Update the transaction's timestamp, if necessary. The transaction
 					// may have needed to move its timestamp for any number of reasons.
-					if updateRetainedTxn {
-						txnMeta.WriteTimestamp = ts
-					}
+					txnMeta.WriteTimestamp = ts
 					ba.Txn = &roachpb.Transaction{
 						TxnMeta:       *txnMeta,
 						ReadTimestamp: ts,
 					}
-					if !updateRetainedTxn {
-						ba.Txn.WriteTimestamp = ts
-					}
-
 					req.Txn = ba.Txn
 				}
 				requestsByName[reqName] = req
@@ -456,22 +449,6 @@ func TestLockTableBasic(t *testing.T) {
 					return err.Error()
 				}
 				return lt.String()
-
-			case "update-txn-not-observed":
-				var txnName string
-				d.ScanArgs(t, "txn", &txnName)
-				txnMeta, ok := txnsByName[txnName]
-				if !ok {
-					d.Fatalf(t, "unknown txn %s", txnName)
-				}
-				ts := scanTimestamp(t, d)
-				var epoch int
-				d.ScanArgs(t, "epoch", &epoch)
-				txnMeta = &enginepb.TxnMeta{ID: txnMeta.ID, Sequence: txnMeta.Sequence}
-				txnMeta.Epoch = enginepb.TxnEpoch(epoch)
-				txnMeta.WriteTimestamp = ts
-				txnsByName[txnName] = txnMeta
-				return ""
 
 			case "add-discovered":
 				var reqName string
@@ -1175,6 +1152,7 @@ func doWork(ctx context.Context, item *workItem, e *workloadExecutor) error {
 				case <-ctx.Done():
 					return ctx.Err()
 				case <-timer.C:
+					timer.Read = true
 					return errors.AssertionFailedf(
 						"request %d has been waiting for more than 5 minutes; lock table state:\n%s\n",
 						g.(*lockTableGuardImpl).seqNum,
@@ -2043,7 +2021,7 @@ func BenchmarkLockTable(b *testing.B) {
 							runRequests(b, iters, requestsPerGroup[0], env)
 						}
 						if log.V(1) {
-							log.KvExec.Infof(context.Background(), "num requests that waited: %d, num scan calls: %d\n",
+							log.Infof(context.Background(), "num requests that waited: %d, num scan calls: %d\n",
 								atomic.LoadUint64(&numRequestsWaited), atomic.LoadUint64(&numScanCalls))
 						}
 					})

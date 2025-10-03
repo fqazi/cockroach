@@ -103,21 +103,19 @@ func Test_handleRaftReadyStats_SafeFormat(t *testing.T) {
 				numAddSST:                3,
 				numAddSSTCopies:          1,
 			},
-			assertionsRequested:  4,
+			stateAssertions:      4,
 			numConfChangeEntries: 6,
 		},
 		append: logstore.AppendStats{
-			Begin: ts(2),
-			End:   ts(3),
-			EntryStats: logstore.EntryStats{
-				RegularEntries:    7,
-				RegularBytes:      1024,
-				SideloadedEntries: 3,
-				SideloadedBytes:   5 * (1 << 20),
-			},
-			PebbleBegin: ts(3),
-			PebbleEnd:   ts(4),
-			PebbleBytes: 1024 * 5,
+			Begin:             ts(2),
+			End:               ts(3),
+			RegularEntries:    7,
+			RegularBytes:      1024,
+			SideloadedEntries: 3,
+			SideloadedBytes:   5 * (1 << 20),
+			PebbleBegin:       ts(3),
+			PebbleEnd:         ts(4),
+			PebbleBytes:       1024 * 5,
 			PebbleCommitStats: storage.BatchCommitStats{
 				BatchCommitStats: pebble.BatchCommitStats{
 					TotalDuration:               100 * time.Millisecond,
@@ -481,7 +479,7 @@ func TestMaybeMarkReplicaUnavailableInLeaderlessWatcher(t *testing.T) {
 		repl := tContext.repl
 		repl.LeaderlessWatcher.mu.unavailable = tc.initReplicaUnavailable
 		repl.LeaderlessWatcher.mu.leaderlessTimestamp = tc.initLeaderlessTimestamp
-		repl.TestingRefreshLeaderlessWatcherUnavailableState(ctx, tc.leader, now, cfg.Settings)
+		repl.RefreshLeaderlessWatcherUnavailableStateForTesting(ctx, tc.leader, now, cfg.Settings)
 		require.Equal(t, tc.expectedUnavailable, repl.LeaderlessWatcher.IsUnavailable())
 		require.Equal(t, tc.expectedLeaderlessTime, repl.LeaderlessWatcher.mu.leaderlessTimestamp)
 

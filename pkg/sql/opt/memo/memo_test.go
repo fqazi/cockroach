@@ -585,16 +585,6 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.SessionData().OptimizerUseExistsFilterHoistRule = false
 	notStale()
 
-	evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables = true
-	stale()
-	evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables = false
-	notStale()
-
-	evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject = true
-	stale()
-	evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject = false
-	notStale()
-
 	// User no longer has access to view.
 	catalog.View(tree.NewTableNameWithSchema("t", catconstants.PublicSchemaName, "abcview")).Revoked = true
 	_, err = o.Memo().IsStale(ctx, &evalCtx, catalog)
@@ -702,15 +692,15 @@ func TestStatsAvailable(t *testing.T) {
 
 	// Stats should not be available for any expression.
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, "SELECT * FROM t WHERE a=1")
-	testNotAvailable(o.Memo().RootExpr())
+	testNotAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, "SELECT sum(a), b FROM t GROUP BY b")
-	testNotAvailable(o.Memo().RootExpr())
+	testNotAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx,
 		"SELECT * FROM t AS t1, t AS t2 WHERE t1.a = t2.a AND t1.b = 5",
 	)
-	testNotAvailable(o.Memo().RootExpr())
+	testNotAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	if _, err := catalog.ExecuteDDL(
 		`ALTER TABLE t INJECT STATISTICS '[
@@ -740,15 +730,15 @@ func TestStatsAvailable(t *testing.T) {
 
 	// Stats should be available for all expressions.
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, "SELECT * FROM t WHERE a=1")
-	testAvailable(o.Memo().RootExpr())
+	testAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, "SELECT sum(a), b FROM t GROUP BY b")
-	testAvailable(o.Memo().RootExpr())
+	testAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx,
 		"SELECT * FROM t AS t1, t AS t2 WHERE t1.a = t2.a AND t1.b = 5",
 	)
-	testAvailable(o.Memo().RootExpr())
+	testAvailable(o.Memo().RootExpr().(memo.RelExpr))
 }
 
 // traverseExpr is a helper function to recursively traverse a relational

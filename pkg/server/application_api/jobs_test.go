@@ -355,8 +355,8 @@ func TestAdminAPIJobsDetails(t *testing.T) {
 			t.Fatal(err)
 		}
 		sqlDB.Exec(t,
-			`INSERT INTO system.jobs (id, status, num_runs, last_run, job_type, owner) VALUES ($1, $2, $3, $4, $5, $6)`,
-			job.id, job.status, job.numRuns, job.lastRun, payload.Type().String(), job.username.Normalized(),
+			`INSERT INTO system.jobs (id, status, num_runs, last_run, job_type) VALUES ($1, $2, $3, $4, $5)`,
+			job.id, job.status, job.numRuns, job.lastRun, payload.Type().String(),
 		)
 		sqlDB.Exec(t,
 			`INSERT INTO system.job_info (job_id, info_key, value) VALUES ($1, $2, $3)`,
@@ -407,9 +407,16 @@ func TestJobStatusResponse(t *testing.T) {
 			Statements:  []string{"SELECT 1"},
 			Username:    username.RootUserName(),
 			Details: jobspb.ImportDetails{
-				Table: jobspb.ImportDetails_Table{
-					Desc: &descpb.TableDescriptor{
-						ID: 1,
+				Tables: []jobspb.ImportDetails_Table{
+					{
+						Desc: &descpb.TableDescriptor{
+							ID: 1,
+						},
+					},
+					{
+						Desc: &descpb.TableDescriptor{
+							ID: 2,
+						},
 					},
 				},
 				URIs: []string{"a", "b"},

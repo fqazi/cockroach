@@ -26,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowinspectpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/rac2"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server"
@@ -554,8 +555,7 @@ func TestFlowControlCrashedNodeV2(t *testing.T) {
 		tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
 			ReplicationMode: base.ReplicationManual,
 			ServerArgs: base.TestServerArgs{
-				DefaultDRPCOption: base.TestDRPCDisabled,
-				Settings:          settings,
+				Settings: settings,
 				RaftConfig: base.RaftConfig{
 					// Reduce the RangeLeaseDuration to speeds up failure detection
 					// below.
@@ -1801,10 +1801,7 @@ func TestFlowControlSendQueue(t *testing.T) {
 	}
 
 	tc := testcluster.StartTestCluster(t, 5, base.TestClusterArgs{
-		ReplicationMode: base.ReplicationManual,
-		ServerArgs: base.TestServerArgs{
-			DefaultDRPCOption: base.TestDRPCDisabled,
-		},
+		ReplicationMode:   base.ReplicationManual,
 		ServerArgsPerNode: stickyArgsPerServer,
 	})
 	defer tc.Stopper().Stop(ctx)
@@ -2538,7 +2535,7 @@ func TestFlowControlSendQueueRangeRelocate(t *testing.T) {
 				// Avoid double printing if the lease hasn't moved.
 				h.comment(fmt.Sprintf(`
 -- Observe the total tracked tokens per-stream on new leaseholder n%v.`, newLeaseNode))
-				h.query(newLeaseDB, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
+				h.query(n1, v2FlowPerStreamTrackedQueryStr, flowPerStreamTrackedQueryHeaderStrs...)
 			}
 
 			// Allow admission to proceed on n3 and wait for all tokens to be returned.
@@ -2852,6 +2849,15 @@ func TestFlowControlSendQueueRangeMigrate(t *testing.T) {
 				Store: &kvserver.StoreTestingKnobs{
 					RaftReportUnreachableBypass: func(_ roachpb.ReplicaID) bool {
 						return true
+					},
+					EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
+						// Because we are migrating from a version (currently) prior to the
+						// range force flush key version gate, we won't trigger the force
+						// flush via migrate until we're on the endV, which defeats the
+						// purpose of this test. We override the behavior here to allow the
+						// force flush to be triggered on the startV from a Migrate
+						// request.
+						OverrideDoTimelyApplicationToAllReplicas: true,
 					},
 					FlowControlTestingKnobs: &kvflowcontrol.TestingKnobs{
 						UseOnlyForScratchRanges: true,
@@ -3333,10 +3339,7 @@ func TestFlowControlSendQueueRangeFeed(t *testing.T) {
 	}
 
 	tc := testcluster.StartTestCluster(t, numNodes, base.TestClusterArgs{
-		ReplicationMode: base.ReplicationManual,
-		ServerArgs: base.TestServerArgs{
-			DefaultDRPCOption: base.TestDRPCDisabled,
-		},
+		ReplicationMode:   base.ReplicationManual,
 		ServerArgsPerNode: argsPerServer,
 	})
 	defer tc.Stopper().Stop(ctx)
@@ -3770,7 +3773,7 @@ func (h *flowControlTestHelper) comment(comment string) {
 
 func (h *flowControlTestHelper) log(msg string) {
 	if log.ShowLogs() {
-		log.KvExec.Infof(context.Background(), "%s", msg)
+		log.Infof(context.Background(), "%s", msg)
 	}
 }
 

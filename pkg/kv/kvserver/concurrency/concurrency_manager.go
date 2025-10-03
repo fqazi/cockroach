@@ -131,16 +131,16 @@ var UnreplicatedLockReliabilityLeaseTransfer = settings.RegisterBoolSetting(
 	settings.SystemOnly,
 	"kv.lock_table.unreplicated_lock_reliability.lease_transfer.enabled",
 	"whether the replica should attempt to keep unreplicated locks during lease transfers",
-	metamorphic.ConstantWithTestBool("kv.lock_table.unreplicated_lock_reliability.lease_transfer.enabled", true),
+	false,
 )
 
-// UnreplicatedLockReliabilityMerge controls whether the replica will attempt to
-// keep unreplicated locks during range merge operations.
+// UnreplicatedLockReliabilityMerge controls whether the replica will
+// attempt to keep unreplicated locks during range merge operations.
 var UnreplicatedLockReliabilityMerge = settings.RegisterBoolSetting(
 	settings.SystemOnly,
 	"kv.lock_table.unreplicated_lock_reliability.merge.enabled",
 	"whether the replica should attempt to keep unreplicated locks during range merges",
-	metamorphic.ConstantWithTestBool("kv.lock_table.unreplicated_lock_reliability.merge.enabled", true),
+	false,
 )
 
 var MaxLockFlushSize = settings.RegisterByteSizeSetting(
@@ -508,7 +508,7 @@ func (m *managerImpl) HandleLockConflictError(
 	ctx context.Context, g *Guard, seq roachpb.LeaseSequence, t *kvpb.LockConflictError,
 ) (*Guard, *Error) {
 	if g.ltg == nil {
-		log.KvExec.Fatalf(ctx, "cannot handle LockConflictError %v for request without "+
+		log.Fatalf(ctx, "cannot handle LockConflictError %v for request without "+
 			"lockTableGuard; were lock spans declared for this request?", t)
 	}
 
@@ -538,7 +538,7 @@ func (m *managerImpl) HandleLockConflictError(
 		foundLock := &t.Locks[i]
 		added, err := m.lt.AddDiscoveredLock(foundLock, seq, consultTxnStatusCache, g.ltg)
 		if err != nil {
-			log.KvExec.Fatalf(ctx, "%v", err)
+			log.Fatalf(ctx, "%v", err)
 		}
 		if !added {
 			log.VEventf(ctx, 2,
@@ -584,30 +584,21 @@ func (m *managerImpl) HandleTransactionPushError(
 func (m *managerImpl) OnLockAcquired(ctx context.Context, acq *roachpb.LockAcquisition) {
 	if err := m.lt.AcquireLock(acq); err != nil {
 		if errors.IsAssertionFailure(err) {
-			log.KvExec.Fatalf(ctx, "%v", err)
+			log.Fatalf(ctx, "%v", err)
 		}
 		// It's reasonable to expect benign errors here that the layer above
 		// (command evaluation) isn't equipped to deal with. As long as we're not
 		// violating any assertions, we simply log and move on. One benign case is
 		// when an unreplicated lock is being acquired by a transaction at an older
 		// epoch.
-		log.KvExec.Errorf(ctx, "%v", err)
-	}
-}
-
-// OnLockMissing implements the Lockmanager interface.
-func (m *managerImpl) OnLockMissing(ctx context.Context, acq *roachpb.LockAcquisition) {
-	if err := m.lt.MarkIneligibleForExport(acq); err != nil {
-		// We don't currently expect any errors other than assertion failures that represent
-		// programming errors from this method.
-		log.KvExec.Fatalf(ctx, "%v", err)
+		log.Errorf(ctx, "%v", err)
 	}
 }
 
 // OnLockUpdated implements the LockManager interface.
 func (m *managerImpl) OnLockUpdated(ctx context.Context, up *roachpb.LockUpdate) {
 	if err := m.lt.UpdateLocks(up); err != nil {
-		log.KvExec.Fatalf(ctx, "%v", err)
+		log.Fatalf(ctx, "%v", err)
 	}
 }
 
@@ -616,13 +607,6 @@ func (m *managerImpl) QueryLockTableState(
 	ctx context.Context, span roachpb.Span, opts QueryLockTableOptions,
 ) ([]roachpb.LockStateInfo, QueryLockTableResumeState) {
 	return m.lt.QueryLockTableState(span, opts)
-}
-
-// ExportUnreplicatedLocks implements the LockManager interface.
-func (m *managerImpl) ExportUnreplicatedLocks(
-	span roachpb.Span, f func(*roachpb.LockAcquisition) bool,
-) {
-	m.lt.ExportUnreplicatedLocks(span, f)
 }
 
 // OnTransactionUpdated implements the TransactionManager interface.
@@ -736,10 +720,9 @@ func (m *managerImpl) exportUnreplicatedLocks() ([]*roachpb.LockAcquisition, int
 	// TODO(ssd): Expose a function that allows us to pre-allocate this a bit better.
 	approximateBatchSize := int64(0)
 	acquistions := make([]*roachpb.LockAcquisition, 0)
-	m.lt.ExportUnreplicatedLocks(allKeysSpan, func(acq *roachpb.LockAcquisition) bool {
+	m.lt.ExportUnreplicatedLocks(allKeysSpan, func(acq *roachpb.LockAcquisition) {
 		approximateBatchSize += storage.ApproximateLockTableSize(acq)
 		acquistions = append(acquistions, acq)
-		return true
 	})
 	return acquistions, approximateBatchSize
 }

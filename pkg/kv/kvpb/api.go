@@ -248,9 +248,7 @@ var _ SafeFormatterRequest = (*EndTxnRequest)(nil)
 func (etr *EndTxnRequest) SafeFormat(s redact.SafePrinter, _ rune) {
 	s.Printf("%s(", etr.Method())
 	if etr.Commit {
-		if etr.Prepare {
-			s.Printf("prepare")
-		} else if etr.IsParallelCommit() {
+		if etr.IsParallelCommit() {
 			s.Printf("parallel commit")
 		} else {
 			s.Printf("commit")
@@ -332,6 +330,13 @@ var _ SizedWriteRequest = (*ConditionalPutRequest)(nil)
 // WriteBytes makes ConditionalPutRequest implement SizedWriteRequest.
 func (cpr *ConditionalPutRequest) WriteBytes() int64 {
 	return int64(len(cpr.Key)) + int64(cpr.Value.Size())
+}
+
+var _ SizedWriteRequest = (*InitPutRequest)(nil)
+
+// WriteBytes makes InitPutRequest implement SizedWriteRequest.
+func (pr *InitPutRequest) WriteBytes() int64 {
+	return int64(len(pr.Key)) + int64(pr.Value.Size())
 }
 
 var _ SizedWriteRequest = (*IncrementRequest)(nil)
@@ -626,6 +631,24 @@ func (r *AdminScatterResponse) combine(_ context.Context, c combinable, _ *Batch
 
 var _ combinable = &AdminScatterResponse{}
 
+func (avptr *AdminVerifyProtectedTimestampResponse) combine(
+	_ context.Context, c combinable, _ *BatchRequest,
+) error {
+	other := c.(*AdminVerifyProtectedTimestampResponse)
+	if avptr != nil {
+		avptr.DeprecatedFailedRanges = append(avptr.DeprecatedFailedRanges,
+			other.DeprecatedFailedRanges...)
+		avptr.VerificationFailedRanges = append(avptr.VerificationFailedRanges,
+			other.VerificationFailedRanges...)
+		if err := avptr.ResponseHeader.combine(other.Header()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var _ combinable = &AdminVerifyProtectedTimestampResponse{}
+
 // combine implements the combinable interface.
 func (r *QueryResolvedTimestampResponse) combine(
 	_ context.Context, c combinable, _ *BatchRequest,
@@ -852,6 +875,9 @@ func (*PutRequest) Method() Method { return Put }
 func (*ConditionalPutRequest) Method() Method { return ConditionalPut }
 
 // Method implements the Request interface.
+func (*InitPutRequest) Method() Method { return InitPut }
+
+// Method implements the Request interface.
 func (*IncrementRequest) Method() Method { return Increment }
 
 // Method implements the Request interface.
@@ -978,6 +1004,11 @@ func (*SubsumeRequest) Method() Method { return Subsume }
 func (*RangeStatsRequest) Method() Method { return RangeStats }
 
 // Method implements the Request interface.
+func (*AdminVerifyProtectedTimestampRequest) Method() Method {
+	return AdminVerifyProtectedTimestamp
+}
+
+// Method implements the Request interface.
 func (*QueryResolvedTimestampRequest) Method() Method { return QueryResolvedTimestamp }
 
 // Method implements the Request interface.
@@ -985,9 +1016,6 @@ func (*BarrierRequest) Method() Method { return Barrier }
 
 // Method implements the Request interface.
 func (*IsSpanEmptyRequest) Method() Method { return IsSpanEmpty }
-
-// Method implements the Request interface.
-func (*FlushLockTableRequest) Method() Method { return FlushLockTable }
 
 // ShallowCopy implements the Request interface.
 func (gr *GetRequest) ShallowCopy() Request {
@@ -1004,6 +1032,12 @@ func (pr *PutRequest) ShallowCopy() Request {
 // ShallowCopy implements the Request interface.
 func (cpr *ConditionalPutRequest) ShallowCopy() Request {
 	shallowCopy := *cpr
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Request interface.
+func (pr *InitPutRequest) ShallowCopy() Request {
+	shallowCopy := *pr
 	return &shallowCopy
 }
 
@@ -1260,6 +1294,12 @@ func (r *RangeStatsRequest) ShallowCopy() Request {
 }
 
 // ShallowCopy implements the Request interface.
+func (r *AdminVerifyProtectedTimestampRequest) ShallowCopy() Request {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Request interface.
 func (r *QueryResolvedTimestampRequest) ShallowCopy() Request {
 	shallowCopy := *r
 	return &shallowCopy
@@ -1273,12 +1313,6 @@ func (r *BarrierRequest) ShallowCopy() Request {
 
 // ShallowCopy implements the Request interface.
 func (r *IsSpanEmptyRequest) ShallowCopy() Request {
-	shallowCopy := *r
-	return &shallowCopy
-}
-
-// ShallowCopy implements the Request interface.
-func (r *FlushLockTableRequest) ShallowCopy() Request {
 	shallowCopy := *r
 	return &shallowCopy
 }
@@ -1298,6 +1332,12 @@ func (pr *PutResponse) ShallowCopy() Response {
 // ShallowCopy implements the Response interface.
 func (cpr *ConditionalPutResponse) ShallowCopy() Response {
 	shallowCopy := *cpr
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Response interface.
+func (pr *InitPutResponse) ShallowCopy() Response {
+	shallowCopy := *pr
 	return &shallowCopy
 }
 
@@ -1552,6 +1592,12 @@ func (r *RangeStatsResponse) ShallowCopy() Response {
 }
 
 // ShallowCopy implements the Response interface.
+func (r *AdminVerifyProtectedTimestampResponse) ShallowCopy() Response {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Response interface.
 func (r *QueryResolvedTimestampResponse) ShallowCopy() Response {
 	shallowCopy := *r
 	return &shallowCopy
@@ -1565,12 +1611,6 @@ func (r *BarrierResponse) ShallowCopy() Response {
 
 // ShallowCopy implements the Response interface.
 func (r *IsSpanEmptyResponse) ShallowCopy() Response {
-	shallowCopy := *r
-	return &shallowCopy
-}
-
-// ShallowCopy implements the Response interface.
-func (r *FlushLockTableResponse) ShallowCopy() Response {
 	shallowCopy := *r
 	return &shallowCopy
 }
@@ -1882,6 +1922,17 @@ func (*ConditionalPutRequest) flags() flag {
 		canParallelCommit
 }
 
+// InitPut, like ConditionalPut, effectively reads without writing if it hits a
+// ConditionFailedError, so it must update the timestamp cache in this case.
+// InitPuts do not require a refresh because on write-too-old errors, they
+// return an error immediately instead of continuing a serializable transaction
+// to be retried at end transaction.
+func (*InitPutRequest) flags() flag {
+	return isRead | isWrite | isTxn | isLocking | isIntentWrite |
+		appliesTSCache | updatesTSCache | updatesTSCacheOnErr | canBackpressure |
+		canPipeline | canParallelCommit
+}
+
 // Increment reads the existing value, but always leaves an intent so
 // it does not need to update the timestamp cache. Increments do not
 // require a refresh because on write-too-old errors, they return an
@@ -1978,7 +2029,8 @@ func (rsr *ReverseScanRequest) flags() flag {
 }
 
 // EndTxn updates the timestamp cache to prevent replays.
-// Replays for the same transaction key and timestamp must retry on EndTxn.
+// Replays for the same transaction key and timestamp will have
+// Txn.WriteTooOld=true and must retry on EndTxn.
 func (*EndTxnRequest) flags() flag              { return isWrite | isTxn | isAlone | updatesTSCache }
 func (*AdminSplitRequest) flags() flag          { return isAdmin | isAlone }
 func (*AdminUnsplitRequest) flags() flag        { return isAdmin | isAlone }
@@ -2059,7 +2111,8 @@ func (*CheckConsistencyRequest) flags() flag { return isAdmin | isRange | isAlon
 func (*ExportRequest) flags() flag {
 	return isRead | isRange | updatesTSCache | bypassesReplicaCircuitBreaker
 }
-func (*AdminScatterRequest) flags() flag { return isAdmin | isRange | isAlone }
+func (*AdminScatterRequest) flags() flag                  { return isAdmin | isRange | isAlone }
+func (*AdminVerifyProtectedTimestampRequest) flags() flag { return isAdmin | isRange | isAlone }
 func (r *AddSSTableRequest) flags() flag {
 	flags := isWrite | isRange | isAlone | isUnsplittable | canBackpressure | bypassesReplicaCircuitBreaker
 	if r.SSTTimestampToRequestTimestamp.IsSet() {
@@ -2103,9 +2156,6 @@ func (r *BarrierRequest) flags() flag {
 	return flags
 }
 func (*IsSpanEmptyRequest) flags() flag { return isRead | isRange }
-func (*FlushLockTableRequest) flags() flag {
-	return isWrite | isRange | isAlone | isUnsplittable
-}
 
 // IsParallelCommit returns whether the EndTxn request is attempting to perform
 // a parallel commit. See txn_interceptor_committer.go for a discussion about
@@ -2161,9 +2211,6 @@ func (e *RangeFeedEvent) ShallowCopy() *RangeFeedEvent {
 	case *RangeFeedError:
 		cpyErr := *t
 		cpy.MustSetValue(&cpyErr)
-	case *RangeFeedBulkEvents:
-		cpyVals := *t
-		cpy.MustSetValue(&cpyVals)
 	default:
 		panic(fmt.Sprintf("unexpected RangeFeedEvent variant: %v", t))
 	}
@@ -2495,14 +2542,10 @@ func (s *ScanStats) SafeFormat(w redact.SafePrinter, _ rune) {
 		humanizeCount(s.NumReverseScans),
 	)
 	if s.SeparatedPointCount != 0 {
-		w.Printf(" separated: (count: %s, bytes: %s, bytes-fetched: %s, "+
-			"count-fetched: %s, reader-cache-misses: %s)",
+		w.Printf(" separated: (count: %s, bytes: %s, bytes-fetched: %s)",
 			humanizeCount(s.SeparatedPointCount),
 			humanizeutil.IBytes(int64(s.SeparatedPointValueBytes)),
-			humanizeutil.IBytes(int64(s.SeparatedPointValueBytesFetched)),
-			humanizeCount(s.SeparatedPointValueCountFetched),
-			humanizeCount(s.SeparatedPointValueReaderCacheMisses),
-		)
+			humanizeutil.IBytes(int64(s.SeparatedPointValueBytesFetched)))
 	}
 }
 
@@ -2547,75 +2590,10 @@ func (writeOptions *WriteOptions) GetOriginTimestamp() hlc.Timestamp {
 	return writeOptions.OriginTimestamp
 }
 
-func (r *ConditionalPutRequest) Validate(_ Header) error {
+func (r *ConditionalPutRequest) Validate() error {
 	if !r.OriginTimestamp.IsEmpty() {
 		if r.AllowIfDoesNotExist {
 			return errors.AssertionFailedf("invalid ConditionalPutRequest: AllowIfDoesNotExist and non-empty OriginTimestamp are incompatible")
-		}
-	}
-	return nil
-}
-
-func (r *GetRequest) Validate(_ Header) error {
-	if !r.ExpectExclusionSince.IsEmpty() && r.KeyLockingStrength == lock.None {
-		return errors.AssertionFailedf("invalid GetRequest: ExpectExclusionSince is non-empty for non-locking request")
-	}
-	return nil
-}
-
-func (r *PutRequest) Validate(bh Header) error {
-	if err := validateExclusionTimestampForBatch(r.ExpectExclusionSince, bh); err != nil {
-		return errors.NewAssertionErrorWithWrappedErrf(err, "invalid PutRequest")
-	}
-	return nil
-}
-
-func (r *DeleteRequest) Validate(bh Header) error {
-	if err := validateExclusionTimestampForBatch(r.ExpectExclusionSince, bh); err != nil {
-		return errors.NewAssertionErrorWithWrappedErrf(err, "invalid DeleteRequest")
-	}
-	return nil
-}
-
-func validateExclusionTimestampForBatch(ts hlc.Timestamp, h Header) error {
-	if ts.IsEmpty() {
-		return nil
-	}
-
-	// TODO(ssd): It would be nice to put this first, but then we fail the
-	// gcassert linter, I assume because the code gets optimized away.
-	if !buildutil.CrdbTestBuild {
-		return nil
-	}
-
-	// If we don't have a transaction, we can't know whether
-	// CanForwardReadTimestamp is valid or not.
-	if h.Txn == nil {
-		return nil
-	}
-
-	// Unless the IsoLevel allows per-statement read snapshots,
-	// CanForwardReadTimestamp implies we haven't served a read, so it makes no
-	// sense that ExpectExclusionSince would be set since it is the result of a
-	// locking read.
-	//
-	// If the IsoLevel permits per-statement read snapshots, then the read
-	// footprint may have been reset since the locking read was issued.
-	if h.CanForwardReadTimestamp && !h.Txn.IsoLevel.PerStatementReadSnapshot() {
-		return errors.New("unexpected ExpectExclusionSince in batch with CanForwardReadTimestamp set")
-	}
-	return nil
-}
-
-func (r *AddSSTableRequest) Validate(bh Header) error {
-	if r.ComputeStatsDiff {
-		if r.DisallowConflicts || r.DisallowShadowingBelow.IsSet() {
-			return errors.New(
-				"invalid AddSSTableRequest: ComputeStatsDiff cannot be used with DisallowConflicts or DisallowShadowingBelow")
-		}
-		if r.MVCCStats != nil {
-			return errors.New(
-				"invalid AddSSTableRequest: ComputeStatsDiff cannot be used with precomputed MVCCStats")
 		}
 	}
 	return nil

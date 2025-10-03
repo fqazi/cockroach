@@ -3,7 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package backupdest
+package backupdest_test
 
 import (
 	"bytes"
@@ -14,17 +14,18 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/backup/backupbase"
+	"github.com/cockroachdb/cockroach/pkg/backup/backupdest"
 	"github.com/cockroachdb/cockroach/pkg/backup/backuppb"
 	"github.com/cockroachdb/cockroach/pkg/backup/backuptestutils"
 	"github.com/cockroachdb/cockroach/pkg/backup/backuputils"
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
 	_ "github.com/cockroachdb/cockroach/pkg/cloud/impl" // register cloud storage providers
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
+	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/sql"
-	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
-	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -56,7 +57,7 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 		require.NoError(t, err)
 		reader := bytes.NewReader(manifestBytes)
 		require.NoError(t, err)
-		require.NoError(t, cloud.WriteFile(ctx, storage, backupbase.DeprecatedBackupManifestName, reader))
+		require.NoError(t, cloud.WriteFile(ctx, storage, backupbase.BackupManifestName, reader))
 	}
 
 	// writeLatest writes latestBackupSuffix to the LATEST file in the given
@@ -65,7 +66,7 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 		storage, err := externalStorageFromURI(ctx, collectionURI, username.RootUserName())
 		defer storage.Close()
 		require.NoError(t, err)
-		require.NoError(t, WriteNewLatestFile(ctx, storage.Settings(), storage, latestBackupSuffix))
+		require.NoError(t, backupdest.WriteNewLatestFile(ctx, storage.Settings(), storage, latestBackupSuffix))
 	}
 
 	// localizeURI returns a slice of just the base URI if localities is nil.
@@ -78,12 +79,12 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 		if localities == nil {
 			return []string{baseURI}
 		}
-		allLocalities := append([]string{DefaultLocalityValue}, localities...)
+		allLocalities := append([]string{backupdest.DefaultLocalityValue}, localities...)
 		localizedURIs := make([]string, len(allLocalities))
 		for i, locality := range allLocalities {
 			parsedURI, err := url.Parse(baseURI)
 			require.NoError(t, err)
-			if locality != DefaultLocalityValue {
+			if locality != backupdest.DefaultLocalityValue {
 				parsedURI.Path = backuputils.JoinURLPath(parsedURI.Path, locality)
 			}
 			q := parsedURI.Query()
@@ -134,6 +135,10 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 				inc5Time := inc4Time.Add(time.Minute * 30)
 				inc6Time := inc5Time.Add(time.Minute * 30)
 				inc7Time := inc6Time.Add(time.Minute * 30)
+				full3Time := inc7Time.Add(time.Minute * 30)
+				inc8Time := full3Time.Add(time.Minute * 30)
+				inc9Time := inc8Time.Add(time.Minute * 30)
+				full4Time := inc9Time.Add(time.Minute * 30)
 
 				// firstBackupChain is maintained throughout the tests as the history of
 				// backups that were taken based on the initial full backup.
@@ -152,7 +157,6 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 				testCollectionBackup := func(t *testing.T, backupTime time.Time,
 					expectedDefault, expectedSuffix, expectedIncDir string, expectedPrevBackups []string,
 					appendToLatest bool, subdir string, incrementalTo []string) {
-					t.Helper()
 
 					endTime := hlc.Timestamp{WallTime: backupTime.UnixNano()}
 
@@ -162,11 +166,11 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 						subdir = endTime.GoTime().Format(backupbase.DateBasedIntoFolderName)
 					}
 
-					_, localityCollections, err := GetURIsByLocalityKV(collectionTo, "")
+					_, localityCollections, err := backupdest.GetURIsByLocalityKV(collectionTo, "")
 					require.NoError(t, err)
 
 					if len(incrementalTo) > 0 {
-						_, localityCollections, err = GetURIsByLocalityKV(incrementalTo, "")
+						_, localityCollections, err = backupdest.GetURIsByLocalityKV(incrementalTo, "")
 						require.NoError(t, err)
 					}
 
@@ -174,7 +178,7 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 					kmsEnv := &cloud.TestKMSEnv{
 						ExternalIOConfig: &base.ExternalIODirConfig{},
 					}
-					backupDest, err := ResolveDest(
+					backupDest, err := backupdest.ResolveDest(
 						ctx, username.RootUserName(),
 						jobspb.BackupDetails_Destination{To: collectionTo, Subdir: subdir,
 							IncrementalStorage: incrementalTo, Exists: fullBackupExists},
@@ -333,252 +337,180 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 						true /* intoLatest */, expectedSubdir, customIncrementalTo)
 					writeManifest(t, expectedDefault, inc7Time)
 				}
+
+				// A new full backup: BACKUP INTO collection
+				var backup3Location string
+				{
+					expectedSuffix := "/2020/12/25-103000.00"
+					expectedIncDir := ""
+					expectedDefault := fmt.Sprintf("nodelocal://1/%s%s?AUTH=implicit", t.Name(), expectedSuffix)
+					backup3Location = expectedDefault
+
+					testCollectionBackup(t, full3Time,
+						expectedDefault, expectedSuffix, expectedIncDir, []string(nil),
+						false /* intoLatest */, noExplicitSubDir, noIncrementalStorage)
+					writeManifest(t, expectedDefault, full3Time)
+					// We also wrote a new full backup, so let's update the latest.
+					writeLatest(t, collectionLoc, expectedSuffix)
+				}
+
+				// A remote incremental into the third full backup: BACKUP INTO LATEST
+				// IN collection, BUT with a trick. Write a (fake) incremental backup
+				// to the old directory, to be sure that subsequent incremental backups
+				// go there as well (and not the newer incrementals/ subdir.)
+				{
+					expectedSuffix := "/2020/12/25-103000.00"
+					expectedIncDir := "/20201225/110000.00-20201225-103000.00"
+
+					// Writes the (fake) incremental backup.
+					oldStyleDefault := fmt.Sprintf("nodelocal://1/%s%s%s?AUTH=implicit",
+						t.Name(),
+						expectedSuffix, expectedIncDir)
+					writeManifest(t, oldStyleDefault, inc8Time)
+
+					expectedSuffix = "/2020/12/25-103000.00"
+					expectedIncDir = "/20201225/113000.00-20201225-110000.00"
+					expectedSubdir := expectedSuffix
+					expectedDefault := fmt.Sprintf("nodelocal://1/%s%s%s?AUTH=implicit",
+						t.Name(),
+						expectedSuffix, expectedIncDir)
+
+					testCollectionBackup(t, inc9Time,
+						expectedDefault, expectedSuffix, expectedIncDir, []string{backup3Location, oldStyleDefault},
+						true /* intoLatest */, expectedSubdir, noIncrementalStorage)
+					writeManifest(t, expectedDefault, inc9Time)
+				}
+
+				// A new full backup: BACKUP INTO collection
+				{
+					expectedSuffix := "/2020/12/25-120000.00"
+					expectedIncDir := ""
+					expectedDefault := fmt.Sprintf("nodelocal://1/%s%s?AUTH=implicit", t.Name(), expectedSuffix)
+
+					testCollectionBackup(t, full4Time,
+						expectedDefault, expectedSuffix, expectedIncDir, []string(nil),
+						false /* intoLatest */, noExplicitSubDir, noIncrementalStorage)
+					writeManifest(t, expectedDefault, full4Time)
+					// We also wrote a new full backup, so let's update the latest.
+					writeLatest(t, collectionLoc, expectedSuffix)
+				}
 			})
 		})
 	}
 }
 
-func TestResolveBackupManifests(t *testing.T) {
+func TestMixedVersionIncrementalSuffixChains(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	ctx := context.Background()
-	tc, db, _, cleanupFn := backuptestutils.StartBackupRestoreTestCluster(
-		t, backuptestutils.SingleNode,
-	)
-	defer cleanupFn()
-
-	execCfg := tc.Server(0).ApplicationLayer().ExecutorConfig().(sql.ExecutorConfig)
-
-	collections := []string{
-		"nodelocal://1/backup/default?COCKROACH_LOCALITY=default",
-		"nodelocal://1/backup/west?COCKROACH_LOCALITY=region%3Dwest",
-		"nodelocal://1/backup/south?COCKROACH_LOCALITY=region%3Dsouth",
+	args := base.TestServerArgs{
+		DefaultTestTenant: base.TestControlsTenantsExplicitly,
 	}
+	args.Knobs.Server = &server.TestingKnobs{
+		ClusterVersionOverride:         clusterversion.V25_1.Version(),
+		DisableAutomaticVersionUpgrade: make(chan struct{}),
+	}
+	_, db, tmpdir, cleanup := backuptestutils.StartBackupRestoreTestCluster(
+		t, backuptestutils.SingleNode, backuptestutils.WithParams(base.TestClusterArgs{
+			ServerArgs: args,
+		}),
+	)
+	defer cleanup()
+	fmt.Println(tmpdir)
 
-	var aost1 string
-	db.QueryRow(t, "SELECT now()").Scan(&aost1)
+	db.Exec(t, "CREATE TABLE foo (a int)")
+	db.Exec(t, "BACKUP INTO 'nodelocal://1/backup'")
+
+	db.Exec(t, "INSERT INTO foo VALUES (1)")
+	// Round to nearest millisecond timestamp to avoid precision shenanigans
+	// between MacOS and Unix.
+	timeBeforeUpgrade := hlc.Timestamp{WallTime: time.Now().UnixNano() / 1e3 * 1e3}
 	db.Exec(
-		t, "BACKUP INTO ($1, $2, $3) AS OF SYSTEM TIME $4::STRING",
-		collections[0], collections[1], collections[2], aost1,
-	)
-	db.Exec(
-		t, "BACKUP INTO LATEST IN ($1, $2, $3)",
-		collections[0], collections[1], collections[2],
-	)
-
-	aost1TS, err := time.Parse(time.RFC3339, aost1)
-	require.NoError(t, err)
-	aost1Hlc := hlc.Timestamp{WallTime: aost1TS.UnixNano()}
-
-	var fullSubdir string
-	db.QueryRow(
-		t, "SHOW BACKUPS IN ($1, $2, $3)",
-		collections[0], collections[1], collections[2],
-	).Scan(&fullSubdir)
-	require.NotEmpty(t, fullSubdir)
-
-	mem := execCfg.RootMemoryMonitor.MakeBoundAccount()
-	defer mem.Close(ctx)
-
-	// TODO (kev-cao): Remove all following variables during cleanup of
-	// `ResolveBackupManifests` parameters.
-	fullyResolvedBaseDirs, err := backuputils.AppendPaths(collections, fullSubdir)
-	require.NoError(t, err)
-
-	fullyResolvedIncDirs, err := util.MapE(collections, func(uri string) (string, error) {
-		u, err := url.Parse(uri)
-		if err != nil {
-			return "", err
-		}
-		u.Path = backuputils.JoinURLPath(u.Path, "incrementals", fullSubdir)
-		return u.String(), nil
-	})
-	require.NoError(t, err)
-
-	t.Run("resolve backup manifests with latest AOST", func(t *testing.T) {
-		uris, manifests, locality, memSize, err := ResolveBackupManifests(
-			ctx,
-			&execCfg,
-			&mem,
-			collections[0],
-			collections,
-			execCfg.DistSQLSrv.ExternalStorageFromURI,
-			fullSubdir,
-			fullyResolvedBaseDirs,
-			fullyResolvedIncDirs,
-			hlc.Timestamp{},
-			nil, /* encryption */
-			nil, /* kms */
-			username.RootUserName(),
-			false, /* includeSkipped */
-			true,  /* includeCompacted */
-			false, /* isCustomIncLocation */
-		)
-		defer mem.Shrink(ctx, memSize)
-		require.NoError(t, err)
-
-		require.Len(t, uris, 2)
-		require.Len(t, manifests, 2)
-		require.Len(t, locality, 2)
-	})
-
-	t.Run("resolve backup manifests with AOST in middle of chain", func(t *testing.T) {
-		uris, manifests, locality, memSize, err := ResolveBackupManifests(
-			ctx,
-			&execCfg,
-			&mem,
-			collections[0],
-			collections,
-			execCfg.DistSQLSrv.ExternalStorageFromURI,
-			fullSubdir,
-			fullyResolvedBaseDirs,
-			fullyResolvedIncDirs,
-			aost1Hlc,
-			nil, /* encryption */
-			nil, /* kms */
-			username.RootUserName(),
-			false, /* includeSkipped */
-			true,  /* includeCompacted */
-			false, /* isCustomIncLocation */
-		)
-		defer mem.Shrink(ctx, memSize)
-		require.NoError(t, err)
-
-		require.Len(t, uris, 1)
-		require.Len(t, manifests, 1)
-		require.Len(t, locality, 1)
-	})
-}
-
-func TestIndexedResolveBackupManifestsWithCompactedBackups(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	tc, db, _, cleanupFn := backuptestutils.StartBackupRestoreTestCluster(
-		t, backuptestutils.SingleNode,
-	)
-	defer cleanupFn()
-
-	const collectionURI = "nodelocal://1/backup"
-
-	execCfg := tc.Server(0).ApplicationLayer().ExecutorConfig().(sql.ExecutorConfig)
-	mem := execCfg.RootMemoryMonitor.MakeBoundAccount()
-
-	db.Exec(t, "SET CLUSTER SETTING backup.index.read.enabled = true")
-
-	var aostFull string
-	db.QueryRow(t, "SELECT now()").Scan(&aostFull)
-	aostFullTS, err := time.Parse(time.RFC3339, aostFull)
-	require.NoError(t, err)
-	aostFullHlc := hlc.Timestamp{WallTime: aostFullTS.UnixNano()}
-
-	db.Exec(
-		t, "BACKUP INTO $1 AS OF SYSTEM TIME $2::STRING",
-		collectionURI, aostFullHlc.AsOfSystemTime(),
-	)
-	db.Exec(t, "BACKUP INTO LATEST IN $1", collectionURI)
-	db.Exec(t, "BACKUP INTO LATEST IN $1", collectionURI)
-
-	var aostEnd string
-	db.QueryRow(t, "SELECT now()").Scan(&aostEnd)
-	aostEndTS, err := time.Parse(time.RFC3339, aostEnd)
-	require.NoError(t, err)
-	aostEndHlc := hlc.Timestamp{WallTime: aostEndTS.UnixNano()}
-	db.Exec(
-		t, "BACKUP INTO LATEST IN $1 AS OF SYSTEM TIME $2::STRING",
-		collectionURI, aostEndHlc.AsOfSystemTime(),
+		t,
+		fmt.Sprintf(
+			"BACKUP INTO LATEST IN 'nodelocal://1/backup' AS OF SYSTEM TIME '%s'",
+			timeBeforeUpgrade.AsOfSystemTime(),
+		),
 	)
 
-	var fullSubdir string
-	db.QueryRow(
-		t, `SELECT path FROM [SHOW BACKUPS IN $1] ORDER BY path DESC`, collectionURI,
-	).Scan(&fullSubdir)
-	require.NotEmpty(t, fullSubdir)
+	backups := db.QueryStr(
+		t,
+		"SELECT DISTINCT (start_time, end_time) FROM [SHOW BACKUP FROM LATEST IN 'nodelocal://1/backup']",
+	)
+	require.Len(t, backups, 2)
 
-	var compactionJob jobspb.JobID
+	pathBeforeIncSuffixFormat := backuputils.JoinURLPath(
+		"/"+backupbase.DefaultIncrementalsSubdir,
+		backupbase.DateBasedIntoFolderName,
+		backupbase.DateBasedIncFolderName,
+	)
+	var path string
 	db.QueryRow(
 		t,
-		`SELECT crdb_internal.backup_compaction(
-				0, $1, $2, $3::DECIMAL, $4::DECIMAL
-			)`,
-		fmt.Sprintf("BACKUP INTO LATEST IN '%s'", collectionURI),
-		fullSubdir,
-		aostFullHlc.AsOfSystemTime(),
-		aostEndHlc.AsOfSystemTime(),
-	).Scan(&compactionJob)
-	jobutils.WaitForJobToSucceed(t, db, compactionJob)
+		`SELECT path FROM [SHOW BACKUP FILES FROM LATEST IN 'nodelocal://1/backup']
+		WHERE backup_type = 'incremental' LIMIT 1`,
+	).Scan(&path)
+	// Before 25.2, incremental folder names do not contain the suffix, so the
+	// next character after the DateBasedIncFolderName should be the end of the
+	// folder.
+	require.Equal(t, byte('/'), path[len(pathBeforeIncSuffixFormat)])
 
-	// Backup chain: f@t=0, i1@t=1, i2@t=2, i3@t=4, c@t=4
-	// where c compacts i1, i2, and i3.
-	const totalBackups = 5
-	const filesPerManifest = 2 // Opening a manifest requires opening the metadata file and checksum
-	for _, tt := range []struct {
-		includeSkipped   bool
-		includeCompacted bool
-		expectedCount    int
-	}{
-		{
-			includeSkipped:   false,
-			includeCompacted: true,
-			expectedCount:    2,
-		},
-		{
-			includeSkipped:   true,
-			includeCompacted: true,
-			expectedCount:    5,
-		},
-		{
-			includeSkipped:   false,
-			includeCompacted: false,
-			expectedCount:    4,
-		},
-		{
-			includeSkipped:   true,
-			includeCompacted: false,
-			expectedCount:    4,
-		},
-	} {
-		t.Run(
-			fmt.Sprintf("includeSkipped=%t,includeCompacted=%t", tt.includeSkipped, tt.includeCompacted),
-			func(t *testing.T) {
-				baseReadersOpened := tc.Servers[0].MustGetSQLCounter("cloud.readers_opened")
-				uris, manifests, locality, memSize, err := indexedResolveBackupManifests(
-					ctx,
-					&mem,
-					[]string{collectionURI},
-					execCfg.DistSQLSrv.ExternalStorageFromURI,
-					fullSubdir,
-					hlc.Timestamp{},
-					nil, /* encryption */
-					nil, /* kms */
-					username.RootUserName(),
-					tt.includeSkipped,
-					tt.includeCompacted,
-				)
-				defer mem.Shrink(ctx, memSize)
-				require.NoError(t, err)
-				require.Len(t, uris, tt.expectedCount)
-				require.Len(t, manifests, tt.expectedCount)
-				require.Len(t, locality, tt.expectedCount)
+	db.Exec(t, fmt.Sprintf("SET CLUSTER SETTING version = '%s'", clusterversion.V25_2.Version()))
 
-				// When using the index for ResolveBackupManifests, we use the following
-				// flow:
-				// 1. Open the index of every backup in the chain (<totalBackups> files)
-				// 2. Validate and truncate the chain to only keep relevant backups
-				// 3. Read the files required for the manifests of the relevant backups
-				//
-				// So to compute step 3, we take the total number of files opened and
-				// subtract the index files, aka readersOpened - totalBackups.
-				//
-				// And for each manifest, we open <filesPerManifest> files to read the
-				// manifest. So to compute the number of manifests opened, we take
-				// readersOpened - totalBackups and divide by filesPerManifest.
-				readersOpened := tc.Servers[0].MustGetSQLCounter("cloud.readers_opened") - baseReadersOpened
-				manifestsOpened := (readersOpened - totalBackups) / filesPerManifest
-				require.Equal(t, tt.expectedCount, int(manifestsOpened))
-			},
-		)
-	}
+	db.Exec(t, "INSERT INTO foo VALUES (2)")
+	timeAfterUpgrade := hlc.Timestamp{WallTime: time.Now().UnixNano() / 1e3 * 1e3}
+	db.Exec(
+		t,
+		fmt.Sprintf(
+			"BACKUP INTO LATEST IN 'nodelocal://1/backup' AS OF SYSTEM TIME '%s'",
+			timeAfterUpgrade.AsOfSystemTime(),
+		),
+	)
+
+	db.QueryRow(
+		t,
+		`SELECT path FROM [SHOW BACKUP FILES FROM LATEST IN 'nodelocal://1/backup']
+		WHERE backup_type = 'incremental' ORDER BY PATH DESC LIMIT 1`,
+	).Scan(&path)
+	// Before 25.2, incremental folder names do not contain the suffix, so the
+	// next character after the DateBasedIncFolderName should not be the end of
+	// the directory.
+	require.NotEqual(t, byte('/'), path[len(pathBeforeIncSuffixFormat)])
+
+	db.Exec(t, "INSERT INTO foo VALUES (3)")
+	db.Exec(t, "BACKUP INTO LATEST IN 'nodelocal://1/backup'")
+	backups = db.QueryStr(
+		t,
+		"SELECT DISTINCT (start_time, end_time) FROM [SHOW BACKUP FROM LATEST IN 'nodelocal://1/backup']",
+	)
+	require.Len(t, backups, 4)
+
+	db.Exec(t, "DROP TABLE foo")
+	db.Exec(
+		t,
+		fmt.Sprintf(
+			"RESTORE TABLE foo FROM LATEST IN 'nodelocal://1/backup' AS OF SYSTEM TIME '%s'",
+			timeBeforeUpgrade.AsOfSystemTime(),
+		),
+	)
+	rows := db.QueryStr(t, "SELECT a FROM foo")
+	require.Len(t, rows, 1)
+
+	db.Exec(t, "DROP TABLE foo")
+	db.Exec(
+		t,
+		fmt.Sprintf(
+			"RESTORE TABLE foo FROM LATEST IN 'nodelocal://1/backup' AS OF SYSTEM TIME '%s'",
+			timeAfterUpgrade.AsOfSystemTime(),
+		),
+	)
+	rows = db.QueryStr(t, "SELECT a FROM foo")
+	require.Len(t, rows, 2)
+
+	db.Exec(t, "DROP TABLE foo")
+	db.Exec(t, "RESTORE TABLE foo FROM LATEST IN 'nodelocal://1/backup'")
+	rows = db.QueryStr(t, "SELECT a FROM foo")
+	require.Len(t, rows, 3)
 }
+
+// TODO(pbardea): Add tests for resolveBackupCollection.

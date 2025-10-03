@@ -56,7 +56,9 @@
 //   across WorkKinds that is used to reflect their shared need for underlying
 //   resources.
 // - The top-level GrantCoordinator which coordinates grants across these
-//   WorkKinds, for CPU.
+//   WorkKinds. The WorkKinds handled by an instantiation of GrantCoordinator
+//   will differ for single-tenant clusters, and multi-tenant clusters
+//   consisting of (multi-tenant) KV nodes and (single-tenant) SQL nodes.
 //
 // The interfaces involved:
 // - requester: handles all requests for a particular WorkKind. Implemented by
@@ -73,7 +75,8 @@
 //   the lock in WorkQueue).
 // - cpuOverloadIndicator: this serves as an optional additional gate on
 //   granting, by providing an (ideally) instantaneous signal of cpu overload.
-//   The kvSlotAdjuster is the concrete implementation.
+//   The kvSlotAdjuster is the concrete implementation, except for SQL
+//   nodes, where this will be implemented by sqlNodeCPUOverloadIndicator.
 //   CPULoadListener is also implemented by these structs, to listen to
 //   the latest CPU load information from the scheduler.
 //
@@ -94,7 +97,7 @@
 // that is setup here.
 //
 
-// Partial usage example:
+// Partial usage example (regular cluster):
 //
 // var metricRegistry *metric.Registry = ...
 // coord, metrics := admission.NewGrantCoordinator(admission.Options{...})
@@ -129,28 +132,13 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
-// burstQualification is an optional behavior of certain WorkQueues (which
-// implement requester), that differentiate between tenants that are qualified
-// to burst (in their token consumption) and those that are not. This is a
-// dynamic attribute of a tenant, based on token consumption history
-// maintained in the WorkQueue. The ordering of tenants is also affected in
-// that burstable tenants are ordered before non-burstable tenants.
-type burstQualification uint8
-
-const (
-	canBurst burstQualification = iota
-	noBurst
-	numBurstQualifications
-)
-
 // requester is an interface implemented by an object that orders admission
 // work for a particular WorkKind. See WorkQueue for the implementation of
 // requester.
 type requester interface {
 	// hasWaitingRequests returns whether there are any waiting/queued requests
-	// of this WorkKind, and when true, the qualification of the highest
-	// importance getter.
-	hasWaitingRequests() (bool, burstQualification)
+	// of this WorkKind.
+	hasWaitingRequests() bool
 	// granted is called by a granter to grant admission to a single queued
 	// request. It returns > 0 if the grant was accepted, else returns 0. A
 	// grant may not be accepted if the grant raced with request cancellation
@@ -167,17 +155,15 @@ type requester interface {
 // WorkKind will interact with a granter. See admission.go for an overview of
 // how this fits into the overall structure.
 type granter interface {
+	grantKind() grantKind
 	// tryGet is used by a requester to get slots/tokens for a piece of work
 	// that has encountered no waiting/queued work. This is the fast path that
-	// avoids queueing in the requester. The optional parameter
-	// burstQualification identifies the qualification of the getter, which is
-	// useful for certain granters.
+	// avoids queueing in the requester.
 	//
 	// REQUIRES: count > 0. count == 1 for slots.
-	tryGet(getterQual burstQualification, count int64) (granted bool)
+	tryGet(count int64) (granted bool)
 	// returnGrant is called for:
 	// - returning slots after use.
-	// - returning tokens after use, if all the granted tokens were not used.
 	// - returning either slots or tokens when the grant raced with the work
 	//   being canceled, and the grantee did not end up doing any work.
 	//
@@ -214,9 +200,7 @@ type granter interface {
 	// the grantee after its goroutine runs and notices that it has been granted
 	// a slot/tokens. This provides a natural throttling that reduces grant
 	// bursts by taking into immediate account the capability of the goroutine
-	// scheduler to schedule such work. Grant chains are only used for the CPU
-	// resource in the hybrid slot/token scheme, where slots are used for KVWork
-	// and tokens for SQLKVResponseWork and SQLSQLResponseWork.
+	// scheduler to schedule such work.
 	//
 	// In an experiment, using such grant chains reduced burstiness of grants by
 	// 5x and shifted ~2s of latency (at p99) from the scheduler into admission
@@ -233,17 +217,16 @@ type granter interface {
 }
 
 // granterWithLockedCalls is an encapsulation of typically one
-// granter-requester pair. It is used as an internal
+// granter-requester pair, and for kvStoreTokenGranter of two
+// granter-requester pairs (one for each workClass). It is used as an internal
 // implementation detail of the GrantCoordinator. An implementer of
 // granterWithLockedCalls responds to calls from its granter(s) by calling
 // into the GrantCoordinator, which then calls the various *Locked() methods.
 // The demuxHandle is meant to be opaque to the GrantCoordinator, and is used
 // when this interface encapsulates multiple granter-requester pairs -- it is
-// currently unused and will be removed. The
+// currently used only by kvStoreTokenGranter, where it is a workClass. The
 // *Locked() methods are where the differences in slots and various kinds of
 // tokens are handled.
-//
-// TODO(sumeer): remove the demuxHandle.
 type granterWithLockedCalls interface {
 	// tryGetLocked is the real implementation of tryGet from the granter
 	// interface. demuxHandle is an opaque handle that was passed into the
@@ -378,9 +361,8 @@ type elasticCPULimiter interface {
 // expect this to be called every scheduler_latency.sample_period.
 type SchedulerLatencyListener = schedulerlatency.LatencyObserver
 
-// There are two ways we grant admission: using a slot or a token.
-//
-// The slot terminology is akin to a scheduler, where a scheduling
+// grantKind represents the two kind of ways we grant admission: using a slot
+// or a token. The slot terminology is akin to a scheduler, where a scheduling
 // slot must be free for a thread to run. But unlike a scheduler, we don't
 // have visibility into the fact that work execution may be blocked on IO. So
 // a slot can also be viewed as a limit on concurrency of ongoing work. The
@@ -402,6 +384,12 @@ type SchedulerLatencyListener = schedulerlatency.LatencyObserver
 // completion information such as how many tokens were actually used, which
 // can differ from the up front information, and is utilized to adjust the
 // available tokens.
+type grantKind int8
+
+const (
+	slot grantKind = iota
+	token
+)
 
 type grantResult int8
 

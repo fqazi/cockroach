@@ -10,7 +10,6 @@ import (
 	"context"
 	gosql "database/sql"
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
@@ -24,6 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/gcjob"
+	"github.com/cockroachdb/cockroach/pkg/sql/row"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/tests"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -203,8 +203,7 @@ func TestUnsplitRanges(t *testing.T) {
 		gcSucceedFunc func(kvDB *kv.DB, sqlDB *gosql.DB, tableDesc catalog.TableDescriptor, indexSpan roachpb.Span) error
 	}
 
-	const deprecatedTableTruncateChunkSize = 600
-	const numRows = 2*deprecatedTableTruncateChunkSize + 1
+	const numRows = 2*row.TableTruncateChunkSize + 1
 	const numKeys = 3 * numRows
 	const tableName string = "test1"
 
@@ -291,8 +290,6 @@ func TestUnsplitRanges(t *testing.T) {
 		defer sqltestutils.DisableGCTTLStrictEnforcement(t, sqlDB)()
 
 		require.NoError(t, tests.CreateKVTable(sqlDB, tableName, numRows))
-		_, err := sqlDB.Exec(fmt.Sprintf(`ALTER TABLE t.%s SET (schema_locked=false)`, tableName))
-		require.NoError(t, err)
 
 		tableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, keys.SystemSQLCodec, "t", tableName)
 		tableSpan := tableDesc.TableSpan(keys.SystemSQLCodec)

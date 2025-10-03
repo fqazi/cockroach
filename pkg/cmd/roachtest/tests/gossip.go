@@ -368,9 +368,7 @@ func runGossipPeerings(ctx context.Context, t test.Test, c cluster.Cluster) {
 }
 
 func runGossipRestart(ctx context.Context, t test.Test, c cluster.Cluster) {
-	opts := option.DefaultStartOpts()
-	opts.RoachprodOpts.ExtraArgs = []string{"--vmodule=*=1"}
-	c.Start(ctx, t.L(), opts, install.MakeClusterSettings())
+	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings())
 
 	// Repeatedly stop and restart a cluster and verify that we can perform basic
 	// operations. This is stressing the gossiping of the first range descriptor
@@ -390,7 +388,7 @@ func runGossipRestart(ctx context.Context, t test.Test, c cluster.Cluster) {
 		t.L().Printf("%d: restarting all nodes\n", i)
 		// Tell the httpClient our saved session cookies are no longer valid after a restart.
 		g.httpClient.ResetSession()
-		c.Start(ctx, t.L(), opts, install.MakeClusterSettings())
+		c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings())
 	}
 }
 

@@ -107,9 +107,7 @@ func (*columnBackfiller) Resume(output execinfra.RowReceiver) {
 }
 
 // Close is part of the execinfra.Processor interface.
-func (cb *columnBackfiller) Close(ctx context.Context) {
-	cb.ColumnBackfiller.Close(ctx)
-}
+func (*columnBackfiller) Close(context.Context) {}
 
 func (cb *columnBackfiller) doRun(ctx context.Context) *execinfrapb.ProducerMetadata {
 	finishedSpans, err := cb.mainLoop(ctx)
@@ -235,7 +233,7 @@ func GetResumeSpans(
 	}
 
 	if jobID == 0 {
-		log.Dev.Errorf(ctx, "mutation with no job: %d, table desc: %+v", mutationID, tableDesc)
+		log.Errorf(ctx, "mutation with no job: %d, table desc: %+v", mutationID, tableDesc)
 		return nil, nil, 0, errors.AssertionFailedf(
 			"no job found for mutation %d", errors.Safe(mutationID))
 	}

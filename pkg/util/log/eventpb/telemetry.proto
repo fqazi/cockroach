@@ -22,19 +22,9 @@ import "util/log/logpb/event.proto";
 // The comment at the top has a specific format for the doc generator.
 // *Really look at doc.go before modifying this file.*
 
-// TODO (#151948): Move this event definition to
-// `pkg/util/log/eventpb/sql_audit_events.proto` to be in the
-// `SQL Execution Log` channel once the `log.channel_compatibility_mode.enabled`
-// cluster setting is set to false by default and cluster setting is set for
-// removal.
 
 // SampledQuery is the SQL query event logged to the telemetry channel. It
 // contains common SQL event/execution details.
-//
-// Note: in version 26.1, these events will be moved to the `SQL_EXEC` channel.
-// To test compatability before this, set the cluster setting
-// `log.channel_compatibility_mode.enabled` to false. This will send the
-// events to `SQL_EXEC` instead of `TELEMETRY`.
 message SampledQuery {
   CommonEventDetails common = 1 [(gogoproto.nullable) = false, (gogoproto.jsontag) = "", (gogoproto.embed) = true];
   CommonSQLEventDetails sql = 2 [(gogoproto.nullable) = false, (gogoproto.jsontag) = "", (gogoproto.embed) = true];
@@ -416,18 +406,7 @@ message MVCCIteratorStats {
   int64 range_key_skipped_points = 13 [(gogoproto.jsontag) = ",includeempty"];
 }
 
-// TODO (#151948): Move this event definition to
-// `pkg/util/log/eventpb/sql_audit_events.proto` to be in the
-// `SQL Execution Log` channel once the `log.channel_compatibility_mode.enabled`
-// cluster setting is set to false by default and cluster setting is set for
-// removal.
-
 // SampledTransaction is the event logged to telemetry at the end of transaction execution.
-//
-// Note: in version 26.1, these events will be moved to the `SQL_EXEC` channel.
-// To test compatability before this, set the cluster setting
-// `log.channel_compatibility_mode.enabled` to false. This will send the
-// events to `SQL_EXEC` instead of `TELEMETRY`.
 message SampledTransaction {
   // Common contains common event details shared by all log events.
   CommonEventDetails common = 1 [(gogoproto.nullable) = false, (gogoproto.jsontag) = "", (gogoproto.embed) = true];
@@ -608,7 +587,11 @@ message RecoveryEvent {
   // TargetCount is the number of targets the in the BACKUP/RESTORE.
   uint32 target_count = 5 [(gogoproto.jsontag) = ",omitempty"];
 
-  reserved 6; 
+  // DestinationSubdirType is
+  // - latest: if using the latest subdir
+  // - standard: if using a date-based subdir
+  // - custom: if using a custom subdir that's not date-based
+  string destination_subdir_type = 6 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) = "redact:\"nonsensitive\""];
 
   // DestinationStorageTypes are the types of storage that the user is backing
   // up to or restoring from.
@@ -621,7 +604,10 @@ message RecoveryEvent {
   // IsLocalityAware indicates if the BACKUP or RESTORE is locality aware.
   bool is_locality_aware = 9 [(gogoproto.jsontag) = ",omitempty"];
 
-  reserved 10;
+  // AsOfInterval is the time interval in nanoseconds between the statement
+  // timestamp and the timestamp resolved by the AS OF SYSTEM TIME expression.
+  // The interval is expressed in nanoseconds.
+  int64 as_of_interval = 10 [(gogoproto.jsontag) = ",omitempty"];
 
   // WithRevisionHistory is true if the BACKUP includes revision history.
   bool with_revision_history = 11 [(gogoproto.jsontag) = ",omitempty"];
@@ -646,7 +632,9 @@ message RecoveryEvent {
   // values to the payload unless they are properly redacted.
   repeated string options = 16 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) = "redact:\"nonsensitive\""];
 
-  reserved 17;
+  // DebugPauseOn is the type of event that the restore should pause on for
+  // debugging purposes. Currently only "error" is supported.
+  string debug_pause_on = 17 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) = "redact:\"nonsensitive\""];
 
   // Fields that are common to BACKUP and RESTORE jobs.
 
@@ -669,9 +657,13 @@ message RecoveryEvent {
   // Expressed as nanoseconds since the Unix epoch.
   int64 custom_first_run_time = 26 [(gogoproto.jsontag) = ",omitempty"];
 
-  reserved 27;
+  // OnExecutionFailure describes the desired behavior if the schedule fails to
+  // execute.
+  string on_execution_failure = 27 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) = "redact:\"nonsensitive\""];
 
-  reserved 28;
+  // OnPreviousRunning describes the desired behavior if the previously
+  // scheduled BACKUP is still running.
+  string on_previous_running = 28 [(gogoproto.jsontag) = ",omitempty", (gogoproto.moretags) = "redact:\"nonsensitive\""];
 
   // IgnoreExistingBackup is true iff the BACKUP schedule should still be
   // created even if a backup is already present in its destination.

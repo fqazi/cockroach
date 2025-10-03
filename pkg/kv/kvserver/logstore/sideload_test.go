@@ -520,22 +520,22 @@ func TestRaftSSTableSideloadingSideload(t *testing.T) {
 			eng := storage.NewDefaultInMemForTesting()
 			defer eng.Close()
 			sideloaded := newTestingSideloadStorage(eng)
-			postEnts, stats, err := MaybeSideloadEntries(ctx, test.preEnts, sideloaded)
+			postEnts, numSideloaded, size, nonSideloadedSize, err := MaybeSideloadEntries(ctx, test.preEnts, sideloaded)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(addSST.Data) == 0 {
 				t.Fatal("invocation mutated original AddSSTable struct in memory")
 			}
-			require.Equal(t, test.nonSideloadedSize, stats.RegularBytes)
+			require.Equal(t, test.nonSideloadedSize, nonSideloadedSize)
 			var expNumSideloaded int
 			if test.size > 0 {
 				expNumSideloaded = 1
 			}
-			require.Equal(t, expNumSideloaded, stats.SideloadedEntries)
+			require.Equal(t, expNumSideloaded, numSideloaded)
 			require.Equal(t, test.postEnts, postEnts)
-			if test.size != stats.SideloadedBytes {
-				t.Fatalf("expected %d sideloadedSize, but found %d", test.size, stats.SideloadedBytes)
+			if test.size != size {
+				t.Fatalf("expected %d sideloadedSize, but found %d", test.size, size)
 			}
 			actKeys, err := sideloaded.eng.Env().List(sideloaded.Dir())
 			if oserror.IsNotExist(err) {
@@ -575,12 +575,9 @@ func TestSideloadStorageSync(t *testing.T) {
 		// able to emulate crash restart by rolling it back to last synced state.
 		ctx := context.Background()
 		memFS := vfs.NewCrashableMem()
-		settings := cluster.MakeTestingClusterSettings()
-		env, err := fs.InitEnv(ctx, memFS, "", fs.EnvConfig{
-			Version: settings.Version,
-		}, nil /* statsCollector */)
+		env, err := fs.InitEnv(ctx, memFS, "", fs.EnvConfig{}, nil /* statsCollector */)
 		require.NoError(t, err)
-		eng, err := storage.Open(ctx, env, settings, storage.ForTesting)
+		eng, err := storage.Open(ctx, env, cluster.MakeTestingClusterSettings(), storage.ForTesting)
 		require.NoError(t, err)
 		ss := newTestingSideloadStorage(eng)
 
@@ -598,11 +595,9 @@ func TestSideloadStorageSync(t *testing.T) {
 		// Reset filesystem to the last synced state.
 
 		// Emulate process restart. Load from the last synced state.
-		env, err = fs.InitEnv(ctx, crashFS, "", fs.EnvConfig{
-			Version: settings.Version,
-		}, nil /* statsCollector */)
+		env, err = fs.InitEnv(ctx, crashFS, "", fs.EnvConfig{}, nil /* statsCollector */)
 		require.NoError(t, err)
-		eng, err = storage.Open(ctx, env, settings, storage.ForTesting)
+		eng, err = storage.Open(ctx, env, cluster.MakeTestingClusterSettings(), storage.ForTesting)
 		require.NoError(t, err)
 		defer eng.Close()
 		ss = newTestingSideloadStorage(eng)

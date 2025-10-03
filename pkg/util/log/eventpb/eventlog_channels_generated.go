@@ -5,9 +5,6 @@ package eventpb
 import "github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 
 // LoggingChannel implements the EventPayload interface.
-func (m *AlterChangefeed) LoggingChannel() logpb.Channel { return logpb.Channel_TELEMETRY }
-
-// LoggingChannel implements the EventPayload interface.
 func (m *ChangefeedCanceled) LoggingChannel() logpb.Channel { return logpb.Channel_TELEMETRY }
 
 // LoggingChannel implements the EventPayload interface.
@@ -59,9 +56,6 @@ func (m *TenantSharedServiceStart) LoggingChannel() logpb.Channel { return logpb
 func (m *TenantSharedServiceStop) LoggingChannel() logpb.Channel { return logpb.Channel_OPS }
 
 // LoggingChannel implements the EventPayload interface.
-func (m *AggregatedContentionInfo) LoggingChannel() logpb.Channel { return logpb.Channel_SQL_EXEC }
-
-// LoggingChannel implements the EventPayload interface.
 func (m *DebugRecoverReplica) LoggingChannel() logpb.Channel { return logpb.Channel_OPS }
 
 // LoggingChannel implements the EventPayload interface.
@@ -96,14 +90,6 @@ func (m *RoleBasedAuditEvent) LoggingChannel() logpb.Channel { return logpb.Chan
 
 // LoggingChannel implements the EventPayload interface.
 func (m *SensitiveTableAccess) LoggingChannel() logpb.Channel { return logpb.Channel_SENSITIVE_ACCESS }
-
-// LoggingChannel implements the EventPayload interface.
-func (m *UnsafeInternalsAccessed) LoggingChannel() logpb.Channel {
-	return logpb.Channel_SENSITIVE_ACCESS
-}
-
-// LoggingChannel implements the EventPayload interface.
-func (m *UnsafeInternalsDenied) LoggingChannel() logpb.Channel { return logpb.Channel_SENSITIVE_ACCESS }
 
 // LoggingChannel implements the EventPayload interface.
 func (m *QueryExecute) LoggingChannel() logpb.Channel { return logpb.Channel_SQL_EXEC }
@@ -238,9 +224,6 @@ func (m *FinishSchemaChangeRollback) LoggingChannel() logpb.Channel { return log
 
 // LoggingChannel implements the EventPayload interface.
 func (m *ForceDeleteTableDataEntry) LoggingChannel() logpb.Channel { return logpb.Channel_SQL_SCHEMA }
-
-// LoggingChannel implements the EventPayload interface.
-func (m *RefreshMaterializedView) LoggingChannel() logpb.Channel { return logpb.Channel_SQL_SCHEMA }
 
 // LoggingChannel implements the EventPayload interface.
 func (m *RenameDatabase) LoggingChannel() logpb.Channel { return logpb.Channel_SQL_SCHEMA }

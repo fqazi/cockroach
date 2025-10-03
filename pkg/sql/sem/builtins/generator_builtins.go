@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/build"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -24,7 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/lexbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/workloadindexrec"
-	"github.com/cockroachdb/cockroach/pkg/sql/parserutils"
+	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
@@ -141,11 +140,7 @@ var generators = map[string]builtinDefinition{
 			volatility.Stable,
 		),
 	),
-	"crdb_internal.scan": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategoryGenerator,
-			DistsqlBlocklist: true, // applicable only on the gateway
-		},
+	"crdb_internal.scan": makeBuiltin(genProps(),
 		makeGeneratorOverload(
 			tree.ParamTypes{
 				{Name: "start_key", Typ: types.Bytes},
@@ -301,11 +296,7 @@ var generators = map[string]builtinDefinition{
 		),
 	),
 
-	"workload_index_recs": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategoryGenerator,
-			DistsqlBlocklist: true, // applicable only on the gateway
-		},
+	"workload_index_recs": makeBuiltin(genProps(),
 		makeGeneratorOverload(
 			tree.ParamTypes{},
 			WorkloadIndexRecsGeneratorType,
@@ -510,8 +501,7 @@ var generators = map[string]builtinDefinition{
 
 	"crdb_internal.list_sql_keys_in_range": makeBuiltin(
 		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true, // applicable only on the gateway
+			Category: builtinconstants.CategorySystemInfo,
 		},
 		makeGeneratorOverload(
 			tree.ParamTypes{
@@ -526,8 +516,7 @@ var generators = map[string]builtinDefinition{
 
 	"crdb_internal.payloads_for_span": makeBuiltin(
 		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true, // applicable only on the gateway
+			Category: builtinconstants.CategorySystemInfo,
 		},
 		makeGeneratorOverload(
 			tree.ParamTypes{
@@ -541,8 +530,7 @@ var generators = map[string]builtinDefinition{
 	),
 	"crdb_internal.payloads_for_trace": makeBuiltin(
 		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true, // applicable only on the gateway
+			Category: builtinconstants.CategorySystemInfo,
 		},
 		makeGeneratorOverload(
 			tree.ParamTypes{
@@ -555,10 +543,7 @@ var generators = map[string]builtinDefinition{
 		),
 	),
 	"crdb_internal.show_create_all_schemas": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true, // applicable only on the gateway
-		},
+		tree.FunctionProperties{},
 		makeGeneratorOverload(
 			tree.ParamTypes{
 				{Name: "database_name", Typ: types.String},
@@ -572,10 +557,7 @@ The output can be used to recreate a database.'
 		),
 	),
 	"crdb_internal.show_create_all_tables": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true, // applicable only on the gateway
-		},
+		tree.FunctionProperties{},
 		makeGeneratorOverload(
 			tree.ParamTypes{
 				{Name: "database_name", Typ: types.String},
@@ -593,23 +575,8 @@ The output can be used to recreate a database.'
 			volatility.Volatile,
 		),
 	),
-	"crdb_internal.show_create_all_triggers": makeBuiltin(
-		tree.FunctionProperties{},
-		makeGeneratorOverload(
-			tree.ParamTypes{
-				{Name: "database_name", Typ: types.String},
-			},
-			showCreateAllTriggersGeneratorType,
-			makeShowCreateAllTriggersGenerator,
-			`Returns rows of CREATE trigger statements. The output can be used to recreate a database.`,
-			volatility.Volatile,
-		),
-	),
 	"crdb_internal.show_create_all_types": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true, // applicable only on the gateway
-		},
+		tree.FunctionProperties{},
 		makeGeneratorOverload(
 			tree.ParamTypes{
 				{Name: "database_name", Typ: types.String},
@@ -622,36 +589,8 @@ The output can be used to recreate a database.'
 			volatility.Volatile,
 		),
 	),
-	"crdb_internal.show_create_all_routines": makeBuiltin(
-		tree.FunctionProperties{},
-		makeGeneratorOverload(
-			tree.ParamTypes{
-				{Name: "database_name", Typ: types.String},
-			},
-			showCreateAllRoutinesGeneratorType,
-			makeShowCreateAllRoutinesGenerator,
-			"Returns rows of CREATE FUNCTION and CREATE PROCEDURE statements for all functions in the specified database.",
-			volatility.Volatile,
-		),
-	),
-	"crdb_internal.session_pending_jobs": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true, // applicable only on the gateway
-		},
-		makeGeneratorOverload(
-			tree.ParamTypes{},
-			sessionPendingJobsType,
-			makeSessionPendingJobsGenerator,
-			`Returns rows of information about all pending jobs created in the session txn.`,
-			volatility.Volatile,
-		),
-	),
 	"crdb_internal.decode_plan_gist": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true, // applicable only on the gateway
-		},
+		tree.FunctionProperties{},
 		makeGeneratorOverload(
 			tree.ParamTypes{
 				{Name: "gist", Typ: types.String},
@@ -664,9 +603,7 @@ The output can be used to recreate a database.'
 		),
 	),
 	"crdb_internal.decode_external_plan_gist": makeBuiltin(
-		tree.FunctionProperties{
-			DistsqlBlocklist: true, // applicable only on the gateway
-		},
+		tree.FunctionProperties{},
 		makeGeneratorOverload(
 			tree.ParamTypes{
 				{Name: "gist", Typ: types.String},
@@ -716,11 +653,7 @@ The last argument is a JSONB object containing the following optional fields:
 			volatility.Volatile,
 		),
 	),
-	"crdb_internal.tenant_span_stats": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategoryGenerator,
-			DistsqlBlocklist: true, // applicable only on the gateway
-		},
+	"crdb_internal.tenant_span_stats": makeBuiltin(genProps(),
 		// This overload defines a built-in that returns the range count,
 		// approximate disk size, live range bytes, total range bytes,
 		// and live range byte percentage for all tables that belong to the
@@ -778,8 +711,7 @@ The last argument is a JSONB object containing the following optional fields:
 	),
 	"crdb_internal.sstable_metrics": makeBuiltin(
 		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true, // applicable only on the gateway
+			Category: builtinconstants.CategorySystemInfo,
 		},
 		makeGeneratorOverload(
 			tree.ParamTypes{
@@ -796,8 +728,7 @@ The last argument is a JSONB object containing the following optional fields:
 	),
 	"crdb_internal.scan_storage_internal_keys": makeBuiltin(
 		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true, // applicable only on the gateway
+			Category: builtinconstants.CategorySystemInfo,
 		},
 		makeGeneratorOverload(
 			tree.ParamTypes{
@@ -827,9 +758,8 @@ The last argument is a JSONB object containing the following optional fields:
 	),
 	"crdb_internal.execute_internally": makeBuiltin(
 		tree.FunctionProperties{
-			Undocumented:     true,
-			Category:         builtinconstants.CategoryGenerator,
-			DistsqlBlocklist: true, // applicable only on the gateway
+			Undocumented: true,
+			Category:     builtinconstants.CategoryGenerator,
 		},
 		makeInternallyExecutedQueryGeneratorOverload(false /* withSessionBound */, false /* withOverrides */, false /* withTxn */),
 		makeInternallyExecutedQueryGeneratorOverload(true /* withSessionBound */, false /* withOverrides */, false /* withTxn */),
@@ -837,25 +767,6 @@ The last argument is a JSONB object containing the following optional fields:
 		makeInternallyExecutedQueryGeneratorOverload(true /* withSessionBound */, true /* withOverrides */, false /* withTxn */),
 		makeInternallyExecutedQueryGeneratorOverload(false /* withSessionBound */, true /* withOverrides */, true /* withTxn */),
 		makeInternallyExecutedQueryGeneratorOverload(true /* withSessionBound */, true /* withOverrides */, true /* withTxn */),
-	),
-	"crdb_internal.request_transaction_bundle": makeBuiltin(
-		tree.FunctionProperties{
-			Category:         builtinconstants.CategorySystemInfo,
-			DistsqlBlocklist: true,
-		},
-		makeGeneratorOverload(
-			tree.ParamTypes{
-				{Name: "transaction_fingerprint_id", Typ: types.String},
-				{Name: "sampling_probability", Typ: types.Float},
-				{Name: "min_execution_latency", Typ: types.Interval},
-				{Name: "expires_after", Typ: types.Interval},
-				{Name: "redacted", Typ: types.Bool},
-			},
-			txnDiagnosticsRequestGeneratorType,
-			makeTxnDiagnosticsRequestGenerator,
-			"Starts a transaction diagnostic for the transaction fingerprint id",
-			volatility.Volatile,
-		),
 	),
 }
 
@@ -1600,8 +1511,9 @@ func NullGenerator(typ *types.T) (eval.ValueGenerator, error) {
 		return nil, errors.AssertionFailedf("generator expected to return multiple columns")
 	}
 	arrs := make([]*tree.DArray, len(typ.TupleContents()))
-	for i, paramTyp := range typ.TupleContents() {
-		arrs[i] = tree.NewDArrayFromDatums(paramTyp, tree.Datums{tree.DNull})
+	for i := range typ.TupleContents() {
+		arrs[i] = &tree.DArray{}
+		arrs[i].Array = tree.Datums{tree.DNull}
 	}
 	return &multipleArrayValueGenerator{arrays: arrs}, nil
 }
@@ -2903,14 +2815,8 @@ func (p *payloadsForTraceGenerator) Close(_ context.Context) {
 }
 
 var showCreateAllSchemasGeneratorType = types.String
-var showCreateAllTriggersGeneratorType = types.String
 var showCreateAllTypesGeneratorType = types.String
 var showCreateAllTablesGeneratorType = types.String
-var showCreateAllRoutinesGeneratorType = types.String
-var sessionPendingJobsType = types.MakeLabeledTuple(
-	[]*types.T{types.Int, types.String, types.String, types.String},
-	[]string{"job_id", "job_type", "description", "user_name"},
-)
 
 // Phase is used to determine if CREATE statements or ALTER statements
 // are being generated for showCreateAllTables.
@@ -3159,83 +3065,6 @@ func makeShowCreateAllTablesGenerator(
 	}, nil
 }
 
-// showCreateAllTriggersGenerator supports the execution of
-// crdb_internal.show_create_all_triggers(dbName).
-type showCreateAllTriggersGenerator struct {
-	evalPlanner eval.Planner
-	txn         *kv.Txn
-	ids         []tableTriggerPair
-	dbName      string
-	acc         mon.BoundAccount
-
-	// The following variables are updated during
-	// calls to Next() and change throughout the lifecycle of
-	// showCreateAllTriggersGenerator.
-	curr tree.Datum
-	idx  int
-}
-
-// ResolvedType implements the eval.ValueGenerator interface.
-func (s *showCreateAllTriggersGenerator) ResolvedType() *types.T {
-	return showCreateAllTriggersGeneratorType
-}
-
-// Start implements the eval.ValueGenerator interface.
-func (s *showCreateAllTriggersGenerator) Start(ctx context.Context, txn *kv.Txn) error {
-	ids, err := getTriggerIds(
-		ctx, s.evalPlanner, txn, s.dbName, &s.acc)
-
-	if err != nil {
-		return err
-	}
-
-	s.ids = ids
-	s.txn = txn
-	s.idx = -1
-	return nil
-}
-
-// Next implements the eval.ValueGenerator interface.
-func (s *showCreateAllTriggersGenerator) Next(ctx context.Context) (bool, error) {
-	s.idx++
-	if s.idx >= len(s.ids) {
-		return false, nil
-	}
-
-	createStmt, err := getTriggerCreateStatement(
-		ctx, s.evalPlanner, s.txn, s.ids[s.idx], s.dbName)
-
-	if err != nil {
-		return false, err
-	}
-	createStmtStr := string(tree.MustBeDString(createStmt))
-	s.curr = tree.NewDString(createStmtStr + ";")
-	return true, nil
-}
-
-// Values implements the eval.ValueGenerator interface.
-func (s *showCreateAllTriggersGenerator) Values() (tree.Datums, error) {
-	return tree.Datums{s.curr}, nil
-}
-
-// Close implements the eval.ValueGenerator interface.
-func (s *showCreateAllTriggersGenerator) Close(ctx context.Context) {
-	s.acc.Close(ctx)
-}
-
-// makeShowCreateAllTriggersGenerator creates a generator to support the
-// crdb_internal.show_create_all_triggers(dbName) builtin.
-func makeShowCreateAllTriggersGenerator(
-	ctx context.Context, evalCtx *eval.Context, args tree.Datums,
-) (eval.ValueGenerator, error) {
-	dbName := string(tree.MustBeDString(args[0]))
-	return &showCreateAllTriggersGenerator{
-		evalPlanner: evalCtx.Planner,
-		dbName:      dbName,
-		acc:         evalCtx.Planner.Mon().MakeBoundAccount(),
-	}, nil
-}
-
 // showCreateAllTypesGenerator supports the execution of
 // crdb_internal.show_create_all_types(dbName).
 type showCreateAllTypesGenerator struct {
@@ -3314,145 +3143,6 @@ func makeShowCreateAllTypesGenerator(
 		dbName:      dbName,
 		acc:         evalCtx.Planner.Mon().MakeBoundAccount(),
 	}, nil
-}
-
-// ShowCreateAllRoutinesGenerator supports the execution of
-// crdb_internal.show_create_all_routines(dbName).
-type showCreateAllRoutinesGenerator struct {
-	evalPlanner  eval.Planner
-	txn          *kv.Txn
-	dbName       string
-	acc          mon.BoundAccount
-	functionIds  []int64
-	procedureIds []int64
-
-	// The following could be updated during the generator's lifecycle
-	// by calls to Next()
-	curr     tree.Datum
-	idxFuncs int
-	idxProcs int
-}
-
-// ResolvedType implements the eval.ValueGenerator interface.
-func (s *showCreateAllRoutinesGenerator) ResolvedType() *types.T {
-	return showCreateAllRoutinesGeneratorType
-}
-
-// Start implements the eval.ValueGenerator interface.
-func (s *showCreateAllRoutinesGenerator) Start(ctx context.Context, txn *kv.Txn) error {
-	functionIds, procedureIds, err := getRoutineCreateStatementIds(ctx, s.evalPlanner, txn, s.dbName, &s.acc)
-	if err != nil {
-		return err
-	}
-	s.functionIds = functionIds
-	s.procedureIds = procedureIds
-	s.txn = txn
-	s.idxFuncs = -1
-	s.idxProcs = -1
-
-	return nil
-}
-
-func (s *showCreateAllRoutinesGenerator) Next(ctx context.Context) (bool, error) {
-	s.idxFuncs++
-	if s.idxFuncs < len(s.functionIds) {
-		createStmt, err := getFunctionCreateStatement(
-			ctx, s.evalPlanner, s.txn, s.functionIds[s.idxFuncs], s.dbName,
-		)
-		if err != nil {
-			return false, err
-		}
-		createStmtStr := string(tree.MustBeDString(createStmt))
-		s.curr = tree.NewDString(createStmtStr + ";")
-		return true, nil
-	}
-
-	s.idxProcs++
-	if s.idxProcs < len(s.procedureIds) {
-		createStmt, err := getProcedureCreateStatement(
-			ctx, s.evalPlanner, s.txn, s.procedureIds[s.idxProcs], s.dbName,
-		)
-		if err != nil {
-			return false, err
-		}
-		createStmtStr := string(tree.MustBeDString(createStmt))
-		s.curr = tree.NewDString(createStmtStr + ";")
-		return true, nil
-	}
-
-	return false, nil
-}
-
-// Values implements the eval.ValueGenerator interface.
-func (s *showCreateAllRoutinesGenerator) Values() (tree.Datums, error) {
-	return tree.Datums{s.curr}, nil
-}
-
-// Close implements the eval.ValueGenerator interface.
-func (s *showCreateAllRoutinesGenerator) Close(ctx context.Context) {
-	s.acc.Close(ctx)
-}
-
-// makeShowCreateAllRoutinesGenerator creates a generator to support the
-// crdb_internal.show_create_all_routines(dbName) builtin.
-// We use the timestamp of when the generator is created as the
-// timestamp to pass to AS OF SYSTEM TIME for looking up the create routine
-func makeShowCreateAllRoutinesGenerator(
-	ctx context.Context, evalCtx *eval.Context, args tree.Datums,
-) (eval.ValueGenerator, error) {
-	dbName := string(tree.MustBeDString(args[0]))
-	return &showCreateAllRoutinesGenerator{
-		evalPlanner: evalCtx.Planner,
-		dbName:      dbName,
-		acc:         evalCtx.Planner.Mon().MakeBoundAccount(),
-	}, nil
-}
-
-func makeSessionPendingJobsGenerator(
-	ctx context.Context, evalCtx *eval.Context, args tree.Datums,
-) (eval.ValueGenerator, error) {
-	records := []jobspb.PendingJob{{}} // Next() always pops first, so pad a zero.
-	if err := evalCtx.SessionAccessor.ForEachSessionPendingJob(func(r jobspb.PendingJob) error {
-		records = append(records, r)
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return &sessionPendingJobsGenerator{
-		jobs: records,
-	}, nil
-}
-
-type sessionPendingJobsGenerator struct {
-	jobs []jobspb.PendingJob
-}
-
-// ResolvedType implements the eval.ValueGenerator interface.
-func (s *sessionPendingJobsGenerator) ResolvedType() *types.T {
-	return sessionPendingJobsType
-}
-
-// Start implements the eval.ValueGenerator interface.
-func (s *sessionPendingJobsGenerator) Start(ctx context.Context, txn *kv.Txn) error {
-	return nil
-}
-
-func (s *sessionPendingJobsGenerator) Next(ctx context.Context) (bool, error) {
-	s.jobs = s.jobs[1:]
-	return len(s.jobs) > 0, nil
-}
-
-// Values implements the eval.ValueGenerator interface.
-func (s *sessionPendingJobsGenerator) Values() (tree.Datums, error) {
-	return tree.Datums{tree.NewDInt(tree.DInt(s.jobs[0].JobID)),
-		tree.NewDString(s.jobs[0].Type.String()),
-		tree.NewDString(s.jobs[0].Description),
-		tree.NewDString(s.jobs[0].Username.Normalized()),
-	}, nil
-}
-
-// Close implements the eval.ValueGenerator interface.
-func (s *sessionPendingJobsGenerator) Close(ctx context.Context) {
 }
 
 // identGenerator supports the execution of
@@ -4079,14 +3769,19 @@ func makeInternallyExecutedQueryGeneratorOverload(
 			// internal executor will parse the query too, but we'd get an
 			// assertion failure error if we gave it more than one statement -
 			// we catch those cases here.
-			stmts, err := parserutils.Parse(query)
+			stmts, err := parser.Parse(query)
 			if err != nil {
 				return nil, err
 			}
 			if len(stmts) != 1 {
 				return nil, errors.Newf("only one statement is supported, %d were given", len(stmts))
 			}
-			if !tree.UserStmtAllowedForInternalExecutor(stmts[0].AST) {
+			if stmts[0].AST.StatementReturnType() == tree.Ack {
+				// We want to disallow statements that modify txn state (like
+				// BEGIN and COMMIT). Such statements (as well as some others
+				// like changing cluster settings and dealing with prepared
+				// statements) have the Ack return type, so we'll lean on the
+				// safe side and prohibit them all.
 				return nil, errors.New("this statement is disallowed")
 			}
 			var sessionBound bool
@@ -4217,136 +3912,4 @@ func (qi *internallyExecutedQueryIterator) Close(context.Context) {
 // ResolvedType implements the eval.ValueGenerator interface.
 func (qi *internallyExecutedQueryIterator) ResolvedType() *types.T {
 	return internallyExecutedQueryGeneratorType
-}
-
-func makeTxnDiagnosticsRequestGenerator(
-	ctx context.Context, evalCtx *eval.Context, args tree.Datums,
-) (eval.ValueGenerator, error) {
-	hasPriv, shouldRedact, err := evalCtx.SessionAccessor.HasViewActivityOrViewActivityRedactedRole(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	txnFingerprintIdStr := string(tree.MustBeDString(args[0]))
-	samplingProbability := float64(tree.MustBeDFloat(args[1]))
-	minExecutionLatency := tree.MustBeDInterval(args[2])
-	expiresAfter := tree.MustBeDInterval(args[3])
-	redacted := bool(tree.MustBeDBool(args[4]))
-	txnFingerprintId, err := strconv.ParseUint(txnFingerprintIdStr, 16, 64)
-	if err != nil {
-		return nil, errors.New("invalid transaction fingerprint id: must be a hex encoded representation of a transaction fingerprint id")
-	}
-	query := `
-SELECT jsonb_array_elements_text(metadata->'stmtFingerprintIDs') as stmt_fingerprint_id
-FROM (
-	SELECT metadata from crdb_internal.transaction_statistics
-	WHERE fingerprint_id = decode($1, 'hex')
-	LIMIT 1
-) t
-`
-	it, err := evalCtx.Planner.QueryIteratorEx(ctx, "get_txn_fingerprint", sessiondata.NoSessionDataOverride, query, txnFingerprintIdStr)
-	if err != nil {
-		return &txnDiagnosticsRequestGenerator{requestId: 0, created: false}, err
-	}
-
-	var stmtFPs []uint64
-	var ok, found bool
-	for ok, err = it.Next(ctx); ok; ok, err = it.Next(ctx) {
-		if err != nil {
-			return nil, err
-		}
-		found = true
-		id := string(tree.MustBeDString(it.Cur()[0]))
-		value, err := strconv.ParseUint(id, 16, 64)
-		if err != nil {
-			return nil, err
-		}
-		stmtFPs = append(stmtFPs, value)
-	}
-
-	if shouldRedact {
-		if !redacted {
-			return nil, pgerror.Newf(
-				pgcode.InsufficientPrivilege,
-				"users with VIEWACTIVITYREDACTED privilege can only request redacted statement bundles",
-			)
-		}
-	} else if !hasPriv {
-		return nil, pgerror.Newf(
-			pgcode.InsufficientPrivilege,
-			"requesting statement bundle requires VIEWACTIVITY privilege",
-		)
-	}
-
-	var username string
-	if sd := evalCtx.SessionData(); sd != nil {
-		username = sd.User().Normalized()
-	}
-	reqId, err := evalCtx.TxnDiagnosticsRequestInserter(
-		ctx,
-		txnFingerprintId,
-		stmtFPs,
-		username,
-		samplingProbability,
-		time.Duration(minExecutionLatency.Duration.Nanos()),
-		time.Duration(expiresAfter.Duration.Nanos()),
-		redacted)
-	if err != nil {
-		return nil, err
-	}
-
-	if !found {
-		return &txnDiagnosticsRequestGenerator{created: false}, nil
-	}
-	return &txnDiagnosticsRequestGenerator{requestId: reqId, created: true}, nil
-}
-
-// txnDiagnosticsRequestGenerator supports the execution of request_transaction_bundle.
-var txnDiagnosticsRequestGeneratorType = types.MakeLabeledTuple(
-	[]*types.T{types.Int, types.Bool},
-	[]string{"request_id", "created"},
-)
-
-type txnDiagnosticsRequestGenerator struct {
-	requestId int
-	created   bool
-	called    bool
-}
-
-// ResolvedType implements the eval.ValueGenerator interface.
-func (g *txnDiagnosticsRequestGenerator) ResolvedType() *types.T {
-	return txnDiagnosticsRequestGeneratorType
-}
-
-// Start implements the eval.ValueGenerator interface.
-func (g *txnDiagnosticsRequestGenerator) Start(ctx context.Context, txn *kv.Txn) error {
-	return nil
-}
-
-// Next implements the eval.ValueGenerator interface.
-func (g *txnDiagnosticsRequestGenerator) Next(ctx context.Context) (bool, error) {
-	if g.called {
-		return false, nil
-	}
-	g.called = true
-	return true, nil
-}
-
-// Values implements the eval.ValueGenerator interface.
-func (g *txnDiagnosticsRequestGenerator) Values() (tree.Datums, error) {
-	var requestIdDatum tree.Datum
-	if g.created {
-		requestIdDatum = tree.NewDInt(tree.DInt(g.requestId))
-	} else {
-		requestIdDatum = tree.DNull
-	}
-
-	return tree.Datums{
-		requestIdDatum,
-		tree.MakeDBool(tree.DBool(g.created)),
-	}, nil
-}
-
-// Close implements the eval.ValueGenerator interface.
-func (g *txnDiagnosticsRequestGenerator) Close(ctx context.Context) {
 }

@@ -205,10 +205,6 @@ func (t Table) GetResolvedName() tree.TableName {
 type BatchedTuples struct {
 	// NumBatches is the number of batches of tuples.
 	NumBatches int
-	// MayContainDuplicates is a flag indicating whether the tuples may contain
-	// keys that violate uniqueness constraints. If true, the data loader will
-	// use INSERT ... ON CONFLICT DO NOTHING statements.
-	MayContainDuplicates bool
 	// FillBatch is a function to deterministically compute a columnar-batch of
 	// tuples given its index.
 	//

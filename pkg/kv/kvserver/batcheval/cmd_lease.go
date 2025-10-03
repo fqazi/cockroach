@@ -76,7 +76,7 @@ func evalNewLease(
 			acquisitions, approxSize := rec.GetConcurrencyManager().OnRangeLeaseTransferEval()
 			log.VEventf(ctx, 2, "upgrading durability of %d locks", len(acquisitions))
 			if approxSize > durabilityUpgradeLimit {
-				log.KvExec.Warningf(ctx,
+				log.Warningf(ctx,
 					"refusing to upgrade lock durability of %d locks since approximate lock size of %d byte exceeds %d bytes",
 					len(acquisitions),
 					approxSize,
@@ -84,7 +84,7 @@ func evalNewLease(
 			} else {
 				for _, acq := range acquisitions {
 					if err := storage.MVCCAcquireLock(ctx, readWriter,
-						&acq.Txn, acq.IgnoredSeqNums, acq.Strength, acq.Key, ms, 0, 0, true /* allowSequenceNumberRegression */); err != nil {
+						&acq.Txn, acq.IgnoredSeqNums, acq.Strength, acq.Key, ms, 0, 0); err != nil {
 						return newFailedLeaseTrigger(isTransfer), err
 					}
 				}

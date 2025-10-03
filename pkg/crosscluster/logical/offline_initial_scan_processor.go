@@ -141,9 +141,7 @@ func (o *offlineInitialScanProcessor) setup(ctx context.Context) error {
 		true,            /* writeAtBatchTs */
 		true,            /* splitAndScatterRanges */
 		o.FlowCtx.Cfg.BackupMonitor.MakeConcurrentBoundAccount(),
-		o.FlowCtx.Cfg.BulkSenderLimiter,
-		nil,
-	)
+		o.FlowCtx.Cfg.BulkSenderLimiter)
 	if err != nil {
 		return err
 	}
@@ -204,7 +202,7 @@ func (o *offlineInitialScanProcessor) Start(ctx context.Context) {
 		return
 	}
 
-	log.Dev.Infof(ctx, "starting offline initial scan writer for partition %s", o.spec.PartitionSpec.PartitionID)
+	log.Infof(ctx, "starting offline initial scan writer for partition %s", o.spec.PartitionSpec.PartitionID)
 
 	// We use a different context for the subscription here so
 	// that we can explicitly cancel it.
@@ -213,7 +211,7 @@ func (o *offlineInitialScanProcessor) Start(ctx context.Context) {
 	o.workerGroup = ctxgroup.WithContext(o.Ctx())
 	o.workerGroup.GoCtx(func(_ context.Context) error {
 		if err := o.subscription.Subscribe(subscriptionCtx); err != nil {
-			log.Dev.Infof(o.Ctx(), "subscription completed. Error: %s", err)
+			log.Infof(o.Ctx(), "subscription completed. Error: %s", err)
 			o.sendError(errors.Wrap(err, "subscription"))
 		}
 		return nil
@@ -223,7 +221,7 @@ func (o *offlineInitialScanProcessor) Start(ctx context.Context) {
 		pprof.Do(ctx, pprof.Labels("proc", fmt.Sprintf("%d", o.ProcessorID)), func(ctx context.Context) {
 			for event := range o.subscription.Events() {
 				if err := o.handleEvent(ctx, event); err != nil {
-					log.Dev.Infof(o.Ctx(), "consumer completed. Error: %s", err)
+					log.Infof(o.Ctx(), "consumer completed. Error: %s", err)
 					o.sendError(errors.Wrap(err, "consume events"))
 				}
 			}
@@ -281,7 +279,7 @@ func (o *offlineInitialScanProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.P
 
 func (o *offlineInitialScanProcessor) MoveToDrainingAndLogError(err error) {
 	if err != nil {
-		log.Dev.Infof(o.Ctx(), "gracefully draining with error: %s", err)
+		log.Infof(o.Ctx(), "gracefully draining with error: %s", err)
 	}
 	o.MoveToDraining(err)
 }
@@ -315,7 +313,7 @@ func (o *offlineInitialScanProcessor) close() {
 	// worker group. The client close and stopCh close above should result
 	// in exit signals being sent to all relevant goroutines.
 	if err := o.workerGroup.Wait(); err != nil {
-		log.Dev.Errorf(o.Ctx(), "error on close(): %s", err)
+		log.Errorf(o.Ctx(), "error on close(): %s", err)
 	}
 
 	if o.batcher != nil {
@@ -332,7 +330,7 @@ func (o *offlineInitialScanProcessor) sendError(err error) {
 	select {
 	case o.errCh <- err:
 	default:
-		log.Dev.VInfof(o.Ctx(), 2, "dropping additional error: %s", err)
+		log.VInfof(o.Ctx(), 2, "dropping additional error: %s", err)
 	}
 }
 
@@ -351,7 +349,7 @@ func (o *offlineInitialScanProcessor) handleEvent(
 	case crosscluster.SSTableEvent, crosscluster.DeleteRangeEvent:
 		return errors.AssertionFailedf("unexpected event for offline initial scan: %v", event)
 	case crosscluster.SplitEvent:
-		log.Dev.Infof(o.Ctx(), "SplitEvent received on logical replication stream")
+		log.Infof(o.Ctx(), "SplitEvent received on logical replication stream")
 	default:
 		return errors.Newf("unknown streaming event type %v", event.Type())
 	}
@@ -379,9 +377,7 @@ func (o *offlineInitialScanProcessor) checkpoint(
 	if err := o.flushBatch(ctx); err != nil {
 		return errors.Wrap(err, "flushing batcher on checkpoint")
 	}
-	if err := o.batcher.Reset(ctx); err != nil {
-		return errors.Wrap(err, "resetting batcher on checkpoint")
-	}
+	o.batcher.Reset(ctx)
 
 	select {
 	case o.checkpointCh <- offlineCheckpoint{
@@ -413,9 +409,7 @@ func (o *offlineInitialScanProcessor) flushBatch(ctx context.Context) error {
 	if err := o.batcher.Flush(ctx); err != nil {
 		return err
 	}
-	if err := o.batcher.Reset(ctx); err != nil {
-		return errors.Wrap(err, "resetting batcher after flush")
-	}
+	o.batcher.Reset(ctx)
 	o.lastKeyAdded = roachpb.Key{}
 	return nil
 }

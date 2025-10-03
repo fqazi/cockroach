@@ -363,7 +363,7 @@ func weakEqualf(t *testing.T, successes int64, count int64, s string, id int) {
 		require.Equalf(t, successes, count, s, id)
 	} else {
 		if successes != count {
-			log.KvExec.Warningf(context.Background(), "Not equal, expected %d, got %d for %s %d", successes, count, s, id)
+			log.Warningf(context.Background(), "Not equal, expected %d, got %d for %s %d", successes, count, s, id)
 		}
 	}
 }
@@ -880,7 +880,7 @@ func TestLearnerSnapshotFailsRollback(t *testing.T) {
 		case roachpb.NON_VOTER:
 			_, err = tc.AddNonVoters(scratchStartKey, tc.Target(1))
 		default:
-			log.KvExec.Fatalf(ctx, "unexpected replicaType: %s", replicaType)
+			log.Fatalf(ctx, "unexpected replicaType: %s", replicaType)
 		}
 
 		if !testutils.IsError(err, `remote couldn't accept snapshot`) {
@@ -926,10 +926,7 @@ func testRaftSnapshotsToNonVoters(t *testing.T, drainReceivingNode bool) {
 
 	tc := testcluster.StartTestCluster(
 		t, 2, base.TestClusterArgs{
-			ServerArgs: base.TestServerArgs{
-				DefaultDRPCOption: base.TestDRPCDisabled,
-				Knobs:             knobs,
-			},
+			ServerArgs:      base.TestServerArgs{Knobs: knobs},
 			ReplicationMode: base.ReplicationManual,
 		},
 	)
@@ -1026,7 +1023,7 @@ func testRaftSnapshotsToNonVoters(t *testing.T, drainReceivingNode bool) {
 	require.Equal(t, receiverMapDelta[""], receiverMapDelta[".recovery"])
 }
 
-func drain(ctx context.Context, t *testing.T, client serverpb.RPCAdminClient, drainingNodeID int) {
+func drain(ctx context.Context, t *testing.T, client serverpb.AdminClient, drainingNodeID int) {
 	stream, err := client.Drain(ctx, &serverpb.DrainRequest{
 		NodeId:  strconv.Itoa(drainingNodeID),
 		DoDrain: true,
@@ -1053,9 +1050,6 @@ func TestSnapshotsToDrainingNodes(t *testing.T) {
 		tc := testcluster.StartTestCluster(
 			t, 2, base.TestClusterArgs{
 				ReplicationMode: base.ReplicationManual,
-				ServerArgs: base.TestServerArgs{
-					DefaultDRPCOption: base.TestDRPCDisabled,
-				},
 			},
 		)
 		defer tc.Stopper().Stop(ctx)
@@ -1747,7 +1741,7 @@ func TestLearnerOrJointConfigAdminRelocateRange(t *testing.T) {
 		desc := tc.LookupRangeOrFatal(t, scratchStartKey)
 		repl, err := tc.GetFirstStoreFromServer(t, 0).GetReplica(desc.RangeID)
 		require.NoError(t, err)
-		if repl.TestingHasOutstandingLearnerSnapshotInFlight() {
+		if repl.HasOutstandingLearnerSnapshotInFlightForTesting() {
 			return errors.Errorf("outstanding learner snapshot in flight %s", desc)
 		}
 		return nil
@@ -2225,48 +2219,41 @@ func getExpectedSnapshotSizeBytes(
 	b := originStore.TODOEngine().NewWriteBatch()
 	defer b.Close()
 
-	selOpts := rditer.SelectOpts{
-		Ranged: rditer.SelectRangedOptions{
-			SystemKeys: true,
-			LockTable:  true,
-			UserKeys:   true,
-		},
-		ReplicatedByRangeID:   true,
-		UnreplicatedByRangeID: false,
-	}
-	err = rditer.IterateReplicaKeySpans(ctx, snap.State.Desc, snap.EngineSnap, selOpts, func(iter storage.EngineIterator, _ roachpb.Span) error {
-		var err error
-		for ok := true; ok && err == nil; ok, err = iter.NextEngineKey() {
-			hasPoint, hasRange := iter.HasPointAndRange()
+	err = rditer.IterateReplicaKeySpans(
+		ctx, snap.State.Desc, snap.EngineSnap, true /* replicatedOnly */, rditer.ReplicatedSpansAll,
+		func(iter storage.EngineIterator, _ roachpb.Span) error {
+			var err error
+			for ok := true; ok && err == nil; ok, err = iter.NextEngineKey() {
+				hasPoint, hasRange := iter.HasPointAndRange()
 
-			if hasPoint {
-				unsafeKey, err := iter.UnsafeEngineKey()
-				if err != nil {
-					return err
-				}
-				v, err := iter.UnsafeValue()
-				if err != nil {
-					return err
-				}
-				if err := b.PutEngineKey(unsafeKey, v); err != nil {
-					return err
-				}
-			}
-			if hasRange && iter.RangeKeyChanged() {
-				bounds, err := iter.EngineRangeBounds()
-				if err != nil {
-					return err
-				}
-				for _, rkv := range iter.EngineRangeKeys() {
-					err := b.PutEngineRangeKey(bounds.Key, bounds.EndKey, rkv.Version, rkv.Value)
+				if hasPoint {
+					unsafeKey, err := iter.UnsafeEngineKey()
 					if err != nil {
 						return err
 					}
+					v, err := iter.UnsafeValue()
+					if err != nil {
+						return err
+					}
+					if err := b.PutEngineKey(unsafeKey, v); err != nil {
+						return err
+					}
+				}
+				if hasRange && iter.RangeKeyChanged() {
+					bounds, err := iter.EngineRangeBounds()
+					if err != nil {
+						return err
+					}
+					for _, rkv := range iter.EngineRangeKeys() {
+						err := b.PutEngineRangeKey(bounds.Key, bounds.EndKey, rkv.Version, rkv.Value)
+						if err != nil {
+							return err
+						}
+					}
 				}
 			}
-		}
-		return err
-	})
+			return err
+		})
 	return int64(b.Len()), err
 }
 

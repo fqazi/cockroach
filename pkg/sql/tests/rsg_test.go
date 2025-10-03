@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl"
 	"github.com/cockroachdb/cockroach/pkg/internal/rsg"
 	"github.com/cockroachdb/cockroach/pkg/internal/sqlsmith"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -202,10 +201,6 @@ func (db *verifyFormatDB) execWithResettableTimeout(
 
 	defer db.Incr(sql)()
 
-	var cancel context.CancelCauseFunc
-	ctx, cancel = context.WithCancelCause(ctx)
-	defer cancel(nil)
-
 	funcdone := make(chan error, 1)
 	go func() {
 		_, err := db.db.ExecContext(ctx, sql)
@@ -269,8 +264,7 @@ func (db *verifyFormatDB) execWithResettableTimeout(
 						// 2 minute wait and miss potential hangs (if the test times out first).
 						// Whereas this approach will wait 2 minutes after the completion of
 						// (1), only waiting an extra second more.
-						remainingDurationSinceLastStmt := db.mu.lastCompletedStmt.Add(duration).Sub(timeutil.Now())
-						targetDuration = duration - remainingDurationSinceLastStmt
+						targetDuration = duration - db.mu.lastCompletedStmt.Add(duration).Sub(timeutil.Now())
 						// Avoid having super tight spins, wait at least a second.
 						if targetDuration <= time.Second {
 							targetDuration = time.Second
@@ -279,13 +273,6 @@ func (db *verifyFormatDB) execWithResettableTimeout(
 						maxResets -= 1
 						return nil
 					}
-				}
-				cancel(errors.Newf("cancelling query after %v", duration))
-				select {
-				case <-funcdone:
-					return nil
-				case <-time.After(5 * time.Second):
-					t.Logf("didn't respect context cancellation within 5 seconds: %s", sql)
 				}
 				b := allstacks.GetWithBuf(make([]byte, 1024*1024))
 				t.Logf("%s\n", b)
@@ -356,6 +343,11 @@ func TestRandomSyntaxGeneration(t *testing.T) {
 		if strings.Contains(s, "EXPERIMENTAL SCRUB DATABASE SYSTEM") {
 			return errors.New("See #43693")
 		}
+		if strings.Contains(s, "CHECK EXTERNAL CONNECTION") {
+			// `CHECK EXTERNAL CONNECTION` is fixed by PR #149260 on master, but the fix does not
+			// meet the backport policy.
+			return errors.New("See #147876")
+		}
 		// Recreate the database on every run in case it was renamed in
 		// a previous run. Should always succeed.
 		if err := db.exec(t, ctx, `CREATE DATABASE IF NOT EXISTS ident`); err != nil {
@@ -421,10 +413,6 @@ func TestRandomSyntaxFunctions(t *testing.T) {
 				case "st_frechetdistance", "st_buffer":
 					// Some spatial function are slow and testing them here
 					// is not worth it.
-					continue
-				case "trigger_in", "trigger_out":
-					// Skip trigger I/O functions since we can't generate random trigger
-					// arguments.
 					continue
 				case "crdb_internal.reset_sql_stats",
 					"crdb_internal.check_consistency",
@@ -898,17 +886,6 @@ func testRandomSyntax(
 	}
 	srv, rawDB, _ := serverutils.StartServer(t, params)
 	defer srv.Stopper().Stop(ctx)
-	if srv.StartedDefaultTestTenant() {
-		// If we started a test tenant, then disable rate limiting for it (we're
-		// going to be slamming the server with many queries, and we don't want
-		// for them to be artificially delayed).
-		tenID := serverutils.TestTenantID()
-		_, err := srv.SystemLayer().SQLConn(t).Exec(
-			"ALTER TENANT [$1] GRANT CAPABILITY exempt_from_rate_limiting", tenID.ToUint64())
-		require.NoError(t, err)
-		expCaps := map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.ExemptFromRateLimiting: "true"}
-		serverutils.WaitForTenantCapabilities(t, srv, tenID, expCaps, "exempt_from_rate_limiting")
-	}
 	db := &verifyFormatDB{db: rawDB}
 	// If the test fails we can log the previous set of statements.
 	defer func() {

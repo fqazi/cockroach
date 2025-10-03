@@ -94,11 +94,6 @@ func (v verifyingLockTable) AcquireLock(acq *roachpb.LockAcquisition) error {
 	return v.lt.AcquireLock(acq)
 }
 
-// MarkIneligibleForExport implements the lockTable interface.
-func (v verifyingLockTable) MarkIneligibleForExport(acq *roachpb.LockAcquisition) error {
-	return v.lt.MarkIneligibleForExport(acq)
-}
-
 // UpdateLocks implements the lockTable interface.
 func (v verifyingLockTable) UpdateLocks(up *roachpb.LockUpdate) error {
 	defer v.lt.verify()
@@ -118,7 +113,7 @@ func (v verifyingLockTable) QueryLockTableState(
 }
 
 func (v verifyingLockTable) ExportUnreplicatedLocks(
-	span roachpb.Span, exporter func(*roachpb.LockAcquisition) bool,
+	span roachpb.Span, exporter func(*roachpb.LockAcquisition),
 ) {
 	v.lt.ExportUnreplicatedLocks(span, exporter)
 }

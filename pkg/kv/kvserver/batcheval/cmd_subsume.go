@@ -10,6 +10,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
@@ -188,7 +189,7 @@ func Subsume(
 		durabilityUpgradeLimit := concurrency.GetMaxLockFlushSize(&cArgs.EvalCtx.ClusterSettings().SV)
 		acquisitions, approxSize := cArgs.EvalCtx.GetConcurrencyManager().OnRangeSubsumeEval()
 		if approxSize > durabilityUpgradeLimit {
-			log.KvExec.Warningf(ctx,
+			log.Warningf(ctx,
 				"refusing to upgrade lock durability of %d locks since approximate lock size of %d byte exceeds %d bytes",
 				len(acquisitions),
 				approxSize,
@@ -198,7 +199,7 @@ func Subsume(
 			statsDelta := enginepb.MVCCStats{}
 			for _, acq := range acquisitions {
 				if err := storage.MVCCAcquireLock(ctx, readWriter,
-					&acq.Txn, acq.IgnoredSeqNums, acq.Strength, acq.Key, &statsDelta, 0, 0, true /* allowSequenceNumberRegression */); err != nil {
+					&acq.Txn, acq.IgnoredSeqNums, acq.Strength, acq.Key, &statsDelta, 0, 0); err != nil {
 					return result.Result{}, err
 				}
 			}
@@ -244,7 +245,9 @@ func Subsume(
 	// Set DoTimelyApplicationToAllReplicas so that merges are applied on all
 	// replicas. This is needed since Replica.AdminMerge calls
 	// waitForApplication when sending a kvpb.SubsumeRequest.
-	pd.Replicated.DoTimelyApplicationToAllReplicas = true
+	if cArgs.EvalCtx.ClusterSettings().Version.IsActive(ctx, clusterversion.V25_1_AddRangeForceFlushKey) {
+		pd.Replicated.DoTimelyApplicationToAllReplicas = true
+	}
 	pd.Local.RepopulateSubsumeResponseLAI = args.PreserveUnreplicatedLocks
 	return pd, nil
 }

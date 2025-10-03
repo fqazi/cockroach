@@ -36,7 +36,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
@@ -167,8 +167,6 @@ func (s *Store) SplitQueuePurgatoryLength() int {
 // LeaseQueuePurgatory returns a map of RangeIDs representing the purgatory.
 func (s *Store) LeaseQueuePurgatory() map[roachpb.RangeID]struct{} {
 	defer s.leaseQueue.baseQueue.lockProcessing()()
-	s.leaseQueue.baseQueue.mu.Lock()
-	defer s.leaseQueue.baseQueue.mu.Unlock()
 	m := make(map[roachpb.RangeID]struct{}, len(s.leaseQueue.baseQueue.mu.purgatory))
 	for k := range s.leaseQueue.baseQueue.mu.purgatory {
 		m[k] = struct{}{}
@@ -214,7 +212,7 @@ func manualQueue(s *Store, q queueImpl, repl *Replica) error {
 		return fmt.Errorf("%s: system config not yet available", s)
 	}
 	ctx := repl.AnnotateCtx(context.Background())
-	_, err := q.process(ctx, repl, cfg, -1 /*priorityAtEnqueue*/)
+	_, err := q.process(ctx, repl, cfg)
 	return err
 }
 
@@ -451,25 +449,25 @@ func (r *Replica) ShouldBackpressureWrites(_ context.Context) bool {
 }
 
 // GetRaftLogSize returns the approximate raft log size and whether it is
-// trustworthy. See replicaLogStorage.shMu.size for details.
+// trustworthy.. See r.mu.raftLogSize for details.
 func (r *Replica) GetRaftLogSize() (int64, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	ls := r.asLogStorage()
-	return ls.shMu.size, ls.shMu.sizeTrusted
+	return r.shMu.raftLogSize, r.shMu.raftLogSizeTrusted
 }
 
-// GetCachedLastTerm returns the term of the last log entry.
+// GetCachedLastTerm returns the cached last term value. May return
+// invalidLastTerm if the cache is not set.
 func (r *Replica) GetCachedLastTerm() kvpb.RaftTerm {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.asLogStorage().shMu.last.Term
+	return r.shMu.lastTermNotDurable
 }
 
 // SideloadedRaftMuLocked returns r.raftMu.sideloaded. Requires a previous call
 // to RaftLock() or some other guarantee that r.raftMu is held.
 func (r *Replica) SideloadedRaftMuLocked() logstore.SideloadStorage {
-	return r.logStorage.ls.Sideload
+	return r.raftMu.sideloaded
 }
 
 // LargestPreviousMaxRangeSizeBytes returns the in-memory value used to mitigate
@@ -605,8 +603,7 @@ func (r *Replica) ReadCachedProtectedTS() (readAt, earliestProtectionTimestamp h
 func (r *Replica) ClosedTimestampPolicy() roachpb.RangeClosedTimestampPolicy {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return toClientClosedTsPolicy(closedTimestampPolicy(r.descRLocked(),
-		*r.cachedClosedTimestampPolicy.Load()))
+	return toClientClosedTsPolicy(r.closedTimestampPolicyRLocked())
 }
 
 // TripBreaker synchronously trips the breaker.
@@ -617,7 +614,7 @@ func (r *Replica) TripBreaker() {
 // GetCircuitBreaker returns the circuit breaker controlling
 // connection attempts to the specified node.
 func (t *RaftTransport) GetCircuitBreaker(
-	nodeID roachpb.NodeID, class rpcbase.ConnectionClass,
+	nodeID roachpb.NodeID, class rpc.ConnectionClass,
 ) (*circuit.Breaker, bool) {
 	return t.dialer.GetCircuitBreaker(nodeID, class)
 }
@@ -704,9 +701,10 @@ func NewRangefeedTxnPusher(
 	}
 }
 
-// descRLocked exports (*Replica).descRLocked() for testing purposes.
-func (r *Replica) DescRLocked() *roachpb.RangeDescriptor {
-	return r.descRLocked()
+// SupportFromEnabled exports (replicaRLockedStoreLiveness).SupportFromEnabled
+// for testing purposes.
+func (r *Replica) SupportFromEnabled() bool {
+	return (*replicaRLockedStoreLiveness)(r).SupportFromEnabled()
 }
 
 // RaftFortificationEnabledForRangeID exports raftFortificationEnabledForRangeID

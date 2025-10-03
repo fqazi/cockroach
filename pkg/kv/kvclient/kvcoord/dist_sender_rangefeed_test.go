@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -49,10 +48,10 @@ type testRangefeedClient struct {
 }
 
 func (c *testRangefeedClient) MuxRangeFeed(
-	ctx context.Context,
-) (kvpb.RPCInternal_MuxRangeFeedClient, error) {
+	ctx context.Context, opts ...grpc.CallOption,
+) (kvpb.Internal_MuxRangeFeedClient, error) {
 	defer c.count()
-	return c.RestrictedInternalClient.MuxRangeFeed(ctx)
+	return c.RestrictedInternalClient.MuxRangeFeed(ctx, opts...)
 }
 
 type internalClientCounts struct {
@@ -168,7 +167,7 @@ func observeNValues(n int) (chan struct{}, func(ev kvcoord.RangeFeedMessage)) {
 			count.Lock()
 			defer count.Unlock()
 			count.c++
-			log.Dev.Infof(context.Background(), "Waiting N values: saw %d, want %d; current=%s", count.c, n, ev.Val.Key)
+			log.Infof(context.Background(), "Waiting N values: saw %d, want %d; current=%s", count.c, n, ev.Val.Key)
 			if count.c == n {
 				close(allSeen)
 			}
@@ -324,7 +323,7 @@ func TestMuxRangeFeedDoesNotStallOnError(t *testing.T) {
 		errCount    int
 	)
 
-	streamInterceptor := func(target string, class rpcbase.ConnectionClass) grpc.StreamClientInterceptor {
+	streamInterceptor := func(target string, class rpc.ConnectionClass) grpc.StreamClientInterceptor {
 		return func(
 			ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn,
 			method string, streamer grpc.Streamer, opts ...grpc.CallOption,
@@ -530,7 +529,7 @@ func TestRangeFeedMetricsManagement(t *testing.T) {
 							skipSet.Lock()
 							skipSet.retry.Add(checkpoint.Span)
 							skipSet.Unlock()
-							log.Dev.Infof(ctx, "skipping span %s", checkpoint.Span)
+							log.Infof(ctx, "skipping span %s", checkpoint.Span)
 							*event = transientErrEvent
 							return false, nil
 						}
@@ -546,7 +545,7 @@ func TestRangeFeedMetricsManagement(t *testing.T) {
 							skipSet.Lock()
 							skipSet.stuck.Add(checkpoint.Span)
 							skipSet.Unlock()
-							log.Dev.Infof(ctx, "skipping stuck span %s", checkpoint.Span)
+							log.Infof(ctx, "skipping stuck span %s", checkpoint.Span)
 							return true /* skip */, nil
 						}
 					}
@@ -755,7 +754,7 @@ func TestMuxRangeFeedCanCloseStream(t *testing.T) {
 					// Keep track of mux errors due to RangeFeedRetryError_REASON_RANGEFEED_CLOSED.
 					// Those results when we issue CloseStream request.
 					err := t.Error.GoError()
-					log.Dev.Infof(ctx, "Got err: %v", err)
+					log.Infof(ctx, "Got err: %v", err)
 					var retryErr *kvpb.RangeFeedRetryError
 					if ok := errors.As(err, &retryErr); ok && retryErr.Reason == kvpb.RangeFeedRetryError_REASON_RANGEFEED_CLOSED {
 						numRestartStreams.Add(1)

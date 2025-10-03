@@ -113,7 +113,7 @@ func TestDetachMemoRace(t *testing.T) {
 			// Rewrite the filter to use a different column, which will trigger creation
 			// of new table statistics. If the statistics object is aliased, this will
 			// be racy.
-			f.CopyAndReplace(mem, mem.RootExpr(), mem.RootProps(), replaceFn)
+			f.CopyAndReplace(mem, mem.RootExpr().(memo.RelExpr), mem.RootProps(), replaceFn)
 			wg.Done()
 		}()
 	}
@@ -137,8 +137,8 @@ func TestCoster(t *testing.T) {
 
 // TestPhysicalProps files can be run separately like this:
 //
-//	./dev test pkg/sql/opt/xform -f TestPhysicalProps/ordering
-//	./dev test pkg/sql/opt/xform -f TestPhysicalProps/presentation
+//	./dev test pkg/sql/opt/xform -f TestPhysicalPropsFactory/ordering
+//	./dev test pkg/sql/opt/xform -f TestPhysicalPropsFactory/presentation
 //	...
 func TestPhysicalProps(t *testing.T) {
 	defer leaktest.AfterTest(t)()

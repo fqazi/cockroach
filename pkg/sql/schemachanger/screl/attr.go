@@ -66,9 +66,6 @@ const (
 	// RecreateSourceIndexID is the index ID that we are replacing with
 	// this new index.
 	RecreateSourceIndexID
-	// RecreateTargetIndexID is the index ID that needs to be public before
-	// this index.
-	RecreateTargetIndexID
 	// SeqNum is a number given to different elements of the same conceptual
 	// object. It is used so we can differentiate those elements in the graph.
 	//
@@ -198,7 +195,6 @@ var elementSchemaOptions = []rel.SchemaOption{
 		rel.EntityAttr(TemporaryIndexID, "TemporaryIndexID"),
 		rel.EntityAttr(SourceIndexID, "SourceIndexID"),
 		rel.EntityAttr(RecreateSourceIndexID, "RecreateSourceIndexID"),
-		rel.EntityAttr(RecreateTargetIndexID, "RecreateTargetIndexID"),
 	),
 	rel.EntityMapping(t((*scpb.TemporaryIndex)(nil)),
 		rel.EntityAttr(DescID, "TableID"),
@@ -266,10 +262,6 @@ var elementSchemaOptions = []rel.SchemaOption{
 	rel.EntityMapping(t((*scpb.TableLocalityRegionalByRow)(nil)),
 		rel.EntityAttr(DescID, "TableID"),
 	),
-	rel.EntityMapping(t((*scpb.TableLocalityRegionalByRowUsingConstraint)(nil)),
-		rel.EntityAttr(DescID, "TableID"),
-		rel.EntityAttr(ConstraintID, "ConstraintID"),
-	),
 	// Column elements.
 	rel.EntityMapping(t((*scpb.ColumnName)(nil)),
 		rel.EntityAttr(DescID, "TableID"),
@@ -303,18 +295,14 @@ var elementSchemaOptions = []rel.SchemaOption{
 	rel.EntityMapping(t((*scpb.ColumnOnUpdateExpression)(nil)),
 		rel.EntityAttr(DescID, "TableID"),
 		rel.EntityAttr(ColumnID, "ColumnID"),
-		rel.EntityAttr(Expr, "Expr"),
 		rel.EntityAttr(ReferencedSequenceIDs, "UsesSequenceIDs"),
 		rel.EntityAttr(ReferencedTypeIDs, "UsesTypeIDs"),
-		rel.EntityAttr(ReferencedFunctionIDs, "UsesFunctionIDs"),
 	),
 	rel.EntityMapping(t((*scpb.ColumnComputeExpression)(nil)),
 		rel.EntityAttr(DescID, "TableID"),
 		rel.EntityAttr(ColumnID, "ColumnID"),
 		rel.EntityAttr(ReferencedSequenceIDs, "UsesSequenceIDs"),
 		rel.EntityAttr(ReferencedTypeIDs, "UsesTypeIDs"),
-		rel.EntityAttr(ReferencedFunctionIDs, "UsesFunctionIDs"),
-		rel.EntityAttr(ReferencedColumnIDs, "ReferencedColumnIDs"),
 		rel.EntityAttr(Usage, "Usage"),
 	),
 	rel.EntityMapping(t((*scpb.ColumnNotNull)(nil)),
@@ -329,6 +317,10 @@ var elementSchemaOptions = []rel.SchemaOption{
 		rel.EntityAttr(Name, "Name"),
 	),
 	rel.EntityMapping(t((*scpb.IndexPartitioning)(nil)),
+		rel.EntityAttr(DescID, "TableID"),
+		rel.EntityAttr(IndexID, "IndexID"),
+	),
+	rel.EntityMapping(t((*scpb.SecondaryIndexPartial)(nil)),
 		rel.EntityAttr(DescID, "TableID"),
 		rel.EntityAttr(IndexID, "IndexID"),
 	),

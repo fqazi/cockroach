@@ -31,7 +31,6 @@ go_test(
     size = "enormous",
     srcs = [
         "allow_role_memberships_to_change_during_transaction_test.go",
-        "allow_user_create_during_transaction_test.go",
         "autocommit_extended_protocol_test.go",
         "bank_test.go",
         "copy_file_upload_test.go",
@@ -87,7 +86,6 @@ go_test(
         "//pkg/kv/kvpb",
         "//pkg/kv/kvserver",
         "//pkg/kv/kvserver/concurrency",
-        "//pkg/multitenant/tenantcapabilitiespb",
         "//pkg/roachpb",
         "//pkg/rpc/nodedialer",
         "//pkg/security/securityassets",
@@ -136,7 +134,6 @@ go_test(
         "//pkg/util/json",
         "//pkg/util/leaktest",
         "//pkg/util/log",
-        "//pkg/util/log/eventlog",
         "//pkg/util/randutil",
         "//pkg/util/ring",
         "//pkg/util/stop",

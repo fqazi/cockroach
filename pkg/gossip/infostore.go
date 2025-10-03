@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -78,13 +77,10 @@ type callback struct {
 // a callback.
 type callbackWorkItem struct {
 	// schedulingTime is the time when the callback was scheduled.
-	schedulingTime crtime.Mono
+	schedulingTime time.Time
 	method         Callback
-	// key, content, origTimestamp are the parameters that will be passed to the
-	// callback method. They are based on the infos added to the infostore.
-	key           string
-	content       roachpb.Value
-	origTimestamp int64
+	key            string
+	content        roachpb.Value
 }
 
 type callbackWork struct {
@@ -270,17 +266,17 @@ func (is *infoStore) launchCallbackWorker(ambient log.AmbientContext, cw *callba
 
 				// Execute all the callbacks in the queue, making sure to update the
 				// metrics accordingly.
-				afterQueue := crtime.NowMono()
 				for _, work := range wq {
-					queueDur := work.schedulingTime.Sub(afterQueue)
+					afterQueue := timeutil.Now()
+					queueDur := afterQueue.Sub(work.schedulingTime)
 					is.metrics.CallbacksPending.Dec(1)
 					if queueDur >= minCallbackDurationToRecord {
 						is.metrics.CallbacksPendingDuration.RecordValue(queueDur.Nanoseconds())
 					}
 
-					work.method(work.key, work.content, work.origTimestamp)
+					work.method(work.key, work.content)
 
-					afterProcess := crtime.NowMono()
+					afterProcess := timeutil.Now()
 					processDur := afterProcess.Sub(afterQueue)
 					is.metrics.CallbacksProcessed.Inc(1)
 					if processDur > minCallbackDurationToRecord {
@@ -356,7 +352,7 @@ func (is *infoStore) addInfo(key string, i *Info) error {
 		i.OrigStamp = monotonicUnixNano()
 		if highWaterStamp, ok := is.highWaterStamps[i.NodeID]; ok && highWaterStamp >= i.OrigStamp {
 			// Report both timestamps in the crash.
-			log.Dev.Fatalf(context.Background(),
+			log.Fatalf(context.Background(),
 				"high water stamp %d >= %d", redact.Safe(highWaterStamp), redact.Safe(i.OrigStamp))
 		}
 	}
@@ -366,7 +362,7 @@ func (is *infoStore) addInfo(key string, i *Info) error {
 	ratchetHighWaterStamp(is.highWaterStamps, i.NodeID, i.OrigStamp)
 	changed := existingInfo == nil ||
 		!bytes.Equal(existingInfo.Value.RawBytes, i.Value.RawBytes)
-	is.processCallbacks(key, i.Value, i.OrigStamp, changed)
+	is.processCallbacks(key, i.Value, changed)
 	return nil
 }
 
@@ -423,7 +419,7 @@ func (is *infoStore) registerCallback(
 
 	if err := is.visitInfos(func(key string, i *Info) error {
 		if matcher.MatchString(key) {
-			is.runCallbacks(key, i.Value, i.OrigStamp, cb)
+			is.runCallbacks(key, i.Value, cb)
 		}
 		return nil
 	}, true /* deleteExpired */); err != nil {
@@ -450,24 +446,20 @@ func (is *infoStore) registerCallback(
 // processCallbacks processes callbacks for the specified key by
 // matching each callback's regular expression against the key and invoking
 // the corresponding callback method on a match.
-func (is *infoStore) processCallbacks(
-	key string, content roachpb.Value, origTimestamp int64, changed bool,
-) {
+func (is *infoStore) processCallbacks(key string, content roachpb.Value, changed bool) {
 	var callbacks []*callback
 	for _, cb := range is.callbacks {
 		if (changed || cb.redundant) && cb.matcher.MatchString(key) {
 			callbacks = append(callbacks, cb)
 		}
 	}
-	is.runCallbacks(key, content, origTimestamp, callbacks...)
+	is.runCallbacks(key, content, callbacks...)
 }
 
 // runCallbacks receives a list of callbacks and contents that match the key.
 // It adds work to the callback work slices, and signals the associated callback
 // workers to execute the work.
-func (is *infoStore) runCallbacks(
-	key string, content roachpb.Value, origTimestamp int64, callbacks ...*callback,
-) {
+func (is *infoStore) runCallbacks(key string, content roachpb.Value, callbacks ...*callback) {
 	// Check if the stopper is quiescing. If so, do not add the callbacks to the
 	// callback work list because they won't be processed anyways.
 	select {
@@ -477,7 +469,7 @@ func (is *infoStore) runCallbacks(
 	}
 
 	// Add the callbacks to the callback work list.
-	beforeQueue := crtime.NowMono()
+	beforeQueue := timeutil.Now()
 	for _, cb := range callbacks {
 		cb.cw.mu.Lock()
 		is.metrics.CallbacksPending.Inc(1)
@@ -486,7 +478,6 @@ func (is *infoStore) runCallbacks(
 			method:         cb.method,
 			key:            key,
 			content:        content,
-			origTimestamp:  origTimestamp,
 		})
 		cb.cw.mu.Unlock()
 

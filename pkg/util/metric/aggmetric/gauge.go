@@ -8,10 +8,8 @@ package aggmetric
 import (
 	"math"
 	"sync/atomic"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/gogo/protobuf/proto"
 	io_prometheus_client "github.com/prometheus/client_model/go"
@@ -48,8 +46,8 @@ func NewFunctionalGauge(
 		values := make([]int64, 0)
 		g.childSet.mu.Lock()
 		defer g.childSet.mu.Unlock()
-		g.childSet.mu.children.ForEach(func(metric ChildMetric) {
-			cg := metric.(*Gauge)
+		g.childSet.mu.children.Do(func(e interface{}) {
+			cg := g.childSet.mu.children.GetChildMetric(e).(*Gauge)
 			values = append(values, cg.Value())
 		})
 		return f(values)
@@ -139,7 +137,7 @@ func (g *AggGauge) Dec(i int64, labelVals ...string) {
 	child.Dec(i)
 }
 
-// Update updates the Gauge value by val for the given label values. If a
+// Update updates the Gauge value to val for the given label values. If a
 // Gauge with the given label values doesn't exist yet, it creates a new
 // Gauge and updates it. Panics if the number of label values doesn't
 // match the number of labels defined for this Gauge.
@@ -155,17 +153,6 @@ func (g *AggGauge) Update(val int64, labelVals ...string) {
 func (g *AggGauge) UpdateFn(f func() int64, labelVals ...string) {
 	child := g.getOrCreateChild(labelVals...)
 	child.UpdateFn(f)
-}
-
-// GetChild returns the gauge for a set of given label values
-// if it exists. If the labels specified are incorrect, or if
-// the child doesn't exist, it returns a nil value.
-func (g *AggGauge) GetChild(labelVals ...string) *Gauge {
-	child, ok := g.get(labelVals...)
-	if !ok {
-		return nil
-	}
-	return child.(*Gauge)
 }
 
 func (g *AggGauge) getOrCreateChild(labelVals ...string) *Gauge {
@@ -434,7 +421,7 @@ func (sg *SQLGauge) Value() int64 {
 	return sg.g.Value()
 }
 
-// Update updates the Gauge value by i for the given label values. If a
+// Update sets the Gauge value to val for the given label values. If a
 // Gauge with the given label values doesn't exist yet, it creates a new
 // Gauge and updates it. Update increments parent metrics
 // irrespective of labelConfig.
@@ -448,6 +435,10 @@ func (sg *SQLGauge) Update(val int64, db, app string) {
 		return
 	}
 
+	// parent gauge value represents the sum of all child gauges. When we update
+	// the child metric, we need to update the parent metric with the difference
+	// between the new value and the old value. This guarantees that the
+	// consistency is maintained between parent and child metrics.
 	delta := val - childMetric.(*SQLChildGauge).Value()
 	sg.g.Inc(delta)
 	childMetric.(*SQLChildGauge).Update(val)
@@ -522,213 +513,4 @@ func (scg *SQLChildGauge) Inc(i int64) {
 // Dec decrements the gauge's value.
 func (scg *SQLChildGauge) Dec(i int64) {
 	scg.gauge.Dec(i)
-}
-
-// HighCardinalityGauge is similar to AggGauge but uses cache storage instead of B-tree,
-// allowing for automatic eviction of less frequently used child metrics.
-// This is useful when dealing with high cardinality metrics that might exceed resource limits.
-type HighCardinalityGauge struct {
-	g metric.Gauge
-	childSet
-	labelSliceCache *metric.LabelSliceCache
-}
-
-var _ metric.Iterable = (*HighCardinalityGauge)(nil)
-var _ metric.PrometheusEvictable = (*HighCardinalityGauge)(nil)
-
-// NewHighCardinalityGauge constructs a new HighCardinalityGauge that uses cache storage
-// with eviction for child metrics.
-func NewHighCardinalityGauge(
-	metadata metric.Metadata, childLabels ...string,
-) *HighCardinalityGauge {
-	g := &HighCardinalityGauge{g: *metric.NewGauge(metadata)}
-	g.initWithCacheStorageType(childLabels, metadata.Name)
-	return g
-}
-
-// GetName is part of the metric.Iterable interface.
-func (g *HighCardinalityGauge) GetName(useStaticLabels bool) string {
-	return g.g.GetName(useStaticLabels)
-}
-
-// GetHelp is part of the metric.Iterable interface.
-func (g *HighCardinalityGauge) GetHelp() string { return g.g.GetHelp() }
-
-// GetMeasurement is part of the metric.Iterable interface.
-func (g *HighCardinalityGauge) GetMeasurement() string { return g.g.GetMeasurement() }
-
-// GetUnit is part of the metric.Iterable interface.
-func (g *HighCardinalityGauge) GetUnit() metric.Unit { return g.g.GetUnit() }
-
-// GetMetadata is part of the metric.Iterable interface.
-func (g *HighCardinalityGauge) GetMetadata() metric.Metadata { return g.g.GetMetadata() }
-
-// Inspect is part of the metric.Iterable interface.
-func (g *HighCardinalityGauge) Inspect(f func(interface{})) { f(g) }
-
-// GetType is part of the metric.PrometheusExportable interface.
-func (g *HighCardinalityGauge) GetType() *io_prometheus_client.MetricType {
-	return g.g.GetType()
-}
-
-// GetLabels is part of the metric.PrometheusExportable interface.
-func (g *HighCardinalityGauge) GetLabels(useStaticLabels bool) []*io_prometheus_client.LabelPair {
-	return g.g.GetLabels(useStaticLabels)
-}
-
-// ToPrometheusMetric is part of the metric.PrometheusExportable interface.
-func (g *HighCardinalityGauge) ToPrometheusMetric() *io_prometheus_client.Metric {
-	return g.g.ToPrometheusMetric()
-}
-
-// Value returns the aggregate sum of all of its current children.
-func (g *HighCardinalityGauge) Value() int64 {
-	return g.g.Value()
-}
-
-// Inc increments the gauge value by i for the given label values. If a
-// gauge with the given label values doesn't exist yet, it creates a new
-// gauge and increments it. Inc increments parent metrics as well.
-func (g *HighCardinalityGauge) Inc(i int64, labelValues ...string) {
-	g.g.Inc(i)
-
-	childMetric := g.GetOrAddChild(labelValues...)
-
-	if childMetric != nil {
-		childMetric.Inc(i)
-	}
-}
-
-// Dec decrements the gauge value by i for the given label values. If a
-// gauge with the given label values doesn't exist yet, it creates a new
-// gauge and decrements it. Dec decrements parent metrics as well.
-func (g *HighCardinalityGauge) Dec(i int64, labelValues ...string) {
-	g.g.Dec(i)
-
-	childMetric := g.GetOrAddChild(labelValues...)
-
-	if childMetric != nil {
-		childMetric.Dec(i)
-	}
-}
-
-// Update sets the gauge value to val for the given label values. If a
-// gauge with the given label values doesn't exist yet, it creates a new
-// gauge and sets it. Update updates parent metrics as well.
-//
-// The parent metric value represents the sum of all children. The parent
-// metric is updated by the delta (new - old) to maintain the aggregate
-// sum of all children.
-// For example, if a child gauge changes from 10 to 25, the
-// parent is incremented by 15, preserving the total sum across all children.
-func (g *HighCardinalityGauge) Update(val int64, labelValues ...string) {
-	childMetric := g.GetOrAddChild(labelValues...)
-
-	if childMetric != nil {
-		old := childMetric.Value()
-		// Increment the parent by the delta of the child metric.
-		g.g.Inc(val - old)
-		childMetric.Update(val)
-	}
-}
-
-// Each is part of the metric.PrometheusIterable interface.
-func (g *HighCardinalityGauge) Each(
-	labels []*io_prometheus_client.LabelPair, f func(metric *io_prometheus_client.Metric),
-) {
-	g.EachWithLabels(labels, f, g.labelSliceCache)
-}
-
-// InitializeMetrics is part of the PrometheusEvictable interface.
-func (g *HighCardinalityGauge) InitializeMetrics(labelCache *metric.LabelSliceCache) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	g.labelSliceCache = labelCache
-}
-
-// GetOrAddChild returns the existing child gauge for the given label values,
-// or creates a new one if it doesn't exist. This is the preferred method for
-// cache-based storage to avoid panics on existing keys.
-func (g *HighCardinalityGauge) GetOrAddChild(labelVals ...string) *HighCardinalityChildGauge {
-
-	if len(labelVals) == 0 {
-		return nil
-	}
-
-	// Create a LabelSliceCacheKey from the tenantID.
-	key := metric.LabelSliceCacheKey(metricKey(labelVals...))
-
-	child := g.getOrAddWithLabelSliceCache(g.GetMetadata().Name, g.createHighCardinalityChildGauge, g.labelSliceCache, labelVals...)
-
-	g.labelSliceCache.Upsert(key, &metric.LabelSliceCacheValue{
-		LabelValues: labelVals,
-	})
-
-	return child.(*HighCardinalityChildGauge)
-}
-
-func (g *HighCardinalityGauge) createHighCardinalityChildGauge(
-	key uint64, cache *metric.LabelSliceCache,
-) LabelSliceCachedChildMetric {
-	return &HighCardinalityChildGauge{
-		LabelSliceCacheKey: metric.LabelSliceCacheKey(key),
-		LabelSliceCache:    cache,
-		createdAt:          timeutil.Now(),
-	}
-}
-
-// HighCardinalityChildGauge is a child of a HighCardinalityGauge. When metrics are
-// collected by prometheus, each of the children will appear with a distinct label,
-// however, when cockroach internally collects metrics, only the parent is collected.
-type HighCardinalityChildGauge struct {
-	metric.LabelSliceCacheKey
-	value metric.Gauge
-	*metric.LabelSliceCache
-	createdAt time.Time
-}
-
-func (g *HighCardinalityChildGauge) CreatedAt() time.Time {
-	return g.createdAt
-}
-
-func (g *HighCardinalityChildGauge) DecrementLabelSliceCacheReference() {
-	g.LabelSliceCache.DecrementAndDeleteIfZero(g.LabelSliceCacheKey)
-}
-
-// ToPrometheusMetric constructs a prometheus metric for this HighCardinalityChildGauge.
-func (g *HighCardinalityChildGauge) ToPrometheusMetric() *io_prometheus_client.Metric {
-	return &io_prometheus_client.Metric{
-		Gauge: &io_prometheus_client.Gauge{
-			Value: proto.Float64(float64(g.Value())),
-		},
-	}
-}
-
-func (g *HighCardinalityChildGauge) labelValues() []string {
-	lv, ok := g.LabelSliceCache.Get(g.LabelSliceCacheKey)
-	if !ok {
-		return nil
-	}
-	return lv.LabelValues
-}
-
-// Value returns the HighCardinalityChildGauge's current value.
-func (g *HighCardinalityChildGauge) Value() int64 {
-	return g.value.Value()
-}
-
-// Inc increments the HighCardinalityChildGauge's value.
-func (g *HighCardinalityChildGauge) Inc(i int64) {
-	g.value.Inc(i)
-}
-
-// Dec decrements the HighCardinalityChildGauge's value.
-func (g *HighCardinalityChildGauge) Dec(i int64) {
-	g.value.Dec(i)
-}
-
-// Update sets the HighCardinalityChildGauge's value.
-func (g *HighCardinalityChildGauge) Update(val int64) {
-	g.value.Update(val)
 }

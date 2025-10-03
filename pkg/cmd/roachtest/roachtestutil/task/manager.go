@@ -25,7 +25,6 @@ type (
 		Tasker
 		GroupProvider
 		Terminate(*logger.Logger)
-		Cancel()
 		CompletedEvents() <-chan Event
 	}
 
@@ -106,11 +105,6 @@ func (m *manager) Terminate(l *logger.Logger) {
 	}()
 
 	WaitForChannel(doneCh, "tasks", l)
-}
-
-// Cancel will cancel all tasks started by the manager.
-func (m *manager) Cancel() {
-	m.group.cancelAll()
 }
 
 // CompletedEvents returns a channel that will receive events for all tasks
@@ -229,18 +223,7 @@ func (t *group) GoWithCancel(fn Func, opts ...Option) context.CancelFunc {
 			return nil
 		}
 		if !opt.DisableReporting {
-			// There's a slight chance that the context is canceled between the check
-			// above and this select. In which case Go might probabilistically select
-			// sending the event. This should not cause issues as the consumer of the
-			// events should also check if the parent context is canceled. But we
-			// require the select here to avoid blocking if the parent context is
-			// canceled, and the consumer is no longer consuming events.
-			select {
-			case t.manager.events <- event:
-			case <-t.manager.ctx.Done():
-				//  do not send the event if the parent context is canceled
-				return nil
-			}
+			t.manager.events <- event
 		}
 		return err
 	})

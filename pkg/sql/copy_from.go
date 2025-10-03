@@ -343,9 +343,15 @@ func newCopyMachine(
 	// to have field data then we have to populate the expectedHiddenColumnIdxs
 	// field with the columns indexes we expect to be hidden.
 	if c.p.SessionData().ExpectAndIgnoreNotVisibleColumnsInCopy && len(n.Columns) == 0 {
+		numInaccessibleCols := 0
 		for i, col := range tableDesc.PublicColumns() {
 			if col.IsHidden() {
-				c.expectedHiddenColumnIdxs = append(c.expectedHiddenColumnIdxs, i)
+				// Offset the index by the number of preceding inaccessible
+				// columns, which are never expected in the input.
+				c.expectedHiddenColumnIdxs = append(c.expectedHiddenColumnIdxs, i-numInaccessibleCols)
+			}
+			if col.IsInaccessible() {
+				numInaccessibleCols++
 			}
 		}
 	}
@@ -1072,7 +1078,7 @@ func (p *planner) preparePlannerForCopy(
 						if rollbackErr := txnOpt.txn.Rollback(ctx); rollbackErr != nil {
 							// Since we failed to roll back the txn, we don't
 							// know whether retrying this batch wouldn't corrupt
-							// the data, so we return this non-retryable error.
+							// the data, so we return this non-retriable error.
 							return errors.Wrap(rollbackErr, "non-atomic COPY couldn't roll back its txn")
 						}
 						// The rollback succeeded, so we can simply attempt to
@@ -1084,7 +1090,7 @@ func (p *planner) preparePlannerForCopy(
 			} else if rollbackErr := txnOpt.txn.Rollback(ctx); rollbackErr != nil {
 				// Since we failed to roll back the txn, we don't know whether
 				// retrying this batch wouldn't corrupt the data, so we return
-				// this non-retryable error.
+				// this non-retriable error.
 				return errors.Wrap(rollbackErr, "non-atomic COPY couldn't roll back its txn")
 			}
 
@@ -1147,8 +1153,8 @@ func (c *copyMachine) insertRows(ctx context.Context, finalBatch bool) error {
 			// for the next batch.
 			return c.doneWithRows(ctx)
 		} else {
-			if errIsRetryable(err) {
-				log.SqlExec.Infof(ctx, "%s failed on attempt %d and with retryable error %+v", c.copyFromAST.String(), r.CurrentAttempt(), err)
+			if errIsRetriable(err) {
+				log.SqlExec.Infof(ctx, "%s failed on attempt %d and with retriable error %+v", c.copyFromAST.String(), r.CurrentAttempt(), err)
 				// It is currently only safe to retry if we are not in atomic copy
 				// mode & we are in an implicit transaction.
 				//
@@ -1167,13 +1173,13 @@ func (c *copyMachine) insertRows(ctx context.Context, finalBatch bool) error {
 					log.SqlExec.Infof(
 						ctx,
 						"%s is not retrying; "+
-							"implicit: %v; copy_from_atomic_enabled: %v; copy_from_retryable_enabled %v",
+							"implicit: %v; copy_from_atomic_enabled: %v; copy_from_retriable_enabled %v",
 						c.copyFromAST.String(), c.implicitTxn,
 						c.p.SessionData().CopyFromAtomicEnabled, c.p.SessionData().CopyFromRetriesEnabled,
 					)
 				}
 			} else {
-				log.SqlExec.Infof(ctx, "%s failed on attempt %d and with non-retryable error %+v", c.copyFromAST.String(), r.CurrentAttempt(), err)
+				log.SqlExec.Infof(ctx, "%s failed on attempt %d and with non-retriable error %+v", c.copyFromAST.String(), r.CurrentAttempt(), err)
 			}
 			return err
 		}
@@ -1247,12 +1253,6 @@ func (c *copyMachine) insertRowsInternal(ctx context.Context, finalBatch bool) (
 		},
 		Returning: tree.AbsentReturningClause,
 	}
-
-	// Initialize annotations for the statement. This is required for proper
-	// error handling and logging during plan optimization. Since this is a
-	// synthetic INSERT statement, we provide an empty annotations array.
-	c.p.semaCtx.Annotations = tree.MakeAnnotations(0)
-	c.p.extendedEvalCtx.Annotations = &c.p.semaCtx.Annotations
 
 	// TODO(cucaroach): We shouldn't need to do this for every batch.
 	if err := c.p.makeOptimizerPlan(ctx); err != nil {

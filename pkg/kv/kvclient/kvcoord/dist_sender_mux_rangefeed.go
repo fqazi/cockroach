@@ -66,10 +66,10 @@ func muxRangeFeed(
 	eventCh chan<- RangeFeedMessage,
 ) (retErr error) {
 	if log.V(1) {
-		log.KvExec.Infof(ctx, "Establishing MuxRangeFeed (%s...; %d spans)", spans[0], len(spans))
+		log.Infof(ctx, "Establishing MuxRangeFeed (%s...; %d spans)", spans[0], len(spans))
 		start := timeutil.Now()
 		defer func() {
-			log.KvExec.Infof(ctx, "MuxRangeFeed terminating after %s with err=%v", timeutil.Since(start), retErr)
+			log.Infof(ctx, "MuxRangeFeed terminating after %s with err=%v", timeutil.Since(start), retErr)
 		}()
 	}
 
@@ -283,7 +283,7 @@ func (s *activeMuxRangeFeed) start(ctx context.Context, m *rangefeedMuxer) error
 
 		for !s.transport.IsExhausted() {
 			args := makeRangeFeedRequest(
-				s.Span, s.token.Desc().RangeID, m.cfg.overSystemTable, s.startAfter, m.cfg.withDiff, m.cfg.withFiltering, m.cfg.withMatchingOriginIDs, m.cfg.consumerID, m.cfg.bulkDelivery)
+				s.Span, s.token.Desc().RangeID, m.cfg.overSystemTable, s.startAfter, m.cfg.withDiff, m.cfg.withFiltering, m.cfg.withMatchingOriginIDs, m.cfg.consumerID)
 			args.Replica = s.transport.NextReplica()
 			args.StreamID = streamID
 			s.ReplicaDescriptor = args.Replica
@@ -381,10 +381,10 @@ func (m *rangefeedMuxer) startNodeMuxRangeFeed(
 	defer restore()
 
 	if log.V(1) {
-		log.KvExec.Infof(ctx, "Establishing MuxRangeFeed to node %d", nodeID)
+		log.Infof(ctx, "Establishing MuxRangeFeed to node %d", nodeID)
 		start := timeutil.Now()
 		defer func() {
-			log.KvExec.Infof(ctx, "MuxRangeFeed to node %d terminating after %s with err=%v",
+			log.Infof(ctx, "MuxRangeFeed to node %d terminating after %s with err=%v",
 				nodeID, timeutil.Since(start), retErr)
 		}()
 	}
@@ -403,7 +403,7 @@ func (m *rangefeedMuxer) startNodeMuxRangeFeed(
 	maybeCloseClient := func() {
 		if closer, ok := mux.(io.Closer); ok {
 			if err := closer.Close(); err != nil {
-				log.KvExec.Warningf(ctx, "error closing mux rangefeed client: %v", err)
+				log.Warningf(ctx, "error closing mux rangefeed client: %v", err)
 			}
 		}
 	}
@@ -442,7 +442,7 @@ func (m *rangefeedMuxer) startNodeMuxRangeFeed(
 		}
 
 		if log.V(1) {
-			log.KvExec.Infof(ctx, "mux to node %d restarted %d streams", ms.nodeID, len(toRestart))
+			log.Infof(ctx, "mux to node %d restarted %d streams", ms.nodeID, len(toRestart))
 		}
 		return m.restartActiveRangeFeeds(ctx, recvErr, toRestart)
 	}
@@ -457,7 +457,7 @@ func (m *rangefeedMuxer) receiveEventsFromNode(
 	for {
 		event, err := receiver.Recv()
 		if err != nil {
-			return errors.Wrapf(err, "receiving from node %d", ms.nodeID)
+			return err
 		}
 
 		active := ms.lookupStream(event.StreamID)
@@ -471,7 +471,7 @@ func (m *rangefeedMuxer) receiveEventsFromNode(
 		// additional event(s) arriving for a stream that is no longer active.
 		if active == nil {
 			if log.V(1) {
-				log.KvExec.Infof(ctx, "received stray event stream %d: %v", event.StreamID, event)
+				log.Infof(ctx, "received stray event stream %d: %v", event.StreamID, event)
 			}
 			continue
 		}
@@ -529,12 +529,8 @@ func (m *rangefeedMuxer) receiveEventsFromNode(
 func (m *rangefeedMuxer) restartActiveRangeFeeds(
 	ctx context.Context, reason error, toRestart []*activeMuxRangeFeed,
 ) error {
-	for i, active := range toRestart {
+	for _, active := range toRestart {
 		if err := m.restartActiveRangeFeed(ctx, active, reason); err != nil {
-			// Release all remaining rangefeeds that we won't restart.
-			for _, remaining := range toRestart[i+1:] {
-				remaining.release()
-			}
 			return err
 		}
 	}
@@ -566,7 +562,7 @@ func (m *rangefeedMuxer) restartActiveRangeFeed(
 	}
 
 	if log.V(1) {
-		log.KvExec.Infof(ctx, "RangeFeed %s@%s (r%d, replica %s) disconnected with last checkpoint %s ago: %v (errInfo %v)",
+		log.Infof(ctx, "RangeFeed %s@%s (r%d, replica %s) disconnected with last checkpoint %s ago: %v (errInfo %v)",
 			active.Span, active.StartAfter, active.RangeID, active.ReplicaDescriptor,
 			timeutil.Since(active.Resolved.GoTime()), reason, errInfo)
 	}

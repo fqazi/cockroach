@@ -41,7 +41,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecpb"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -742,15 +741,6 @@ func (oc *optCatalog) codec() keys.SQLCodec {
 	return oc.planner.ExecCfg().Codec
 }
 
-// DisableUnsafeInternalCheck sets the planners skipUnsafeInternalsCheck
-// to true, and returns a function which reverses it to false.
-func (oc *optCatalog) DisableUnsafeInternalCheck() func() {
-	oc.planner.skipUnsafeInternalsCheck = true
-	return func() {
-		oc.planner.skipUnsafeInternalsCheck = false
-	}
-}
-
 // optView is a wrapper around catalog.TableDescriptor that implements
 // the cat.Object, cat.DataSource, and cat.View interfaces.
 type optView struct {
@@ -1188,7 +1178,6 @@ func newOptTable(
 			originColumns:     fk.ForeignKeyDesc().OriginColumnIDs,
 			referencedTable:   cat.StableID(fk.GetReferencedTableID()),
 			referencedColumns: fk.ForeignKeyDesc().ReferencedColumnIDs,
-			constraintID:      fk.GetConstraintID(),
 			validity:          fk.GetConstraintValidity(),
 			match:             tree.CompositeKeyMatchMethodType[fk.Match()],
 			deleteAction:      tree.ForeignKeyReferenceActionType[fk.OnDelete()],
@@ -1202,7 +1191,6 @@ func newOptTable(
 			originColumns:     fk.ForeignKeyDesc().OriginColumnIDs,
 			referencedTable:   ot.ID(),
 			referencedColumns: fk.ForeignKeyDesc().ReferencedColumnIDs,
-			constraintID:      fk.GetConstraintID(),
 			validity:          fk.GetConstraintValidity(),
 			match:             tree.CompositeKeyMatchMethodType[fk.Match()],
 			deleteAction:      tree.ForeignKeyReferenceActionType[fk.OnDelete()],
@@ -1581,21 +1569,6 @@ func (ot *optTable) HomeRegionColName() (colName string, ok bool) {
 	return *regionalByRowConfig.As, true
 }
 
-// RegionalByRowUsingConstraint is part of the cat.Table interface.
-func (ot *optTable) RegionalByRowUsingConstraint() cat.ForeignKeyConstraint {
-	if !ot.desc.IsLocalityRegionalByRow() {
-		return nil
-	}
-	if id := ot.desc.GetRegionalByRowUsingConstraint(); id != catid.ConstraintID(0) {
-		for i := range ot.outboundFKs {
-			if ot.outboundFKs[i].constraintID == id {
-				return &ot.outboundFKs[i]
-			}
-		}
-	}
-	return nil
-}
-
 // GetDatabaseID is part of the cat.Table interface.
 func (ot *optTable) GetDatabaseID() descpb.ID {
 	return ot.desc.GetParentID()
@@ -1761,7 +1734,7 @@ func (oi *optIndex) init(
 				valueEncBuf, nil, /* prefixDatums */
 			)
 			if err != nil {
-				log.Dev.Fatalf(context.TODO(), "error while decoding partition tuple: %+v %+v",
+				log.Fatalf(context.TODO(), "error while decoding partition tuple: %+v %+v",
 					oi.tab.desc, oi.tab.desc.GetDependsOnTypes())
 			}
 			op.datums = append(op.datums, t.Datums)
@@ -1955,11 +1928,6 @@ func (oi *optIndex) GeoConfig() geopb.Config {
 	return oi.idx.IndexDesc().GeoConfig
 }
 
-// VecConfig is part of the cat.Index interface.
-func (oi *optIndex) VecConfig() *vecpb.Config {
-	return &oi.idx.IndexDesc().VecConfig
-}
-
 // Version is part of the cat.Index interface.
 func (oi *optIndex) Version() descpb.IndexDescriptorVersion {
 	return oi.idx.GetVersion()
@@ -2087,7 +2055,7 @@ func (os *optTableStat) init(
 				)
 			}
 			// For release builds, skip over the stat and log a warning.
-			log.Dev.Warningf(ctx, "skipping stat %d due to failed type check: %v", stat.StatisticID, err)
+			log.Warningf(ctx, "skipping stat %d due to failed type check: %v", stat.StatisticID, err)
 			return false, nil
 		}
 	}
@@ -2309,7 +2277,6 @@ type optForeignKeyConstraint struct {
 	referencedTable   cat.StableID
 	referencedColumns []descpb.ColumnID
 
-	constraintID catid.ConstraintID
 	validity     descpb.ConstraintValidity
 	match        tree.CompositeKeyMatchMethod
 	deleteAction tree.ReferenceAction
@@ -2727,11 +2694,6 @@ func (ot *optVirtualTable) HomeRegionColName() (colName string, ok bool) {
 	return "", false
 }
 
-// RegionalByRowUsingConstraint is part of the cat.Table interface.
-func (ot *optVirtualTable) RegionalByRowUsingConstraint() cat.ForeignKeyConstraint {
-	return nil
-}
-
 // GetDatabaseID is part of the cat.Table interface.
 func (ot *optVirtualTable) GetDatabaseID() descpb.ID {
 	return 0
@@ -2948,11 +2910,6 @@ func (oi *optVirtualIndex) ImplicitPartitioningColumnCount() int {
 // GeoConfig is part of the cat.Index interface.
 func (oi *optVirtualIndex) GeoConfig() geopb.Config {
 	return geopb.Config{}
-}
-
-// VecConfig is part of the cat.Index interface.
-func (oi *optVirtualIndex) VecConfig() *vecpb.Config {
-	return nil
 }
 
 // Version is part of the cat.Index interface.

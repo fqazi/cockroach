@@ -135,7 +135,7 @@ func (s *fdCountingSemaphore) Acquire(ctx context.Context, n int) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	log.Dev.Warning(ctx, "acquiring of file descriptors for disk-spilling timed out")
+	log.Warning(ctx, "acquiring of file descriptors for disk-spilling timed out")
 	return errAcquireTimeout
 }
 
@@ -391,7 +391,7 @@ func (f *vectorizedFlow) Cleanup(ctx context.Context) {
 		if err := f.Cfg.TempFS.RemoveAll(f.GetPath(ctx)); err != nil {
 			// Log error as a Warning but keep on going to close the memory
 			// infrastructure.
-			log.Dev.Warningf(
+			log.Warningf(
 				ctx,
 				"unable to remove flow %s's temporary directory at %s, files may be left over: %v",
 				f.GetID().Short(),
@@ -977,6 +977,9 @@ func (s *vectorizedFlowCreator) setupInput(
 			var err error
 			if input.EnforceHomeRegionError != nil {
 				err = input.EnforceHomeRegionError.ErrorDetail(ctx)
+				if flowCtx.EvalCtx.SessionData().EnforceHomeRegionFollowerReadsEnabled {
+					err = execinfra.NewDynamicQueryHasNoHomeRegionError(err)
+				}
 			}
 			sync := colexec.NewSerialUnorderedSynchronizer(
 				flowCtx, processorID, allocator, input.ColumnTypes, inputStreamOps,
@@ -1271,7 +1274,7 @@ var _ flowinfra.InboundStreamHandler = vectorizedInboundStreamHandler{}
 // Run is part of the flowinfra.InboundStreamHandler interface.
 func (s vectorizedInboundStreamHandler) Run(
 	ctx context.Context,
-	stream execinfrapb.RPCDistSQL_FlowStreamStream,
+	stream execinfrapb.DistSQL_FlowStreamServer,
 	_ *execinfrapb.ProducerMessage,
 	_ *flowinfra.FlowBase,
 ) error {

@@ -29,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvtestutils"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -540,7 +539,7 @@ func TestOracle(t *testing.T) {
 		// the exponentially-weighted moving average to work properly. See the
 		// comment on the WARMUP_SAMPLES const in the ewma package for details.
 		for i := 0; i < 11; i++ {
-			rpcContext.RemoteClocks.UpdateOffset(ctx, id, rpc.RemoteOffset{}, latency, rpcbase.DefaultClass)
+			rpcContext.RemoteClocks.UpdateOffset(ctx, id, rpc.RemoteOffset{}, latency, rpc.DefaultClass)
 		}
 	}
 	setLatency(1, 100*time.Millisecond)
@@ -845,7 +844,7 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 
 	// Further down, we'll set up the test to pin the lease to store 1. Turn off
 	// load based rebalancing to make sure it doesn't move.
-	kvserverbase.LoadBasedRebalancingMode.Override(ctx, &settings.SV, kvserverbase.LBRebalancingOff)
+	kvserver.LoadBasedRebalancingMode.Override(ctx, &settings.SV, kvserver.LBRebalancingOff)
 
 	n1 := sqlutils.MakeSQLRunner(tc.Conns[0])
 	n1.Exec(t, `CREATE DATABASE t`)
@@ -859,9 +858,9 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 
 	// Sleep so that we can perform follower reads. The read timestamp needs to be
 	// above the timestamp when the table was created.
-	log.Dev.Infof(ctx, "test sleeping for the follower read timestamps to pass the table creation timestamp...")
+	log.Infof(ctx, "test sleeping for the follower read timestamps to pass the table creation timestamp...")
 	n1.Exec(t, `SELECT pg_sleep((now() - follower_read_timestamp())::FLOAT)`)
-	log.Dev.Infof(ctx, "test sleeping... done")
+	log.Infof(ctx, "test sleeping... done")
 
 	// Run a query on n4 to populate its cache.
 	n4 := sqlutils.MakeSQLRunner(tc.Conns[3])
@@ -1183,9 +1182,9 @@ func TestSecondaryTenantFollowerReadsRouting(t *testing.T) {
 
 			// Sleep so that we can perform follower reads. The read timestamp
 			// needs to be above the timestamp when the table was created.
-			log.Dev.Infof(ctx, "test sleeping for the follower read timestamps to pass the table creation timestamp...")
+			log.Infof(ctx, "test sleeping for the follower read timestamps to pass the table creation timestamp...")
 			tenantSQL.Exec(t, `SELECT pg_sleep((now() - follower_read_timestamp())::FLOAT)`)
-			log.Dev.Infof(ctx, "test sleeping... done")
+			log.Infof(ctx, "test sleeping... done")
 
 			// Check that the cache was indeed populated.
 			tenantSQL.Exec(t, `SELECT * FROM t.test WHERE k = 1`)
