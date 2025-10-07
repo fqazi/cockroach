@@ -904,7 +904,7 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 
 	mmaAllocator := mmaprototype.NewAllocatorState(timeutil.DefaultTimeSource{},
 		rand.New(rand.NewSource(timeutil.Now().UnixNano())))
-	allocatorSync := mmaintegration.NewAllocatorSync(storePool, mmaAllocator, st, nil)
+	allocatorSync := mmaintegration.NewAllocatorSync(storePool, mmaAllocator, st)
 	g.RegisterCallback(
 		gossip.MakePrefixPattern(gossip.KeyStoreDescPrefix),
 		func(_ string, content roachpb.Value, origTimestampNanos int64) {
@@ -1707,6 +1707,7 @@ func (s *topLevelServer) PreStart(ctx context.Context) error {
 		s.cfg.AmbientCtx,
 		s.rpcContext,
 		s.stopper,
+		s.grpc,
 		s.cfg.AdvertiseAddr,
 	)
 	if err != nil {

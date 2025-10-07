@@ -34,7 +34,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -448,7 +447,7 @@ func (c *kvEventToRowConsumer) encodeAndEmit(
 		}
 	}
 
-	timer := c.metrics.Timers.Encode.Start()
+	stop := c.metrics.Timers.Encode.Start()
 	if c.encodingOpts.Format == changefeedbase.OptFormatParquet {
 		return c.encodeForParquet(
 			ctx, updatedRow, prevRow, topic, schemaTS, updatedRow.MvccTimestamp,
@@ -472,7 +471,7 @@ func (c *kvEventToRowConsumer) encodeAndEmit(
 	// Since we're done processing/converting this event, and will not use much more
 	// than len(key)+len(bytes) worth of resources, adjust allocation to match.
 	alloc.AdjustBytesToTarget(ctx, int64(len(keyCopy)+len(valueCopy)))
-	timer.End()
+	stop()
 
 	headers, err := c.makeRowHeaders(ctx, updatedRow)
 	if err != nil {
@@ -638,9 +637,10 @@ type parallelEventConsumer struct {
 var _ eventConsumer = (*parallelEventConsumer)(nil)
 
 func (c *parallelEventConsumer) ConsumeEvent(ctx context.Context, ev kvevent.Event) error {
-	start := crtime.NowMono()
+	startTime := timeutil.Now().UnixNano()
 	defer func() {
-		c.metrics.ParallelConsumerConsumeNanos.RecordValue(start.Elapsed().Nanoseconds())
+		time := timeutil.Now().UnixNano()
+		c.metrics.ParallelConsumerConsumeNanos.RecordValue(time - startTime)
 	}()
 
 	bucket := c.getBucketForEvent(ev)
@@ -766,9 +766,10 @@ func (c *parallelEventConsumer) setWorkerError(err error) error {
 // Flush flushes the consumer by blocking until all events are consumed,
 // or until there is an error.
 func (c *parallelEventConsumer) Flush(ctx context.Context) error {
-	start := crtime.NowMono()
+	startTime := timeutil.Now().UnixNano()
 	defer func() {
-		c.metrics.ParallelConsumerFlushNanos.RecordValue(start.Elapsed().Nanoseconds())
+		time := timeutil.Now().UnixNano()
+		c.metrics.ParallelConsumerFlushNanos.RecordValue(time - startTime)
 	}()
 
 	needFlush := func() bool {

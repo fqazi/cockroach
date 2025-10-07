@@ -17,8 +17,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
-	"github.com/cockroachdb/crlib/crtime"
 )
 
 // Throttler is a changefeed IO throttler.
@@ -168,9 +168,9 @@ func (m Metrics) MetricStruct() {}
 func waitQuota(
 	ctx context.Context, n int64, limit *quotapool.RateLimiter, c *metric.Counter,
 ) error {
-	start := crtime.NowMono()
+	start := timeutil.Now()
 	defer func() {
-		c.Inc(start.Elapsed().Nanoseconds())
+		c.Inc(int64(timeutil.Since(start)))
 	}()
 	return limit.WaitN(ctx, n)
 }

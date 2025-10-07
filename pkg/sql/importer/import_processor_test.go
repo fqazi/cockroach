@@ -57,14 +57,14 @@ import (
 type testSpec struct {
 	format roachpb.IOFileFormat
 	inputs map[int32]string
-	table  *execinfrapb.ReadImportDataSpec_ImportTable
+	tables map[string]*execinfrapb.ReadImportDataSpec_ImportTable
 }
 
 // Given test spec returns ReadImportDataSpec suitable creating input converter.
 func (spec *testSpec) getConverterSpec() *execinfrapb.ReadImportDataSpec {
 	return &execinfrapb.ReadImportDataSpec{
 		Format:            spec.format,
-		Table:             spec.table,
+		Tables:            spec.tables,
 		Uri:               spec.inputs,
 		ReaderParallelism: 1, // Make tests deterministic
 	}
@@ -953,9 +953,8 @@ func newTestSpec(
 	}
 	assert.True(t, numCols > 0)
 
-	spec.table = &execinfrapb.ReadImportDataSpec_ImportTable{
-		Desc:       descr.TableDesc(),
-		TargetCols: targetCols[0:numCols],
+	spec.tables = map[string]*execinfrapb.ReadImportDataSpec_ImportTable{
+		"simple": {Desc: descr.TableDesc(), TargetCols: targetCols[0:numCols]},
 	}
 
 	for id, path := range inputs {

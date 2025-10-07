@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/container/list"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
@@ -290,31 +289,17 @@ type lockTableImpl struct {
 
 	// settings provides a handle to cluster settings.
 	settings *cluster.Settings
-
-	// The number of locks that are shed due to the lock table running into memory
-	// limits.
-	locksShedDueToMemoryLimit *metric.Counter
-	// The number of times the lock table ran into memory limits and shed locks as
-	// a result.
-	numLockShedDueToMemoryLimitEvents *metric.Counter
 }
 
 var _ lockTable = &lockTableImpl{}
 
 func newLockTable(
-	maxLocks int64,
-	rangeID roachpb.RangeID,
-	clock *hlc.Clock,
-	settings *cluster.Settings,
-	locksShedDueToMemoryLimit *metric.Counter,
-	numLockShedDueToMemoryLimitEvents *metric.Counter,
+	maxLocks int64, rangeID roachpb.RangeID, clock *hlc.Clock, settings *cluster.Settings,
 ) *lockTableImpl {
 	lt := &lockTableImpl{
-		rID:                               rangeID,
-		clock:                             clock,
-		settings:                          settings,
-		locksShedDueToMemoryLimit:         locksShedDueToMemoryLimit,
-		numLockShedDueToMemoryLimitEvents: numLockShedDueToMemoryLimitEvents,
+		rID:      rangeID,
+		clock:    clock,
+		settings: settings,
 	}
 	lt.setMaxKeysLocked(maxLocks)
 	return lt
@@ -3147,7 +3132,6 @@ func (kl *keyLocks) discoveredLock(
 	accessStrength lock.Strength,
 	notRemovable bool,
 	clock *hlc.Clock,
-	st *cluster.Settings,
 ) error {
 	kl.mu.Lock()
 	defer kl.mu.Unlock()
@@ -3160,14 +3144,7 @@ func (kl *keyLocks) discoveredLock(
 	if kl.isLockedBy(foundLock.Txn.ID) {
 		e := kl.heldBy[foundLock.Txn.ID]
 		tl = e.Value
-
-		beforeTs := tl.writeTS()
-
 		tl.replicatedInfo.acquire(foundLock.Strength, foundLock.Txn.WriteTimestamp)
-
-		if beforeTs.Less(tl.writeTS()) {
-			kl.recomputeWaitQueues(st)
-		}
 		// TODO(arul): If the discovered lock indicates a newer epoch than what's
 		// being tracked, should we clear out unreplicatedLockInfo here?
 	} else {
@@ -4375,7 +4352,7 @@ func (t *lockTableImpl) AddDiscoveredLock(
 		g.notRemovableLock = l
 		notRemovableLock = true
 	}
-	err = l.discoveredLock(foundLock, g, str, notRemovableLock, g.lt.clock, g.lt.settings)
+	err = l.discoveredLock(foundLock, g, str, notRemovableLock, g.lt.clock)
 	// Can't release tree.mu until call l.discoveredLock() since someone may
 	// find an empty lock and remove it from the tree.
 	t.locks.mu.Unlock()
@@ -4509,12 +4486,7 @@ func (t *lockTableImpl) checkMaxKeysLockedAndTryClear() {
 	totalLocks := t.locks.numKeysLocked.Load()
 	if totalLocks > t.maxKeysLocked {
 		numToClear := totalLocks - t.minKeysLocked
-		numCleared := t.tryClearLocks(false /* force */, int(numToClear))
-		// Update metrics if we successfully cleared any number of locks.
-		if numCleared != 0 {
-			t.locksShedDueToMemoryLimit.Inc(numCleared)
-			t.numLockShedDueToMemoryLimitEvents.Inc(1)
-		}
+		t.tryClearLocks(false /* force */, int(numToClear))
 	}
 }
 
@@ -4529,10 +4501,9 @@ func (t *lockTableImpl) lockCountForTesting() int64 {
 //
 // Waiters of removed locks are told to wait elsewhere or that they are done
 // waiting.
-func (t *lockTableImpl) tryClearLocks(force bool, numToClear int) int64 {
-	var clearCount int64
+func (t *lockTableImpl) tryClearLocks(force bool, numToClear int) {
+	clearCount := 0
 	t.locks.mu.Lock()
-	defer t.locks.mu.Unlock()
 	var locksToClear []*keyLocks
 	iter := t.locks.MakeIter()
 	for iter.First(); iter.Valid(); iter.Next() {
@@ -4540,13 +4511,13 @@ func (t *lockTableImpl) tryClearLocks(force bool, numToClear int) int64 {
 		if l.tryClearLock(force) {
 			locksToClear = append(locksToClear, l)
 			clearCount++
-			if !force && clearCount >= int64(numToClear) {
+			if !force && clearCount >= numToClear {
 				break
 			}
 		}
 	}
 	t.clearLocksMuLocked(locksToClear)
-	return clearCount
+	t.locks.mu.Unlock()
 }
 
 // tryClearLockGE attempts to clear all locks greater or equal to given key.

@@ -152,9 +152,6 @@ type StartOpts struct {
 	// initialization and sequential node starts and also reuses the previous start script.
 	IsRestart bool
 
-	// AutoRestart enables automatically restarting a process if it died.
-	AutoRestart bool
-
 	// EnableFluentSink determines whether to enable the fluent-servers attribute
 	// in the CockroachDB logging configuration.
 	EnableFluentSink bool
@@ -1007,7 +1004,6 @@ func (c *SyncedCluster) generateStartCmd(
 		NumFilesLimit:       startOpts.NumFilesLimit,
 		VirtualClusterLabel: VirtualClusterLabel(startOpts.VirtualClusterName, startOpts.SQLInstance),
 		Local:               c.IsLocal(),
-		AutoRestart:         startOpts.AutoRestart,
 	})
 }
 
@@ -1021,7 +1017,6 @@ type startTemplateData struct {
 	VirtualClusterLabel string
 	Args                []string
 	EnvVars             []string
-	AutoRestart         bool
 }
 
 type loggingTemplateData struct {

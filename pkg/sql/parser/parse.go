@@ -86,18 +86,18 @@ var defaultNakedIntType = types.Int
 
 // Parse parses the sql and returns a list of statements.
 func (p *Parser) Parse(sql string) (statements.Statements, error) {
-	return p.parseWithOptions(sql, DefaultParseOptions)
+	return p.parseWithDepth(1, sql, DefaultParseOptions)
 }
 
 // ParseWithOptions parses the sql with the provided options and returns a list of statements.
 func (p *Parser) ParseWithOptions(sql string, opts ParseOptions) (statements.Statements, error) {
-	return p.parseWithOptions(sql, opts)
+	return p.parseWithDepth(1, sql, opts)
 }
 
 func (p *Parser) parseOne(
 	sql string, opts ParseOptions,
 ) (statements.Statement[tree.Statement], error) {
-	stmts, err := p.parseWithOptions(sql, opts)
+	stmts, err := p.parseWithDepth(1, sql, opts)
 	if err != nil {
 		return statements.Statement[tree.Statement]{}, err
 	}
@@ -161,7 +161,9 @@ func (p *Parser) scanOneStmt() (sql string, tokens []sqlSymType, done bool) {
 	}
 }
 
-func (p *Parser) parseWithOptions(sql string, options ParseOptions) (statements.Statements, error) {
+func (p *Parser) parseWithDepth(
+	depth int, sql string, options ParseOptions,
+) (statements.Statements, error) {
 	stmts := statements.Statements(p.stmtBuf[:0])
 	p.scanner.Init(sql)
 	if options.retainComments {
@@ -174,7 +176,7 @@ func (p *Parser) parseWithOptions(sql string, options ParseOptions) (statements.
 	}
 	for {
 		sql, tokens, done := p.scanOneStmt()
-		stmt, err := p.parse(sql, tokens, options.intType, numAnnotations)
+		stmt, err := p.parse(depth+1, sql, tokens, options.intType, numAnnotations)
 		if err != nil {
 			return nil, err
 		}
@@ -201,7 +203,11 @@ func (p *Parser) parseWithOptions(sql string, options ParseOptions) (statements.
 
 // parse parses a statement from the given scanned tokens.
 func (p *Parser) parse(
-	sql string, tokens []sqlSymType, nakedIntType *types.T, numAnnotations tree.AnnotationIdx,
+	depth int,
+	sql string,
+	tokens []sqlSymType,
+	nakedIntType *types.T,
+	numAnnotations tree.AnnotationIdx,
 ) (statements.Statement[tree.Statement], error) {
 	p.lexer.init(sql, tokens, nakedIntType, numAnnotations)
 	defer p.lexer.cleanup()

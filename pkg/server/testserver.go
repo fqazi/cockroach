@@ -285,7 +285,7 @@ func makeTestConfigFromParams(params base.TestServerArgs) Config {
 	// Validate the store specs.
 	for _, storeSpec := range params.StoreSpecs {
 		if storeSpec.InMemory {
-			if storeSpec.Size.IsPercent() {
+			if storeSpec.Size.Percent > 0 {
 				panic(fmt.Sprintf("test server does not yet support in memory stores based on percentage of total memory: %s", base.StoreSpecCmdLineString(storeSpec)))
 			}
 		} else {
@@ -333,11 +333,8 @@ func makeTestConfigFromParams(params base.TestServerArgs) Config {
 		cfg.TestingKnobs.AdmissionControlOptions = &admission.Options{}
 	}
 
-	switch params.DefaultDRPCOption {
-	case base.TestDRPCEnabled:
+	if params.DefaultDRPCOption == base.TestDRPCEnabled {
 		rpcbase.ExperimentalDRPCEnabled.Override(context.Background(), &st.SV, true)
-	case base.TestDRPCDisabled:
-		rpcbase.ExperimentalDRPCEnabled.Override(context.Background(), &st.SV, false)
 	}
 
 	return cfg
@@ -2734,11 +2731,9 @@ func newClientRPCContext(
 	cid *base.ClusterIDContainer,
 	s serverutils.ApplicationLayerInterface,
 ) *rpc.Context {
-	tags := logtags.BuildBuffer()
-	tags.Add("testclient", nil)
-	tags.Add("user", user)
-	tags.Add("nsql", s.SQLInstanceID())
-	ctx = logtags.AddTags(ctx, tags.Finish())
+	ctx = logtags.AddTag(ctx, "testclient", nil)
+	ctx = logtags.AddTag(ctx, "user", user)
+	ctx = logtags.AddTag(ctx, "nsql", s.SQLInstanceID())
 
 	stopper := s.AppStopper()
 	if ctx.Done() == nil {

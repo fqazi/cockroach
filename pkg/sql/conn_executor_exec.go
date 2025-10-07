@@ -393,11 +393,11 @@ func (ex *connExecutor) execStmtInOpenState(
 	}
 
 	if len(stmt.QueryTags) > 0 {
-		tags := logtags.BuildBuffer()
+		tags := &logtags.Buffer{}
 		for _, tag := range stmt.QueryTags {
-			tags.Add("querytag-"+tag.Key, tag.Value)
+			tags = tags.Add("querytag-"+tag.Key, tag.Value)
 		}
-		ctx = logtags.AddTags(ctx, tags.Finish())
+		ctx = logtags.AddTags(ctx, tags)
 	}
 
 	var queryTimeoutTicker *time.Timer
@@ -2325,16 +2325,20 @@ func (ex *connExecutor) reportSessionDataChanges(fn func() error) error {
 	after := ex.sessionDataStack.Top()
 	if ex.dataMutatorIterator.paramStatusUpdater != nil {
 		for _, param := range bufferableParamStatusUpdates {
-			if param.sv.Equal == nil {
+			_, v, err := getSessionVar(param.lowerName, false /* missingOk */)
+			if err != nil {
+				return err
+			}
+			if v.Equal == nil {
 				return errors.AssertionFailedf("Equal for %s must be set", param.name)
 			}
-			if param.sv.GetFromSessionData == nil {
+			if v.GetFromSessionData == nil {
 				return errors.AssertionFailedf("GetFromSessionData for %s must be set", param.name)
 			}
-			if !param.sv.Equal(before, after) {
+			if !v.Equal(before, after) {
 				ex.dataMutatorIterator.paramStatusUpdater.BufferParamStatusUpdate(
 					param.name,
-					param.sv.GetFromSessionData(after),
+					v.GetFromSessionData(after),
 				)
 			}
 		}
@@ -3231,7 +3235,6 @@ func (ex *connExecutor) makeExecPlan(
 
 	// Include gist in error reports.
 	ih := &planner.instrumentation
-	ex.curStmtPlanGist = redact.SafeString(ih.planGist.String())
 	ctx = withPlanGist(ctx, ih.planGist.String())
 	if buildutil.CrdbTestBuild && ih.planGist.String() != "" {
 		// Ensure that the gist can be decoded in test builds.
@@ -4195,12 +4198,13 @@ func (ex *connExecutor) recordTransactionFinish(
 	txnStart crtime.Mono,
 	txnErr error,
 ) error {
-	recordingStart := crtime.NowMono()
+	recordingStart := timeutil.Now()
 	defer func() {
+		recordingOverhead := timeutil.Since(recordingStart)
 		ex.server.
 			ServerMetrics.
 			StatsMetrics.
-			SQLTxnStatsCollectionOverhead.RecordValue(recordingStart.Elapsed().Nanoseconds())
+			SQLTxnStatsCollectionOverhead.RecordValue(recordingOverhead.Nanoseconds())
 	}()
 
 	txnEnd := timeutil.Now()

@@ -189,11 +189,11 @@ func (o *offlineInitialScanProcessor) setup(ctx context.Context) error {
 }
 
 func (o *offlineInitialScanProcessor) Start(ctx context.Context) {
-	tags := logtags.BuildBuffer()
-	tags.Add("job", o.spec.JobID)
-	tags.Add("src-node", o.spec.PartitionSpec.PartitionID)
-	tags.Add("proc", o.ProcessorID)
-	ctx = logtags.AddTags(ctx, tags.Finish())
+	tags := &logtags.Buffer{}
+	tags = tags.Add("job", o.spec.JobID)
+	tags = tags.Add("src-node", o.spec.PartitionSpec.PartitionID)
+	tags = tags.Add("proc", o.ProcessorID)
+	ctx = logtags.AddTags(ctx, tags)
 
 	ctx = o.StartInternal(ctx, offlineInitialScanProcessorName)
 
@@ -269,7 +269,7 @@ func (o *offlineInitialScanProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.P
 				return nil, o.DrainHelper()
 			}
 			row := rowenc.EncDatumRow{
-				rowenc.DatumToEncDatumUnsafe(types.Bytes, tree.NewDBytes(tree.DBytes(progressBytes))),
+				rowenc.DatumToEncDatum(types.Bytes, tree.NewDBytes(tree.DBytes(progressBytes))),
 			}
 			return row, nil
 		}

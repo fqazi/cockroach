@@ -251,21 +251,6 @@ const (
 	TestDRPCEnabledRandomly
 )
 
-func (d DefaultTestDRPCOption) String() string {
-	switch d {
-	case TestDRPCUnset:
-		return "unset"
-	case TestDRPCDisabled:
-		return "disabled"
-	case TestDRPCEnabled:
-		return "enabled"
-	case TestDRPCEnabledRandomly:
-		return "enabled-randomly"
-	default:
-		panic("unreachable")
-	}
-}
-
 // TestClusterArgs contains the parameters one can set when creating a test
 // cluster. It contains a TestServerArgs instance which will be copied over to
 // every server.
@@ -613,7 +598,9 @@ func InternalNonDefaultDecision(
 // with no special attributes.
 var DefaultTestStoreSpec = storageconfig.Store{
 	InMemory: true,
-	Size:     storageconfig.BytesSize(512 << 20),
+	Size: storageconfig.Size{
+		Bytes: 512 << 20,
+	},
 }
 
 // DefaultTestTempStorageConfig is the associated temp storage for

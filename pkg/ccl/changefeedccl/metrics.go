@@ -30,7 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/metric/aggmetric"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/rcrowley/go-metrics"
 )
 
@@ -69,7 +68,6 @@ type AggMetrics struct {
 	ParallelIOPendingRows       *aggmetric.AggGauge
 	ParallelIOResultQueueNanos  *aggmetric.AggHistogram
 	ParallelIOInFlightKeys      *aggmetric.AggGauge
-	ParallelIOWorkers           *aggmetric.AggGauge
 	SinkIOInflight              *aggmetric.AggGauge
 	SinkBackpressureNanos       *aggmetric.AggHistogram
 	CommitLatency               *aggmetric.AggHistogram
@@ -121,7 +119,7 @@ type metricsRecorder interface {
 	recordMessageSize(int64)
 	recordInternalRetry(int64, bool)
 	recordOneMessage() recordOneMessageCallback
-	recordEmittedBatch(startTime crtime.Mono, numMessages int, mvcc hlc.Timestamp, bytes int, compressedBytes int)
+	recordEmittedBatch(startTime time.Time, numMessages int, mvcc hlc.Timestamp, bytes int, compressedBytes int)
 	recordResolvedCallback() func()
 	recordFlushRequestCallback() func()
 	getBackfillCallback() func() func()
@@ -129,7 +127,6 @@ type metricsRecorder interface {
 	recordSizeBasedFlush()
 	newParallelIOMetricsRecorder() parallelIOMetricsRecorder
 	recordSinkIOInflightChange(int64)
-	recordParallelIOWorkers(int64)
 	recordSinkBackpressure(time.Duration)
 	makeCloudstorageFileAllocCallback() func(delta int64)
 	getKafkaThrottlingMetrics(*cluster.Settings) metrics.Histogram
@@ -160,7 +157,6 @@ type sliMetrics struct {
 	ParallelIOPendingRows       *aggmetric.Gauge
 	ParallelIOResultQueueNanos  *aggmetric.Histogram
 	ParallelIOInFlightKeys      *aggmetric.Gauge
-	ParallelIOWorkers           *aggmetric.Gauge
 	SinkIOInflight              *aggmetric.Gauge
 	SinkBackpressureNanos       *aggmetric.Histogram
 	CommitLatency               *aggmetric.Histogram
@@ -266,7 +262,7 @@ func (m *sliMetrics) recordOneMessage() recordOneMessageCallback {
 		return func(mvcc hlc.Timestamp, bytes int, compressedBytes int) {}
 	}
 
-	start := crtime.NowMono()
+	start := timeutil.Now()
 	return func(mvcc hlc.Timestamp, bytes int, compressedBytes int) {
 		m.MessageSize.RecordValue(int64(bytes))
 		m.recordEmittedBatch(start, 1, mvcc, bytes, compressedBytes)
@@ -300,12 +296,12 @@ func (m *sliMetrics) recordInternalRetry(numMessages int64, reducedBatchSize boo
 }
 
 func (m *sliMetrics) recordEmittedBatch(
-	startTime crtime.Mono, numMessages int, mvcc hlc.Timestamp, bytes int, compressedBytes int,
+	startTime time.Time, numMessages int, mvcc hlc.Timestamp, bytes int, compressedBytes int,
 ) {
 	if m == nil {
 		return
 	}
-	emitNanos := startTime.Elapsed().Nanoseconds()
+	emitNanos := timeutil.Since(startTime).Nanoseconds()
 	m.EmittedRowMessages.Inc(int64(numMessages))
 	m.EmittedBytes.Inc(int64(bytes))
 	m.EmittedBatchSizes.RecordValue(int64(numMessages))
@@ -324,9 +320,9 @@ func (m *sliMetrics) recordResolvedCallback() func() {
 		return func() {}
 	}
 
-	start := crtime.NowMono()
+	start := timeutil.Now()
 	return func() {
-		emitNanos := start.Elapsed().Nanoseconds()
+		emitNanos := timeutil.Since(start).Nanoseconds()
 		m.EmittedResolvedMessages.Inc(1)
 		m.BatchHistNanos.RecordValue(emitNanos)
 		m.EmittedBatchSizes.RecordValue(int64(1))
@@ -338,9 +334,9 @@ func (m *sliMetrics) recordFlushRequestCallback() func() {
 		return func() {}
 	}
 
-	start := crtime.NowMono()
+	start := timeutil.Now()
 	return func() {
-		flushNanos := start.Elapsed().Nanoseconds()
+		flushNanos := timeutil.Since(start).Nanoseconds()
 		m.Flushes.Inc(1)
 		m.FlushHistNanos.RecordValue(flushNanos)
 	}
@@ -557,8 +553,8 @@ func (k *kafkaHistogramAdapter) Variance() (_ float64) {
 }
 
 type parallelIOMetricsRecorder interface {
-	recordPendingQueuePush(numMessages int64)
-	recordPendingQueuePop(numMessages int64, latency time.Duration)
+	recordPendingQueuePush(numKeys int64)
+	recordPendingQueuePop(numKeys int64, latency time.Duration)
 	recordResultQueueLatency(latency time.Duration)
 	setInFlightKeys(n int64)
 }
@@ -629,14 +625,6 @@ func (m *sliMetrics) recordSinkIOInflightChange(delta int64) {
 	m.SinkIOInflight.Inc(delta)
 }
 
-func (m *sliMetrics) recordParallelIOWorkers(n int64) {
-	if m == nil {
-		return
-	}
-
-	m.ParallelIOWorkers.Update(n)
-}
-
 func (m *sliMetrics) recordSinkBackpressure(duration time.Duration) {
 	if m == nil {
 		return
@@ -678,7 +666,7 @@ func (w *wrappingCostController) recordOneMessage() recordOneMessageCallback {
 }
 
 func (w *wrappingCostController) recordEmittedBatch(
-	startTime crtime.Mono, numMessages int, mvcc hlc.Timestamp, bytes int, compressedBytes int,
+	startTime time.Time, numMessages int, mvcc hlc.Timestamp, bytes int, compressedBytes int,
 ) {
 	w.recordExternalIO(bytes, compressedBytes)
 	w.inner.recordEmittedBatch(startTime, numMessages, mvcc, bytes, compressedBytes)
@@ -721,10 +709,6 @@ func (w *wrappingCostController) recordSizeBasedFlush() {
 
 func (w *wrappingCostController) recordSinkIOInflightChange(delta int64) {
 	w.inner.recordSinkIOInflightChange(delta)
-}
-
-func (w *wrappingCostController) recordParallelIOWorkers(n int64) {
-	w.inner.recordParallelIOWorkers(n)
 }
 
 func (w *wrappingCostController) recordSinkBackpressure(duration time.Duration) {
@@ -991,7 +975,7 @@ func newAggregateMetrics(histogramWindow time.Duration, lookup *cidr.Lookup) *Ag
 	metaChangefeedParallelIOPendingRows := metric.Metadata{
 		Name:        "changefeed.parallel_io_pending_rows",
 		Help:        "Number of rows which are blocked from being sent due to conflicting in-flight keys",
-		Measurement: "Messages",
+		Measurement: "Keys",
 		Unit:        metric.Unit_COUNT,
 	}
 	metaChangefeedParallelIOResultQueueNanos := metric.Metadata{
@@ -1005,12 +989,6 @@ func newAggregateMetrics(histogramWindow time.Duration, lookup *cidr.Lookup) *Ag
 		Name:        "changefeed.parallel_io_in_flight_keys",
 		Help:        "The number of keys currently in-flight which may contend with batches pending to be emitted",
 		Measurement: "Keys",
-		Unit:        metric.Unit_COUNT,
-	}
-	metaChangefeedParallelIOWorkers := metric.Metadata{
-		Name:        "changefeed.parallel_io_workers",
-		Help:        "The number of workers in the ParallelIO",
-		Measurement: "Workers",
 		Unit:        metric.Unit_COUNT,
 	}
 	metaChangefeedSinkIOInflight := metric.Metadata{
@@ -1159,7 +1137,6 @@ func newAggregateMetrics(histogramWindow time.Duration, lookup *cidr.Lookup) *Ag
 			SigFigs:      2,
 			BucketConfig: metric.ChangefeedBatchLatencyBuckets,
 		}),
-		ParallelIOWorkers: b.Gauge(metaChangefeedParallelIOWorkers),
 		BatchHistNanos: b.Histogram(metric.HistogramOptions{
 			Metadata:     metaChangefeedBatchHistNanos,
 			Duration:     histogramWindow,
@@ -1267,7 +1244,6 @@ func (a *AggMetrics) getOrCreateScope(scope string) (*sliMetrics, error) {
 		ParallelIOPendingRows:       a.ParallelIOPendingRows.AddChild(scope),
 		ParallelIOResultQueueNanos:  a.ParallelIOResultQueueNanos.AddChild(scope),
 		ParallelIOInFlightKeys:      a.ParallelIOInFlightKeys.AddChild(scope),
-		ParallelIOWorkers:           a.ParallelIOWorkers.AddChild(scope),
 		SinkIOInflight:              a.SinkIOInflight.AddChild(scope),
 		SinkBackpressureNanos:       a.SinkBackpressureNanos.AddChild(scope),
 		CommitLatency:               a.CommitLatency.AddChild(scope),

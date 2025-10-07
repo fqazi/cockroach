@@ -370,13 +370,6 @@ func (b *Builder) buildCast(ctx *buildScalarCtx, scalar opt.ScalarExpr) (tree.Ty
 	return tree.NewTypedCastExpr(input, cast.Typ), nil
 }
 
-const assnCastFnName = "crdb_internal.assignment_cast"
-
-var (
-	assnCastFuncRef                  = tree.WrapFunction(assnCastFnName)
-	assnCastProps, assnCastOverloads = builtinsregistry.GetBuiltinProperties(assnCastFnName)
-)
-
 // buildAssignmentCast builds an AssignmentCastExpr with input i and type T into
 // a built-in function call crdb_internal.assignment_cast(i, NULL::T).
 func (b *Builder) buildAssignmentCast(
@@ -395,15 +388,21 @@ func (b *Builder) buildAssignmentCast(
 		return input, nil
 	}
 
+	const fnName = "crdb_internal.assignment_cast"
+	funcRef, err := b.wrapBuiltinFunction(fnName)
+	if err != nil {
+		return nil, err
+	}
+	props, overloads := builtinsregistry.GetBuiltinProperties(fnName)
 	return tree.NewTypedFuncExpr(
-		assnCastFuncRef,
+		funcRef,
 		0, /* aggQualifier */
 		tree.TypedExprs{input, tree.NewTypedCastExpr(tree.DNull, cast.Typ)},
 		nil, /* filter */
 		nil, /* windowDef */
 		cast.Typ,
-		assnCastProps,
-		&assnCastOverloads[0],
+		props,
+		&overloads[0],
 	), nil
 }
 

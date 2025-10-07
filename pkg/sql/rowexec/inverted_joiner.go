@@ -499,8 +499,7 @@ func (ij *invertedJoiner) readInput() (invertedJoinerState, *execinfrapb.Produce
 	}
 	// NB: spans is already sorted, and that sorting is preserved when
 	// generating ij.indexSpans.
-	prefixIncludedInKeys := len(ij.prefixEqualityCols) > 0
-	ij.indexSpans, err = ij.spanBuilder.SpansFromInvertedSpans(ij.Ctx(), spans, nil /* constraint */, prefixIncludedInKeys, ij.indexSpans)
+	ij.indexSpans, err = ij.spanBuilder.SpansFromInvertedSpans(ij.Ctx(), spans, nil /* constraint */, ij.indexSpans)
 	if err != nil {
 		ij.MoveToDraining(err)
 		return ijStateUnknown, ij.DrainHelper()
@@ -586,8 +585,8 @@ func (ij *invertedJoiner) performScan() (invertedJoinerState, *execinfrapb.Produ
 	return ijEmittingRows, nil
 }
 
-var trueEncDatum = rowenc.DatumToEncDatumUnsafe(types.Bool, tree.DBoolTrue)
-var falseEncDatum = rowenc.DatumToEncDatumUnsafe(types.Bool, tree.DBoolFalse)
+var trueEncDatum = rowenc.DatumToEncDatum(types.Bool, tree.DBoolTrue)
+var falseEncDatum = rowenc.DatumToEncDatum(types.Bool, tree.DBoolFalse)
 
 // emitRow returns the next row from ij.emitCursor, if present. Otherwise it
 // prepares for another input batch.

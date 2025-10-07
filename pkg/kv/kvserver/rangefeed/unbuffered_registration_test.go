@@ -13,7 +13,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -35,9 +34,7 @@ func TestUnbufferedRegWithStreamManager(t *testing.T) {
 	defer stopper.Stop(ctx)
 	testServerStream := newTestServerStream()
 	smMetrics := NewStreamManagerMetrics()
-	st := cluster.MakeTestingClusterSettings()
-
-	bs := NewBufferedSender(testServerStream, st, NewBufferedSenderMetrics())
+	bs := NewBufferedSender(testServerStream, NewBufferedSenderMetrics())
 	sm := NewStreamManager(bs, smMetrics)
 	require.NoError(t, sm.Start(ctx, stopper))
 
@@ -65,14 +62,13 @@ func TestUnbufferedRegWithStreamManager(t *testing.T) {
 		})
 	})
 	testServerStream.reset()
-	eventCount := testProcessorEventCCap - 1
-	t.Run(fmt.Sprintf("publish %d logical ops to 50 registrations", eventCount), func(t *testing.T) {
-		for range eventCount {
+	t.Run("publish 20 logical ops to 50 registrations", func(t *testing.T) {
+		for i := 0; i < 20; i++ {
 			p.ConsumeLogicalOps(ctx, writeValueOp(hlc.Timestamp{WallTime: 1}))
 		}
-		testServerStream.waitForEventCount(t, eventCount*50)
+		testServerStream.waitForEventCount(t, 20*50)
 		testServerStream.iterateEventsByStreamID(func(_ int64, events []*kvpb.MuxRangeFeedEvent) {
-			require.Equal(t, eventCount, len(events))
+			require.Equal(t, 20, len(events))
 			require.NotNil(t, events[0].RangeFeedEvent.Val)
 		})
 	})
@@ -110,8 +106,7 @@ func TestUnbufferedRegCorrectnessOnDisconnect(t *testing.T) {
 	defer stopper.Stop(ctx)
 	testServerStream := newTestServerStream()
 	smMetrics := NewStreamManagerMetrics()
-	st := cluster.MakeTestingClusterSettings()
-	bs := NewBufferedSender(testServerStream, st, NewBufferedSenderMetrics())
+	bs := NewBufferedSender(testServerStream, NewBufferedSenderMetrics())
 	sm := NewStreamManager(bs, smMetrics)
 	require.NoError(t, sm.Start(ctx, stopper))
 	defer sm.Stop(ctx)

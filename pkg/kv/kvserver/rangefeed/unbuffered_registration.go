@@ -14,6 +14,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 )
@@ -149,6 +150,10 @@ func (ubr *unbufferedRegistration) publish(
 	// is nil. Safe to send to underlying stream.
 	if ubr.mu.catchUpBuf == nil {
 		if err := ubr.stream.SendBuffered(strippedEvent, alloc); err != nil {
+			// Disconnect here for testing purposes only: there are test stream
+			// implementations that inject errors without calling disconnect. For
+			// production code, we expect buffered sender to shut down all
+			// registrations.
 			ubr.disconnectLocked(kvpb.NewError(err))
 		}
 	} else {
@@ -354,10 +359,10 @@ func (ubr *unbufferedRegistration) maybeRunCatchUpScan(ctx context.Context) erro
 	if catchUpIter == nil {
 		return nil
 	}
-	start := crtime.NowMono()
+	start := timeutil.Now()
 	defer func() {
 		catchUpIter.Close()
-		ubr.metrics.RangeFeedCatchUpScanNanos.Inc(start.Elapsed().Nanoseconds())
+		ubr.metrics.RangeFeedCatchUpScanNanos.Inc(timeutil.Since(start).Nanoseconds())
 	}()
 
 	return catchUpIter.CatchUpScan(ctx, ubr.stream.SendUnbuffered, ubr.withDiff, ubr.withFiltering,

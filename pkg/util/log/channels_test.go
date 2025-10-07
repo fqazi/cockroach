@@ -170,7 +170,7 @@ func TestRepro81025(t *testing.T) {
 	// log line.
 	wg.Add(1)
 	go func() {
-		Dev.Fatalf(context.Background(), "uh oh")
+		Fatalf(context.Background(), "uh oh")
 		wg.Done()
 	}()
 

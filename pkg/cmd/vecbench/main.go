@@ -48,7 +48,6 @@ const (
 )
 
 const (
-	ClearLine  = "\033[2K"
 	HideCursor = "\033[?25l"
 	ShowCursor = "\033[?25h"
 )
@@ -79,8 +78,6 @@ var flagDisableAdaptiveSearch = flag.Bool(
 var flagMemStore = flag.Bool("memstore", false, "Use in-memory store instead of CockroachDB")
 var flagDBConnStr = flag.String("db", "postgresql://root@localhost:26257",
 	"Database connection string (when not using --memstore)")
-var flagCreateIndexAfterImport = flag.Bool("index-after", false,
-	"Create vector index after data import instead of during table creation (SQL provider only)")
 
 // vecbench benchmarks vector index in-memory build and search performance on a
 // variety of datasets. Datasets are downloaded from the
@@ -128,7 +125,7 @@ func main() {
 	// Hide the cursor, but ensure it's restored on exit, including Ctrl+C.
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	err := stopper.RunAsyncTask(ctx, "Ctrl+C", func(context.Context) {
+	stopper.RunAsyncTask(ctx, "Ctrl+C", func(context.Context) {
 		select {
 		case <-c:
 			fmt.Print(ShowCursor)
@@ -139,17 +136,12 @@ func main() {
 			break
 		}
 	})
-	if err != nil {
-		fmt.Printf("Failed to install Ctrl-C handler: %v\n", err)
-	}
 	fmt.Print(HideCursor)
 	defer fmt.Print(ShowCursor)
 
-	// Start pprof server at http://localhost:8080/debug/pprof/.
+	// Start pprof server at http://localhost:8080/debug/pprof/
 	go func() {
-		if err := http.ListenAndServe("localhost:8080", nil); err != nil {
-			fmt.Printf("Failed to start pprof server: %v\n", err)
-		}
+		http.ListenAndServe("localhost:8080", nil)
 	}()
 
 	switch flag.Arg(0) {
@@ -348,14 +340,6 @@ func (vb *vectorBench) BuildIndex() {
 		panic(err)
 	}
 
-	// Create index immediately if flag is not set (default behavior).
-	if !*flagCreateIndexAfterImport {
-		err = vb.provider.CreateIndex(vb.ctx)
-		if err != nil {
-			panic(err)
-		}
-	}
-
 	// Compute percentile latencies.
 	estimator := NewPercentileEstimator(1000)
 
@@ -384,7 +368,7 @@ func (vb *vectorBench) BuildIndex() {
 	var lastInserted int
 	batchSize := *flagBatchSize
 
-	// Reset the dataset to start from the beginning.
+	// Reset the dataset to start from the beginning
 	vb.data.Reset()
 
 	for {
@@ -400,7 +384,7 @@ func (vb *vectorBench) BuildIndex() {
 		trainBatch := vb.data.Train
 		insertedBefore := int(insertCount.Load())
 
-		// Create primary keys for this batch.
+		// Create primary keys for this batch
 		primaryKeys := make([]cspann.KeyBytes, trainBatch.Count)
 		keyBuf := make(cspann.KeyBytes, trainBatch.Count*4)
 		for i := range trainBatch.Count {
@@ -472,50 +456,6 @@ func (vb *vectorBench) BuildIndex() {
 		}
 	}
 
-	// Create index after import if flag is set.
-	if *flagCreateIndexAfterImport {
-		if !*flagHideProgress {
-			fmt.Println()
-		}
-		startIndexTime := timeutil.Now()
-
-		// Start index creation in a goroutine to track progress.
-		done := make(chan error, 1)
-		go func() {
-			done <- vb.provider.CreateIndex(vb.ctx)
-		}()
-
-		// Track progress until CreateIndex returns.
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case err := <-done:
-				// CreateIndex returned, stop tracking.
-				if err != nil {
-					panic(err)
-				}
-				fmt.Printf(ClearLine+White+"\rVector index creation completed in %v\n"+Reset,
-					roundDuration(timeutil.Since(startIndexTime)))
-				goto indexCreated
-			case <-ticker.C:
-				if *flagHideProgress {
-					break
-				}
-				// Check progress.
-				progress, err := vb.provider.CheckIndexCreationStatus(vb.ctx)
-				if err != nil {
-					fmt.Printf(Red+"Error checking index status: %v\n"+Reset, err)
-				} else {
-					fmt.Printf(ClearLine+White+"\rIndex creation progress: %.1f%% in %v"+Reset,
-						progress*100, timeutil.Since(startIndexTime).Truncate(time.Second))
-				}
-			}
-		}
-	indexCreated:
-	}
-
 	fmt.Printf(White+"\nBuilt index in %v\n"+Reset, roundDuration(startAt.Elapsed()))
 
 	// Ensure that index is persisted so it can be reused.
@@ -554,11 +494,6 @@ func (vb *vectorBench) ensureDataset(ctx context.Context) {
 func newVectorProvider(
 	stopper *stop.Stopper, datasetName string, dims int, distanceMetric vecpb.DistanceMetric,
 ) (VectorProvider, error) {
-	// Validate flag compatibility.
-	if *flagCreateIndexAfterImport && *flagMemStore {
-		return nil, errors.New("--create-index-after-import flag cannot be used with --memstore")
-	}
-
 	options := cspann.IndexOptions{
 		MinPartitionSize:      minPartitionSize,
 		MaxPartitionSize:      maxPartitionSize,

@@ -154,6 +154,8 @@ func RegisterTests(r registry.Registry) {
 	registerSchemaChangeRandomLoad(r)
 	registerLargeSchemaBackupRestores(r)
 	registerLargeSchemaBenchmarks(r)
+	registerScrubAllChecksTPCC(r)
+	registerScrubIndexOnlyTPCC(r)
 	registerSecondaryIndexesMultiVersionCluster(r)
 	registerSequelize(r)
 	registerSlowDrain(r)

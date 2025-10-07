@@ -18,8 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -91,10 +89,7 @@ func (t *truncateNode) startExec(params runParams) error {
 			}
 
 			if n.DropBehavior != tree.DropCascade {
-				// The error code returned here matches PGSQL, even though the CASCADE
-				// operation is supported there with TRUNCATE as well.
-				return errors.WithHintf(pgerror.Newf(pgcode.FeatureNotSupported, "%q is %s table %q", tableDesc.Name, msg, other.Name),
-					"truncate dependent tables at the same time or specify the CASCADE option")
+				return errors.Errorf("%q is %s table %q", tableDesc.Name, msg, other.Name)
 			}
 			if err := p.CheckPrivilege(ctx, other, privilege.DROP); err != nil {
 				return err

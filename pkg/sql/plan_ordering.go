@@ -21,8 +21,12 @@ func planReqOrdering(plan planNode) ReqOrdering {
 		return planReqOrdering(n.input)
 	case *max1RowNode:
 		return planReqOrdering(n.input)
+	case *spoolNode:
+		return planReqOrdering(n.input)
 	case *saveTableNode:
 		return planReqOrdering(n.input)
+	case *serializeNode:
+		return planReqOrdering(n.source)
 	case *deleteNode:
 		if n.run.rowsNeeded {
 			return planReqOrdering(n.input)

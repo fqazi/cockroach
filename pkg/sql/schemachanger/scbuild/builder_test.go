@@ -39,7 +39,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
-	"github.com/cockroachdb/cockroach/pkg/util/yamlutil"
 	"github.com/cockroachdb/datadriven"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -273,8 +272,10 @@ var _ sort.Interface = nodeEntries{}
 func formatElementForDisplay(t *testing.T, e scpb.Element) []byte {
 	marshaled, err := sctestutils.ProtoToYAML(e, false /* emitDefaults */)
 	require.NoError(t, err)
+	dec := yaml.NewDecoder(strings.NewReader(marshaled))
+	dec.KnownFields(true)
 	var n yaml.Node
-	require.NoError(t, yamlutil.UnmarshalStrict([]byte(marshaled), &n))
+	require.NoError(t, dec.Decode(&n))
 	walkYaml(&n, func(node *yaml.Node) { node.Style = yaml.FlowStyle })
 	data, err := yaml.Marshal(&n)
 	require.NoError(t, err)

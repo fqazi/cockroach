@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/ctpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rangefeed"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/split"
@@ -292,13 +291,6 @@ var (
 		Help: "Number of replica leaseholders which satisfy a lease " +
 			"preference which is not the most preferred",
 		Measurement: "Replicas",
-		Unit:        metric.Unit_COUNT,
-	}
-
-	metaSubsumeLocksWrittenCount = metric.Metadata{
-		Name:        "subsume.locks_written",
-		Help:        "Number of locks written to storage during subsume (range merge)",
-		Measurement: "Locks Written",
 		Unit:        metric.Unit_COUNT,
 	}
 
@@ -3334,17 +3326,15 @@ type StoreMetrics struct {
 	RangeFeedMetrics *rangefeed.Metrics
 
 	// Concurrency control metrics.
-	Locks                             *metric.Gauge
-	AverageLockHoldDurationNanos      *metric.Gauge
-	MaxLockHoldDurationNanos          *metric.Gauge
-	LocksWithWaitQueues               *metric.Gauge
-	LockWaitQueueWaiters              *metric.Gauge
-	AverageLockWaitDurationNanos      *metric.Gauge
-	MaxLockWaitDurationNanos          *metric.Gauge
-	MaxLockWaitQueueWaitersForLock    *metric.Gauge
-	LocksShedDueToMemoryLimit         *metric.Counter
-	NumLockShedDueToMemoryLimitEvents *metric.Counter
-	LatchWaitDurations                metric.IHistogram
+	Locks                          *metric.Gauge
+	AverageLockHoldDurationNanos   *metric.Gauge
+	MaxLockHoldDurationNanos       *metric.Gauge
+	LocksWithWaitQueues            *metric.Gauge
+	LockWaitQueueWaiters           *metric.Gauge
+	AverageLockWaitDurationNanos   *metric.Gauge
+	MaxLockWaitDurationNanos       *metric.Gauge
+	MaxLockWaitQueueWaitersForLock *metric.Gauge
+	LatchWaitDurations             metric.IHistogram
 
 	// Ingestion metrics
 	IngestCount *metric.Gauge
@@ -3369,8 +3359,6 @@ type StoreMetrics struct {
 
 	SplitsWithEstimatedStats     *metric.Counter
 	SplitEstimatedTotalBytesDiff *metric.Counter
-
-	SubsumeLocksWritten *metric.Counter
 
 	FlushUtilization *metric.GaugeFloat64
 	FsyncLatency     *metric.ManualWindowHistogram
@@ -3726,9 +3714,6 @@ func newStoreMetrics(histogramWindow time.Duration) *StoreMetrics {
 		ResolveCommitCount: metric.NewCounter(metaResolveCommit),
 		ResolveAbortCount:  metric.NewCounter(metaResolveAbort),
 		ResolvePoisonCount: metric.NewCounter(metaResolvePoison),
-
-		// Subsume metrics
-		SubsumeLocksWritten: metric.NewCounter(metaSubsumeLocksWrittenCount),
 
 		Capacity:  metric.NewGauge(metaCapacity),
 		Available: metric.NewGauge(metaAvailable),
@@ -4136,16 +4121,14 @@ func newStoreMetrics(histogramWindow time.Duration) *StoreMetrics {
 		RangeFeedMetrics: rangefeed.NewMetrics(),
 
 		// Concurrency control metrics.
-		Locks:                             metric.NewGauge(metaConcurrencyLocks),
-		AverageLockHoldDurationNanos:      metric.NewGauge(metaConcurrencyAverageLockHoldDurationNanos),
-		MaxLockHoldDurationNanos:          metric.NewGauge(metaConcurrencyMaxLockHoldDurationNanos),
-		LocksWithWaitQueues:               metric.NewGauge(metaConcurrencyLocksWithWaitQueues),
-		LockWaitQueueWaiters:              metric.NewGauge(metaConcurrencyLockWaitQueueWaiters),
-		AverageLockWaitDurationNanos:      metric.NewGauge(metaConcurrencyAverageLockWaitDurationNanos),
-		MaxLockWaitDurationNanos:          metric.NewGauge(metaConcurrencyMaxLockWaitDurationNanos),
-		MaxLockWaitQueueWaitersForLock:    metric.NewGauge(metaConcurrencyMaxLockWaitQueueWaitersForLock),
-		LocksShedDueToMemoryLimit:         metric.NewCounter(concurrency.MetaConcurrencyLocksShedDueToMemoryLimit),
-		NumLockShedDueToMemoryLimitEvents: metric.NewCounter(concurrency.MetaConcurrencyNumLockShedDueToMemoryLimitEvents),
+		Locks:                          metric.NewGauge(metaConcurrencyLocks),
+		AverageLockHoldDurationNanos:   metric.NewGauge(metaConcurrencyAverageLockHoldDurationNanos),
+		MaxLockHoldDurationNanos:       metric.NewGauge(metaConcurrencyMaxLockHoldDurationNanos),
+		LocksWithWaitQueues:            metric.NewGauge(metaConcurrencyLocksWithWaitQueues),
+		LockWaitQueueWaiters:           metric.NewGauge(metaConcurrencyLockWaitQueueWaiters),
+		AverageLockWaitDurationNanos:   metric.NewGauge(metaConcurrencyAverageLockWaitDurationNanos),
+		MaxLockWaitDurationNanos:       metric.NewGauge(metaConcurrencyMaxLockWaitDurationNanos),
+		MaxLockWaitQueueWaitersForLock: metric.NewGauge(metaConcurrencyMaxLockWaitQueueWaitersForLock),
 		LatchWaitDurations: metric.NewHistogram(metric.HistogramOptions{
 			Mode:         metric.HistogramModePreferHdrLatency,
 			Metadata:     metaLatchConflictWaitDurations,
@@ -4527,9 +4510,6 @@ func (sm *StoreMetrics) handleMetricsResult(ctx context.Context, metric result.M
 
 	sm.SplitEstimatedTotalBytesDiff.Inc(int64(metric.SplitEstimatedTotalBytesDiff))
 	metric.SplitEstimatedTotalBytesDiff = 0
-
-	sm.SubsumeLocksWritten.Inc(int64(metric.SubsumeLocksWritten))
-	metric.SubsumeLocksWritten = 0
 
 	if metric != (result.Metrics{}) {
 		log.KvExec.Fatalf(ctx, "unhandled fields in metrics result: %+v", metric)

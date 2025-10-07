@@ -10,14 +10,12 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/scheduledjobs"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
@@ -161,7 +159,6 @@ func (s rowLevelTTLExecutor) ExecuteJob(
 		execCfg.JobRegistry,
 		*args,
 		execCfg.SV(),
-		execCfg.Settings,
 	); err != nil {
 		s.metrics.NumFailed.Inc(1)
 		return err
@@ -279,7 +276,6 @@ func createRowLevelTTLJob(
 	jobRegistry *jobs.Registry,
 	ttlArgs catpb.ScheduledRowLevelTTLArgs,
 	sv *settings.Values,
-	st *cluster.Settings,
 ) (jobspb.JobID, error) {
 	descsCol := descs.FromTxn(txn)
 	tableID := ttlArgs.TableID
@@ -295,12 +291,6 @@ func createRowLevelTTLJob(
 	if err != nil {
 		return 0, err
 	}
-
-	// We can only use checkpointing starting in v25.4. Checkpointing depends on
-	// using the new dist SQL message flow, where the coordinator manages job
-	// progress updates. This flow is not available in older releases.
-	useCheckpointing := st.Version.IsActive(ctx, clusterversion.V25_4)
-
 	record := jobs.Record{
 		Description: description,
 		Username:    username.NodeUserName(),
@@ -309,7 +299,7 @@ func createRowLevelTTLJob(
 			Cutoff:       timeutil.Now(),
 			TableVersion: tableDesc.GetVersion(),
 		},
-		Progress:  jobspb.RowLevelTTLProgress{UseCheckpointing: useCheckpointing},
+		Progress:  jobspb.RowLevelTTLProgress{},
 		CreatedBy: createdByInfo,
 	}
 

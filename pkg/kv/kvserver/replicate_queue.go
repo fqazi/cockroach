@@ -1051,6 +1051,7 @@ func (rq *replicateQueue) shedLease(
 		desc.Replicas().VoterDescriptors(),
 		repl,
 		rangeUsageInfo,
+		false, /* forceDecisionWithoutStats */
 		opts,
 	)
 	if targetDesc == (roachpb.ReplicaDescriptor{}) {

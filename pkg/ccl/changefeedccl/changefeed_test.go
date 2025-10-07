@@ -168,6 +168,7 @@ func TestChangefeedBasics(t *testing.T) {
 func TestDatabaseLevelChangefeedBasics(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	skip.WithIssue(t, 154053, "unreleased feature")
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
@@ -229,80 +230,29 @@ func TestDatabaseLevelChangefeedBasics(t *testing.T) {
 func TestDatabaseLevelChangefeedWithIncludeFilter(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	skip.WithIssue(t, 154053, "unreleased feature")
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-		sqlDB := sqlutils.MakeSQLRunner(s.DB)
-		for i := range 4 {
-			name := fmt.Sprintf("foo%d", i+1)
-			sqlDB.Exec(t, fmt.Sprintf(`CREATE TABLE %s (a INT PRIMARY KEY, b STRING)`, name))
-			sqlDB.Exec(t, fmt.Sprintf(`INSERT INTO %s VALUES (0, 'initial')`, name))
-			sqlDB.Exec(t, fmt.Sprintf(`UPSERT INTO %s VALUES (0, 'updated')`, name))
+		expectSuccess := func(stmt string) {
+			successfulFeed := feed(t, f, stmt)
+			defer closeFeed(t, successfulFeed)
+			_, err := successfulFeed.Next()
+			require.NoError(t, err)
 		}
+		sqlDB := sqlutils.MakeSQLRunner(s.DB)
+		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
+		sqlDB.Exec(t, `INSERT INTO foo VALUES (0, 'initial')`)
+		sqlDB.Exec(t, `UPSERT INTO foo VALUES (0, 'updated')`)
+		sqlDB.Exec(t, `CREATE TABLE foo2 (a INT PRIMARY KEY, b STRING)`)
+		sqlDB.Exec(t, `INSERT INTO foo2 VALUES (0, 'initial')`)
+		sqlDB.Exec(t, `UPSERT INTO foo2 VALUES (0, 'updated')`)
 
-		sqlDB.Exec(t, `CREATE SCHEMA private`)
-		sqlDB.Exec(t, `CREATE TABLE private.foo1 (a INT PRIMARY KEY, b STRING)`)
-		sqlDB.Exec(t, `INSERT INTO private.foo1 VALUES (0, 'initial')`)
-		// Test that if there are multiple tables with the same name the correct
-		// one will still be found using the default schema of public.
-		feed1 := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo1`)
-		defer closeFeed(t, feed1)
-		assertPayloads(t, feed1, []string{
-			`foo1: [0]->{"after": {"a": 0, "b": "updated"}}`,
-		})
-
-		// Test that we can include multiple tables.
-		feed2 := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo1,foo2`)
-		defer closeFeed(t, feed2)
-		assertPayloads(t, feed2, []string{
-			`foo1: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo2: [0]->{"after": {"a": 0, "b": "updated"}}`,
-		})
-
-		// Test that we can handle fully qualified, partially qualified, and unqualified
-		// table names.
-		feed3 := feed(t, f,
-			`CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES d.public.foo2, public.foo3, foo4`)
-		defer closeFeed(t, feed3)
-		assertPayloads(t, feed3, []string{
-			`foo2: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo3: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo4: [0]->{"after": {"a": 0, "b": "updated"}}`,
-		})
-
-		// Test that we can handle tables that don't exist.
-		feed4 := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo1,bob`)
-		defer closeFeed(t, feed4)
-		assertPayloads(t, feed4, []string{
-			`foo1: [0]->{"after": {"a": 0, "b": "updated"}}`,
-		})
-
-		// Test that fully qualified table names outside of the target database will
-		// cause an error.
-		expectErrCreatingFeed(t, f, `CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES fizz.buzz.foo`,
-			`table "fizz.buzz.foo" must be in target database "d"`)
-
-		// Table patterns are not supported.
+		expectSuccess(`CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo`)
+		expectSuccess(`CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo,foo2`)
+		expectSuccess(`CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo.bar.fizz, foo.foo2, foo`)
 		expectErrCreatingFeed(t, f, `CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo.*`,
 			`at or near "*": syntax error`)
-
-		// Test that name resolution is not dependent on search_path() or current DB.
-		sqlDB.Exec(t, `CREATE DATABASE notd`)
-		sqlDB.Exec(t, `USE notd`)
-		sqlDB.Exec(t, `SET search_path TO notpublic`)
-		feed5 := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo1, private.foo1`)
-		defer closeFeed(t, feed5)
-		assertPayloads(t, feed5, []string{
-			`foo1: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo1: [0]->{"after": {"a": 0, "b": "initial"}}`,
-		})
-
-		// Test that partially qualified table names are always assumed to be
-		// <schema>.<table>.
-		feed6 := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES d.foo1, public.foo2`)
-		defer closeFeed(t, feed6)
-		assertPayloads(t, feed6, []string{
-			`foo2: [0]->{"after": {"a": 0, "b": "updated"}}`,
-		})
+		// TODO(#147421): Assert payload once the filter works
 	}
 	cdcTest(t, testFn, feedTestEnterpriseSinks)
 }
@@ -310,89 +260,29 @@ func TestDatabaseLevelChangefeedWithIncludeFilter(t *testing.T) {
 func TestDatabaseLevelChangefeedWithExcludeFilter(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	skip.WithIssue(t, 154053, "unreleased feature")
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-		sqlDB := sqlutils.MakeSQLRunner(s.DB)
-		for i := range 4 {
-			name := fmt.Sprintf("foo%d", i+1)
-			sqlDB.Exec(t, fmt.Sprintf(`CREATE TABLE %s (a INT PRIMARY KEY, b STRING)`, name))
-			sqlDB.Exec(t, fmt.Sprintf(`INSERT INTO %s VALUES (0, 'initial')`, name))
-			sqlDB.Exec(t, fmt.Sprintf(`UPSERT INTO %s VALUES (0, 'updated')`, name))
+		expectSuccess := func(stmt string) {
+			successfulFeed := feed(t, f, stmt)
+			defer closeFeed(t, successfulFeed)
+			_, err := successfulFeed.Next()
+			require.NoError(t, err)
 		}
+		sqlDB := sqlutils.MakeSQLRunner(s.DB)
+		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
+		sqlDB.Exec(t, `INSERT INTO foo VALUES (0, 'initial')`)
+		sqlDB.Exec(t, `UPSERT INTO foo VALUES (0, 'updated')`)
+		sqlDB.Exec(t, `CREATE TABLE foo2 (a INT PRIMARY KEY, b STRING)`)
+		sqlDB.Exec(t, `INSERT INTO foo2 VALUES (0, 'initial')`)
+		sqlDB.Exec(t, `UPSERT INTO foo2 VALUES (0, 'updated')`)
 
-		sqlDB.Exec(t, `CREATE SCHEMA private`)
-		sqlDB.Exec(t, `CREATE TABLE private.foo1 (a INT PRIMARY KEY, b STRING)`)
-		sqlDB.Exec(t, `INSERT INTO private.foo1 VALUES (0, 'initial')`)
-		// Test that if there are multiple tables with the same name the correct
-		// one will still be found using the default schema of public.
-		feed1 := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo1`)
-		defer closeFeed(t, feed1)
-		assertPayloads(t, feed1, []string{
-			`foo1: [0]->{"after": {"a": 0, "b": "initial"}}`,
-			`foo2: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo3: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo4: [0]->{"after": {"a": 0, "b": "updated"}}`,
-		})
-
-		feed2 := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo2`)
-		defer closeFeed(t, feed2)
-		assertPayloads(t, feed2, []string{
-			`foo1: [0]->{"after": {"a": 0, "b": "initial"}}`,
-			`foo1: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo3: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo4: [0]->{"after": {"a": 0, "b": "updated"}}`,
-		})
-
-		// Test that we can exclude multiple tables.
-		feed3 := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo2,foo3`)
-		defer closeFeed(t, feed3)
-		assertPayloads(t, feed3, []string{
-			`foo1: [0]->{"after": {"a": 0, "b": "initial"}}`,
-			`foo1: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo4: [0]->{"after": {"a": 0, "b": "updated"}}`,
-		})
-
-		// Test that we can handle fully qualified, partially qualified, and unqualified
-		// table names.
-		feed4 := feed(t, f,
-			`CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES d.public.foo2, public.foo3, foo4`)
-		defer closeFeed(t, feed4)
-		assertPayloads(t, feed4, []string{
-			`foo1: [0]->{"after": {"a": 0, "b": "initial"}}`,
-			`foo1: [0]->{"after": {"a": 0, "b": "updated"}}`,
-		})
-
-		// Test that we can handle tables that don't exist.
-		feed5 := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES bob`)
-		defer closeFeed(t, feed5)
-		assertPayloads(t, feed5, []string{
-			`foo1: [0]->{"after": {"a": 0, "b": "initial"}}`,
-			`foo1: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo2: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo3: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo4: [0]->{"after": {"a": 0, "b": "updated"}}`,
-		})
-
-		// Test that fully qualified table names outside of the target database will
-		// cause an error.
-		expectErrCreatingFeed(t, f, `CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES fizz.buzz.foo`,
-			`table "fizz.buzz.foo" must be in target database "d"`)
-
-		// Table patterns are not supported.
+		expectSuccess(`CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo`)
+		expectSuccess(`CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo,foo2`)
+		expectSuccess(`CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo.bar.fizz, foo.foo2, foo`)
 		expectErrCreatingFeed(t, f, `CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo.*`,
 			`at or near "*": syntax error`)
-
-		// Test that name resolution is not dependent on search_path() or current DB
-		sqlDB.Exec(t, `CREATE DATABASE notd`)
-		sqlDB.Exec(t, `USE notd`)
-		sqlDB.Exec(t, `SET search_path TO notpublic`)
-		feed6 := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo1, private.foo1`)
-		defer closeFeed(t, feed6)
-		assertPayloads(t, feed6, []string{
-			`foo2: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo3: [0]->{"after": {"a": 0, "b": "updated"}}`,
-			`foo4: [0]->{"after": {"a": 0, "b": "updated"}}`,
-		})
+		// TODO(#147421): Assert payload once the filter works
 	}
 	cdcTest(t, testFn, feedTestEnterpriseSinks)
 }
@@ -1146,6 +1036,7 @@ func TestChangefeedDiff(t *testing.T) {
 func TestDatabaseLevelChangefeedDiff(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	skip.WithIssue(t, 154053, "unreleased feature")
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
@@ -1279,6 +1170,8 @@ func TestMissingTableErr(t *testing.T) {
 func TestChangefeedMissingDatabaseErr(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	skip.WithIssue(t, 154053, "unreleased feature")
+
 	cdcTest(t, func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		expectErrCreatingFeed(t, f, `CREATE CHANGEFEED FOR DATABASE foo`, `database "foo" does not exist`)
 	})
@@ -1287,6 +1180,8 @@ func TestChangefeedMissingDatabaseErr(t *testing.T) {
 func TestChangefeedCannotTargetSystemDatabaseErr(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	skip.WithIssue(t, 154053, "unreleased feature")
+
 	cdcTest(t, func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		expectErrCreatingFeed(t, f, `CREATE CHANGEFEED FOR DATABASE system`, `changefeed cannot target the system database`)
 	})
@@ -1692,7 +1587,6 @@ func TestChangefeedRandomExpressions(t *testing.T) {
 			sqlsmith.DisableWith(),
 			sqlsmith.DisableMutations(),
 			sqlsmith.DisableLimits(),
-			sqlsmith.DisableDoBlocks(),
 			sqlsmith.DisableAggregateFuncs(),
 			sqlsmith.DisableWindowFuncs(),
 			sqlsmith.DisableJoins(),
@@ -4121,7 +4015,7 @@ func TestChangefeedCreateAuthorizationWithChangefeedPriv(t *testing.T) {
 			"CREATE CHANGEFEED FOR table_a, table_b INTO 'external://nope'",
 		)
 		userDB.ExpectErr(t,
-			`user "user1" requires the CHANGEFEED privilege on the target database to be able to run an enterprise changefeed`,
+			`database-level changefeed is not implemented yet`,
 			"CREATE CHANGEFEED FOR DATABASE defaultdb INTO 'kafka://nope'",
 		)
 	})
@@ -4132,7 +4026,7 @@ func TestChangefeedCreateAuthorizationWithChangefeedPriv(t *testing.T) {
 			"CREATE CHANGEFEED FOR table_a, table_b INTO 'external://nope'",
 		)
 		userDB.ExpectErr(t,
-			`user "user1" requires the CHANGEFEED privilege on the target database to be able to run an enterprise changefeed`,
+			`database-level changefeed is not implemented yet`,
 			"CREATE CHANGEFEED FOR DATABASE defaultdb INTO 'kafka://nope'",
 		)
 	})
@@ -4142,7 +4036,7 @@ func TestChangefeedCreateAuthorizationWithChangefeedPriv(t *testing.T) {
 			"CREATE CHANGEFEED FOR table_a, table_b INTO 'external://nope'",
 		)
 		userDB.ExpectErr(t,
-			`user "user1" requires the CHANGEFEED privilege on the target database to be able to run an enterprise changefeed`,
+			`database-level changefeed is not implemented yet`,
 			"CREATE CHANGEFEED FOR DATABASE defaultdb INTO 'kafka://nope'",
 		)
 	})
@@ -4156,7 +4050,7 @@ func TestChangefeedCreateAuthorizationWithChangefeedPriv(t *testing.T) {
 			"CREATE CHANGEFEED FOR table_a, table_b INTO 'kafka://nope'",
 		)
 		userDB.ExpectErr(t,
-			"pq: the CHANGEFEED privilege on the target database can only be used with external connection sinks",
+			"database-level changefeed is not implemented yet",
 			"CREATE CHANGEFEED FOR DATABASE defaultdb INTO 'kafka://nope'",
 		)
 	})
@@ -4167,7 +4061,8 @@ func TestChangefeedCreateAuthorizationWithChangefeedPriv(t *testing.T) {
 		)
 	})
 	withUser(t, "user1", func(userDB *sqlutils.SQLRunner) {
-		userDB.Exec(t,
+		userDB.ExpectErr(t,
+			"database-level changefeed is not implemented yet",
 			"CREATE CHANGEFEED FOR DATABASE defaultdb INTO 'external://nope'",
 		)
 	})
@@ -11713,9 +11608,9 @@ func TestParallelIOMetrics(t *testing.T) {
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		registry := s.Server.JobRegistry().(*jobs.Registry)
 		metrics := registry.MetricsStruct().Changefeed.(*Metrics).AggMetrics
-		numWorkers := 1
+
 		db := sqlutils.MakeSQLRunner(s.DB)
-		db.Exec(t, fmt.Sprintf(`SET CLUSTER SETTING changefeed.sink_io_workers = %d`, numWorkers))
+		db.Exec(t, `SET CLUSTER SETTING changefeed.sink_io_workers = 1`)
 		db.Exec(t, `
 		  CREATE TABLE foo (a INT PRIMARY KEY);
 		`)
@@ -11744,7 +11639,6 @@ func TestParallelIOMetrics(t *testing.T) {
 		// Set the frequency to 1s. The default frequency at the time of writing is
 		foo, err := f.Feed("CREATE CHANGEFEED FOR TABLE foo WITH pubsub_sink_config=" +
 			"'{\"Flush\": {\"Frequency\": \"100ms\"}}'")
-		defer closeFeed(t, foo)
 		require.NoError(t, err)
 
 		testutils.SucceedsSoon(t, func() error {
@@ -11777,19 +11671,6 @@ func TestParallelIOMetrics(t *testing.T) {
 			}
 			return nil
 		})
-
-		assert.Equal(t, int64(numWorkers), metrics.ParallelIOWorkers.Value())
-		jobFeed := foo.(cdctest.EnterpriseTestFeed)
-		require.NoError(t, jobFeed.Pause())
-		db.Exec(t, fmt.Sprintf(`SET CLUSTER SETTING changefeed.sink_io_workers = %d`, numWorkers+1))
-		require.NoError(t, jobFeed.Resume())
-		testutils.SucceedsSoon(t, func() error {
-			if metrics.ParallelIOWorkers.Value() != int64(numWorkers+1) {
-				return errors.Newf("waiting for workers: %d", metrics.ParallelIOWorkers.Value())
-			}
-			return nil
-		})
-
 		close(done)
 		require.NoError(t, g.Wait())
 		require.NoError(t, foo.Close())
@@ -12184,7 +12065,9 @@ WITH resolved='10ms', min_checkpoint_frequency='10ms', no_initial_scan`
 			require.NoError(t, err)
 			return ts
 		}
-		perTablePTSEnabled := changefeedbase.PerTableProtectedTimestamps.Get(&s.Server.ClusterSettings().SV)
+
+		// In 25.4 we are hard disabling per table protected timestamps.
+		perTablePTSEnabled := false
 		perTableProgressEnabled := changefeedbase.TrackPerTableProgress.Get(&s.Server.ClusterSettings().SV)
 		getPTS := func() hlc.Timestamp {
 			if perTablePTSEnabled && perTableProgressEnabled {
@@ -12690,6 +12573,7 @@ func TestChangefeedBareFullProtobuf(t *testing.T) {
 func TestDatabaseRenameDuringDatabaseLevelChangefeed(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	skip.WithIssue(t, 154053, "unreleased feature")
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
@@ -12718,6 +12602,7 @@ func TestDatabaseRenameDuringDatabaseLevelChangefeed(t *testing.T) {
 func TestTableRenameDuringDatabaseLevelChangefeed(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	skip.WithIssue(t, 154053, "unreleased feature")
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
@@ -12770,6 +12655,29 @@ func TestCreateTableLevelChangefeedWithDBPrivilege(t *testing.T) {
 		asUser(t, f, `user1`, func(_ *sqlutils.SQLRunner) {
 			expectSuccess(`CREATE CHANGEFEED FOR d.bar`)
 		})
+	}
+	cdcTest(t, testFn, feedTestEnterpriseSinks)
+}
+
+func TestDatabaseLevelChangefeedUnimplemented(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
+		sqlDB := sqlutils.MakeSQLRunner(s.DB)
+		sqlDB.Exec(t, `CREATE TABLE bar (id INT PRIMARY KEY);`)
+		sqlDB.Exec(t, `INSERT INTO bar VALUES (1);`)
+		expectErrCreatingFeed(t, f, `CREATE CHANGEFEED FOR DATABASE d`,
+			`database-level changefeed is not implemented yet`)
+		expectErrCreatingFeed(t, f, `CREATE CHANGEFEED FOR DATABASE d WITH diff`,
+			`database-level changefeed is not implemented yet`)
+		expectErrCreatingFeed(t, f, `CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo`,
+			`database-level changefeed is not implemented yet`)
+		expectErrCreatingFeed(t, f, `CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo`,
+			`database-level changefeed is not implemented yet`)
+		expectErrCreatingFeed(t, f, `CREATE CHANGEFEED FOR DATABASE system`,
+			`database-level changefeed is not implemented yet`)
+		expectErrCreatingFeed(t, f, `CREATE CHANGEFEED FOR DATABASE doesnotexist`,
+			`database-level changefeed is not implemented yet`)
 	}
 	cdcTest(t, testFn, feedTestEnterpriseSinks)
 }

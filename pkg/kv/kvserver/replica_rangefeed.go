@@ -33,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil/singleflight"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 )
 
@@ -98,6 +97,19 @@ func init() {
 	// Inject into kvserverbase to allow usage from kvcoord.
 	kvserverbase.RangeFeedRefreshInterval = RangeFeedRefreshInterval
 }
+
+// defaultEventChanCap is the channel capacity of the rangefeed processor and
+// each registration.
+//
+// The size of an event is 72 bytes, so this will result in an allocation on the
+// order of ~300KB per RangeFeed. That's probably ok given the number of ranges
+// on a node that we'd like to support with active rangefeeds, but it's
+// certainly on the upper end of the range.
+//
+// TODO(dan): Everyone seems to agree that this memory limit would be better set
+// at a store-wide level, but there doesn't seem to be an easy way to accomplish
+// that.
+const defaultEventChanCap = 4096
 
 // defaultEventChanTimeout is the send timeout for events published to a
 // rangefeed processor or rangefeed client channels. When exceeded, the
@@ -415,9 +427,9 @@ func (r *Replica) updateRangefeedFilterLocked() bool {
 // to believe that is blocks the raftMu in practice.
 func logSlowRangefeedRegistration(ctx context.Context) func() {
 	const slowRaftMuWarnThreshold = 20 * time.Millisecond
-	start := crtime.NowMono()
+	start := timeutil.Now()
 	return func() {
-		elapsed := start.Elapsed()
+		elapsed := timeutil.Since(start)
 		if elapsed >= slowRaftMuWarnThreshold {
 			log.KvDistribution.Warningf(ctx, "rangefeed registration took %s", elapsed)
 		}
@@ -504,7 +516,7 @@ func (r *Replica) registerWithRangefeedRaftMuLocked(
 		Span:             desc.RSpan(),
 		TxnPusher:        &tp,
 		PushTxnsAge:      r.store.TestingKnobs().RangeFeedPushTxnsAge,
-		EventChanCap:     kvserverbase.DefaultRangefeedEventCap,
+		EventChanCap:     defaultEventChanCap,
 		EventChanTimeout: defaultEventChanTimeout,
 		Metrics:          r.store.metrics.RangeFeedMetrics,
 		MemBudget:        feedBudget,
@@ -514,13 +526,19 @@ func (r *Replica) registerWithRangefeedRaftMuLocked(
 	p = rangefeed.NewProcessor(cfg)
 
 	// Start it with an iterator to initialize the resolved timestamp.
-	rtsIter := func() (rangefeed.IntentScanner, error) {
+	rtsIter := func() rangefeed.IntentScanner {
 		// Assert that we still hold the raftMu when this is called to ensure
 		// that the rtsIter reads from the current snapshot. The replica
 		// synchronizes with the rangefeed Processor calling this function by
 		// waiting for the Register call below to return.
 		r.raftMu.AssertHeld()
-		return rangefeed.NewSeparatedIntentScanner(streamCtx, r.store.TODOEngine(), desc.RSpan())
+
+		scanner, err := rangefeed.NewSeparatedIntentScanner(streamCtx, r.store.TODOEngine(), desc.RSpan())
+		if err != nil {
+			stream.SendError(kvpb.NewError(err))
+			return nil
+		}
+		return scanner
 	}
 
 	// NB: This only errors if the stopper is stopping, and we have to return here

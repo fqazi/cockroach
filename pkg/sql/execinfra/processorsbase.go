@@ -295,10 +295,7 @@ func (h *ProcOutputHelper) ProcessRow(
 			if err != nil {
 				return nil, false, err
 			}
-			h.outputRow[i], err = rowenc.DatumToEncDatum(h.OutputTypes[i], datum)
-			if err != nil {
-				return nil, false, err
-			}
+			h.outputRow[i] = rowenc.DatumToEncDatum(h.OutputTypes[i], datum)
 		}
 	} else if h.outputCols != nil {
 		// Projection.

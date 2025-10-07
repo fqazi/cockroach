@@ -101,9 +101,7 @@ func TestWALFailover(t *testing.T) {
 
 				var cfg storageconfig.WALFailover
 				if flagStr != "" {
-					var err error
-					cfg, err = storageconfig.ParseWALFailover(flagStr)
-					if err != nil {
+					if err := cfg.Set(flagStr); err != nil {
 						return fmt.Sprintf("error parsing flag: %q", err)
 					}
 				}

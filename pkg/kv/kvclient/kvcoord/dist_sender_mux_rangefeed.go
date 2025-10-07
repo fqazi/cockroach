@@ -25,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 )
@@ -68,9 +67,9 @@ func muxRangeFeed(
 ) (retErr error) {
 	if log.V(1) {
 		log.KvExec.Infof(ctx, "Establishing MuxRangeFeed (%s...; %d spans)", spans[0], len(spans))
-		start := crtime.NowMono()
+		start := timeutil.Now()
 		defer func() {
-			log.KvExec.Infof(ctx, "MuxRangeFeed terminating after %s with err=%v", start.Elapsed(), retErr)
+			log.KvExec.Infof(ctx, "MuxRangeFeed terminating after %s with err=%v", timeutil.Since(start), retErr)
 		}()
 	}
 
@@ -370,23 +369,23 @@ func (m *rangefeedMuxer) startNodeMuxRangeFeed(
 	stream *future.Future[muxStreamOrError],
 ) (retErr error) {
 
-	tags := logtags.BuildBuffer()
-	tags.Add("mux_n", nodeID)
+	tags := &logtags.Buffer{}
+	tags = tags.Add("mux_n", nodeID)
 	// Add "generation" number to the context so that log messages and stacks can
 	// differentiate between multiple instances of mux rangefeed goroutine
 	// (this can happen when one was shutdown, then re-established).
-	tags.Add("gen", atomic.AddInt64(&m.seqID, 1))
+	tags = tags.Add("gen", atomic.AddInt64(&m.seqID, 1))
 
-	ctx = logtags.AddTags(ctx, tags.Finish())
+	ctx = logtags.AddTags(ctx, tags)
 	ctx, restore := pprofutil.SetProfilerLabelsFromCtxTags(ctx)
 	defer restore()
 
 	if log.V(1) {
 		log.KvExec.Infof(ctx, "Establishing MuxRangeFeed to node %d", nodeID)
-		start := crtime.NowMono()
+		start := timeutil.Now()
 		defer func() {
 			log.KvExec.Infof(ctx, "MuxRangeFeed to node %d terminating after %s with err=%v",
-				nodeID, start.Elapsed(), retErr)
+				nodeID, timeutil.Since(start), retErr)
 		}()
 	}
 

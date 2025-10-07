@@ -29,9 +29,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
+	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logflags"
 	"github.com/cockroachdb/cockroach/pkg/util/netutil/addr"
 	"github.com/cockroachdb/errors"
+	"github.com/dustin/go-humanize"
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -62,7 +64,7 @@ var storeSpecs base.StoreSpecList
 var goMemLimit int64
 var tenantIDFile string
 var localityFile string
-var encryptionSpecs encryptionSpecList
+var encryptionSpecs storageconfig.EncryptionSpecList
 
 // initPreFlagsDefaults initializes the values of the global variables
 // defined above.
@@ -431,11 +433,7 @@ func init() {
 
 		// Add a new pre-run command to match encryption specs to store specs.
 		AddPersistentPreRunE(cmd, func(cmd *cobra.Command, _ []string) error {
-			return populateWithEncryptionOpts(
-				serverCfg.Stores,
-				&serverCfg.StorageConfig.WALFailover,
-				encryptionSpecs,
-			)
+			return populateStoreSpecsEncryption()
 		})
 	}
 
@@ -529,7 +527,7 @@ func init() {
 		cliflagcfg.StringFlag(f, &deprecatedStorageEngine, cliflags.StorageEngine)
 		_ = pf.MarkHidden(cliflags.StorageEngine.Name)
 
-		cliflagcfg.VarFlag(f, &walFailoverWrapper{cfg: &serverCfg.StorageConfig.WALFailover}, cliflags.WALFailover)
+		cliflagcfg.VarFlag(f, &serverCfg.StorageConfig.WALFailover, cliflags.WALFailover)
 		// TODO(storage): Consider combining the uri and cache manual settings.
 		// Alternatively remove the ability to configure shared storage without
 		// passing a bootstrap configuration file.
@@ -1480,13 +1478,25 @@ func mtStartSQLFlagsInit(cmd *cobra.Command) error {
 	// unless a ballast size was specified explicitly by the user.
 	for i := range serverCfg.Stores.Specs {
 		spec := &serverCfg.Stores.Specs[i]
-		if !spec.BallastSize.IsSet() {
+		if spec.BallastSize == nil {
 			// Only override if there was no ballast size specified to start
 			// with.
-			spec.BallastSize = storageconfig.BytesSize(0)
+			zero := storageconfig.Size{Bytes: 0, Percent: 0}
+			spec.BallastSize = &zero
 		}
 	}
 	return nil
+}
+
+// populateStoreSpecsEncryption is a PreRun hook that matches store encryption
+// specs with the parsed stores and populates some fields in the StoreSpec and
+// WAL failover config.
+func populateStoreSpecsEncryption() error {
+	return base.PopulateWithEncryptionOpts(
+		GetServerCfgStores(),
+		GetWALFailoverConfig(),
+		encryptionSpecs,
+	)
 }
 
 // sizeFlagVal is a pflag.Value wrapper for storageconfig.Size. It can be
@@ -1504,7 +1514,10 @@ func newSizeFlagVal(spec *storageconfig.Size) *sizeFlagVal {
 // String returns a string representation of the Size. It is part of the
 // pflag.Value interface.
 func (sv *sizeFlagVal) String() string {
-	return sv.spec.String()
+	if sv.spec.Percent != 0 {
+		return humanize.Ftoa(sv.spec.Percent) + "%"
+	}
+	return string(humanizeutil.IBytes(sv.spec.Bytes))
 }
 
 // Type returns the underlying type in string form.  It is part of the
@@ -1516,7 +1529,7 @@ func (sv *sizeFlagVal) Type() string {
 // Set adds a new value to the StoreSpecValue. It is part of the pflag.Value
 // interface.
 func (sv *sizeFlagVal) Set(value string) error {
-	spec, err := storageconfig.ParseSizeSpec(value)
+	spec, err := storageconfig.ParseSizeSpec(value, storageconfig.SizeSpecConstraints{})
 	if err != nil {
 		return err
 	}

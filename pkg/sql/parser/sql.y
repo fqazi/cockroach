@@ -965,8 +965,11 @@ func (u *sqlSymUnion) doBlockOptions() tree.DoBlockOptions {
 func (u *sqlSymUnion) doBlockOption() tree.DoBlockOption {
     return u.val.(tree.DoBlockOption)
 }
-func (u *sqlSymUnion) changefeedFilterOption() tree.ChangefeedFilterOption {
-    return u.val.(tree.ChangefeedFilterOption)
+func (u *sqlSymUnion) changefeedFilterOption() *tree.ChangefeedFilterOption {
+    if filterOption, ok := u.val.(*tree.ChangefeedFilterOption); ok {
+        return filterOption
+    }
+    return nil
 } 
 
 %}
@@ -1096,7 +1099,7 @@ func (u *sqlSymUnion) changefeedFilterOption() tree.ChangefeedFilterOption {
 %token <str> VIEWCLUSTERSETTING VIRTUAL VISIBLE INVISIBLE VISIBILITY VOLATILE VOTERS
 %token <str> VIRTUAL_CLUSTER_NAME VIRTUAL_CLUSTER
 
-%token <str> WATCHED_TABLES WHEN WHERE WINDOW WITH WITHIN WITHOUT WORK WRITE
+%token <str> WHEN WHERE WINDOW WITH WITHIN WITHOUT WORK WRITE
 
 %token <str> YEAR
 
@@ -1607,7 +1610,7 @@ func (u *sqlSymUnion) changefeedFilterOption() tree.ChangefeedFilterOption {
 %type <tree.ReturningClause> returning_clause
 %type <tree.TableExprs> opt_using_clause
 %type <tree.RefreshDataOption> opt_clear_data
-%type <tree.ChangefeedFilterOption> db_level_changefeed_filter_option
+%type <*tree.ChangefeedFilterOption> db_level_changefeed_filter_option
 
 %type <tree.BatchParam> batch_param
 %type <[]tree.BatchParam> batch_param_list
@@ -6507,15 +6510,15 @@ opt_using_clause:
 db_level_changefeed_filter_option:
   EXCLUDE TABLES table_name_list
   {
-    $$.val = tree.ChangefeedFilterOption{Tables: $3.tableNames(), FilterType: tree.ExcludeFilter}
+    $$.val = &tree.ChangefeedFilterOption{Tables: $3.tableNames(), FilterType: tree.ExcludeFilter}
   }
 | INCLUDE TABLES table_name_list
   {
-    $$.val = tree.ChangefeedFilterOption{Tables: $3.tableNames(), FilterType: tree.IncludeFilter}
+    $$.val = &tree.ChangefeedFilterOption{Tables: $3.tableNames(), FilterType: tree.IncludeFilter}
   }
 | /* EMPTY */ 
   {
-    $$.val = tree.ChangefeedFilterOption{}
+    $$.val = nil
   }
 
 
@@ -9495,10 +9498,6 @@ show_jobs_stmt:
   {
     $$.val = &tree.ShowChangefeedJobs{}
   }
-| SHOW CHANGEFEED JOBS WITH WATCHED_TABLES
-  {
-    $$.val = &tree.ShowChangefeedJobs{IncludeWatchedTables: true}
-  }
 | SHOW AUTOMATIC JOBS error // SHOW HELP: SHOW JOBS
 | SHOW JOBS error // SHOW HELP: SHOW JOBS
 | SHOW CHANGEFEED JOBS error // SHOW HELP: SHOW JOBS
@@ -9525,13 +9524,6 @@ show_jobs_stmt:
   {
     $$.val = &tree.ShowChangefeedJobs{Jobs: $4.slct()}
   }
-| SHOW CHANGEFEED JOBS select_stmt WITH WATCHED_TABLES
-  {
-    $$.val = &tree.ShowChangefeedJobs{
-      Jobs: $4.slct(),
-      IncludeWatchedTables: true,
-    }
-  }
 | SHOW JOBS select_stmt error // SHOW HELP: SHOW JOBS
 | SHOW JOB a_expr
   {
@@ -9556,15 +9548,6 @@ show_jobs_stmt:
       Jobs: &tree.Select{
         Select: &tree.ValuesClause{Rows: []tree.Exprs{tree.Exprs{$4.expr()}}},
       },
-    }
-  }
-| SHOW CHANGEFEED JOB a_expr WITH WATCHED_TABLES
-  {
-    $$.val = &tree.ShowChangefeedJobs{
-      Jobs: &tree.Select{
-        Select: &tree.ValuesClause{Rows: []tree.Exprs{tree.Exprs{$4.expr()}}},
-      },
-      IncludeWatchedTables: true,
     }
   }
 | SHOW JOB WHEN COMPLETE a_expr
@@ -18956,7 +18939,6 @@ unreserved_keyword:
 | VISIBILITY
 | VOLATILE
 | VOTERS
-| WATCHED_TABLES
 | WITHIN
 | WITHOUT
 | WRITE
@@ -19571,7 +19553,6 @@ bare_label_keywords:
 | VISIBILITY
 | VOLATILE
 | VOTERS
-| WATCHED_TABLES
 | WHEN
 | WORK
 | WRITE

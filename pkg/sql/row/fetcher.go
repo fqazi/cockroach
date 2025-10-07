@@ -1131,10 +1131,7 @@ func (rf *Fetcher) processValueSingle(
 	if rf.args.TraceKV {
 		prettyValue = value.String()
 	}
-	table.row[idx], err = rowenc.DatumToEncDatum(typ, value)
-	if err != nil {
-		return "", "", err
-	}
+	table.row[idx] = rowenc.DatumToEncDatum(typ, value)
 	return prettyKey, prettyValue, nil
 }
 

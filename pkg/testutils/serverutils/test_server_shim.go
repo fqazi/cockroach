@@ -177,13 +177,6 @@ const (
 
 	testTenantModeEnabledShared   = "shared"
 	testTenantModeEnabledExternal = "external"
-
-	// COCKROACH_TEST_DRPC controls the DRPC enablement mode for test servers.
-	//
-	// - disabled: disables DRPC; all inter-node connectivity will use gRPC only
-	//
-	// - enabled: enables DRPC for inter-node connectivity
-	testDRPCEnabledEnvVar = "COCKROACH_TEST_DRPC"
 )
 
 func testTenantDecisionFromEnvironment(
@@ -544,24 +537,6 @@ func WaitForTenantCapabilities(
 	}
 }
 
-// parseDefaultTestDRPCOptionFromEnv parses the COCKROACH_TEST_DRPC environment
-// variable and returns the corresponding DefaultTestDRPCOption. If the
-// environment variable is not set it returns TestDRPCUnset. For invalid value,
-// it panic.
-func parseDefaultTestDRPCOptionFromEnv() base.DefaultTestDRPCOption {
-	if str, present := envutil.EnvString(testDRPCEnabledEnvVar, 0); present {
-		switch str {
-		case "disabled", "false":
-			return base.TestDRPCDisabled
-		case "enabled", "true":
-			return base.TestDRPCEnabled
-		default:
-			panic(fmt.Sprintf("invalid value for %s: %s", testDRPCEnabledEnvVar, str))
-		}
-	}
-	return base.TestDRPCUnset
-}
-
 // ShouldEnableDRPC determines the final DRPC option based on the input
 // option and any global overrides, resolving random choices to a concrete
 // enabled/disabled state.
@@ -569,16 +544,10 @@ func ShouldEnableDRPC(
 	ctx context.Context, t TestLogger, option base.DefaultTestDRPCOption,
 ) base.DefaultTestDRPCOption {
 	var logSuffix string
-
-	// Check environment variable first
-	if envOption := parseDefaultTestDRPCOptionFromEnv(); envOption != base.TestDRPCUnset {
-		option = envOption
-		logSuffix = " (override by COCKROACH_TEST_DRPC environment variable)"
-	} else if option == base.TestDRPCUnset && globalDefaultDRPCOptionOverride.isSet {
+	if option == base.TestDRPCUnset && globalDefaultDRPCOptionOverride.isSet {
 		option = globalDefaultDRPCOptionOverride.value
 		logSuffix = " (override by TestingGlobalDRPCOption)"
 	}
-
 	enableDRPC := false
 	switch option {
 	case base.TestDRPCEnabled:
@@ -586,8 +555,6 @@ func ShouldEnableDRPC(
 	case base.TestDRPCEnabledRandomly:
 		rng, _ := randutil.NewTestRand()
 		enableDRPC = rng.Intn(2) == 0
-	case base.TestDRPCUnset:
-		return base.TestDRPCUnset
 	}
 
 	if enableDRPC {

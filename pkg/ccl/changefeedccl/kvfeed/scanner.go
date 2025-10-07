@@ -31,7 +31,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 )
 
@@ -188,7 +187,7 @@ func (p *scanRequestScanner) exportSpan(
 	if err := txn.SetFixedTimestamp(ctx, ts); err != nil {
 		return err
 	}
-	stopwatchStart := crtime.NowMono()
+	stopwatchStart := timeutil.Now()
 	var scanDuration, bufferDuration time.Duration
 	targetBytesPerScan := changefeedbase.ScanRequestSize.Get(&p.settings.SV)
 	for remaining := &span; remaining != nil; {
@@ -224,14 +223,14 @@ func (p *scanRequestScanner) exportSpan(
 		if err := txn.Run(ctx, b); err != nil {
 			return errors.Wrapf(err, `fetching changes for %s`, span)
 		}
-		afterScan := crtime.NowMono()
-		scanDuration += afterScan.Sub(crtime.MonoFromTime(start))
-
+		afterScan := timeutil.Now()
 		res := b.RawResponse().Responses[0].GetScan()
 		if err := slurpScanResponse(ctx, sink, res, ts, withDiff, *remaining); err != nil {
 			return err
 		}
-		bufferDuration += afterScan.Elapsed()
+		afterBuffer := timeutil.Now()
+		scanDuration += afterScan.Sub(start)
+		bufferDuration += afterBuffer.Sub(afterScan)
 		if res.ResumeSpan != nil {
 			consumed := roachpb.Span{Key: remaining.Key, EndKey: res.ResumeSpan.Key}
 			if err := sink.Add(
@@ -250,7 +249,7 @@ func (p *scanRequestScanner) exportSpan(
 	}
 	if log.V(2) {
 		log.Changefeed.Infof(ctx, `finished Scan of %s at %s took %s`,
-			span, ts.AsOfSystemTime(), stopwatchStart.Elapsed())
+			span, ts.AsOfSystemTime(), timeutil.Since(stopwatchStart))
 	}
 	return nil
 }

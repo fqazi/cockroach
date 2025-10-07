@@ -55,7 +55,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
@@ -858,7 +857,7 @@ func (ca *changeAggregator) tick() error {
 		return err
 	}
 
-	queuedNanos := event.BufferAddTimestamp().Elapsed().Nanoseconds()
+	queuedNanos := timeutil.Since(event.BufferAddTimestamp()).Nanoseconds()
 	ca.metrics.QueueTimeNanos.Inc(queuedNanos)
 
 	switch event.Type() {
@@ -937,11 +936,11 @@ func (ca *changeAggregator) noteResolvedSpan(resolved jobspb.ResolvedSpan) error
 	checkpointFrontier := (advanced && forceFlush) || ca.frontierFlushLimiter.canSave(ctx)
 
 	if checkpointFrontier {
-		now := crtime.NowMono()
+		now := timeutil.Now()
 		if err := ca.flushFrontier(ctx); err != nil {
 			return err
 		}
-		ca.frontierFlushLimiter.doneSave(now.Elapsed())
+		ca.frontierFlushLimiter.doneSave(timeutil.Since(now))
 	}
 
 	return nil
@@ -1844,7 +1843,7 @@ func (cf *changeFrontier) checkpointJobProgress(
 ) error {
 	ctx, sp := tracing.ChildSpan(ctx, "changefeed.frontier.checkpoint_job_progress")
 	defer sp.Finish()
-	defer cf.sliMetrics.Timers.CheckpointJobProgress.Start().End()
+	defer cf.sliMetrics.Timers.CheckpointJobProgress.Start()()
 
 	if cf.knobs.RaiseRetryableError != nil {
 		if err := cf.knobs.RaiseRetryableError(); err != nil {
@@ -1925,7 +1924,7 @@ func (cf *changeFrontier) maybePersistFrontier(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	persistDuration := timer.End()
+	persistDuration := timer()
 	cf.frontierPersistenceLimiter.doneSave(persistDuration)
 	return nil
 }
@@ -1951,11 +1950,11 @@ func (cf *changeFrontier) manageProtectedTimestamps(
 	recordPTSMetricsErrorTime := cf.sliMetrics.Timers.PTSManageError.Start()
 	defer func() {
 		if err != nil {
-			recordPTSMetricsErrorTime.End()
+			recordPTSMetricsErrorTime()
 			return
 		}
 		if updated {
-			recordPTSMetricsTime.End()
+			recordPTSMetricsTime()
 		}
 	}()
 

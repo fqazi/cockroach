@@ -534,16 +534,9 @@ func DestroyCluster(l *logger.Logger, c *Cluster) error {
 	// DNS entries are destroyed first to ensure that the GC job will not try
 	// and clean-up entries prematurely.
 	stopSpinner := ui.NewDefaultSpinner(l, "Destroying DNS entries").Start()
-	publicRecords := make([]string, 0, len(c.VMs))
-	for _, v := range c.VMs {
-		publicRecords = append(publicRecords, v.PublicDNS)
-	}
 	dnsErr := vm.FanOutDNS(c.VMs, func(p vm.DNSProvider, vms vm.List) error {
-		publicRecordsErr := p.DeletePublicRecordsByName(context.Background(), publicRecords...)
-		srvRecordsErr := p.DeleteSRVRecordsBySubdomain(context.Background(), c.Name)
-		return errors.CombineErrors(publicRecordsErr, srvRecordsErr)
+		return p.DeleteRecordsBySubdomain(context.Background(), c.Name)
 	})
-
 	stopSpinner()
 
 	stopSpinner = ui.NewDefaultSpinner(l, "Destroying VMs").Start()

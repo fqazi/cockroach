@@ -1838,10 +1838,6 @@ func runCDCMultiTablePTSBenchmark(
 		numRanges = params.numRanges
 	}
 
-	if _, err := db.Exec("SET CLUSTER SETTING changefeed.protect_timestamp.per_table.enabled = $1", params.perTablePTS); err != nil {
-		t.Fatalf("failed to set per-table protected timestamps: %v", err)
-	}
-
 	initCmd := fmt.Sprintf("./cockroach workload init bank --rows=%d --ranges=%d --tables=%d {pgurl%s}",
 		params.numRows, numRanges, params.numTables, ct.crdbNodes.RandNode())
 	if err := c.RunE(ctx, option.WithNodes(ct.workloadNode), initCmd); err != nil {
@@ -3092,7 +3088,7 @@ CONFIGURE ZONE USING
 		CompatibleClouds: registry.AllExceptIBM,
 		Run:              runMessageTooLarge,
 	})
-	for _, perTablePTS := range []bool{false, true} {
+	for _, perTablePTS := range []bool{false} {
 		for _, config := range []struct {
 			numTables    int
 			numRanges    int
@@ -3159,8 +3155,6 @@ CONFIGURE ZONE USING
 						// Disable span-level checkpointing since it's not necessary
 						// when frontier persistence is on.
 						"changefeed.span_checkpoint.interval": "'0'",
-						// Disable per-table PTS to avoid impact on results.
-						"changefeed.protect_timestamp.per_table.enabled": "false",
 					} {
 						stmt := fmt.Sprintf(`SET CLUSTER SETTING %s = %s`, name, value)
 						if _, err := db.ExecContext(ctx, stmt); err != nil {

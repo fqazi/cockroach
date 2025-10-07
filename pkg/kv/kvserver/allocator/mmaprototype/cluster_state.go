@@ -1949,7 +1949,7 @@ func (cs *clusterState) canShedAndAddLoad(
 	srcSS *storeState,
 	targetSS *storeState,
 	delta LoadVector,
-	means *meansLoad,
+	means *meansForStoreSet,
 	onlyConsiderTargetCPUSummary bool,
 	overloadedDim LoadDimension,
 ) (canAddLoad bool) {

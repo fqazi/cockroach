@@ -33,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	raft "github.com/cockroachdb/cockroach/pkg/raft"
@@ -1879,10 +1878,6 @@ func TestLogGrowthWhenRefreshingPendingCommands(t *testing.T) {
 			raftConfig := base.RaftConfig{
 				// Drop the raft tick interval so the Raft group is ticked more.
 				RaftTickInterval: 10 * time.Millisecond,
-				// Suppress timeout-based elections to avoid leadership changes in ways
-				// this test doesn't expect. See DisablePreCampaignStoreLivenessCheck,
-				// which counteracts this knob's effect on leader leases.
-				RaftElectionTimeoutTicks: 1000000,
 				// Reduce the max uncommitted entry size.
 				RaftMaxUncommittedEntriesSize: 64 << 10, // 64 KB
 				// RaftProposalQuota cannot exceed RaftMaxUncommittedEntriesSize.
@@ -1890,6 +1885,12 @@ func TestLogGrowthWhenRefreshingPendingCommands(t *testing.T) {
 				// RaftMaxInflightMsgs * RaftMaxSizePerMsg cannot exceed RaftProposalQuota.
 				RaftMaxInflightMsgs: 16,
 				RaftMaxSizePerMsg:   1 << 10, // 1 KB
+			}
+			// Suppress timeout-based elections to avoid leadership changes in ways this
+			// test doesn't expect. For leader leases, fortification itself provides us
+			// this guarantee.
+			if leaseType != roachpb.LeaseLeader {
+				raftConfig.RaftElectionTimeoutTicks = 1000000
 			}
 
 			const numServers int = 5
@@ -1915,14 +1916,6 @@ func TestLogGrowthWhenRefreshingPendingCommands(t *testing.T) {
 							// Refresh pending commands on every Raft group tick instead of
 							// every RaftReproposalTimeoutTicks.
 							RefreshReasonTicksPeriod: 1,
-							RaftTestingKnobs: &raft.TestingKnobs{
-								// Due to high RaftElectionTimeoutTicks, we only have one
-								// opportunity to campaign which should not be missed. Under
-								// leader leases, in a "cold" cluster, a campaign can fail due
-								// to missing store liveness support from the node's peers.
-								// Disallow this check to ensure that the campaign succeeds.
-								DisablePreCampaignStoreLivenessCheck: true,
-							},
 						},
 					},
 				}
@@ -5327,13 +5320,13 @@ func TestProcessSplitAfterRightHandSideHasBeenRemoved(t *testing.T) {
 			t *testing.T, store *kvserver.Store, rangeID roachpb.RangeID,
 		) raftpb.HardState {
 			t.Helper()
-			hs, err := logstore.NewStateLoader(rangeID).LoadHardState(ctx, store.LogEngine())
+			hs, err := stateloader.Make(rangeID).LoadHardState(ctx, store.TODOEngine())
 			require.NoError(t, err)
 			return hs
 		}
 		partitionReplicaOnSplit := func(t *testing.T, tc *testcluster.TestCluster, key roachpb.Key, basePartition *testClusterPartitionedRange, partRange **testClusterPartitionedRange) {
-			// Set up a hook to partition away the first store of the RHS range at the
-			// first opportunity (when the split trigger is proposed).
+			// Set up a hook to partition the RHS range at its initial range ID
+			// before proposing the split trigger.
 			var setupOnce sync.Once
 			f := kvserverbase.ReplicaProposalFilter(func(args kvserverbase.ProposalFilterArgs) *kvpb.Error {
 				req, ok := args.Req.GetArg(kvpb.EndTxn)
@@ -5364,10 +5357,9 @@ func TestProcessSplitAfterRightHandSideHasBeenRemoved(t *testing.T) {
 			proposalFilter.Store(f)
 		}
 
-		// The basic setup for all of these tests are that we have an LHS range on 3
-		// nodes (lease on the last one), and we've partitioned store 0 for the LHS
-		// range. The tests will now perform a split, remove the RHS, add it back
-		// and validate assumptions.
+		// The basic setup for all of these tests are that we have a LHS range on 3
+		// nodes and we've partitioned store 0 for the LHS range. The tests will now
+		// perform a split, remove the RHS, add it back and validate assumptions.
 		//
 		// Different outcomes will occur depending on whether and how the RHS is
 		// partitioned and whether the server is killed. In all cases we want the
@@ -5402,11 +5394,6 @@ func TestProcessSplitAfterRightHandSideHasBeenRemoved(t *testing.T) {
 							// Newly-started stores (including the "rogue" one) should not GC
 							// their replicas. We'll turn this back on when needed.
 							DisableReplicaGCQueue: true,
-							// Some subtests, e.g. (4), expect that n1 catches up on the raft
-							// log after a partition, and runs the split trigger. Disable raft
-							// log truncation to make sure that it doesn't miss the split
-							// trigger by being caught up by a later snapshot. See #154313.
-							DisableRaftLogQueue:   true,
 							TestingProposalFilter: testingProposalFilter,
 						},
 					},
@@ -5493,9 +5480,9 @@ func TestProcessSplitAfterRightHandSideHasBeenRemoved(t *testing.T) {
 			target := tc.Target(0)
 			log.KvExec.Infof(ctx, "removing voter: %v", target)
 			tc.RemoveVotersOrFatal(t, keyB, target)
-			// Unsuccessful because the RHS will not accept the learner snapshot and
-			// will be rolled back. Nevertheless, it will have learned that it has
-			// been removed at the old replica ID.
+			// Unsuccessful because the RHS will not accept the learner snapshot
+			// and will be rolled back. Nevertheless it will have learned that it
+			// has been removed at the old replica ID.
 			_, err = tc.Servers[0].DB().AdminChangeReplicas(
 				ctx, keyB, tc.LookupRangeOrFatal(t, keyB),
 				kvpb.MakeReplicationChanges(roachpb.ADD_VOTER, target),
@@ -5708,8 +5695,8 @@ func TestProcessSplitAfterRightHandSideHasBeenRemoved(t *testing.T) {
 			target := tc.Target(0)
 			log.KvExec.Infof(ctx, "removing voter: %v", target)
 			tc.RemoveVotersOrFatal(t, keyB, target)
-			// Unsuccessful because the RHS will not accept the learner snapshot
-			// and will be rolled back. Nevertheless, it will have learned that it
+			// Unsuccessfuly because the RHS will not accept the learner snapshot
+			// and will be rolled back. Nevertheless it will have learned that it
 			// has been removed at the old replica ID.
 			//
 			// Not using tc.AddVoters because we expect an error, but that error
@@ -5729,7 +5716,7 @@ func TestProcessSplitAfterRightHandSideHasBeenRemoved(t *testing.T) {
 			log.KvExec.Infof(ctx, "added %d to RHS partition: %s", rhsInfo.Desc.NextReplicaID, rhsPartition)
 
 			// We do all of this incrementing to ensure that nobody will ever
-			// succeed in sending a message to the new RHS replica after we restart
+			// succeed in sending a message the new RHS replica after we restart
 			// the store. Previously there were races which could happen if we
 			// stopped the store immediately. Sleeps worked but this feels somehow
 			// more principled.

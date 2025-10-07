@@ -148,13 +148,13 @@ func (p *rangefeed) handleRangefeedEvent(ctx context.Context, e *kvpb.RangeFeedE
 				return err
 			}
 		}
-		timer := p.st.RangefeedBufferValue.Start()
+		stop := p.st.RangefeedBufferValue.Start()
 		if err := p.memBuf.Add(
 			ctx, kvevent.MakeKVEvent(e),
 		); err != nil {
 			return err
 		}
-		timer.End()
+		stop()
 	case *kvpb.RangeFeedCheckpoint:
 		ev := e.ShallowCopy()
 		ev.Checkpoint.ResolvedTS = quantizeTS(ev.Checkpoint.ResolvedTS, p.cfg.WithFrontierQuantize)
@@ -167,13 +167,13 @@ func (p *rangefeed) handleRangefeedEvent(ctx context.Context, e *kvpb.RangeFeedE
 		if p.knobs.ShouldSkipCheckpoint != nil && p.knobs.ShouldSkipCheckpoint(t) {
 			return nil
 		}
-		timer := p.st.RangefeedBufferCheckpoint.Start()
+		stop := p.st.RangefeedBufferCheckpoint.Start()
 		if err := p.memBuf.Add(
 			ctx, kvevent.MakeResolvedEvent(ev, jobspb.ResolvedSpan_NONE),
 		); err != nil {
 			return err
 		}
-		timer.End()
+		stop()
 	case *kvpb.RangeFeedSSTable:
 		// For now, we just error on SST ingestion, since we currently don't
 		// expect SST ingestion into spans with active changefeeds.

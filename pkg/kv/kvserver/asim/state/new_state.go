@@ -174,10 +174,7 @@ func RangesInfoWithDistribution(
 	targetReplicaCount := make(requestCounts, len(stores))
 	targetLeaseCount := map[StoreID]int{}
 	var buf strings.Builder
-	storesInfo := make(map[StoreID]struct {
-		replicas int
-		leases   int
-	})
+	_, _ = fmt.Fprintf(&buf, "[")
 	for i, store := range stores {
 		requiredReplicas := int(float64(numRanges*rf) * (replicaWeights[i]))
 		requiredLeases := int(float64(numRanges) * (leaseWeights[i]))
@@ -186,7 +183,13 @@ func RangesInfoWithDistribution(
 			id:  int(store),
 		}
 		targetLeaseCount[store] = requiredLeases
+		_, _ = fmt.Fprintf(&buf, "s%d:(%d,%d*)",
+			int(store), requiredReplicas, requiredLeases)
+		if i != len(stores)-1 {
+			_, _ = fmt.Fprintf(&buf, ",")
+		}
 	}
+	_, _ = fmt.Fprintf(&buf, "]")
 
 	// If there are no ranges specified, default to 1 range.
 	if numRanges == 0 {
@@ -225,9 +228,6 @@ func RangesInfoWithDistribution(
 			rangeInfo.Descriptor.InternalReplicas[replCandidateIdx] = roachpb.ReplicaDescriptor{
 				StoreID: roachpb.StoreID(storeID),
 			}
-			storeInfo := storesInfo[storeID]
-			storeInfo.replicas++
-			storesInfo[storeID] = storeInfo
 			if targetLeaseCount[storeID] >
 				targetLeaseCount[StoreID(rangeInfo.Descriptor.InternalReplicas[maxLeaseRequestedIdx].StoreID)] {
 				maxLeaseRequestedIdx = replCandidateIdx
@@ -240,21 +240,8 @@ func RangesInfoWithDistribution(
 		lhStore := rangeInfo.Descriptor.InternalReplicas[maxLeaseRequestedIdx].StoreID
 		targetLeaseCount[StoreID(lhStore)]--
 		rangeInfo.Leaseholder = StoreID(lhStore)
-		storeInfo := storesInfo[StoreID(lhStore)]
-		storeInfo.leases++
-		storesInfo[StoreID(lhStore)] = storeInfo
 		ret[rngIdx] = rangeInfo
 	}
-
-	_, _ = fmt.Fprintf(&buf, "[")
-	for i, sID := range stores {
-		storeInfo := storesInfo[sID]
-		_, _ = fmt.Fprintf(&buf, "s%d:(%d,%d*)", int(sID), storeInfo.replicas, storeInfo.leases)
-		if i != len(stores)-1 {
-			_, _ = fmt.Fprintf(&buf, ",")
-		}
-	}
-	_, _ = fmt.Fprintf(&buf, "]")
 
 	return ret, buf.String()
 }

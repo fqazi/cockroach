@@ -325,10 +325,7 @@ func initBinariesAndLibraries() {
 	cockroachPath := roachtestflags.CockroachPath
 	cockroachEAPath := roachtestflags.CockroachEAPath
 	workloadPath := roachtestflags.WorkloadPath
-	// Skip cockroach binary validation if using --cockroach-stage
-	if roachtestflags.CockroachStage == "" {
-		cockroach[defaultArch], _ = resolveBinary("cockroach", cockroachPath, defaultArch, true, false)
-	}
+	cockroach[defaultArch], _ = resolveBinary("cockroach", cockroachPath, defaultArch, true, false)
 	// Let the test runner verify the workload binary exists if TestSpec.RequiresDeprecatedWorkload is true.
 	workload[defaultArch], _ = resolveBinary("workload", workloadPath, defaultArch, false, false)
 	cockroachEA[defaultArch], err = resolveBinary("cockroach-ea", cockroachEAPath, defaultArch, false, true)
@@ -339,9 +336,7 @@ func initBinariesAndLibraries() {
 	if roachtestflags.ARM64Probability > 0 && defaultArch != vm.ArchARM64 {
 		fmt.Printf("Locating and verifying binaries for os=%q, arch=%q\n", defaultOSName, vm.ArchARM64)
 		// We need to verify we have all the required binaries for arm64.
-		if roachtestflags.CockroachStage == "" {
-			cockroach[vm.ArchARM64], _ = resolveBinary("cockroach", cockroachPath, vm.ArchARM64, true, false)
-		}
+		cockroach[vm.ArchARM64], _ = resolveBinary("cockroach", cockroachPath, vm.ArchARM64, true, false)
 		workload[vm.ArchARM64], _ = resolveBinary("workload", workloadPath, vm.ArchARM64, true, false)
 		cockroachEA[vm.ArchARM64], err = resolveBinary("cockroach-ea", cockroachEAPath, vm.ArchARM64, false, true)
 		if err != nil {
@@ -351,9 +346,7 @@ func initBinariesAndLibraries() {
 	if roachtestflags.FIPSProbability > 0 && defaultArch != vm.ArchFIPS {
 		fmt.Printf("Locating and verifying binaries for os=%q, arch=%q\n", defaultOSName, vm.ArchFIPS)
 		// We need to verify we have all the required binaries for fips.
-		if roachtestflags.CockroachStage == "" {
-			cockroach[vm.ArchFIPS], _ = resolveBinary("cockroach", cockroachPath, vm.ArchFIPS, true, false)
-		}
+		cockroach[vm.ArchFIPS], _ = resolveBinary("cockroach", cockroachPath, vm.ArchFIPS, true, false)
 		workload[vm.ArchFIPS], _ = resolveBinary("workload", workloadPath, vm.ArchFIPS, true, false)
 		cockroachEA[vm.ArchFIPS], err = resolveBinary("cockroach-ea", cockroachEAPath, vm.ArchFIPS, false, true)
 		if err != nil {
@@ -1946,11 +1939,7 @@ func (c *clusterImpl) PutE(
 func (c *clusterImpl) PutCockroach(ctx context.Context, l *logger.Logger, t *testImpl) error {
 	if roachtestflags.CockroachStage != "" {
 		// Use staging instead of upload when --cockroach-stage is specified
-		stageVersion := roachtestflags.CockroachStage
-		if stageVersion == "latest" {
-			stageVersion = "" // Stage() expects empty string for latest
-		}
-		return c.Stage(ctx, l, "cockroach", stageVersion, ".", c.All())
+		return c.Stage(ctx, l, "cockroach", roachtestflags.CockroachStage, ".", c.All())
 	}
 	return c.PutE(ctx, l, t.Cockroach(), test.DefaultCockroachPath, c.All())
 }

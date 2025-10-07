@@ -636,6 +636,7 @@ func (s *SQLServerWrapper) PreStart(ctx context.Context) error {
 		s.sqlServer.cfg.AmbientCtx,
 		s.rpcContext,
 		s.stopper,
+		s.grpc,
 		s.sqlServer.cfg.AdvertiseAddr,
 	)
 	if err != nil {

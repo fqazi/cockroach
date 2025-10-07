@@ -228,14 +228,11 @@ func (sls storeLoadSummary) SafeFormat(w redact.SafePrinter, _ rune) {
 // storeLoadSummary no longer matches that of storeState.loadSeqNum.
 type meansForStoreSet struct {
 	constraintsDisj
-	meansLoad
-	stores         storeIDPostingList
-	storeSummaries map[roachpb.StoreID]storeLoadSummary
-}
-
-type meansLoad struct {
+	stores    storeIDPostingList
 	storeLoad meanStoreLoad
 	nodeLoad  meanNodeLoad
+
+	storeSummaries map[roachpb.StoreID]storeLoadSummary
 }
 
 var _ mapEntry = &meansForStoreSet{}
@@ -280,8 +277,7 @@ type meansMemo struct {
 	constraintMatcher *constraintMatcher
 	meansMap          *clearableMemoMap[constraintsDisj, *meansForStoreSet]
 
-	scratchNodes  map[roachpb.NodeID]*NodeLoad
-	scratchStores map[roachpb.StoreID]struct{}
+	scratchNodes map[roachpb.NodeID]*NodeLoad
 }
 
 var meansForStoreSetSlicePool = sync.Pool{
@@ -321,8 +317,7 @@ func newMeansMemo(
 		constraintMatcher: constraintMatcher,
 		meansMap: newClearableMapMemo[constraintsDisj, *meansForStoreSet](
 			meansForStoreSetAllocator{}, meansForStoreSetSlicePoolImpl{}),
-		scratchNodes:  map[roachpb.NodeID]*NodeLoad{},
-		scratchStores: map[roachpb.StoreID]struct{}{},
+		scratchNodes: map[roachpb.NodeID]*NodeLoad{},
 	}
 }
 
@@ -344,7 +339,7 @@ func (mm *meansMemo) getMeans(expr constraintsDisj) *meansForStoreSet {
 	}
 	means.constraintsDisj = expr
 	mm.constraintMatcher.constrainStoresForExpr(expr, &means.stores)
-	means.meansLoad = computeMeansForStoreSet(mm.loadInfoProvider, means.stores, mm.scratchNodes, mm.scratchStores)
+	computeMeansForStoreSet(mm.loadInfoProvider, means, mm.scratchNodes)
 	return means
 }
 
@@ -367,30 +362,18 @@ func (mm *meansMemo) getStoreLoadSummary(
 // It does not do any filtering e.g. the stores can include fdDead stores. It
 // is up to the caller to adjust means.stores if it wants to do filtering.
 //
-// stores may contain duplicate storeIDs, in which case computeMeansForStoreSet
-// should deduplicate processing of the stores. stores should be immutable.
-//
 // TODO: fix callers to exclude stores based on node failure detection, from
 // the mean.
 func computeMeansForStoreSet(
-	loadProvider loadInfoProvider,
-	stores []roachpb.StoreID,
-	scratchNodes map[roachpb.NodeID]*NodeLoad,
-	scratchStores map[roachpb.StoreID]struct{},
-) (means meansLoad) {
-	if len(stores) == 0 {
-		panic(fmt.Sprintf("no stores for meansForStoreSet: %v", stores))
+	loadProvider loadInfoProvider, means *meansForStoreSet, scratchNodes map[roachpb.NodeID]*NodeLoad,
+) {
+	n := len(means.stores)
+	if n == 0 {
+		panic(fmt.Sprintf("no stores for meansForStoreSet: %v", *means))
 	}
 	clear(scratchNodes)
-	clear(scratchStores)
-	n := 0
-	for _, storeID := range stores {
+	for _, storeID := range means.stores {
 		nodeID, sload := loadProvider.getStoreReportedLoad(storeID)
-		if _, ok := scratchStores[storeID]; ok {
-			continue
-		}
-		n++
-		scratchStores[storeID] = struct{}{}
 		for j := range sload.reportedLoad {
 			means.storeLoad.load[j] += sload.reportedLoad[j]
 			if sload.capacity[j] == UnknownCapacity {
@@ -430,7 +413,6 @@ func computeMeansForStoreSet(
 		float64(means.nodeLoad.loadCPU) / float64(means.nodeLoad.capacityCPU)
 	means.nodeLoad.loadCPU /= LoadValue(n)
 	means.nodeLoad.capacityCPU /= LoadValue(n)
-	return means
 }
 
 // loadSummary aggregates across all load dimensions for a store, or a node.

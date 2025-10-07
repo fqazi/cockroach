@@ -281,16 +281,16 @@ func (tc *TestCluster) validateDefaultTestTenant(
 // validateDefaultDRPCOption checks that per-server args don't override
 // the top-level DefaultDRPCOption setting inconsistently.
 func (tc *TestCluster) validateDefaultDRPCOption(
-	t serverutils.TestFataler, nodes int, clusterDRPCOption base.DefaultTestDRPCOption,
+	t serverutils.TestFataler, nodes int, defaultDRPCOption base.DefaultTestDRPCOption,
 ) {
 	for i := range nodes {
 		if args, ok := tc.clusterArgs.ServerArgsPerNode[i]; ok &&
 			args.DefaultDRPCOption != base.TestDRPCUnset &&
-			args.DefaultDRPCOption != clusterDRPCOption {
+			args.DefaultDRPCOption != defaultDRPCOption {
 			tc.Stopper().Stop(context.Background())
 			t.Fatalf("improper use of DefaultDRPCOption in per-server args: %v vs %v\n"+
-				"Use the top-level ServerArgs to set the default DRPC option.",
-				args.DefaultDRPCOption, clusterDRPCOption)
+				"Tip: use the top-level ServerArgs to set the default DRPC option.",
+				args.DefaultDRPCOption, defaultDRPCOption)
 		}
 	}
 }
@@ -1267,7 +1267,6 @@ func (tc *TestCluster) MoveRangeLeaseNonCooperatively(
 		return nil, errors.Errorf("must set StoreTestingKnobs.AllowLeaseRequestProposalsWhenNotLeader")
 	}
 
-	log.Dev.Infof(ctx, "moving lease non-cooperatively of range %v to %v", rangeDesc, dest)
 	destServer, err := tc.FindMemberServer(dest.StoreID)
 	if err != nil {
 		return nil, err
@@ -1381,17 +1380,8 @@ func (tc *TestCluster) ensureLeaderStepsDown(
 				leaderStore = curStore
 				leaderNode = s
 				leaderReplica = curR
-
-				// Make sure that the leader is fortified because in the next step we
-				// will stop store liveness messages to the leader, and we want to cause
-				// it to step down. If the leader isn't fortified yet, stopping store
-				// liveness messages to it will not cause it to step down.
-				if curR.RaftStatus().LeadSupportUntil.IsEmpty() {
-					return errors.Errorf("leader is not fortified")
-				}
 			}
 		}
-
 		// At this point we have iterated over all nodes in the cluster, if we
 		// haven't found a leader, wait for a bit for one to step up.
 		if leaderStore == nil {

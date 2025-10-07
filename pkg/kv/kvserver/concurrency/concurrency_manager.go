@@ -186,11 +186,9 @@ type Config struct {
 	Stopper        *stop.Stopper
 	IntentResolver IntentResolver
 	// Metrics.
-	TxnWaitMetrics                    *txnwait.Metrics
-	SlowLatchGauge                    *metric.Gauge
-	LatchWaitDurations                metric.IHistogram
-	LocksShedDueToMemoryLimit         *metric.Counter
-	NumLockShedDueToMemoryLimitEvents *metric.Counter
+	TxnWaitMetrics     *txnwait.Metrics
+	SlowLatchGauge     *metric.Gauge
+	LatchWaitDurations metric.IHistogram
 	// Configs + Knobs.
 	MaxLockTableSize  int64
 	DisableTxnPushing bool
@@ -208,10 +206,7 @@ func NewManager(cfg Config) Manager {
 	cfg.initDefaults()
 	m := new(managerImpl)
 	lt := maybeWrapInVerifyingLockTable(
-		newLockTable(
-			cfg.MaxLockTableSize, cfg.RangeDesc.RangeID, cfg.Clock, cfg.Settings,
-			cfg.LocksShedDueToMemoryLimit, cfg.NumLockShedDueToMemoryLimitEvents,
-		),
+		newLockTable(cfg.MaxLockTableSize, cfg.RangeDesc.RangeID, cfg.Clock, cfg.Settings),
 	)
 	*m = managerImpl{
 		st: cfg.Settings,

@@ -34,8 +34,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	// Placeholder for pgzip and zdstd.
 	_ "github.com/klauspost/compress/zstd"
@@ -89,7 +89,7 @@ func (b *byteBufferWithTrackedLength) Len() int {
 
 type cloudStorageSinkFile struct {
 	cloudStorageSinkKey
-	created       crtime.Mono
+	created       time.Time
 	codec         io.WriteCloser
 	rawSize       int
 	numMessages   int
@@ -545,7 +545,7 @@ func (s *cloudStorageSink) getOrCreateFile(
 		return f, nil
 	}
 	f := &cloudStorageSinkFile{
-		created:             crtime.NowMono(),
+		created:             timeutil.Now(),
 		cloudStorageSinkKey: key,
 		oldestMVCC:          eventMVCC,
 		allocCallback:       s.metrics.makeCloudstorageFileAllocCallback(),
@@ -892,7 +892,7 @@ func (f *cloudStorageSinkFile) flushToStorage(
 	ctx context.Context, es cloud.ExternalStorage, dest string, m metricsRecorder,
 ) error {
 	defer f.releaseAlloc(ctx)
-	defer m.timers().DownstreamClientSend.Start().End()
+	defer m.timers().DownstreamClientSend.Start()()
 
 	if f.rawSize == 0 {
 		// This method shouldn't be called with an empty file, but be defensive

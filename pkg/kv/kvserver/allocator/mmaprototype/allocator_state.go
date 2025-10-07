@@ -356,7 +356,6 @@ func (a *allocatorState) rebalanceStores(
 	var storesToExclude storeIDPostingList
 	var storesToExcludeForRange storeIDPostingList
 	scratchNodes := map[roachpb.NodeID]*NodeLoad{}
-	scratchStores := map[roachpb.StoreID]struct{}{}
 	// The caller has a fixed concurrency limit it can move ranges at, when it
 	// is the sender of the snapshot. So we don't want to create too many
 	// changes, since then the allocator gets too far ahead of what has been
@@ -474,8 +473,10 @@ func (a *allocatorState) rebalanceStores(
 				if len(candsPL) <= 1 {
 					continue // leaseholder is the only candidate
 				}
+				var means meansForStoreSet
 				clear(scratchNodes)
-				means := computeMeansForStoreSet(a.cs, candsPL, scratchNodes, scratchStores)
+				means.stores = candsPL
+				computeMeansForStoreSet(a.cs, &means, scratchNodes)
 				sls := a.cs.computeLoadSummary(ctx, store.StoreID, &means.storeLoad, &means.nodeLoad)
 				log.KvDistribution.VInfof(ctx, 2, "considering lease-transfer r%v from s%v: candidates are %v", rangeID, store.StoreID, candsPL)
 				if sls.dimSummary[CPURate] < overloadSlow {
@@ -947,7 +948,7 @@ type candidateInfo struct {
 
 type candidateSet struct {
 	candidates []candidateInfo
-	means      *meansLoad
+	means      *meansForStoreSet
 }
 
 type ignoreLevel uint8
@@ -1389,7 +1390,7 @@ func (a *allocatorState) computeCandidatesForRange(
 			storeLoadSummary: csls,
 		})
 	}
-	cset.means = &means.meansLoad
+	cset.means = means
 	return cset, sheddingSLS
 }
 

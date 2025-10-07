@@ -121,7 +121,6 @@
 package admission
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
@@ -143,17 +142,6 @@ const (
 	noBurst
 	numBurstQualifications
 )
-
-func (bq burstQualification) String() string {
-	switch bq {
-	case canBurst:
-		return "canBurst"
-	case noBurst:
-		return "noBurst"
-	default:
-		return fmt.Sprintf("burstQualification(%d)", bq)
-	}
-}
 
 // requester is an interface implemented by an object that orders admission
 // work for a particular WorkKind. See WorkQueue for the implementation of

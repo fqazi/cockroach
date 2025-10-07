@@ -453,8 +453,6 @@ func initFlagsStartOpsForCmd(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&startOpts.EnableFluentSink,
 		"enable-fluent-sink", startOpts.EnableFluentSink,
 		"whether to enable the fluent-servers attribute in the CockroachDB logging configuration")
-	cmd.Flags().BoolVar(&startOpts.AutoRestart,
-		"auto-restart", startOpts.AutoRestart, "automatically restart cockroach processes that die")
 }
 
 func initFlagInsecureIgnoreHostKeyForCmd(cmd *cobra.Command) {

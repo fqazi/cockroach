@@ -793,7 +793,7 @@ var CreateTableWithSchemaLocked = settings.RegisterBoolSetting(
 	"default value for create_table_with_schema_locked; "+
 		"default value for the create_table_with_schema_locked session setting; controls "+
 		"if new created tables will have schema_locked set",
-	true)
+	buildutil.CrdbTestBuild || buildutil.CrdbBenchBuild)
 
 // createTableWithSchemaLockedDefault override for the schema_locked
 var createTableWithSchemaLockedDefault = true
@@ -2780,9 +2780,11 @@ func truncateStatementStringForTelemetry(stmt string) string {
 // hideNonVirtualTableNameFunc returns a function that can be used with
 // FmtCtx.SetReformatTableNames. It hides all table names that are not virtual
 // tables.
-func hideNonVirtualTableNameFunc(vt VirtualTabler) func(ctx *tree.FmtCtx, name *tree.TableName) {
+func hideNonVirtualTableNameFunc(
+	vt VirtualTabler, ns eval.ClientNoticeSender,
+) func(ctx *tree.FmtCtx, name *tree.TableName) {
 	reformatFn := func(ctx *tree.FmtCtx, tn *tree.TableName) {
-		virtual, err := vt.getVirtualTableEntry(tn)
+		virtual, err := vt.getVirtualTableEntry(tn, ns)
 
 		if err != nil || virtual == nil {
 			// Current table is non-virtual and therefore needs to be scrubbed (for statement stats) or redacted (for logs).
@@ -2826,20 +2828,33 @@ func hideNonVirtualTableNameFunc(vt VirtualTabler) func(ctx *tree.FmtCtx, name *
 	return reformatFn
 }
 
-func anonymizeStmtAndConstants(stmt tree.Statement, vt VirtualTabler) string {
+func anonymizeStmtAndConstants(
+	stmt tree.Statement, vt VirtualTabler, ns eval.ClientNoticeSender,
+) string {
 	// Re-format to remove most names.
 	fmtFlags := tree.FmtAnonymize | tree.FmtHideConstants
 	var f *tree.FmtCtx
 	if vt != nil {
 		f = tree.NewFmtCtx(
 			fmtFlags,
-			tree.FmtReformatTableNames(hideNonVirtualTableNameFunc(vt)),
+			tree.FmtReformatTableNames(hideNonVirtualTableNameFunc(vt, ns)),
 		)
 	} else {
 		f = tree.NewFmtCtx(fmtFlags)
 	}
 	f.FormatNode(stmt)
 	return f.CloseAndGetString()
+}
+
+// WithAnonymizedStatement attaches the anonymized form of a statement
+// to an error object.
+func WithAnonymizedStatement(
+	err error, stmt tree.Statement, vt VirtualTabler, ns eval.ClientNoticeSender,
+) error {
+	anonStmtStr := anonymizeStmtAndConstants(stmt, vt, ns)
+	anonStmtStr = truncateStatementStringForTelemetry(anonStmtStr)
+	return errors.WithSafeDetails(err,
+		"while executing: %s", errors.Safe(anonStmtStr))
 }
 
 // SessionTracing holds the state used by SET TRACING statements in the context
@@ -3387,8 +3402,8 @@ type paramStatusUpdater interface {
 }
 
 type bufferableParamStatusUpdate struct {
-	name string
-	sv   sessionVar
+	name      string
+	lowerName string
 }
 
 // bufferableParamStatusUpdates contains all vars which can be sent through
@@ -3403,14 +3418,9 @@ var bufferableParamStatusUpdates = func() []bufferableParamStatusUpdate {
 	}
 	ret := make([]bufferableParamStatusUpdate, len(params))
 	for i, param := range params {
-		svName := strings.ToLower(param)
-		_, sv, err := getSessionVar(svName, false /* missingOk */)
-		if err != nil {
-			panic(errors.Wrapf(err, "could not find session var %q", svName))
-		}
 		ret[i] = bufferableParamStatusUpdate{
-			name: param,
-			sv:   sv,
+			name:      param,
+			lowerName: strings.ToLower(param),
 		}
 	}
 	return ret
@@ -4459,7 +4469,7 @@ func quantizeCounts(d *appstatspb.StatementStatistics) {
 	d.FirstAttemptCount = int64((float64(d.FirstAttemptCount) / float64(oldCount)) * float64(newCount))
 }
 
-func scrubStmtStatKey(vt VirtualTabler, key string) (string, bool) {
+func scrubStmtStatKey(vt VirtualTabler, key string, ns eval.ClientNoticeSender) (string, bool) {
 	// Re-parse the statement to obtain its AST.
 	stmt, err := parser.ParseOne(key)
 	if err != nil {
@@ -4469,7 +4479,7 @@ func scrubStmtStatKey(vt VirtualTabler, key string) (string, bool) {
 	// Re-format to remove most names.
 	f := tree.NewFmtCtx(
 		tree.FmtAnonymize,
-		tree.FmtReformatTableNames(hideNonVirtualTableNameFunc(vt)),
+		tree.FmtReformatTableNames(hideNonVirtualTableNameFunc(vt, ns)),
 	)
 	f.FormatNode(stmt.AST)
 	return f.CloseAndGetString(), true

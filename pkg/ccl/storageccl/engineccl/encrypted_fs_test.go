@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -243,7 +242,7 @@ func TestPebbleEncryption(t *testing.T) {
 			CurrentKey: "16.key",
 			OldKey:     "plain",
 		},
-		RotationPeriod: time.Hour,
+		DataKeyRotationPeriod: 1000, // arbitrary seconds
 	}
 
 	func() {
@@ -253,7 +252,7 @@ func TestPebbleEncryption(t *testing.T) {
 			ctx,
 			base.StoreSpec{
 				InMemory:          true,
-				Size:              storageconfig.BytesSize(512 << 20),
+				Size:              storageconfig.Size{Bytes: 512 << 20},
 				EncryptionOptions: encOptions,
 				StickyVFSID:       stickyVFSID,
 			},
@@ -305,7 +304,7 @@ func TestPebbleEncryption(t *testing.T) {
 			ctx,
 			base.StoreSpec{
 				InMemory:          true,
-				Size:              storageconfig.BytesSize(512 << 20),
+				Size:              storageconfig.Size{Bytes: 512 << 20},
 				EncryptionOptions: encOptions,
 				StickyVFSID:       stickyVFSID,
 			},
@@ -386,7 +385,7 @@ func TestPebbleEncryption2(t *testing.T) {
 				CurrentKey: encKeyFile,
 				OldKey:     oldEncFileKey,
 			},
-			RotationPeriod: time.Hour,
+			DataKeyRotationPeriod: 1000,
 		}
 
 		// Initialize the filesystem env.
@@ -396,7 +395,7 @@ func TestPebbleEncryption2(t *testing.T) {
 			ctx,
 			base.StoreSpec{
 				InMemory:          true,
-				Size:              storageconfig.BytesSize(512 << 20),
+				Size:              storageconfig.Size{Bytes: 512 << 20},
 				EncryptionOptions: encOptions,
 				StickyVFSID:       stickyVFSID,
 			},
@@ -581,7 +580,7 @@ func makeEncryptedTestFS(t *testing.T, errorProb float64, errorRand *rand.Rand) 
 	//
 	// TODO(sumeer): Do deterministic data key rotation. Inject kmTimeNow and
 	// operations that advance time.
-	encOptions.RotationPeriod = 100000 * time.Second
+	encOptions.DataKeyRotationPeriod = 100000
 	etfs := &encryptedTestFS{
 		mem:        mem,
 		encOptions: &encOptions,
