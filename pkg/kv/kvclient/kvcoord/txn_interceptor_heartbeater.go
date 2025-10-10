@@ -14,13 +14,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/txnwait"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/interval"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
@@ -45,17 +40,6 @@ const abortTxnAsyncTimeout = time.Minute
 // lacking a transaction record) by another pushing transaction that encounters
 // its intents, as this will result in the transaction being aborted.
 const heartbeatTxnBufferPeriod = 200 * time.Millisecond
-
-// RandomizedTxnAnchorKeyEnabled dictates whether a transactions anchor key is
-// chosen at random from all keys being locked in its first locking batch;
-// otherwise, it's set to the first ever key that's locked by the transaction.
-var RandomizedTxnAnchorKeyEnabled = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"kv.transaction.randomized_anchor_key.enabled",
-	"dictates whether a transactions anchor key is randomized or not",
-	metamorphic.ConstantWithTestBool("kv.transaction.randomized_anchor_key.enabled", false),
-	settings.WithPublic,
-)
 
 // txnHeartbeater is a txnInterceptor in charge of a transaction's heartbeat
 // loop. Transaction coordinators heartbeat their transaction record
@@ -93,8 +77,6 @@ type txnHeartbeater struct {
 	clock        *hlc.Clock
 	metrics      *TxnMetrics
 	loopInterval time.Duration
-	st           *cluster.Settings
-	knobs        *ClientTestingKnobs
 
 	// wrapped is the next sender in the interceptor stack.
 	wrapped lockedSender
@@ -183,19 +165,12 @@ func (h *txnHeartbeater) init(
 	gatekeeper lockedSender,
 	mu sync.Locker,
 	txn *roachpb.Transaction,
-	settings *cluster.Settings,
-	testingKnobs *ClientTestingKnobs,
 ) {
-	if testingKnobs == nil {
-		testingKnobs = &ClientTestingKnobs{}
-	}
 	h.AmbientContext = ac
 	h.stopper = stopper
 	h.clock = clock
 	h.metrics = metrics
 	h.loopInterval = loopInterval
-	h.st = settings
-	h.knobs = testingKnobs
 	h.gatekeeper = gatekeeper
 	h.mu.Locker = mu
 	h.mu.txn = txn
@@ -206,16 +181,16 @@ func (h *txnHeartbeater) SendLocked(
 	ctx context.Context, ba *kvpb.BatchRequest,
 ) (*kvpb.BatchResponse, *kvpb.Error) {
 	etArg, hasET := ba.GetArg(kvpb.EndTxn)
-	randLockingIdx, pErr := h.randLockingIndex(ba)
+	firstLockingIndex, pErr := firstLockingIndex(ba)
 	if pErr != nil {
 		return nil, pErr
 	}
-	if randLockingIdx != -1 {
-		// If the anchor key for the transaction's txn record is unset, we set it
-		// here to a random key that it's locking in the supplied batch. If it's
-		// already set, however, make sure we keep the anchor key the same.
+	if firstLockingIndex != -1 {
+		// Set txn key based on the key of the first transactional write if not
+		// already set. If it is already set, make sure we keep the anchor key
+		// the same.
 		if len(h.mu.txn.Key) == 0 {
-			anchor := ba.Requests[randLockingIdx].GetInner().Header().Key
+			anchor := ba.Requests[firstLockingIndex].GetInner().Header().Key
 			h.mu.txn.Key = anchor
 			// Put the anchor also in the ba's copy of the txn, since this batch
 			// was prepared before we had an anchor.
@@ -284,10 +259,7 @@ func (h *txnHeartbeater) setWrapped(wrapped lockedSender) {
 }
 
 // populateLeafInputState is part of the txnInterceptor interface.
-func (*txnHeartbeater) populateLeafInputState(*roachpb.LeafTxnInputState, interval.Tree) {}
-
-// initializeLeaf is part of the txnInterceptor interface.
-func (*txnHeartbeater) initializeLeaf(tis *roachpb.LeafTxnInputState) {}
+func (*txnHeartbeater) populateLeafInputState(*roachpb.LeafTxnInputState) {}
 
 // populateLeafFinalState is part of the txnInterceptor interface.
 func (*txnHeartbeater) populateLeafFinalState(*roachpb.LeafTxnFinalState) {}
@@ -303,9 +275,6 @@ func (h *txnHeartbeater) epochBumpedLocked() {}
 // createSavepointLocked is part of the txnInterceptor interface.
 func (*txnHeartbeater) createSavepointLocked(context.Context, *savepoint) {}
 
-// releaseSavepointLocked is part of the txnInterceptor interface.
-func (*txnHeartbeater) releaseSavepointLocked(context.Context, *savepoint) {}
-
 // rollbackToSavepointLocked is part of the txnInterceptor interface.
 func (*txnHeartbeater) rollbackToSavepointLocked(context.Context, savepoint) {}
 
@@ -317,11 +286,11 @@ func (h *txnHeartbeater) closeLocked() {
 // startHeartbeatLoopLocked starts a heartbeat loop in a different goroutine.
 func (h *txnHeartbeater) startHeartbeatLoopLocked(ctx context.Context) {
 	if h.loopInterval < 0 {
-		log.KvExec.Infof(ctx, "coordinator heartbeat loop disabled")
+		log.Infof(ctx, "coordinator heartbeat loop disabled")
 		return
 	}
 	if h.mu.loopStarted {
-		log.KvExec.Fatal(ctx, "attempting to start a second heartbeat loop")
+		log.Fatal(ctx, "attempting to start a second heartbeat loop")
 	}
 	log.VEventf(ctx, 2, kvbase.SpawningHeartbeatLoopMsg)
 	h.mu.loopStarted = true
@@ -446,28 +415,19 @@ func (h *txnHeartbeater) heartbeat(ctx context.Context) bool {
 // Returns true if heartbeating should continue, false if the transaction is no
 // longer Pending and so there's no point in heartbeating further.
 func (h *txnHeartbeater) heartbeatLocked(ctx context.Context) bool {
-	switch h.mu.txn.Status {
-	case roachpb.PENDING:
-		// Continue heartbeating.
-	case roachpb.PREPARED:
-		// If the transaction is prepared, there's no point in heartbeating. The
-		// transaction will remain active without heartbeats until it is committed
-		// or rolled back.
-		return false
-	case roachpb.ABORTED:
+	if h.mu.txn.Status != roachpb.PENDING {
+		if h.mu.txn.Status == roachpb.COMMITTED {
+			log.Fatalf(ctx, "txn committed but heartbeat loop hasn't been signaled to stop: %s", h.mu.txn)
+		}
 		// If the transaction is aborted, there's no point in heartbeating. The
 		// client needs to send a rollback.
 		return false
-	case roachpb.COMMITTED:
-		log.KvExec.Fatalf(ctx, "txn committed but heartbeat loop hasn't been signaled to stop: %s", h.mu.txn)
-	default:
-		log.KvExec.Fatalf(ctx, "unexpected txn status in heartbeat loop: %s", h.mu.txn)
 	}
 
 	// Clone the txn in order to put it in the heartbeat request.
 	txn := h.mu.txn.Clone()
 	if txn.Key == nil {
-		log.KvExec.Fatalf(ctx, "attempting to heartbeat txn without anchor key: %v", txn)
+		log.Fatalf(ctx, "attempting to heartbeat txn without anchor key: %v", txn)
 	}
 	ba := &kvpb.BatchRequest{}
 	ba.Txn = txn
@@ -570,111 +530,84 @@ func (h *txnHeartbeater) abortTxnAsyncLocked(ctx context.Context) {
 
 	const taskName = "txnHeartbeater: aborting txn"
 	log.VEventf(ctx, 2, "async abort for txn: %s", txn)
+	if err := h.stopper.RunAsyncTask(h.AnnotateCtx(context.Background()), taskName,
+		func(ctx context.Context) {
+			if err := timeutil.RunWithTimeout(ctx, taskName, abortTxnAsyncTimeout,
+				func(ctx context.Context) error {
+					h.mu.Lock()
+					defer h.mu.Unlock()
 
-	work := func(ctx context.Context) {
-		if err := timeutil.RunWithTimeout(ctx, taskName, abortTxnAsyncTimeout,
-			func(ctx context.Context) error {
-				h.mu.Lock()
-				defer h.mu.Unlock()
+					// If we find an abortTxnAsyncResultC, that means an async
+					// rollback request is already in flight, so there's no
+					// point in us running another. This can happen because the
+					// TxnCoordSender also calls abortTxnAsyncLocked()
+					// independently of the heartbeat loop.
+					if h.mu.abortTxnAsyncResultC != nil {
+						log.VEventf(ctx, 2,
+							"skipping async abort due to concurrent async abort for %s", txn)
+						return nil
+					}
 
-				// If we find an abortTxnAsyncResultC, that means an async
-				// rollback request is already in flight, so there's no
-				// point in us running another. This can happen because the
-				// TxnCoordSender also calls abortTxnAsyncLocked()
-				// independently of the heartbeat loop.
-				if h.mu.abortTxnAsyncResultC != nil {
-					log.VEventf(ctx, 2,
-						"skipping async abort due to concurrent async abort for %s", txn)
+					// TxnCoordSender allows EndTxn(commit=false) through even
+					// after we set finalObservedStatus, and that request can
+					// race with us for the mutex. Thus, if we find an in-flight
+					// request here, after checking ifReqs=0 before being spawned,
+					// we deduce that it must have been a rollback and there's no
+					// point in sending another rollback.
+					if h.mu.ifReqs > 0 {
+						log.VEventf(ctx, 2,
+							"skipping async abort due to client rollback for %s", txn)
+						return nil
+					}
+
+					// Set up a result channel to signal to an incoming client
+					// rollback that an async rollback is already in progress,
+					// and pass it the result. The buffer allows storing the
+					// result even when no client rollback arrives. Recall that
+					// the SendLocked() call below releases the mutex while
+					// running, allowing concurrent incoming requests.
+					h.mu.abortTxnAsyncResultC = make(chan abortTxnAsyncResult, 1)
+
+					// Send the abort request through the interceptor stack. This is
+					// important because we need the txnPipeliner to append lock spans
+					// to the EndTxn request.
+					br, pErr := h.wrapped.SendLocked(ctx, ba)
+					if pErr != nil {
+						log.VErrEventf(ctx, 1, "async abort failed for %s: %s ", txn, pErr)
+						h.metrics.AsyncRollbacksFailed.Inc(1)
+					}
+
+					// Pass the result to a waiting client rollback, if any, and
+					// remove the channel since we're no longer in flight.
+					h.mu.abortTxnAsyncResultC <- abortTxnAsyncResult{br: br, pErr: pErr}
+					h.mu.abortTxnAsyncResultC = nil
 					return nil
-				}
-
-				// TxnCoordSender allows EndTxn(commit=false) through even
-				// after we set finalObservedStatus, and that request can
-				// race with us for the mutex. Thus, if we find an in-flight
-				// request here, after checking ifReqs=0 before being spawned,
-				// we deduce that it must have been a rollback and there's no
-				// point in sending another rollback.
-				if h.mu.ifReqs > 0 {
-					log.VEventf(ctx, 2,
-						"skipping async abort due to client rollback for %s", txn)
-					return nil
-				}
-
-				// Set up a result channel to signal to an incoming client
-				// rollback that an async rollback is already in progress,
-				// and pass it the result. The buffer allows storing the
-				// result even when no client rollback arrives. Recall that
-				// the SendLocked() call below releases the mutex while
-				// running, allowing concurrent incoming requests.
-				h.mu.abortTxnAsyncResultC = make(chan abortTxnAsyncResult, 1)
-
-				// Send the abort request through the interceptor stack. This is
-				// important because we need the txnPipeliner to append lock spans
-				// to the EndTxn request.
-				br, pErr := h.wrapped.SendLocked(ctx, ba)
-				if pErr != nil {
-					log.VErrEventf(ctx, 1, "async abort failed for %s: %s ", txn, pErr)
-					h.metrics.AsyncRollbacksFailed.Inc(1)
-				}
-
-				// Pass the result to a waiting client rollback, if any, and
-				// remove the channel since we're no longer in flight.
-				h.mu.abortTxnAsyncResultC <- abortTxnAsyncResult{br: br, pErr: pErr}
-				h.mu.abortTxnAsyncResultC = nil
-				return nil
-			},
-		); err != nil {
-			log.VEventf(ctx, 1, "async abort failed for %s: %s", txn, err)
-		}
-	}
-
-	asyncCtx, hdl, err := h.stopper.GetHandle(h.AnnotateCtx(context.Background()), stop.TaskOpts{
-		TaskName: taskName,
-	})
-	if err != nil {
-		log.KvExec.Warningf(ctx, "%v", err)
+				},
+			); err != nil {
+				log.VEventf(ctx, 1, "async abort failed for %s: %s", txn, err)
+			}
+		},
+	); err != nil {
+		log.Warningf(ctx, "%v", err)
 		h.metrics.AsyncRollbacksFailed.Inc(1)
-		return
 	}
-	go func(ctx context.Context) {
-		defer hdl.Activate(ctx).Release(ctx)
-		work(ctx)
-	}(asyncCtx)
 }
 
-// randLockingIndex returns the index of the first request that acquires locks
+// firstLockingIndex returns the index of the first request that acquires locks
 // in the BatchRequest. Returns -1 if the batch has no intention to acquire
 // locks. It also verifies that if an EndTxnRequest is included, then it is the
 // last request in the batch.
-func (h *txnHeartbeater) randLockingIndex(ba *kvpb.BatchRequest) (int, *kvpb.Error) {
-	// We don't know the number of locking requests in the supplied batch request,
-	// if any. We'll use reservoir sampling to get a uniform distribution for our
-	// random pick. To do so, we need to keep track of the number of locking
-	// requests we've seen so far and the index of our pick.
-	numLocking := 0
-	idx := -1
-	disableRandomization := h.knobs.DisableTxnAnchorKeyRandomization ||
-		!RandomizedTxnAnchorKeyEnabled.Get(&h.st.SV)
+func firstLockingIndex(ba *kvpb.BatchRequest) (int, *kvpb.Error) {
 	for i, ru := range ba.Requests {
 		args := ru.GetInner()
-		if i < len(ba.Requests)-1 /* if not last */ {
+		if i < len(ba.Requests)-1 /* if not last*/ {
 			if _, ok := args.(*kvpb.EndTxnRequest); ok {
 				return -1, kvpb.NewErrorf("%s sent as non-terminal call", args.Method())
 			}
 		}
 		if kvpb.IsLocking(args) {
-			if disableRandomization {
-				return i, nil // return the index of the first locking request if randomization is disabled
-			}
-			numLocking++
-			if numLocking == 1 { // fastpath; no need to generate a random number
-				idx = i
-			} else if randutil.FastUint32()%uint32(numLocking) == 0 {
-				// Reservoir sampling picks a locking request with prob =
-				// 1/numLockingRequestsSeenSoFar.
-				idx = i
-			}
+			return i, nil
 		}
 	}
-	return idx, nil
+	return -1, nil
 }

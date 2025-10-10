@@ -71,19 +71,14 @@ func (c *CustomFuncs) IsInt(scalar opt.ScalarExpr) bool {
 	return scalar.DataType().Family() == types.IntFamily
 }
 
-// IsTuple returns true if the given scalar expression is a tuple type.
-func (c *CustomFuncs) IsTuple(scalar opt.ScalarExpr) bool {
-	return scalar.DataType().Family() == types.TupleFamily
-}
-
 // BoolType returns the boolean SQL type.
 func (c *CustomFuncs) BoolType() *types.T {
 	return types.Bool
 }
 
-// AnyType returns the wildcard AnyElement type.
+// AnyType returns the wildcard Any type.
 func (c *CustomFuncs) AnyType() *types.T {
-	return types.AnyElement
+	return types.Any
 }
 
 // CanConstructBinary returns true if (op left right) has a valid binary op
@@ -110,12 +105,6 @@ func (c *CustomFuncs) BinaryType(op opt.Operator, left, right opt.ScalarExpr) *t
 // TypeOf returns the type of the expression.
 func (c *CustomFuncs) TypeOf(e opt.ScalarExpr) *types.T {
 	return e.DataType()
-}
-
-// IdenticalTypes returns true if the two types are identical. See
-// (*types.T).Identical.
-func (c *CustomFuncs) IdenticalTypes(left, right *types.T) bool {
-	return left.Identical(right)
 }
 
 // IsConstArray returns true if the expression is a constant array.
@@ -625,13 +614,6 @@ func (c *CustomFuncs) ExprIsNeverNull(e opt.ScalarExpr, notNullCols opt.ColSet) 
 	return memo.ExprIsNeverNull(e, notNullCols)
 }
 
-// EitherExprIsNeverNull returns true if either of the two provided scalar
-// expressions is guaranteed to be non-NULL, given the set of outer columns that
-// are known to be not null.
-func (c *CustomFuncs) EitherExprIsNeverNull(a, b opt.ScalarExpr, notNullCols opt.ColSet) bool {
-	return memo.ExprIsNeverNull(a, notNullCols) || memo.ExprIsNeverNull(b, notNullCols)
-}
-
 // sharedProps returns the shared logical properties for the given expression.
 // Only relational expressions and certain scalar list items (e.g. FiltersItem,
 // ProjectionsItem, AggregationsItem) have shared properties.
@@ -651,11 +633,6 @@ func (c *CustomFuncs) sharedProps(e opt.Expr) *props.Shared {
 // FuncDeps retrieves the FuncDepSet for the given expression.
 func (c *CustomFuncs) FuncDeps(expr memo.RelExpr) *props.FuncDepSet {
 	return &expr.Relational().FuncDeps
-}
-
-// IsLeakproof returns true if the given expression is leakproof.
-func (c *CustomFuncs) IsLeakproof(expr memo.RelExpr) bool {
-	return expr.Relational().VolatilitySet.IsLeakproof()
 }
 
 // ----------------------------------------------------------------------
@@ -790,17 +767,6 @@ func (c *CustomFuncs) RemoveFiltersItem(
 	filters memo.FiltersExpr, search *memo.FiltersItem,
 ) memo.FiltersExpr {
 	return filters.RemoveFiltersItem(search)
-}
-
-// AppendFiltersItem returns a new list that is a copy of the given list, except
-// that the given item has been appended to the end of the list.
-func (c *CustomFuncs) AppendFiltersItem(
-	filters memo.FiltersExpr, toAppend opt.ScalarExpr,
-) memo.FiltersExpr {
-	newFilters := make(memo.FiltersExpr, len(filters)+1)
-	copy(newFilters, filters)
-	newFilters[len(filters)] = c.f.ConstructFiltersItem(toAppend)
-	return newFilters
 }
 
 // ReplaceFiltersItem returns a new list that is a copy of the given list,
@@ -1003,7 +969,7 @@ func (c *CustomFuncs) findConstantFilterCols(
 			colTyp := tab.Column(scanPrivate.Table.ColumnOrdinal(colID)).DatumType()
 
 			span := cons.Spans.Get(0)
-			if !span.HasSingleKey(c.f.ctx, c.f.evalCtx) {
+			if !span.HasSingleKey(c.f.evalCtx) {
 				continue
 			}
 
@@ -1139,7 +1105,7 @@ func CombineComputedColFilters(
 	}
 	for k := 0; k < cons.Spans.Count(); k++ {
 		span := cons.Spans.Get(k)
-		if !span.HasSingleKey(f.ctx, f.evalCtx) {
+		if !span.HasSingleKey(f.evalCtx) {
 			// If we don't have a single value, or combination of single values
 			// to use in folding the computed column expression, don't use this
 			// constraint.
@@ -1468,17 +1434,6 @@ func (c *CustomFuncs) NoJoinHints(p *memo.JoinPrivate) bool {
 //
 // ----------------------------------------------------------------------
 
-// If returns the given boolean value. This function is useful in matching
-// expressions that have a boolean field.
-func (c *CustomFuncs) If(val bool) bool {
-	return val
-}
-
-// EqualsBool returns true if the given boolean values are equal.
-func (c *CustomFuncs) EqualsBool(left, right bool) bool {
-	return left == right
-}
-
 // IsPositiveInt is true if the given Datum value is greater than zero.
 func (c *CustomFuncs) IsPositiveInt(datum tree.Datum) bool {
 	val := int64(*datum.(*tree.DInt))
@@ -1540,57 +1495,20 @@ func (c *CustomFuncs) CanAddConstInts(first tree.Datum, second tree.Datum) bool 
 	return ok
 }
 
-// DInt returns a new *tree.DInt with the given integer value.
-func (c *CustomFuncs) DInt(i tree.DInt) *tree.DInt {
-	return tree.NewDInt(i)
-}
-
 // IntConst constructs a Const holding a DInt.
 func (c *CustomFuncs) IntConst(d *tree.DInt) opt.ScalarExpr {
 	return c.f.ConstructConst(d, types.Int)
 }
 
-// StringFromConst extracts a string from a Const expression. It returns the
-// string and a boolean indicating whether the extraction was successful.
-func (c *CustomFuncs) StringFromConst(expr opt.ScalarExpr) (string, bool) {
-	if constExpr, ok := expr.(*memo.ConstExpr); ok {
-		datum := tree.UnwrapDOidWrapper(constExpr.Value)
-		switch d := datum.(type) {
-		case *tree.DString:
-			return string(*d), true
-		case *tree.DCollatedString:
-			return d.Contents, true
-		}
-	}
-	return "", false
-}
-
-// ConstStringEquals returns true if e is a constant string expression and is
-// equal to other.
-func (c *CustomFuncs) ConstStringEquals(e opt.ScalarExpr, other string) bool {
-	if eStr, ok := c.StringFromConst(e); ok {
-		return eStr == other
-	}
-	return false
-}
-
 // IsGreaterThan returns true if the first datum compares as greater than the
 // second.
 func (c *CustomFuncs) IsGreaterThan(first, second tree.Datum) bool {
-	cmp, err := first.Compare(c.f.ctx, c.f.evalCtx, second)
-	if err != nil {
-		panic(err)
-	}
-	return cmp == 1
+	return first.Compare(c.f.evalCtx, second) == 1
 }
 
 // DatumsEqual returns true if the first datum compares as equal to the second.
 func (c *CustomFuncs) DatumsEqual(first, second tree.Datum) bool {
-	cmp, err := first.Compare(c.f.ctx, c.f.evalCtx, second)
-	if err != nil {
-		panic(err)
-	}
-	return cmp == 0
+	return first.Compare(c.f.evalCtx, second) == 0
 }
 
 // ----------------------------------------------------------------------
@@ -1622,48 +1540,4 @@ func (c *CustomFuncs) DuplicateJoinPrivate(jp *memo.JoinPrivate) *memo.JoinPriva
 		Flags:            jp.Flags,
 		SkipReorderJoins: jp.SkipReorderJoins,
 	}
-}
-
-// SplitLeakproofFilters separates a list of filters into two groups: those that
-// are leakproof and those that are not. Leakproof filters are expressions that
-// do not reveal information about underlying data through their evaluation
-// behavior.
-//
-// This function is typically used to determine which filters can be safely
-// reordered or pushed past a Barrier marked as LeakproofPermeable. It returns
-// the leakproof filters, the remaining filters, and a boolean indicating
-// whether any leakproof filters were found.
-func (c *CustomFuncs) SplitLeakproofFilters(
-	filters memo.FiltersExpr,
-) (leakproofFilters, remainingFilters memo.FiltersExpr, hasLeakproofFilters bool) {
-	numLeakproof := 0
-	for i := range filters {
-		if filters[i].ScalarProps().VolatilitySet.IsLeakproof() {
-			numLeakproof++
-		}
-	}
-	if numLeakproof == 0 {
-		// Return early if there are no leakproof filters.
-		return nil, nil, false
-	}
-	leakproofFilters = make(memo.FiltersExpr, 0, numLeakproof)
-	remainingFilters = make(memo.FiltersExpr, 0, len(filters)-numLeakproof)
-	for i := range filters {
-		if filters[i].ScalarProps().VolatilitySet.IsLeakproof() {
-			leakproofFilters = append(leakproofFilters, filters[i])
-		} else {
-			remainingFilters = append(remainingFilters, filters[i])
-		}
-	}
-	return leakproofFilters, remainingFilters, true
-}
-
-// HasAllLeakProofFilters returns true if every filter given is leakproof.
-func (c *CustomFuncs) HasAllLeakProofFilters(filters memo.FiltersExpr) bool {
-	for i := range filters {
-		if !filters[i].ScalarProps().VolatilitySet.IsLeakproof() {
-			return false
-		}
-	}
-	return true
 }

@@ -3,9 +3,8 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { UIData, UIDataStatus } from "src/redux/uiData";
-
 import { dismissReleaseNotesSignupForm } from "./uiDataSelectors";
+import { UIData, UIDataStatus } from "src/redux/uiData";
 
 describe("uiDataSelectors", () => {
   describe("dismissReleaseNotesSignupForm selector", () => {

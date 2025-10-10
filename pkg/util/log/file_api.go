@@ -127,7 +127,7 @@ func ListLogFiles() (logFiles []logpb.FileInfo, err error) {
 		l.mu.Lock()
 		thisLogDir := l.mu.logDir
 		l.mu.Unlock()
-		if !l.enabled.Load() || thisLogDir == "" {
+		if !l.enabled.Get() || thisLogDir == "" {
 			// This file sink is detached from file storage.
 			return nil
 		}
@@ -204,7 +204,7 @@ func GetLogReader(filename string) (io.ReadCloser, error) {
 		return nil
 	})
 	// Check whether we found a sink and it has a log directory.
-	if fs == nil || !fs.enabled.Load() {
+	if fs == nil || !fs.enabled.Get() {
 		return nil, errors.Newf("no log directory found for %s", filename)
 	}
 	dir := func() string {
@@ -428,13 +428,6 @@ func readAllEntriesFromFile(
 		if err := decoder.Decode(&entry); err != nil {
 			if err == io.EOF {
 				break
-			}
-
-			// skip the malformed log entry. This is primarily observed in the
-			// panic which is unstructured.
-			// See: https://github.com/cockroachdb/cockroach/issues/151493
-			if errors.Is(err, ErrMalformedLogEntry) {
-				continue
 			}
 			return nil, false, err
 		}

@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/pebble/sstable"
-	"github.com/cockroachdb/pebble/sstable/block"
 	"github.com/stretchr/testify/require"
 )
 
@@ -56,7 +55,7 @@ func makePebbleSST(t testing.TB, kvs []MVCCKeyValue, ingestion bool) []byte {
 	if ingestion {
 		w = MakeIngestionSSTWriter(ctx, st, f)
 	} else {
-		w = MakeTransportSSTWriter(ctx, st, f)
+		w = MakeBackupSSTWriter(ctx, st, &f.Buffer)
 	}
 	defer w.Close()
 
@@ -73,38 +72,19 @@ func makePebbleSST(t testing.TB, kvs []MVCCKeyValue, ingestion bool) []byte {
 func TestMakeIngestionWriterOptions(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
-	type want struct {
-		format             sstable.TableFormat
-		disableValueBlocks bool
-	}
 	testCases := []struct {
 		name string
 		st   *cluster.Settings
-		want want
+		want sstable.TableFormat
 	}{
 		{
 			name: "with virtual sstables",
 			st: func() *cluster.Settings {
 				st := cluster.MakeTestingClusterSettings()
-				IngestionValueBlocksEnabled.Override(context.Background(), &st.SV, true)
+				ValueBlocksEnabled.Override(context.Background(), &st.SV, true)
 				return st
 			}(),
-			want: want{
-				format:             sstable.TableFormatPebblev7,
-				disableValueBlocks: false,
-			},
-		},
-		{
-			name: "disable value blocks",
-			st: func() *cluster.Settings {
-				st := cluster.MakeTestingClusterSettings()
-				IngestionValueBlocksEnabled.Override(context.Background(), &st.SV, false)
-				return st
-			}(),
-			want: want{
-				format:             sstable.TableFormatPebblev7,
-				disableValueBlocks: true,
-			},
+			want: sstable.TableFormatPebblev4,
 		},
 	}
 
@@ -112,8 +92,7 @@ func TestMakeIngestionWriterOptions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			opts := MakeIngestionWriterOptions(ctx, tc.st)
-			require.Equal(t, tc.want.format, opts.TableFormat)
-			require.Equal(t, tc.want.disableValueBlocks, opts.DisableValueBlocks)
+			require.Equal(t, tc.want, opts.TableFormat)
 		})
 	}
 }
@@ -154,86 +133,6 @@ func TestSSTWriterRangeKeys(t *testing.T) {
 		pointKV("a", 1, "foo"),
 		rangeKV("f", "g", 2, tombstoneLocalTS(1)),
 	}, scanIter(t, iter))
-}
-
-func TestSSTWriterOption(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	// makeCompressionWriterOpt returns a new SSTWriterOption that uses the
-	// cluster setting that has been set to the given algorithm as the basis for
-	// determining which compression algorithm is used when the SSTWriterOption
-	// runs over an sstable.WriterOptions.
-	makeCompressionWriterOpt := func(alg SSTableCompressionProfile) SSTWriterOption {
-		ctx := context.Background()
-		st := cluster.MakeTestingClusterSettings()
-		CompressionAlgorithmBackupTransport.Override(ctx, &st.SV, alg)
-		return WithCompressionFromClusterSetting(ctx, st, CompressionAlgorithmBackupTransport)
-	}
-
-	tcs := []struct {
-		name      string
-		writerOpt SSTWriterOption
-		wantFunc  func(*testing.T, *sstable.WriterOptions)
-	}{
-		{
-			"disable value blocks",
-			WithValueBlocksDisabled,
-			func(t *testing.T, opts *sstable.WriterOptions) {
-				require.True(t, opts.DisableValueBlocks)
-			},
-		},
-		{
-			"with snappy compression",
-			makeCompressionWriterOpt(SSTableCompressionSnappy),
-			func(t *testing.T, opts *sstable.WriterOptions) {
-				require.Equal(t, block.SnappyCompression, opts.Compression)
-			},
-		},
-		{
-			"with zstd compression",
-			makeCompressionWriterOpt(SSTableCompressionZstd),
-			func(t *testing.T, opts *sstable.WriterOptions) {
-				require.Equal(t, block.ZstdCompression, opts.Compression)
-			},
-		},
-		{
-			"with minlz compression",
-			makeCompressionWriterOpt(SSTableCompressionMinLZ),
-			func(t *testing.T, opts *sstable.WriterOptions) {
-				require.Equal(t, block.MinLZCompression, opts.Compression)
-			},
-		},
-		{
-			"with fast compression",
-			makeCompressionWriterOpt(SSTableCompressionFast),
-			func(t *testing.T, opts *sstable.WriterOptions) {
-				require.Equal(t, block.FastCompression, opts.Compression)
-			},
-		},
-		{
-			"with balanced compression",
-			makeCompressionWriterOpt(SSTableCompressionBalanced),
-			func(t *testing.T, opts *sstable.WriterOptions) {
-				require.Equal(t, block.BalancedCompression, opts.Compression)
-			},
-		},
-		{
-			"with good compression",
-			makeCompressionWriterOpt(SSTableCompressionGood),
-			func(t *testing.T, opts *sstable.WriterOptions) {
-				require.Equal(t, block.GoodCompression, opts.Compression)
-			},
-		},
-	}
-
-	for _, tc := range tcs {
-		t.Run(tc.name, func(t *testing.T) {
-			opts := &sstable.WriterOptions{}
-			tc.writerOpt(opts)
-			tc.wantFunc(t, opts)
-		})
-	}
 }
 
 func BenchmarkWriteSSTable(b *testing.B) {

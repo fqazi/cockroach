@@ -103,11 +103,6 @@ func (s *server) GetNodeMetrics() *Metrics {
 // The received delta is combined with the infostore, and this
 // node's own gossip is returned to requesting client.
 func (s *server) Gossip(stream Gossip_GossipServer) error {
-	return s.gossip(stream)
-}
-
-// gossip is the shared implementation for Gossip for both gRPC and DRPC.
-func (s *server) gossip(stream RPCGossip_GossipStream) error {
 	args, err := stream.Recv()
 	if err != nil {
 		return err
@@ -130,10 +125,8 @@ func (s *server) gossip(stream RPCGossip_GossipStream) error {
 			infoCount := int64(len(reply.Delta))
 			s.nodeMetrics.BytesSent.Inc(bytesSent)
 			s.nodeMetrics.InfosSent.Inc(infoCount)
-			s.nodeMetrics.MessagesSent.Inc(1)
 			s.serverMetrics.BytesSent.Inc(bytesSent)
 			s.serverMetrics.InfosSent.Inc(infoCount)
-			s.serverMetrics.MessagesSent.Inc(1)
 
 			return stream.Send(reply)
 		}
@@ -143,12 +136,8 @@ func (s *server) gossip(stream RPCGossip_GossipStream) error {
 
 	errCh := make(chan error, 1)
 
-	// Maintain what were the recently sent high water stamps to avoid resending
-	// them.
-	lastSentHighWaterStamps := make(map[roachpb.NodeID]int64)
-
 	if err := s.stopper.RunAsyncTask(ctx, "gossip receiver", func(ctx context.Context) {
-		errCh <- s.gossipReceiver(ctx, &args, &lastSentHighWaterStamps, send, stream.Recv)
+		errCh <- s.gossipReceiver(ctx, &args, send, stream.Recv)
 	}); err != nil {
 		return err
 	}
@@ -173,7 +162,7 @@ func (s *server) gossip(stream RPCGossip_GossipStream) error {
 		// the remote node receives our high water stamps in a timely fashion.
 		if infoCount := len(delta); init || infoCount > 0 {
 			if log.V(1) {
-				log.Dev.Infof(ctx, "returning %d info(s) to n%d: %s",
+				log.Infof(ctx, "returning %d info(s) to n%d: %s",
 					infoCount, args.NodeID, extractKeys(delta))
 			}
 			// Ensure that the high water stamps for the remote client are kept up to
@@ -183,12 +172,9 @@ func (s *server) gossip(stream RPCGossip_GossipStream) error {
 				ratchetHighWaterStamp(args.HighWaterStamps, i.NodeID, i.OrigStamp)
 			}
 
-			var diffStamps map[roachpb.NodeID]int64
-			lastSentHighWaterStamps, diffStamps =
-				s.mu.is.getHighWaterStampsWithDiff(lastSentHighWaterStamps)
 			*reply = Response{
 				NodeID:          s.NodeID.Get(),
-				HighWaterStamps: diffStamps,
+				HighWaterStamps: s.mu.is.getHighWaterStamps(),
 				Delta:           delta,
 			}
 
@@ -206,9 +192,6 @@ func (s *server) gossip(stream RPCGossip_GossipStream) error {
 		case err := <-errCh:
 			return err
 		case <-ready:
-			// We just sleep here instead of calling batchAndConsume() because the
-			// channel is closed, and sleeping won't block the sender of the channel.
-			time.Sleep(infosBatchDelay)
 		}
 	}
 }
@@ -216,7 +199,6 @@ func (s *server) gossip(stream RPCGossip_GossipStream) error {
 func (s *server) gossipReceiver(
 	ctx context.Context,
 	argsPtr **Request,
-	lastSentHighWaterStampsPtr *map[roachpb.NodeID]int64,
 	senderFn func(*Response) error,
 	receiverFn func() (*Request, error),
 ) error {
@@ -238,7 +220,7 @@ func (s *server) gossipReceiver(
 			// Let the connection through so that the client can get a node ID. Once it
 			// has one, we'll run the logic below to decide whether to keep the
 			// connection to it or to forward it elsewhere.
-			log.Dev.Infof(ctx, "received initial cluster-verification connection from %s", args.Addr)
+			log.Infof(ctx, "received initial cluster-verification connection from %s", args.Addr)
 		} else if !nodeIdentified {
 			nodeIdentified = true
 
@@ -248,14 +230,14 @@ func (s *server) gossipReceiver(
 				// This is an incoming loopback connection which should be closed by
 				// the client.
 				if log.V(2) {
-					log.Dev.Infof(ctx, "ignoring gossip from n%d (loopback)", args.NodeID)
+					log.Infof(ctx, "ignoring gossip from n%d (loopback)", args.NodeID)
 				}
 			} else if _, ok := s.mu.nodeMap[args.Addr]; ok {
 				// This is a duplicate incoming connection from the same node as an existing
 				// connection. This can happen when bootstrap connections are initiated
 				// through a load balancer.
 				if log.V(2) {
-					log.Dev.Infof(ctx, "duplicate connection received from n%d at %s", args.NodeID, args.Addr)
+					log.Infof(ctx, "duplicate connection received from n%d at %s", args.NodeID, args.Addr)
 				}
 				return errors.Errorf("duplicate connection from node at %s", args.Addr)
 			} else if s.mu.incoming.hasSpace() {
@@ -267,7 +249,6 @@ func (s *server) gossipReceiver(
 					createdAt: timeutil.Now(),
 				}
 
-				//nolint:deferloop (this happens at most once).
 				defer func(nodeID roachpb.NodeID, addr util.UnresolvedAddr) {
 					log.VEventf(ctx, 2, "removing n%d from incoming set", args.NodeID)
 					s.mu.incoming.removeNode(nodeID)
@@ -289,7 +270,7 @@ func (s *server) gossipReceiver(
 				}
 
 				s.nodeMetrics.ConnectionsRefused.Inc(1)
-				log.Dev.Infof(ctx, "refusing gossip from n%d (max %d conns); forwarding to n%d (%s)",
+				log.Infof(ctx, "refusing gossip from n%d (max %d conns); forwarding to n%d (%s)",
 					args.NodeID, s.mu.incoming.maxSize, alternateNodeID, alternateAddr)
 
 				*reply = Response{
@@ -317,26 +298,21 @@ func (s *server) gossipReceiver(
 		infosReceived := int64(len(args.Delta))
 		s.nodeMetrics.BytesReceived.Inc(bytesReceived)
 		s.nodeMetrics.InfosReceived.Inc(infosReceived)
-		s.nodeMetrics.MessagesReceived.Inc(1)
 		s.serverMetrics.BytesReceived.Inc(bytesReceived)
 		s.serverMetrics.InfosReceived.Inc(infosReceived)
-		s.serverMetrics.MessagesReceived.Inc(1)
 
 		freshCount, err := s.mu.is.combine(args.Delta, args.NodeID)
 		if err != nil {
-			log.Dev.Warningf(ctx, "failed to fully combine gossip delta from n%d: %s", args.NodeID, err)
+			log.Warningf(ctx, "failed to fully combine gossip delta from n%d: %s", args.NodeID, err)
 		}
 		if log.V(1) {
-			log.Dev.Infof(ctx, "received %s from n%d (%d fresh)", extractKeys(args.Delta), args.NodeID, freshCount)
+			log.Infof(ctx, "received %s from n%d (%d fresh)", extractKeys(args.Delta), args.NodeID, freshCount)
 		}
 		s.maybeTightenLocked()
 
-		var diffStamps map[roachpb.NodeID]int64
-		*lastSentHighWaterStampsPtr, diffStamps =
-			s.mu.is.getHighWaterStampsWithDiff(*lastSentHighWaterStampsPtr)
 		*reply = Response{
 			NodeID:          s.NodeID.Get(),
-			HighWaterStamps: diffStamps,
+			HighWaterStamps: s.mu.is.getHighWaterStamps(),
 		}
 
 		s.mu.Unlock()
@@ -396,7 +372,7 @@ func (s *server) start(addr net.Addr) {
 	// We require redundant callbacks here as the broadcast callback is
 	// propagating gossip infos to other nodes and needs to propagate the new
 	// expiration info.
-	unregister := s.mu.is.registerCallback(".*", func(_ string, _ roachpb.Value, _ int64) {
+	unregister := s.mu.is.registerCallback(".*", func(_ string, _ roachpb.Value) {
 		broadcast()
 	}, Redundant)
 

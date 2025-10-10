@@ -26,10 +26,8 @@ func (fs *BlockingWriteFSForTesting) WaitForBlockAndUnblock() {
 	close(fs.block)
 }
 
-func (fs *BlockingWriteFSForTesting) Create(
-	name string, category vfs.DiskWriteCategory,
-) (vfs.File, error) {
-	f, err := fs.FS.Create(name, category)
+func (fs *BlockingWriteFSForTesting) Create(name string) (vfs.File, error) {
+	f, err := fs.FS.Create(name)
 	if err != nil {
 		return nil, err
 	}

@@ -130,8 +130,6 @@ func makeInstanceInfo(row instancerow) sqlinstance.InstanceInfo {
 		SessionID:       row.sessionID,
 		Locality:        row.locality,
 		BinaryVersion:   row.binaryVersion,
-		Region:          row.region,
-		IsDraining:      row.isDraining,
 	}
 }
 
@@ -183,7 +181,7 @@ func (r *Reader) GetInstance(
 		return sqlinstance.InstanceInfo{}, err
 	}
 	getNonCached := func(instanceID base.SQLInstanceID) (sqlinstance.InstanceInfo, error) {
-		log.Dev.Infof(ctx, "getting non-cached version of SQL server %d", instanceID)
+		log.Infof(ctx, "getting non-cached version of SQL server %d", instanceID)
 		instances, err := r.GetAllInstancesNoCache(ctx)
 		if err != nil {
 			return sqlinstance.InstanceInfo{}, err

@@ -4,9 +4,8 @@
 // included in the /LICENSE file.
 
 import { assert } from "chai";
-import { Location } from "history";
-
 import { propsToQueryString, queryByName } from "./query";
+import { Location } from "history";
 
 const location: Location = {
   pathname: "/debug/chart",
@@ -32,11 +31,11 @@ describe("Query utils", () => {
     });
 
     it("skips entries with nullish values", () => {
-      const obj: { [key: string]: unknown } = {
+      const obj = {
         start: 100,
         end: 200,
-        strParam: null,
-        hello: undefined,
+        strParam: null as any,
+        hello: undefined as any,
       };
       const expected = "start=100&end=200";
       const res = propsToQueryString(obj);

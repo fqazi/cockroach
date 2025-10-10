@@ -25,9 +25,9 @@ import (
 )
 
 type controlSchedulesNode struct {
-	singleInputPlanNode
-	rowsAffectedOutputHelper
+	rows    planNode
 	command tree.ScheduleCommand
+	numRows int
 }
 
 func collectTelemetry(command tree.ScheduleCommand) {
@@ -39,6 +39,11 @@ func collectTelemetry(command tree.ScheduleCommand) {
 	case tree.DropSchedule:
 		telemetry.Inc(sqltelemetry.ScheduledBackupControlCounter("drop"))
 	}
+}
+
+// FastPathResults implements the planNodeFastPath interface.
+func (n *controlSchedulesNode) FastPathResults() (int, bool) {
+	return n.numRows, true
 }
 
 // JobSchedulerEnv returns JobSchedulerEnv.
@@ -105,7 +110,7 @@ func DeleteSchedule(
 // startExec implements planNode interface.
 func (n *controlSchedulesNode) startExec(params runParams) error {
 	for {
-		ok, err := n.input.Next(params)
+		ok, err := n.rows.Next(params)
 		if err != nil {
 			return err
 		}
@@ -113,7 +118,7 @@ func (n *controlSchedulesNode) startExec(params runParams) error {
 			break
 		}
 
-		schedule, err := loadSchedule(params, n.input.Values()[0])
+		schedule, err := loadSchedule(params, n.rows.Values()[0])
 		if err != nil {
 			return err
 		}
@@ -170,7 +175,7 @@ func (n *controlSchedulesNode) startExec(params runParams) error {
 				if err != nil {
 					return errors.Wrap(err, "failed to run OnDrop")
 				}
-				n.addAffectedRows(additionalDroppedSchedules)
+				n.numRows += additionalDroppedSchedules
 			}
 			err = DeleteSchedule(
 				params.ctx, params.ExecCfg(), params.p.InternalSQLTxn(),
@@ -184,23 +189,19 @@ func (n *controlSchedulesNode) startExec(params runParams) error {
 		if err != nil {
 			return err
 		}
-		n.incAffectedRows()
+		n.numRows++
 	}
 
 	return nil
 }
 
-// Next implements the planNode interface.
-func (n *controlSchedulesNode) Next(_ runParams) (bool, error) {
-	return n.next(), nil
-}
+// Next implements planNode interface.
+func (*controlSchedulesNode) Next(runParams) (bool, error) { return false, nil }
 
-// Values implements the planNode interface.
-func (n *controlSchedulesNode) Values() tree.Datums {
-	return n.values()
-}
+// Values implements planNode interface.
+func (*controlSchedulesNode) Values() tree.Datums { return nil }
 
 // Close implements planNode interface.
 func (n *controlSchedulesNode) Close(ctx context.Context) {
-	n.input.Close(ctx)
+	n.rows.Close(ctx)
 }

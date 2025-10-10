@@ -37,7 +37,7 @@ type CatalogReader interface {
 
 	// IsNameInCache return true when all the by-name catalog data for this name
 	// key is known to be in the cache.
-	IsNameInCache(key descpb.NameInfo) bool
+	IsNameInCache(key catalog.NameKey) bool
 
 	// IsDescIDKnownToNotExist returns true when we know that there definitely
 	// exists no descriptor in storage with that ID.
@@ -48,9 +48,6 @@ type CatalogReader interface {
 
 	// ScanAll scans the entirety of the descriptor and namespace tables.
 	ScanAll(ctx context.Context, txn *kv.Txn) (nstree.Catalog, error)
-
-	// ScanDescriptorsInSpans scans the descriptors specified in a given span.
-	ScanDescriptorsInSpans(ctx context.Context, txn *kv.Txn, span []roachpb.Span) (nstree.Catalog, error)
 
 	// ScanAllComments scans the entirety of the comments table as well as the namespace entries for the given database.
 	// If the dbContext is nil, we scan the database-level namespace entries.
@@ -136,7 +133,7 @@ func (cr catalogReader) IsIDInCache(_ descpb.ID) bool {
 }
 
 // IsNameInCache is part of the CatalogReader interface.
-func (cr catalogReader) IsNameInCache(_ descpb.NameInfo) bool {
+func (cr catalogReader) IsNameInCache(_ catalog.NameKey) bool {
 	return false
 }
 
@@ -158,79 +155,6 @@ func (cr catalogReader) ScanAll(ctx context.Context, txn *kv.Txn) (nstree.Catalo
 	if err != nil {
 		return nstree.Catalog{}, err
 	}
-	return mc.Catalog, nil
-}
-
-// getDescriptorIDFromExclusiveKey translates an exclusive upper bound roach key
-// into an upper bound descriptor ID. It does this by turning the key into a
-// descriptor ID, and then moving it upwards if and only if it is not the prefix
-// of the current index / table span.
-func getDescriptorIDFromExclusiveKey(codec keys.SQLCodec, key roachpb.Key) (uint32, error) {
-	keyWithoutTable, endID, err := codec.DecodeTablePrefix(key)
-	if err != nil {
-		return 0, err
-	}
-	if len(keyWithoutTable) == 0 {
-		return endID, nil
-	}
-
-	keyWithoutIndex, _, indexId, err := codec.DecodeIndexPrefix(key)
-	if err != nil {
-		return 0, err
-	}
-	// if there's remaining bytes or the index isn't the primary, increment
-	// the end so that the descriptor under the key is included.
-	if len(keyWithoutIndex) != 0 || indexId > 1 {
-		endID++
-	}
-	return endID, nil
-}
-
-// getDescriptorSpanFromSpan returns a start and end descriptor ID from a given span
-func getDescriptorSpanFromSpan(codec keys.SQLCodec, span roachpb.Span) (roachpb.Span, error) {
-	_, startID, err := codec.DecodeTablePrefix(span.Key)
-	if err != nil {
-		return roachpb.Span{}, err
-	}
-	endID, err := getDescriptorIDFromExclusiveKey(codec, span.EndKey)
-	if err != nil {
-		return roachpb.Span{}, err
-	}
-
-	return roachpb.Span{
-		Key:    catalogkeys.MakeDescMetadataKey(codec, descpb.ID(startID)),
-		EndKey: catalogkeys.MakeDescMetadataKey(codec, descpb.ID(endID)),
-	}, nil
-}
-
-// ScanDescriptorsInSpans is part of the CatalogReader interface.
-func (cr catalogReader) ScanDescriptorsInSpans(
-	ctx context.Context, txn *kv.Txn, spans []roachpb.Span,
-) (nstree.Catalog, error) {
-	var mc nstree.MutableCatalog
-
-	descSpans := []roachpb.Span{}
-	for _, span := range spans {
-		descSpan, err := getDescriptorSpanFromSpan(cr.Codec(), span)
-		if err != nil {
-			return mc.Catalog, err
-		}
-		if descSpan.ZeroLength() {
-			continue
-		}
-		descSpans = append(descSpans, descSpan)
-	}
-
-	cq := catalogQuery{codec: cr.codec}
-	err := cq.query(ctx, txn, &mc, func(codec keys.SQLCodec, b *kv.Batch) {
-		for _, descSpan := range descSpans {
-			scanRange(ctx, b, descSpan.Key, descSpan.EndKey)
-		}
-	})
-	if err != nil {
-		return mc.Catalog, err
-	}
-
 	return mc.Catalog, nil
 }
 
@@ -402,10 +326,9 @@ func (cr catalogReader) GetByNames(
 	var mc nstree.MutableCatalog
 	cq := catalogQuery{codec: cr.codec}
 	err := cq.query(ctx, txn, &mc, func(codec keys.SQLCodec, b *kv.Batch) {
-		for i := range nameInfos {
-			ni := &nameInfos[i]
-			if ni.Name != "" {
-				get(ctx, b, catalogkeys.EncodeNameKey(codec, ni))
+		for _, nameInfo := range nameInfos {
+			if nameInfo.Name != "" {
+				get(ctx, b, catalogkeys.EncodeNameKey(codec, nameInfo))
 			}
 		}
 	})

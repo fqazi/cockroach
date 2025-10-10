@@ -300,7 +300,7 @@ func TestInboxShutdown(t *testing.T) {
 									wg.Add(1)
 									go func() {
 										defer wg.Done()
-										defer c.Close(context.Background())
+										defer c.Release(context.Background())
 										arrowData, err := c.BatchToArrow(context.Background(), batch)
 										if err != nil {
 											errCh <- err

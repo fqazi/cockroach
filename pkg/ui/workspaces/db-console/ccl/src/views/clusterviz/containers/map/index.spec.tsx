@@ -3,16 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import React from "react";
 import { shallow } from "enzyme";
 import { createMemoryHistory, History } from "history";
-import React from "react";
 import { match as Match } from "react-router-dom";
-
 import { refreshCluster } from "src/redux/apiReducers";
 
-import { Breadcrumbs } from "./breadcrumbs";
-
 import { ClusterVisualization } from "./index";
+import { Breadcrumbs } from "./breadcrumbs";
 
 describe("ClusterVisualization", () => {
   describe("parse tiers params from URL path", () => {

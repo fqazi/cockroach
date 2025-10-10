@@ -16,10 +16,6 @@ KEY_CMD=#{.KeyCmd#}
 MEMORY_MAX=#{.MemoryMax#}
 NUM_FILES_LIMIT=#{.NumFilesLimit#}
 VIRTUAL_CLUSTER_LABEL=#{.VirtualClusterLabel#}
-#{if .AutoRestart#}
-AUTO_RESTART=1
-#{end#}
-
 ARGS=(
 #{range .Args -#}
 #{shesc .#}
@@ -76,7 +72,7 @@ sudo systemctl reset-failed "${VIRTUAL_CLUSTER_LABEL}" 2>/dev/null || true
 
 # The first time we run, install a small script that shows some helpful
 # information when we ssh in.
-if [ ! -e "${HOME}/.profile-${VIRTUAL_CLUSTER_LABEL}" ]; then
+if [ ! -e "${HOME}/.profile-cockroach" ]; then
   cat > "${HOME}/.profile-${VIRTUAL_CLUSTER_LABEL}" <<EOQ
 echo ""
 if systemctl is-active -q ${VIRTUAL_CLUSTER_LABEL}; then
@@ -103,5 +99,4 @@ sudo systemd-run --unit "${VIRTUAL_CLUSTER_LABEL}" \
   -p "MemoryMax=${MEMORY_MAX}" \
   -p LimitCORE=infinity \
   -p "LimitNOFILE=${NUM_FILES_LIMIT}" \
-  ${AUTO_RESTART:+-p Restart=always -p RestartSec=5s -p StartLimitIntervalSec=60s -p StartLimitBurst=3} \
   bash "${0}" run

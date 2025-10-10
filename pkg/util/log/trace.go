@@ -98,16 +98,6 @@ func Eventf(ctx context.Context, format string, args ...interface{}) {
 	eventInternal(sp, false /* isErr */, &entry)
 }
 
-// NOTE: we maintain a vEvent function separate from vEventf, instead of having
-// all VEvent callers invoke vEventf directly, so that the heap allocation from
-// the `msg` parameter escaping when packed into a vararg slice is not incurred
-// on the no-op path.
-func vEvent(ctx context.Context, isErr bool, depth int, level Level, ch Channel, msg string) {
-	if VDepth(level, 1+depth) || getSpan(ctx) != nil {
-		vEventf(ctx, isErr, 1+depth, level, ch, "%s", msg)
-	}
-}
-
 func vEventf(
 	ctx context.Context,
 	isErr bool,
@@ -124,7 +114,12 @@ func vEventf(
 			sev = severity.ERROR
 		}
 		logfDepth(ctx, 1+depth, sev, ch, format, args...)
-	} else if sp := getSpan(ctx); sp != nil {
+	} else {
+		sp := getSpan(ctx)
+		if sp == nil {
+			// Nothing to log. Skip the work.
+			return
+		}
 		entry := makeUnstructuredEntry(ctx,
 			severity.INFO, /* unused for trace events */
 			channel.DEV,   /* unused for trace events */
@@ -139,7 +134,7 @@ func vEventf(
 // active trace) or to the trace alone, depending on whether the specified
 // verbosity level is active.
 func VEvent(ctx context.Context, level Level, msg string) {
-	vEvent(ctx, false /* isErr */, 1, level, channel.DEV, msg)
+	vEventf(ctx, false /* isErr */, 1, level, channel.DEV, msg)
 }
 
 // VEventf either logs a message to the DEV channel (which also outputs to the
@@ -159,7 +154,7 @@ func VEventfDepth(ctx context.Context, depth int, level Level, format string, ar
 // outputs to the active trace) or to the trace alone, depending on whether
 // the specified verbosity level is active.
 func VErrEvent(ctx context.Context, level Level, msg string) {
-	vEvent(ctx, true /* isErr */, 1, level, channel.DEV, msg)
+	vEventf(ctx, true /* isErr */, 1, level, channel.DEV, msg)
 }
 
 // VErrEventf either logs an error message to the DEV Channel (which also

@@ -8,6 +8,7 @@
 // tag is reserved for the toplevel Makefile's linux-gnu build.
 
 //go:build gss_compose
+// +build gss_compose
 
 package gss
 
@@ -168,7 +169,7 @@ func TestGSS(t *testing.T) {
 			})
 			t.Run("cockroach", func(t *testing.T) {
 				out, err := exec.Command("/cockroach/cockroach", "sql",
-					"-e", "SELECT authentication_method FROM [SHOW SESSIONS]",
+					"-e", "SELECT 1",
 					"--certs-dir", "/certs",
 					// TODO(mjibson): Teach the CLI to not ask for passwords during kerberos.
 					// See #51588.
@@ -177,11 +178,6 @@ func TestGSS(t *testing.T) {
 				err = errors.Wrap(err, strings.TrimSpace(string(out)))
 				if !IsError(err, tc.gssErr) {
 					t.Errorf("expected err %v, got %v", tc.gssErr, err)
-				}
-				if tc.gssErr == "" {
-					if !strings.Contains(string(out), "gss") {
-						t.Errorf("expected authentication_method=gss, got %s", out)
-					}
 				}
 			})
 		})

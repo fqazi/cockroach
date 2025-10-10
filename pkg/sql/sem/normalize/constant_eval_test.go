@@ -31,8 +31,8 @@ func TestConstantEvalArrayComparison(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
-	typedExpr, err := expr.TypeCheck(context.Background(), &semaCtx, types.AnyElement)
+	semaCtx := tree.MakeSemaContext()
+	typedExpr, err := expr.TypeCheck(context.Background(), &semaCtx, types.Any)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,10 +48,12 @@ func TestConstantEvalArrayComparison(t *testing.T) {
 	left := tree.ColumnItem{
 		ColumnName: "a",
 	}
-	right := tree.NewDArrayFromDatums(
-		types.Int, tree.Datums{tree.NewDInt(1), tree.NewDInt(2)},
-	)
-	expected := tree.NewTypedComparisonExpr(treecmp.MakeComparisonOperator(treecmp.EQ), &left, right)
+	right := tree.DArray{
+		ParamTyp:    types.Int,
+		Array:       tree.Datums{tree.NewDInt(1), tree.NewDInt(2)},
+		HasNonNulls: true,
+	}
+	expected := tree.NewTypedComparisonExpr(treecmp.MakeComparisonOperator(treecmp.EQ), &left, &right)
 	if !reflect.DeepEqual(expr, expected) {
 		t.Errorf("invalid expr '%v', expected '%v'", expr, expected)
 	}

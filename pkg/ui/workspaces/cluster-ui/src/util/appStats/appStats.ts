@@ -4,11 +4,11 @@
 // included in the /LICENSE file.
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import Long from "long";
-
-import { uniqueLong, unique } from "src/util/arrays";
 import { TimestampToNumber, DurationToNumber } from "src/util/convert";
+
 import { FixLong } from "src/util/fixLong";
+import { uniqueLong, unique } from "src/util/arrays";
+import Long from "long";
 
 export type StatementStatistics = cockroach.sql.IStatementStatistics;
 export type ExecStats = cockroach.sql.IExecStats;
@@ -202,7 +202,6 @@ export function addStatementStats(
   return {
     count: a.count.add(b.count),
     failure_count: a.failure_count.add(b.failure_count),
-    generic_count: a.generic_count.add(b.generic_count),
     first_attempt_count: a.first_attempt_count.add(b.first_attempt_count),
     max_retries: a.max_retries.greaterThan(b.max_retries)
       ? a.max_retries
@@ -249,9 +248,7 @@ export function addStatementStats(
         ? a.last_exec_timestamp
         : b.last_exec_timestamp,
     nodes: uniqueLong([...a.nodes, ...b.nodes]),
-    kv_node_ids: unique([...a.kv_node_ids, ...b.kv_node_ids]),
     regions: regions,
-    used_follower_read: a.used_follower_read || b.used_follower_read,
     plan_gists: planGists,
     index_recommendations: indexRec,
     indexes: indexes,

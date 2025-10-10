@@ -48,7 +48,6 @@ func TestSettingWatcherOnTenant(t *testing.T) {
 	ctx := context.Background()
 	srv, sqlDB, db := serverutils.StartServer(t, base.TestServerArgs{
 		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-		DefaultDRPCOption: base.TestDRPCDisabled,
 	})
 	defer srv.Stopper().Stop(ctx)
 	s0 := srv.ApplicationLayer()
@@ -398,7 +397,6 @@ func TestOverflowRestart(t *testing.T) {
 	ctx := context.Background()
 	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
 		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-		DefaultDRPCOption: base.TestDRPCDisabled,
 	})
 	defer s.Stopper().Stop(ctx)
 
@@ -598,15 +596,15 @@ func TestStaleRowsDoNotCauseSettingsToRegress(t *testing.T) {
 	tombstone := setting1KV
 	tombstone.Value.RawBytes = nil
 
-	require.NoError(t, stream.SendUnbuffered(newRangeFeedEvent(setting1KV, ts1)))
+	require.NoError(t, stream.Send(newRangeFeedEvent(setting1KV, ts1)))
 	settingIsSoon(t, newSettingValue)
 
-	require.NoError(t, stream.SendUnbuffered(newRangeFeedEvent(tombstone, ts0)))
+	require.NoError(t, stream.Send(newRangeFeedEvent(tombstone, ts0)))
 	settingStillHasValueAfterAShortWhile(t, newSettingValue)
 
-	require.NoError(t, stream.SendUnbuffered(newRangeFeedEvent(tombstone, ts2)))
+	require.NoError(t, stream.Send(newRangeFeedEvent(tombstone, ts2)))
 	settingIsSoon(t, defaultFakeSettingValue)
-	require.NoError(t, stream.SendUnbuffered(newRangeFeedEvent(setting1KV, ts1)))
+	require.NoError(t, stream.Send(newRangeFeedEvent(setting1KV, ts1)))
 	settingStillHasValueAfterAShortWhile(t, defaultFakeSettingValue)
 }
 

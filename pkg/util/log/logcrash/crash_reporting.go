@@ -8,7 +8,6 @@ package logcrash
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -41,12 +40,10 @@ var (
 	// Collecting this data from production clusters helps us understand and improve
 	// how our storage systems behave in real-world use cases.
 	//
-	// Note: while the setting defaults to `true`, it can be overridden with the
+	// Note: while the setting itself is actually defined with a default value of
+	// `false`, it is usually automatically set to `true` when a cluster is created
+	// (or is migrated from a earlier beta version). This can be prevented with the
 	// env var COCKROACH_SKIP_ENABLING_DIAGNOSTIC_REPORTING.
-	//
-	// Note: while this setting also controls crash reporting (see logcrash.ShouldSendReport), the updated setting
-	// isn't affected until after the server startup sequence is complete. Thus, if you also must disable crash reporting
-	// during server startup, you should set the env var `COCKROACH_CRASH_REPORTS=` to the empty value.
 	//
 	// Doing this, rather than just using a default of `true`, means that a node
 	// will not errantly send a report using a default before loading settings.
@@ -54,9 +51,8 @@ var (
 		settings.ApplicationLevel,
 		"diagnostics.reporting.enabled",
 		"enable reporting diagnostic metrics to cockroach labs, but is ignored for Trial or Free licenses",
-		true,
-		settings.WithPublic,
-	)
+		false,
+		settings.WithPublic)
 
 	// CrashReports wraps "diagnostics.reporting.send_crash_reports.enabled".
 	CrashReports = settings.RegisterBoolSetting(
@@ -210,21 +206,6 @@ func PanicAsError(depth int, r interface{}) error {
 	return errors.NewWithDepthf(depth+1, "panic: %v", r)
 }
 
-// crashReportingDisabledString controls whether to opt out of crash reporting
-// or not compile time. The variable is set by bazel via stamping
-// (`stamp.sh -d true/false`, which controls telemetry opt out). Becuase Go only
-// supports strings for in `-ldflags "-X ..."`, we have to use a string
-// representation here.
-var crashReportingDisabledString = "false"
-
-func crashReportingDisabled() bool {
-	ret, err := strconv.ParseBool(crashReportingDisabledString)
-	if err != nil {
-		return false
-	}
-	return ret
-}
-
 // Crash reporting URL.
 //
 // This uses a Sentry proxy run by Cockroach Labs. The proxy
@@ -243,9 +224,6 @@ func crashReportingDisabled() bool {
 // TODO(knz): We could envision auto-selecting this alternate URL
 // when detecting a non-release build.
 var crashReportURL = func() string {
-	if crashReportingDisabled() {
-		return ""
-	}
 	var defaultURL string
 	if build.SeemsOfficial() {
 		defaultURL = "https://ignored@errors.cockroachdb.com/api/sentry/v2/1111"
@@ -340,7 +318,7 @@ const (
 	// still may include an exception and stack trace.
 	ReportTypeError
 	// ReportTypeLogFatal signifies that this is an error report that
-	// was generated via a log.Dev.Fatal call.
+	// was generated via a log.Fatal call.
 	ReportTypeLogFatal
 )
 
@@ -412,10 +390,10 @@ func SendReport(
 
 	res := sentry.CaptureEvent(event)
 	if res != nil {
-		log.Dev.Shoutf(ctx, severity.ERROR, "Queued as error %v", string(*res))
+		log.Shoutf(ctx, severity.ERROR, "Queued as error %v", string(*res))
 	}
 	if !sentry.Flush(10 * time.Second) {
-		log.Dev.Shout(ctx, severity.ERROR, "Timeout trying to submit crash report")
+		log.Shout(ctx, severity.ERROR, "Timeout trying to submit crash report")
 	}
 }
 
@@ -433,7 +411,7 @@ func ReportOrPanic(
 	if !build.IsRelease() || (sv != nil && PanicOnAssertions.Get(sv)) {
 		panic(err)
 	}
-	log.Dev.Errorf(ctx, "%v", err)
+	log.Errorf(ctx, "%v", err)
 	sendCrashReport(ctx, sv, err, ReportTypeError)
 }
 

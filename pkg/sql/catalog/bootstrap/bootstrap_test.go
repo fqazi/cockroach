@@ -12,7 +12,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/systemschema"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -99,11 +99,11 @@ func TestRoundTripInitialValuesStringRepresentation(t *testing.T) {
 		roundTripInitialValuesStringRepresentation(t, 0 /* tenantID */)
 	})
 	t.Run("tenant", func(t *testing.T) {
-		const dummyTenantID = 109
+		const dummyTenantID = 54321
 		roundTripInitialValuesStringRepresentation(t, dummyTenantID)
 	})
 	t.Run("tenants", func(t *testing.T) {
-		const dummyTenantID1, dummyTenantID2 = 109, 255
+		const dummyTenantID1, dummyTenantID2 = 54321, 12345
 		require.Equal(t,
 			InitialValuesToString(makeMetadataSchema(dummyTenantID1)),
 			InitialValuesToString(makeMetadataSchema(dummyTenantID2)),
@@ -133,27 +133,32 @@ func makeMetadataSchema(tenantID uint64) MetadataSchema {
 	if tenantID > 0 {
 		codec = keys.MakeSQLCodec(roachpb.MustMakeTenantID(tenantID))
 	}
-	return MakeMetadataSchema(codec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef(), NoOffset)
+	return MakeMetadataSchema(codec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef())
 }
 
-func TestDynamicSystemTableIDOffset(t *testing.T) {
+// TestSystemDatabaseSchemaBootstrapVersionBumped serves as a reminder to bump
+// systemschema.SystemDatabaseSchemaBootstrapVersion whenever a new upgrade
+// creates or modifies the schema of system tables. We unfortunately cannot
+// programmatically determine if an upgrade should bump the version so by
+// adding a test failure when the initial values change, the programmer and
+// code reviewers are reminded to manually check whether the version should
+// be bumped.
+func TestSystemDatabaseSchemaBootstrapVersionBumped(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	offset := uint32(1000)
+	// If you need to update this value (i.e. failed this test), check whether
+	// you need to bump systemschema.SystemDatabaseSchemaBootstrapVersion too.
+	const prevSystemHash = "2c0b6d061800b632f4d6e33e67219bf93395bc87349363262f8902fa8ee96d37"
+	_, curSystemHash := GetAndHashInitialValuesToString(0 /* tenantID */)
 
-	defaultMetadata := MakeMetadataSchema(keys.SystemSQLCodec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef(), NoOffset)
-	offsetMetadata := MakeMetadataSchema(keys.SystemSQLCodec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef(), offset)
-
-	require.Len(t, defaultMetadata.descs, len(offsetMetadata.descs))
-
-	for i := range defaultMetadata.descs {
-		defaultID := defaultMetadata.descs[i].GetID()
-		if defaultID <= keys.MaxReservedDescID {
-			// Reserved IDs are not offset.
-			require.Equal(t, defaultID, offsetMetadata.descs[i].GetID())
-		} else {
-			require.Equal(t, defaultMetadata.descs[i].GetID()+descpb.ID(offset), offsetMetadata.descs[i].GetID())
-		}
+	if prevSystemHash != curSystemHash {
+		t.Fatalf(
+			`Check whether you need to bump systemschema.SystemDatabaseSchemaBootstrapVersion
+and then update prevSystemHash to %q.
+The current value of SystemDatabaseSchemaBootstrapVersion is %s.`,
+			curSystemHash,
+			systemschema.SystemDatabaseSchemaBootstrapVersion,
+		)
 	}
 }

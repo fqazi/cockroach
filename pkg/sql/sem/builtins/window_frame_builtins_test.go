@@ -72,16 +72,15 @@ func testMin(t *testing.T, evalCtx *eval.Context, wfr *eval.WindowFrameRun) {
 		wfr.StartBoundOffset = tree.NewDInt(tree.DInt(offset))
 		wfr.EndBoundOffset = tree.NewDInt(tree.DInt(offset))
 		min := &slidingWindowFunc{}
-		min.sw = makeSlidingWindow(evalCtx, func(ctx context.Context, evalCtx *eval.Context, a, b tree.Datum) (int, error) {
-			cmp, err := a.Compare(ctx, evalCtx, b)
-			return -cmp, err
+		min.sw = makeSlidingWindow(evalCtx, func(evalCtx *eval.Context, a, b tree.Datum) int {
+			return -a.Compare(evalCtx, b)
 		})
 		for wfr.RowIdx = 0; wfr.RowIdx < wfr.PartitionSize(); wfr.RowIdx++ {
 			res, err := min.Compute(context.Background(), evalCtx, wfr)
 			if err != nil {
 				t.Errorf("Unexpected error received when getting min from sliding window: %+v", err)
 			}
-			minResult := res.(*tree.DInt)
+			minResult, _ := tree.AsDInt(res)
 			naiveMin := tree.DInt(maxInt)
 			for idx := wfr.RowIdx - offset; idx <= wfr.RowIdx+offset; idx++ {
 				if idx < 0 || idx >= wfr.PartitionSize() {
@@ -95,16 +94,16 @@ func testMin(t *testing.T, evalCtx *eval.Context, wfr *eval.WindowFrameRun) {
 				if err != nil {
 					panic(err)
 				}
-				el := datum.(*tree.DInt)
-				if *el < naiveMin {
-					naiveMin = *el
+				el, _ := tree.AsDInt(datum)
+				if el < naiveMin {
+					naiveMin = el
 				}
 			}
-			if *minResult != naiveMin {
+			if minResult != naiveMin {
 				t.Errorf("Min sliding window returned wrong result: expected %+v, found %+v", naiveMin, minResult)
 				t.Errorf("partitionSize: %+v idx: %+v offset: %+v", wfr.PartitionSize(), wfr.RowIdx, offset)
-				t.Error(min.sw.string())
-				t.Error(partitionToString(context.Background(), wfr.Rows))
+				t.Errorf(min.sw.string())
+				t.Errorf(partitionToString(context.Background(), wfr.Rows))
 				panic("")
 			}
 		}
@@ -116,15 +115,15 @@ func testMax(t *testing.T, evalCtx *eval.Context, wfr *eval.WindowFrameRun) {
 		wfr.StartBoundOffset = tree.NewDInt(tree.DInt(offset))
 		wfr.EndBoundOffset = tree.NewDInt(tree.DInt(offset))
 		max := &slidingWindowFunc{}
-		max.sw = makeSlidingWindow(evalCtx, func(ctx context.Context, evalCtx *eval.Context, a, b tree.Datum) (int, error) {
-			return a.Compare(ctx, evalCtx, b)
+		max.sw = makeSlidingWindow(evalCtx, func(evalCtx *eval.Context, a, b tree.Datum) int {
+			return a.Compare(evalCtx, b)
 		})
 		for wfr.RowIdx = 0; wfr.RowIdx < wfr.PartitionSize(); wfr.RowIdx++ {
 			res, err := max.Compute(context.Background(), evalCtx, wfr)
 			if err != nil {
 				t.Errorf("Unexpected error received when getting max from sliding window: %+v", err)
 			}
-			maxResult := res.(*tree.DInt)
+			maxResult, _ := tree.AsDInt(res)
 			naiveMax := tree.DInt(-maxInt)
 			for idx := wfr.RowIdx - offset; idx <= wfr.RowIdx+offset; idx++ {
 				if idx < 0 || idx >= wfr.PartitionSize() {
@@ -138,16 +137,16 @@ func testMax(t *testing.T, evalCtx *eval.Context, wfr *eval.WindowFrameRun) {
 				if err != nil {
 					panic(err)
 				}
-				el := datum.(*tree.DInt)
-				if *el > naiveMax {
-					naiveMax = *el
+				el, _ := tree.AsDInt(datum)
+				if el > naiveMax {
+					naiveMax = el
 				}
 			}
-			if *maxResult != naiveMax {
+			if maxResult != naiveMax {
 				t.Errorf("Max sliding window returned wrong result: expected %+v, found %+v", naiveMax, maxResult)
 				t.Errorf("partitionSize: %+v idx: %+v offset: %+v", wfr.PartitionSize(), wfr.RowIdx, offset)
-				t.Error(max.sw.string())
-				t.Error(partitionToString(context.Background(), wfr.Rows))
+				t.Errorf(max.sw.string())
+				t.Errorf(partitionToString(context.Background(), wfr.Rows))
 				panic("")
 			}
 		}
@@ -184,8 +183,8 @@ func testSumAndAvg(t *testing.T, evalCtx *eval.Context, wfr *eval.WindowFrameRun
 				if err != nil {
 					panic(err)
 				}
-				el := datum.(*tree.DInt)
-				naiveSum += int64(*el)
+				el, _ := tree.AsDInt(datum)
+				naiveSum += int64(el)
 			}
 			s, err := sumResult.Int64()
 			if err != nil {
@@ -194,7 +193,7 @@ func testSumAndAvg(t *testing.T, evalCtx *eval.Context, wfr *eval.WindowFrameRun
 			if s != naiveSum {
 				t.Errorf("Sum sliding window returned wrong result: expected %+v, found %+v", naiveSum, s)
 				t.Errorf("partitionSize: %+v idx: %+v offset: %+v", wfr.PartitionSize(), wfr.RowIdx, offset)
-				t.Error(partitionToString(context.Background(), wfr.Rows))
+				t.Errorf(partitionToString(context.Background(), wfr.Rows))
 				panic("")
 			}
 			a, err := avgResult.Float64()
@@ -208,7 +207,7 @@ func testSumAndAvg(t *testing.T, evalCtx *eval.Context, wfr *eval.WindowFrameRun
 			if a != float64(naiveSum)/float64(frameSize) {
 				t.Errorf("Sum sliding window returned wrong result: expected %+v, found %+v", float64(naiveSum)/float64(frameSize), a)
 				t.Errorf("partitionSize: %+v idx: %+v offset: %+v", wfr.PartitionSize(), wfr.RowIdx, offset)
-				t.Error(partitionToString(context.Background(), wfr.Rows))
+				t.Errorf(partitionToString(context.Background(), wfr.Rows))
 				panic("")
 			}
 		}

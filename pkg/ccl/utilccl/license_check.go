@@ -45,7 +45,6 @@ var EnterpriseLicense = settings.RegisterStringSetting(
 				return errors.WithHint(errors.Newf("a trial license has previously been installed on this cluster"),
 					"Please install a non-trial license to continue")
 			}
-
 			return nil
 		},
 	),
@@ -108,7 +107,7 @@ var GetLicenseTTL = func(
 ) int64 {
 	license, err := GetLicense(st)
 	if err != nil {
-		log.Dev.Errorf(ctx, "unable to find license: %v", err)
+		log.Errorf(ctx, "unable to find license: %v", err)
 		return 0
 	}
 	if license == nil {
@@ -128,14 +127,13 @@ func GetLicense(st *cluster.Settings) (*licenseccl.License, error) {
 	}
 	cacheKey := licenseCacheKey(str)
 	if cachedLicense, ok := st.Cache.Load(cacheKey); ok {
-		return (*cachedLicense).(*licenseccl.License), nil
+		return cachedLicense.(*licenseccl.License), nil
 	}
 	license, err := decode(str)
 	if err != nil {
 		return nil, err
 	}
-	licenseBox := any(license)
-	st.Cache.Store(cacheKey, &licenseBox)
+	st.Cache.Store(cacheKey, license)
 	return license, nil
 }
 
@@ -181,7 +179,7 @@ func RegisterCallbackOnLicenseChange(
 	refreshFunc := func(ctx context.Context, isChange bool) {
 		lic, err := GetLicense(st)
 		if err != nil {
-			log.Dev.Errorf(ctx, "unable to refresh license enforcer for license change: %v", err)
+			log.Errorf(ctx, "unable to refresh license enforcer for license change: %v", err)
 			return
 		}
 		var licenseType licenseserver.LicType
@@ -205,7 +203,7 @@ func RegisterCallbackOnLicenseChange(
 
 		expiry, err := licenseEnforcer.UpdateTrialLicenseExpiry(ctx, licenseType, isChange, licenseExpiry.Unix())
 		if err != nil {
-			log.Dev.Errorf(ctx, "unable to update trial license expiry: %v", err)
+			log.Errorf(ctx, "unable to update trial license expiry: %v", err)
 			return
 		}
 		trialLicenseExpiryTimestamp.Store(expiry)

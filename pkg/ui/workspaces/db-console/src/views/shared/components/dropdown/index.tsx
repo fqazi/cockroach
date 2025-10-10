@@ -4,16 +4,16 @@
 // included in the /LICENSE file.
 
 import classNames from "classnames/bind";
-import includes from "lodash/includes";
-import isNil from "lodash/isNil";
-import React from "react";
 import Select from "react-select";
-
-import { CaretDown } from "src/components/icon/caretDown";
-import { trustIcon } from "src/util/trust";
-import { leftArrow, rightArrow } from "src/views/shared/components/icons";
+import React from "react";
+import _ from "lodash";
 
 import styles from "./dropdown.module.styl";
+
+import { leftArrow, rightArrow } from "src/views/shared/components/icons";
+import { trustIcon } from "src/util/trust";
+import ReactSelectClass from "react-select";
+import { CaretDown } from "src/components/icon/caretDown";
 
 export interface DropdownOption {
   value: string;
@@ -61,7 +61,7 @@ export default class Dropdown extends React.Component<DropdownOwnProps, {}> {
 
   dropdownRef: React.RefObject<HTMLDivElement> = React.createRef();
   titleRef: React.RefObject<HTMLDivElement> = React.createRef();
-  selectRef: React.RefObject<Select<DropdownOption>> = React.createRef();
+  selectRef: React.RefObject<ReactSelectClass> = React.createRef();
 
   triggerSelectClick = (e: any) => {
     this.props.onDropdownClick && this.props.onDropdownClick();
@@ -112,19 +112,19 @@ export default class Dropdown extends React.Component<DropdownOwnProps, {}> {
       `dropdown--type-${type}`,
       {
         _range: isTimeRange,
-        "dropdown--side-arrows": !isNil(onArrowClick),
+        "dropdown--side-arrows": !_.isNil(onArrowClick),
         dropdown__focused: this.state.is_focused,
       },
       this.props.className,
     );
     const leftClassName = cx("dropdown__side-arrow", {
-      "dropdown__side-arrow--disabled": includes(
+      "dropdown__side-arrow--disabled": _.includes(
         disabledArrows,
         ArrowDirection.LEFT,
       ),
     });
     const rightClassName = cx("dropdown__side-arrow", {
-      "dropdown__side-arrow--disabled": includes(
+      "dropdown__side-arrow--disabled": _.includes(
         disabledArrows,
         ArrowDirection.RIGHT,
       ),
@@ -155,15 +155,6 @@ export default class Dropdown extends React.Component<DropdownOwnProps, {}> {
         {content ? (
           content
         ) : (
-          // The below typescript fails to typecheck because the
-          // react-select library's types aren't flexible enough to
-          // accept the `options` and `onChange` props that use the
-          // custom `DropdownOption` type as the target. It's likely
-          // that an upgrade of react-select would fix this but we
-          // avoid it here because it will likely break implementation.
-
-          /* eslint @typescript-eslint/ban-ts-comment: "off" */
-          // @ts-ignore
           <Select
             className={cx("dropdown__select")}
             arrowRenderer={arrowRenderer}

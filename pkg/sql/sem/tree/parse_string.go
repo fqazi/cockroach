@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/col/typeconv"
 	"github.com/cockroachdb/cockroach/pkg/sql/lex"
-	"github.com/cockroachdb/cockroach/pkg/sql/oidext"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
@@ -65,8 +64,6 @@ func ParseAndRequireString(
 		d, err = ParseDIntervalWithTypeMetadata(intervalStyle(ctx), s, itm)
 	case types.PGLSNFamily:
 		d, err = ParseDPGLSN(s)
-	case types.PGVectorFamily:
-		d, err = ParseDPGVector(s)
 	case types.RefCursorFamily:
 		d = NewDRefCursor(s)
 	case types.Box2DFamily:
@@ -77,8 +74,6 @@ func ParseAndRequireString(
 		d, err = ParseDGeometry(s)
 	case types.JsonFamily:
 		d, err = ParseDJSON(s)
-	case types.JsonpathFamily:
-		d, err = ParseDJsonpath(s)
 	case types.OidFamily:
 		if t.Oid() != oid.T_oid && s == UnknownOidName {
 			d = NewDOidWithType(UnknownOidValue, t)
@@ -86,12 +81,7 @@ func ParseAndRequireString(
 			d, err = ParseDOidAsInt(s)
 		}
 	case types.CollatedStringFamily:
-		switch t.Oid() {
-		case oidext.T_citext:
-			d, err = NewDCIText(s, ctx.GetCollationEnv())
-		default:
-			d, err = NewDCollatedString(s, t.Locale(), ctx.GetCollationEnv())
-		}
+		d, err = NewDCollatedString(s, t.Locale(), ctx.GetCollationEnv())
 	case types.StringFamily:
 		s = truncateString(s, t)
 		return NewDString(s), false, nil
@@ -115,8 +105,6 @@ func ParseAndRequireString(
 		d, err = ParseDTSQuery(s)
 	case types.TSVectorFamily:
 		d, err = ParseDTSVector(s)
-	case types.LTreeFamily:
-		d, err = ParseDLTree(s)
 	case types.TupleFamily:
 		d, dependsOnContext, err = ParseDTupleFromString(ctx, s, t)
 	case types.VoidFamily:
@@ -264,18 +252,22 @@ func ParseAndRequireStringHandler(
 		s = truncateString(s, t)
 		vh.String(s)
 	case types.TimestampTZFamily:
-		var ts time.Time
-		if ts, _, err = ParseTimestampTZ(ctx, s, TimeFamilyPrecisionToRoundDuration(t.Precision())); err == nil {
-			vh.TimestampTZ(ts)
-		}
-	case types.TimestampFamily:
-		// TODO(yuzefovich): can we refactor the next 2 case arms to be simpler
+		// TODO(cucaroach): can we refactor the next 3 case arms to be simpler
 		// and avoid code duplication?
 		now := relativeParseTime(ctx)
 		var ts time.Time
-		if ts, _, err = pgdate.ParseTimestampWithoutTimezone(now, dateStyle(ctx), s, dateParseHelper(ctx)); err == nil {
+		if ts, _, err = pgdate.ParseTimestamp(now, dateStyle(ctx), s); err == nil {
 			// Always normalize time to the current location.
-			if ts, err = roundAndCheck(ts, TimeFamilyPrecisionToRoundDuration(t.Precision())); err == nil {
+			if ts, err = checkTimeBounds(ts, TimeFamilyPrecisionToRoundDuration(t.Precision())); err == nil {
+				vh.TimestampTZ(ts)
+			}
+		}
+	case types.TimestampFamily:
+		now := relativeParseTime(ctx)
+		var ts time.Time
+		if ts, _, err = pgdate.ParseTimestampWithoutTimezone(now, dateStyle(ctx), s); err == nil {
+			// Always normalize time to the current location.
+			if ts, err = checkTimeBounds(ts, TimeFamilyPrecisionToRoundDuration(t.Precision())); err == nil {
 				vh.TimestampTZ(ts)
 			}
 		}

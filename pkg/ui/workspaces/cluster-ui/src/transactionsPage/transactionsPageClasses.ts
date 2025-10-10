@@ -4,10 +4,8 @@
 // included in the /LICENSE file.
 
 import classNames from "classnames/bind";
-
-import sortedTableStyles from "src/sortedtable/sortedtable.module.scss";
 import statementsPageStyles from "src/statementsPage/statementsPage.module.scss";
-
+import sortedTableStyles from "src/sortedtable/sortedtable.module.scss";
 import { commonStyles } from "../common";
 
 const pageCx = classNames.bind(statementsPageStyles);

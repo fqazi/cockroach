@@ -9,9 +9,7 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcostmodel"
-	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -34,13 +32,9 @@ type TenantSideCostController interface {
 	// the CPU usage (in CPU secs) per wall-clock second.
 	GetCPUMovingAvg() float64
 
-	// GetRequestUnitModel returns the request unit cost model that this
-	// TenantSideCostController is using.
-	GetRequestUnitModel() *tenantcostmodel.RequestUnitModel
-
-	// GetEstimatedCPUModel returns the estimated CPU cost model that this
-	// TenantSideCostController is using.
-	GetEstimatedCPUModel() *tenantcostmodel.EstimatedCPUModel
+	// GetCostConfig returns the cost model config this TenantSideCostController
+	// is using.
+	GetCostConfig() *tenantcostmodel.Config
 
 	// Metrics returns a metric.Struct which holds metrics for the controller.
 	Metrics() metric.Struct
@@ -92,11 +86,7 @@ type TenantSideKVInterceptor interface {
 	// If the context (or a parent context) was created using
 	// WithTenantCostControlExemption, the method is a no-op.
 	OnResponseWait(
-		ctx context.Context,
-		request *kvpb.BatchRequest,
-		response *kvpb.BatchResponse,
-		targetRange *roachpb.RangeDescriptor,
-		targetReplica *roachpb.ReplicaDescriptor,
+		ctx context.Context, req tenantcostmodel.RequestInfo, resp tenantcostmodel.ResponseInfo,
 	) error
 }
 

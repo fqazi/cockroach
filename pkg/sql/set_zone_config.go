@@ -37,13 +37,13 @@ import (
 )
 
 type setZoneConfigNode struct {
-	zeroInputPlanNode
-	stmt          *tree.SetZoneConfig
 	zoneSpecifier tree.ZoneSpecifier
 	allIndexes    bool
 	yamlConfig    tree.TypedExpr
 	options       map[tree.Name]zone.OptionValue
 	setDefault    bool
+
+	run setZoneConfigRun
 }
 
 func (p *planner) getUpdatedZoneConfigYamlConfig(
@@ -157,9 +157,8 @@ func (p *planner) SetZoneConfig(ctx context.Context, n *tree.SetZoneConfig) (pla
 	}
 
 	return &setZoneConfigNode{
-		stmt:          n,
 		zoneSpecifier: n.ZoneSpecifier,
-		allIndexes:    n.ZoneSpecifier.StarIndex,
+		allIndexes:    n.AllIndexes,
 		yamlConfig:    yamlConfig,
 		options:       options,
 		setDefault:    n.SetDefault,
@@ -171,19 +170,6 @@ func checkPrivilegeForSetZoneConfig(ctx context.Context, p *planner, zs tree.Zon
 	// an admin. Otherwise we require CREATE privileges on the database or table
 	// in question.
 	if zs.NamedZone != "" {
-		// Only block privileges for non-root users if this is the default range
-		// for a secondary tenant with
-		// sql.zone_configs.default_range_modifiable_by_non_root.enabled set to
-		// false; other ranges just need the REPAIRCLUSTER privilege.
-		if zonepb.NamedZone(zs.NamedZone.String()) == zonepb.DefaultZoneName && !p.execCfg.Codec.ForSystemTenant() &&
-			!zonepb.DefaultRangeModifiableByNonRoot.Get(&p.execCfg.Settings.SV) {
-			if !p.EvalContext().SessionData().User().IsRootUser() {
-				return pgerror.New(
-					pgcode.InsufficientPrivilege,
-					"only root users are allowed to modify the default range",
-				)
-			}
-		}
 		return p.CheckPrivilege(ctx, syntheticprivilege.GlobalPrivilegeObject, privilege.REPAIRCLUSTER)
 	}
 	if zs.Database != "" {
@@ -226,6 +212,11 @@ func checkPrivilegeForSetZoneConfig(ctx context.Context, p *planner, zs tree.Zon
 
 	return sqlerrors.NewInsufficientPrivilegeOnDescriptorError(p.SessionData().User(),
 		[]privilege.Kind{privilege.ZONECONFIG, privilege.CREATE}, string(tableDesc.DescriptorType()), tableDesc.GetName())
+}
+
+// setZoneConfigRun contains the run-time state of setZoneConfigNode during local execution.
+type setZoneConfigRun struct {
+	numAffected int
 }
 
 // ReadingOwnWrites implements the planNodeReadingOwnWrites interface.
@@ -340,7 +331,7 @@ func (n *setZoneConfigNode) startExec(params runParams) error {
 	}
 
 	// Disallow schema changes if it's a table and its schema is locked.
-	if err = params.p.checkSchemaChangeIsAllowed(params.ctx, table, n.stmt); err != nil {
+	if err = checkTableSchemaUnlocked(table); err != nil {
 		return err
 	}
 
@@ -471,16 +462,16 @@ func (n *setZoneConfigNode) startExec(params runParams) error {
 		// default (whichever applies -- a database if targetID is a table,
 		// default if targetID is a database, etc.). For this, we use the last
 		// parameter getInheritedDefault to GetZoneConfigInTxn().
-		// These zones are only used for validations. The merged zone will
+		// These zones are only used for validations. The merged zone is will
 		// not be written.
 		_, completeZone, completeSubzone, err := GetZoneConfigInTxn(
 			params.ctx, params.p.txn, params.p.Descriptors(), targetID, index, partition, n.setDefault,
 		)
 
-		if errors.Is(err, sqlerrors.ErrNoZoneConfigApplies) {
+		if errors.Is(err, errNoZoneConfigApplies) {
 			// No zone config yet.
 			//
-			// GetZoneConfigInTxn will fail with ErrNoZoneConfigApplies when
+			// GetZoneConfigInTxn will fail with errNoZoneConfigApplies when
 			// the target ID is not a database object, i.e. one of the system
 			// ranges (liveness, meta, etc.), and did not have a zone config
 			// already.
@@ -625,7 +616,7 @@ func (n *setZoneConfigNode) startExec(params runParams) error {
 			}
 
 			// Validate that there are no conflicts in the zone setup.
-			if err := zonepb.ValidateNoRepeatKeysInZone(&newZone); err != nil {
+			if err := validateNoRepeatKeysInZone(&newZone); err != nil {
 				return err
 			}
 
@@ -740,7 +731,7 @@ func (n *setZoneConfigNode) startExec(params runParams) error {
 		zoneToWrite := partialZone
 		// TODO(ajwerner): This is extremely fragile because we accept a nil table
 		// all the way down here.
-		err = writeZoneConfig(
+		n.run.numAffected, err = writeZoneConfig(
 			params.ctx,
 			params.p.InternalSQLTxn(),
 			targetID,
@@ -789,8 +780,68 @@ func (n *setZoneConfigNode) Next(runParams) (bool, error) { return false, nil }
 func (n *setZoneConfigNode) Values() tree.Datums          { return nil }
 func (*setZoneConfigNode) Close(context.Context)          {}
 
+func (n *setZoneConfigNode) FastPathResults() (int, bool) { return n.run.numAffected, true }
+
 type nodeGetter func(context.Context, *serverpb.NodesRequest) (*serverpb.NodesResponse, error)
 type regionsGetter func(context.Context) (*serverpb.RegionsResponse, error)
+
+// Check that there are not duplicated values for a particular
+// constraint. For example, constraints [+region=us-east1,+region=us-east2]
+// will be rejected. Additionally, invalid constraints such as
+// [+region=us-east1, -region=us-east1] will also be rejected.
+func validateNoRepeatKeysInZone(zone *zonepb.ZoneConfig) error {
+	for _, leasePreference := range zone.LeasePreferences {
+		if err := validateNoRepeatKeysInConstraints(leasePreference.Constraints); err != nil {
+			return err
+		}
+	}
+	if err := validateNoRepeatKeysInConjunction(zone.Constraints); err != nil {
+		return err
+	}
+	return validateNoRepeatKeysInConjunction(zone.VoterConstraints)
+}
+
+func validateNoRepeatKeysInConjunction(conjunctions []zonepb.ConstraintsConjunction) error {
+	for _, constraints := range conjunctions {
+		if err := validateNoRepeatKeysInConstraints(constraints.Constraints); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNoRepeatKeysInConstraints(constraints []zonepb.Constraint) error {
+	// Because we expect to have a small number of constraints, a nested
+	// loop is probably better than allocating a map.
+	for i, curr := range constraints {
+		for _, other := range constraints[i+1:] {
+			// We don't want to enter the other validation logic if both of the constraints
+			// are attributes, due to the keys being the same for attributes.
+			if curr.Key == "" && other.Key == "" {
+				if curr.Value == other.Value {
+					return pgerror.Newf(pgcode.CheckViolation,
+						"incompatible zone constraints: %q and %q", curr, other)
+				}
+			} else {
+				if curr.Type == zonepb.Constraint_REQUIRED {
+					if other.Type == zonepb.Constraint_REQUIRED && other.Key == curr.Key ||
+						other.Type == zonepb.Constraint_PROHIBITED && other.Key == curr.Key && other.Value == curr.Value {
+						return pgerror.Newf(pgcode.CheckViolation,
+							"incompatible zone constraints: %q and %q", curr, other)
+					}
+				} else if curr.Type == zonepb.Constraint_PROHIBITED {
+					// If we have a -k=v pair, verify that there are not any
+					// +k=v pairs in the constraints.
+					if other.Type == zonepb.Constraint_REQUIRED && other.Key == curr.Key && other.Value == curr.Value {
+						return pgerror.Newf(pgcode.CheckViolation,
+							"incompatible zone constraints: %q and %q", curr, other)
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
 
 // accumulateNewUniqueConstraints returns a list of unique constraints in the
 // given newZone config proto that are not in the currentZone
@@ -945,9 +996,6 @@ func validateZoneLocalitiesForSecondaryTenants(
 	settings *cluster.Settings,
 ) error {
 	toValidate := accumulateNewUniqueConstraints(currentZone, newZone)
-	if err := zonepb.ValidateNewUniqueConstraintsForSecondaryTenants(&settings.SV, currentZone, newZone); err != nil {
-		return err
-	}
 
 	// rs and zs will be lazily populated with regions and zones, respectively.
 	// These should not be accessed directly - use getRegionsAndZones helper
@@ -1025,7 +1073,9 @@ func prepareZoneConfigWrites(
 	hasNewSubzones bool,
 ) (_ *zoneConfigUpdate, err error) {
 	if len(z.Subzones) > 0 {
-		z.SubzoneSpans, err = GenerateSubzoneSpans(execCfg.Codec, table, z.Subzones)
+		st := execCfg.Settings
+		z.SubzoneSpans, err = GenerateSubzoneSpans(
+			st, execCfg.Codec, table, z.Subzones, hasNewSubzones)
 		if err != nil {
 			return nil, err
 		}
@@ -1049,38 +1099,41 @@ func writeZoneConfig(
 	execCfg *ExecutorConfig,
 	hasNewSubzones bool,
 	kvTrace bool,
-) error {
+) (numAffected int, err error) {
 	update, err := prepareZoneConfigWrites(ctx, execCfg, targetID, table, zone, expectedExistingRawBytes, hasNewSubzones)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	return writeZoneConfigUpdate(ctx, txn, kvTrace, update)
 }
 
 func writeZoneConfigUpdate(
 	ctx context.Context, txn descs.Txn, kvTrace bool, update *zoneConfigUpdate,
-) error {
+) (numAffected int, err error) {
 	b := txn.KV().NewBatch()
 	if update.zoneConfig == nil {
-		err := txn.Descriptors().DeleteZoneConfigInBatch(ctx, kvTrace, b, update.id)
-		if err != nil {
-			return err
-		}
+		err = txn.Descriptors().DeleteZoneConfigInBatch(ctx, kvTrace, b, update.id)
 	} else {
-		err := txn.Descriptors().WriteZoneConfigToBatch(ctx, kvTrace, b, update.id, update.zoneConfig)
-		if err != nil {
-			return err
-		}
+		numAffected = 1
+		err = txn.Descriptors().WriteZoneConfigToBatch(ctx, kvTrace, b, update.id, update.zoneConfig)
+	}
+	if err != nil {
+		return 0, err
 	}
 
 	if err := txn.KV().Run(ctx, b); err != nil {
-		return err
+		return 0, err
 	}
 	r := b.Results[0]
 	if r.Err != nil {
 		panic("run succeeded even through the result has an error")
 	}
-	return nil
+	// We don't really care how many keys are affected since this function always
+	// write one single zone config.
+	if len(r.Keys) > 0 {
+		numAffected = 1
+	}
+	return numAffected, err
 }
 
 // RemoveIndexZoneConfigs removes the zone configurations for some
@@ -1127,7 +1180,7 @@ func RemoveIndexZoneConfigs(
 
 	if zcRewriteNecessary {
 		// Ignore CCL required error to allow schema change to progress.
-		err = writeZoneConfig(
+		_, err = writeZoneConfig(
 			ctx, txn, tableDesc.GetID(), tableDesc, zone,
 			zoneWithRaw.GetRawBytesInStorage(), execCfg,
 			false /* hasNewSubzones */, kvTrace,

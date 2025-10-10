@@ -79,6 +79,7 @@ func TestIsLocalMsg(t *testing.T) {
 		{pb.MsgBeat, true},
 		{pb.MsgUnreachable, true},
 		{pb.MsgSnapStatus, true},
+		{pb.MsgCheckQuorum, true},
 		{pb.MsgTransferLeader, false},
 		{pb.MsgProp, false},
 		{pb.MsgApp, false},
@@ -89,12 +90,14 @@ func TestIsLocalMsg(t *testing.T) {
 		{pb.MsgHeartbeat, false},
 		{pb.MsgHeartbeatResp, false},
 		{pb.MsgTimeoutNow, false},
+		{pb.MsgReadIndex, false},
+		{pb.MsgReadIndexResp, false},
 		{pb.MsgPreVote, false},
 		{pb.MsgPreVoteResp, false},
-		{pb.MsgForgetLeader, false},
-		{pb.MsgFortifyLeader, false},
-		{pb.MsgFortifyLeaderResp, false},
-		{pb.MsgDeFortifyLeader, false},
+		{pb.MsgStorageAppend, true},
+		{pb.MsgStorageAppendResp, true},
+		{pb.MsgStorageApply, true},
+		{pb.MsgStorageApplyResp, true},
 	}
 
 	for _, tt := range tests {
@@ -113,6 +116,7 @@ func TestIsResponseMsg(t *testing.T) {
 		{pb.MsgBeat, false},
 		{pb.MsgUnreachable, true},
 		{pb.MsgSnapStatus, false},
+		{pb.MsgCheckQuorum, false},
 		{pb.MsgTransferLeader, false},
 		{pb.MsgProp, false},
 		{pb.MsgApp, false},
@@ -123,92 +127,20 @@ func TestIsResponseMsg(t *testing.T) {
 		{pb.MsgHeartbeat, false},
 		{pb.MsgHeartbeatResp, true},
 		{pb.MsgTimeoutNow, false},
+		{pb.MsgReadIndex, false},
+		{pb.MsgReadIndexResp, true},
 		{pb.MsgPreVote, false},
 		{pb.MsgPreVoteResp, true},
-		{pb.MsgForgetLeader, false},
-		{pb.MsgFortifyLeader, false},
-		{pb.MsgFortifyLeaderResp, true},
-		{pb.MsgDeFortifyLeader, false},
+		{pb.MsgStorageAppend, false},
+		{pb.MsgStorageAppendResp, true},
+		{pb.MsgStorageApply, false},
+		{pb.MsgStorageApplyResp, true},
 	}
 
 	for i, tt := range tests {
 		got := IsResponseMsg(tt.msgt)
 		if got != tt.isResponse {
 			t.Errorf("#%d: got %v, want %v", i, got, tt.isResponse)
-		}
-	}
-}
-
-func TestMsgFromLeader(t *testing.T) {
-	tests := []struct {
-		msgt            pb.MessageType
-		isMsgFromLeader bool
-	}{
-		{pb.MsgHup, false},
-		{pb.MsgBeat, false},
-		{pb.MsgUnreachable, false},
-		{pb.MsgSnapStatus, false},
-		{pb.MsgTransferLeader, false},
-		{pb.MsgProp, false},
-		{pb.MsgApp, true},
-		{pb.MsgAppResp, false},
-		{pb.MsgVote, false},
-		{pb.MsgVoteResp, false},
-		{pb.MsgSnap, false},
-		{pb.MsgHeartbeat, true},
-		{pb.MsgHeartbeatResp, false},
-		{pb.MsgTimeoutNow, true},
-		{pb.MsgPreVote, false},
-		{pb.MsgPreVoteResp, false},
-		{pb.MsgForgetLeader, false},
-		{pb.MsgFortifyLeader, true},
-		{pb.MsgFortifyLeaderResp, false},
-		{pb.MsgDeFortifyLeader, true},
-	}
-
-	for i, tt := range tests {
-		got := IsMsgFromLeader(tt.msgt)
-		if got != tt.isMsgFromLeader {
-			t.Errorf("#%d: got %v, want %v", i, got, tt.isMsgFromLeader)
-		}
-		if got {
-			require.True(t, IsMsgIndicatingLeader(tt.msgt),
-				"IsMsgFromLeader should imply IsMsgIndicatingLeader")
-		}
-	}
-}
-
-func TestMsgIndicatingLeader(t *testing.T) {
-	tests := []struct {
-		msgt                  pb.MessageType
-		isMsgIndicatingLeader bool
-	}{
-		{pb.MsgHup, false},
-		{pb.MsgBeat, false},
-		{pb.MsgUnreachable, false},
-		{pb.MsgSnapStatus, false},
-		{pb.MsgTransferLeader, false},
-		{pb.MsgProp, false},
-		{pb.MsgApp, true},
-		{pb.MsgAppResp, false},
-		{pb.MsgVote, false},
-		{pb.MsgVoteResp, false},
-		{pb.MsgSnap, true},
-		{pb.MsgHeartbeat, true},
-		{pb.MsgHeartbeatResp, false},
-		{pb.MsgTimeoutNow, true},
-		{pb.MsgPreVote, false},
-		{pb.MsgPreVoteResp, false},
-		{pb.MsgForgetLeader, false},
-		{pb.MsgFortifyLeader, true},
-		{pb.MsgFortifyLeaderResp, false},
-		{pb.MsgDeFortifyLeader, true},
-	}
-
-	for i, tt := range tests {
-		got := IsMsgIndicatingLeader(tt.msgt)
-		if got != tt.isMsgIndicatingLeader {
-			t.Errorf("#%d: got %v, want %v", i, got, tt.isMsgIndicatingLeader)
 		}
 	}
 }

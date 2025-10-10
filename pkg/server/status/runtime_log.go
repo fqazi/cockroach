@@ -12,7 +12,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
-	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
 	"github.com/cockroachdb/redact"
 	humanize "github.com/dustin/go-humanize"
 )
@@ -31,13 +30,13 @@ var statsTemplate = template.Must(template.New("runtime stats").Funcs(template.F
 
 func logStats(ctx context.Context, stats *eventpb.RuntimeStats) {
 	// In any case, log the structured event to its native channel (HEALTH).
-	log.StructuredEvent(ctx, severity.INFO, stats)
+	log.StructuredEvent(ctx, stats)
 
 	// Also, log a formatted version of the structured event on the HEALTH channel,
 	// for use by humans while troubleshooting from log files.
 	var buf strings.Builder
 	if err := statsTemplate.Execute(&buf, stats); err != nil {
-		log.Dev.Warningf(ctx, "failed to render runtime stats: %v", err)
+		log.Warningf(ctx, "failed to render runtime stats: %v", err)
 		return
 	}
 	log.Health.Infof(ctx, "runtime stats: %s", redact.SafeString(buf.String()))

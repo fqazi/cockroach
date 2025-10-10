@@ -8,7 +8,6 @@ package testcat
 import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/systemschema"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
-	_ "github.com/cockroachdb/cockroach/pkg/sql/sem/builtins"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/vtable"
 	"github.com/cockroachdb/errors"
@@ -134,12 +133,6 @@ var systemTables = []string{
 	systemschema.SystemMVCCStatisticsSchema,
 	systemschema.TxnExecutionStatsTableSchema,
 	systemschema.StatementExecutionStatsTableSchema,
-	systemschema.TableMetadataTableSchema,
-	systemschema.PreparedTransactionsTableSchema,
-	systemschema.InspectErrorsTableSchema,
-	systemschema.TransactionDiagnosticsRequestsTableSchema,
-	systemschema.TransactionDiagnosticsTableSchema,
-	systemschema.StatementHintsTableSchema,
 }
 
 func init() {

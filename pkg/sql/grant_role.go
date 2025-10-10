@@ -27,7 +27,6 @@ import (
 // GrantRoleNode creates entries in the system.role_members table.
 // This is called from GRANT <ROLE>
 type GrantRoleNode struct {
-	zeroInputPlanNode
 	roles       []username.SQLUsername
 	members     []username.SQLUsername
 	adminOption bool
@@ -180,7 +179,7 @@ VALUES ($1, $2, $3, (SELECT user_id FROM system.users WHERE username = $1), (SEL
 ON CONFLICT ("role", "member")`
 	if n.adminOption {
 		// admin option: true, set "isAdmin" even if the membership exists.
-		memberStmt += ` DO UPDATE SET "isAdmin" = true WHERE role_members."isAdmin" IS NOT true`
+		memberStmt += ` DO UPDATE SET "isAdmin" = true`
 	} else {
 		// admin option: false, do not clear it from existing memberships.
 		memberStmt += ` DO NOTHING`

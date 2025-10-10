@@ -66,12 +66,12 @@
   margin: 15px 0;
 }
 
-:global(.crdb-ant-tooltip) {
+:global(.ant-tooltip) {
   &:global(.hljs) {
-    &:global(.crdb-ant-tooltip-content) {
+    &:global(.ant-tooltip-content) {
       width: 535px;
     }
-    &:global(.crdb-ant-tooltip-inner) {
+    &:global(.ant-tooltip-inner) {
       background-color: $colors--neutral-8;
       padding: 8px;
     }

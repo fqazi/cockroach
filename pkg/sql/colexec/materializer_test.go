@@ -56,7 +56,7 @@ func TestColumnarizeMaterialize(t *testing.T) {
 	c := NewBufferingColumnarizerForTests(testAllocator, flowCtx, 0, input)
 
 	m := NewMaterializer(
-		nil, /* streamingMemAcc */
+		nil, /* allocator */
 		flowCtx,
 		1, /* processorID */
 		colexecargs.OpWithMetaInfo{Root: c},
@@ -73,9 +73,7 @@ func TestColumnarizeMaterialize(t *testing.T) {
 			t.Fatal("unexpected nil row")
 		}
 		for j := range typs {
-			if cmp, err := row[j].Datum.Compare(ctx, &evalCtx, rows[i][j].Datum); err != nil {
-				t.Fatal(err)
-			} else if cmp != 0 {
+			if row[j].Datum.Compare(&evalCtx, rows[i][j].Datum) != 0 {
 				t.Fatal("unequal rows", row, rows[i])
 			}
 		}
@@ -101,100 +99,67 @@ func BenchmarkMaterializer(b *testing.B) {
 		Mon:     evalCtx.TestingMon,
 	}
 
-	type testCase struct {
-		name string
-		typs []*types.T
-	}
-	testCases := []testCase{
-		{"int", []*types.T{types.Int}},
-		{"float", []*types.T{types.Float}},
-		{"bytes", []*types.T{types.Bytes}},
-		{"int6", []*types.T{types.Int, types.Int, types.Int, types.Int, types.Int, types.Int}},
-		{"string4", []*types.T{types.String, types.String, types.String, types.String}},
-		{"multi80", []*types.T{
-			types.Int, types.Int, types.Int, types.Int, types.Int, types.Int, types.Int, types.Int,
-			types.Int, types.Int, types.Int, types.Int, types.Int, types.Int, types.Int, types.Int,
-			types.Int, types.Int, types.Int, types.Int, types.Int, types.Int, types.Int, types.Int,
-			types.Int, types.Int, types.Int, types.Int, types.Int, types.Int, types.Int, types.Int,
-			types.String, types.String, types.String, types.String, types.String, types.String,
-			types.String, types.String, types.String, types.String, types.String, types.String,
-			types.String, types.String, types.String, types.String, types.String, types.String,
-			types.String, types.String, types.String, types.String, types.String, types.String,
-			types.Float, types.Float, types.Float, types.Float, types.Float, types.Float,
-			types.Float, types.Float, types.Float, types.Float, types.Float, types.Float,
-			types.Float, types.Float, types.Float, types.Float, types.Float, types.Float,
-			types.Float, types.Float, types.Float, types.Float, types.Float, types.Float,
-		}},
-	}
-
 	rng, _ := randutil.NewTestRand()
 	nBatches := 10
-	for _, tc := range testCases {
-		nCols := len(tc.typs)
+	nRows := nBatches * coldata.BatchSize()
+	for _, typ := range []*types.T{types.Int, types.Float, types.Bytes} {
+		typs := []*types.T{typ}
+		nCols := len(typs)
 		for _, hasNulls := range []bool{false, true} {
 			for _, useSelectionVector := range []bool{false, true} {
-				for _, singleRowBatch := range []bool{false, true} {
-					batchSize := coldata.BatchSize()
-					batchSizeStr := ""
-					if singleRowBatch {
-						batchSize = 1
-						batchSizeStr = "/batchSize=1"
+				b.Run(fmt.Sprintf("%s/hasNulls=%t/useSel=%t", typ, hasNulls, useSelectionVector), func(b *testing.B) {
+					nullProb := 0.0
+					if hasNulls {
+						nullProb = 0.1
 					}
-					nRows := nBatches * batchSize
-					b.Run(fmt.Sprintf("%s/hasNulls=%t/useSel=%t%s", tc.name, hasNulls, useSelectionVector, batchSizeStr), func(b *testing.B) {
-						nullProb := 0.0
-						if hasNulls {
-							nullProb = 0.1
+					batch := testAllocator.NewMemBatchWithMaxCapacity(typs)
+					for _, colVec := range batch.ColVecs() {
+						coldatatestutils.RandomVec(coldatatestutils.RandomVecArgs{
+							Rand:             rng,
+							Vec:              colVec,
+							N:                coldata.BatchSize(),
+							NullProbability:  nullProb,
+							BytesFixedLength: 8,
+						})
+					}
+					batch.SetLength(coldata.BatchSize())
+					if useSelectionVector {
+						batch.SetSelection(true)
+						sel := batch.Selection()
+						for i := 0; i < coldata.BatchSize(); i++ {
+							sel[i] = i
 						}
-						batch := testAllocator.NewMemBatchWithMaxCapacity(tc.typs)
-						for _, colVec := range batch.ColVecs() {
-							coldatatestutils.RandomVec(coldatatestutils.RandomVecArgs{
-								Rand:             rng,
-								Vec:              colVec,
-								N:                coldata.BatchSize(),
-								NullProbability:  nullProb,
-								BytesFixedLength: 8,
-							})
-						}
-						batch.SetLength(batchSize)
-						if useSelectionVector {
-							batch.SetSelection(true)
-							sel := batch.Selection()
-							for i := 0; i < batchSize; i++ {
-								sel[i] = i
-							}
-						}
-						input := colexectestutils.NewFiniteBatchSource(testAllocator, batch, tc.typs, nBatches)
+					}
+					input := colexectestutils.NewFiniteBatchSource(testAllocator, batch, typs, nBatches)
 
-						b.SetBytes(int64(nRows * nCols * int(memsize.Int64)))
-						for i := 0; i < b.N; i++ {
-							m := NewMaterializer(
-								nil, /* streamingMemAcc */
-								flowCtx,
-								0, /* processorID */
-								colexecargs.OpWithMetaInfo{Root: input},
-								tc.typs,
-							)
-							m.Start(ctx)
+					b.SetBytes(int64(nRows * nCols * int(memsize.Int64)))
+					for i := 0; i < b.N; i++ {
+						m := NewMaterializer(
+							nil, /* allocator */
+							flowCtx,
+							0, /* processorID */
+							colexecargs.OpWithMetaInfo{Root: input},
+							typs,
+						)
+						m.Start(ctx)
 
-							foundRows := 0
-							for {
-								row, meta := m.Next()
-								if meta != nil {
-									b.Fatalf("unexpected metadata %v", meta)
-								}
-								if row == nil {
-									break
-								}
-								foundRows++
+						foundRows := 0
+						for {
+							row, meta := m.Next()
+							if meta != nil {
+								b.Fatalf("unexpected metadata %v", meta)
 							}
-							if foundRows != nRows {
-								b.Fatalf("expected %d rows, found %d", nRows, foundRows)
+							if row == nil {
+								break
 							}
-							input.Reset(nBatches)
+							foundRows++
 						}
-					})
-				}
+						if foundRows != nRows {
+							b.Fatalf("expected %d rows, found %d", nRows, foundRows)
+						}
+						input.Reset(nBatches)
+					}
+				})
 			}
 		}
 	}
@@ -219,7 +184,7 @@ func TestMaterializerNextErrorAfterConsumerDone(t *testing.T) {
 	}
 
 	m := NewMaterializer(
-		nil, /* streamingMemAcc */
+		nil, /* allocator */
 		flowCtx,
 		0, /* processorID */
 		colexecargs.OpWithMetaInfo{
@@ -264,7 +229,7 @@ func BenchmarkColumnarizeMaterialize(b *testing.B) {
 	b.SetBytes(int64(nRows * nCols * int(memsize.Int64)))
 	for i := 0; i < b.N; i++ {
 		m := NewMaterializer(
-			nil, /* streamingMemAcc */
+			nil, /* allocator */
 			flowCtx,
 			1, /* processorID */
 			colexecargs.OpWithMetaInfo{Root: c},

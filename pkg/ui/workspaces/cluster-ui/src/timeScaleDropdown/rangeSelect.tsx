@@ -3,17 +3,18 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Button, Dropdown } from "antd";
-import classNames from "classnames/bind";
-import moment, { Moment } from "moment-timezone";
 import React, { useState, useRef } from "react";
-
+import { Button, Dropdown } from "antd";
+import "antd/lib/button/style";
+import "antd/lib/dropdown/style";
+import moment, { Moment } from "moment-timezone";
 import { DateRangeMenu } from "src/dateRangeMenu";
 import { CaretDown } from "src/icon/caretDown";
-import { Timezone } from "src/timestamp";
+import classNames from "classnames/bind";
 
 import styles from "./rangeSelector.module.scss";
 import { TimeWindow } from "./timeScaleTypes";
+import { Timezone } from "src/timestamp";
 
 const cx = classNames.bind(styles);
 
@@ -195,17 +196,13 @@ const RangeSelect = ({
     <div ref={rangeContainer} className={cx("Range")}>
       <div className={cx("trigger-wrapper")}>
         <Dropdown
-          open={isVisible}
-          onOpenChange={onVisibleChange}
+          visible={isVisible}
+          onVisibleChange={onVisibleChange}
           placement="bottomLeft"
           trigger={["click"]}
           overlay={menu}
-          destroyPopupOnHide
         >
-          <Button
-            className={cx("trigger-button")}
-            data-testid="dropdown-button"
-          >
+          <Button className={cx("trigger-button")}>
             <div className={cx("trigger", "Select")}>
               <div>
                 <TimeLabel>{selected.timeLabel}</TimeLabel>

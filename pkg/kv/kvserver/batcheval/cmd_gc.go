@@ -7,7 +7,7 @@ package batcheval
 
 import (
 	"context"
-	"slices"
+	"sort"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -115,8 +115,8 @@ func mergeAdjacentSpans(spans []roachpb.Span) []roachpb.Span {
 	if len(spans) == 0 {
 		return nil
 	}
-	slices.SortFunc(spans, func(a, b roachpb.Span) int {
-		return a.Key.Compare(b.Key)
+	sort.Slice(spans, func(i, j int) bool {
+		return spans[i].Key.Compare(spans[j].Key) < 0
 	})
 	j := 0
 	for i := 1; i < len(spans); i++ {
@@ -265,7 +265,9 @@ func GC(
 	// Check if optional GC hint on the range is expired (e.g. delete operation is
 	// older than GC threshold) and remove it. Otherwise this range could be
 	// unnecessarily GC'd with high priority again.
-	{
+	// We should only do that when we are doing actual cleanup as we want to have
+	// a hint when request is being handled.
+	if len(args.Keys) != 0 || len(args.RangeKeys) != 0 || args.ClearRange != nil {
 		sl := MakeStateLoader(cArgs.EvalCtx)
 		hint, err := sl.LoadGCHint(ctx, readWriter)
 		if err != nil {

@@ -3,11 +3,16 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import moment from "moment-timezone";
-import { call } from "redux-saga/effects";
 import { expectSaga } from "redux-saga-test-plan";
 import { throwError } from "redux-saga-test-plan/providers";
-
+import { call } from "redux-saga/effects";
+import {
+  createDiagnosticsReportSaga,
+  requestStatementsDiagnosticsSaga,
+  cancelDiagnosticsReportSaga,
+  StatementDiagnosticsState,
+} from "src/store/statementDiagnostics";
+import { actions, reducer } from "src/store/statementDiagnostics";
 import {
   createStatementDiagnosticsReport,
   cancelStatementDiagnosticsReport,
@@ -18,14 +23,7 @@ import {
   CancelStmtDiagnosticRequest,
   CancelStmtDiagnosticResponse,
 } from "src/api/statementDiagnosticsApi";
-import {
-  createDiagnosticsReportSaga,
-  requestStatementsDiagnosticsSaga,
-  cancelDiagnosticsReportSaga,
-  StatementDiagnosticsState,
-  actions,
-  reducer,
-} from "src/store/statementDiagnostics";
+import moment from "moment-timezone";
 
 describe("statementsDiagnostics sagas", () => {
   describe("createDiagnosticsReportSaga", () => {
@@ -39,7 +37,6 @@ describe("statementsDiagnostics sagas", () => {
       minExecutionLatencySeconds: minExecLatency,
       expiresAfterSeconds: expiresAfter,
       planGist: planGist,
-      redacted: false,
     };
 
     const insertResponse: InsertStmtDiagnosticResponse = {

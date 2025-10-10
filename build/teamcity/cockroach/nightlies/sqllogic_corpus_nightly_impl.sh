@@ -11,8 +11,8 @@ set -xeuo pipefail
 dir="$(dirname $(dirname $(dirname $(dirname "${0}"))))"
 source "$dir/teamcity-support.sh"
 
-bazel build //pkg/cmd/bazci
-BAZEL_BIN=$(bazel info bazel-bin)
+bazel build //pkg/cmd/bazci --config=ci
+BAZEL_BIN=$(bazel info bazel-bin --config=ci)
 google_credentials="$GOOGLE_EPHEMERAL_CREDENTIALS"
 
 log_into_gcloud
@@ -81,7 +81,7 @@ if [ $exit_status = 0 ]; then
 fi
 
 # Generate a corpus for all mixed version variants
-for config in local-mixed-25.2; do
+for config in local-mixed-23.2; do
   $BAZEL_BIN/pkg/cmd/bazci/bazci_/bazci test -- --config=ci \
       //pkg/sql/logictest/tests/$config/... \
       --test_arg=--declarative-corpus=$ARTIFACTS_DIR/corpus-mixed \

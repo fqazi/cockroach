@@ -38,10 +38,6 @@ func (ewo ErrorWithOwnership) Is(target error) bool {
 	return errors.Is(ewo.Err, target)
 }
 
-func (ewo ErrorWithOwnership) Unwrap() error {
-	return ewo.Err
-}
-
 func (ewo ErrorWithOwnership) As(reference interface{}) bool {
 	return errors.As(ewo.Err, reference)
 }

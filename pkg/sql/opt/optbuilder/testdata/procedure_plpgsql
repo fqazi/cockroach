@@ -105,7 +105,6 @@ call
                 │                                                      │    │    ├── variable: c:18
                 │                                                      │    │    └── const: 0
                 │                                                      │    └── subquery
-                │                                                      │         ├── tail-call
                 │                                                      │         └── project
                 │                                                      │              ├── columns: "_stmt_exec_4":41
                 │                                                      │              ├── values
@@ -131,8 +130,7 @@ call
                 │                                                      │                             │         ├── select
                 │                                                      │                             │         │    ├── columns: k:33!null i:34 s:35 crdb_internal_mvcc_timestamp:36 tableoid:37
                 │                                                      │                             │         │    ├── scan t
-                │                                                      │                             │         │    │    ├── columns: k:33!null i:34 s:35 crdb_internal_mvcc_timestamp:36 tableoid:37
-                │                                                      │                             │         │    │    └── flags: avoid-full-scan
+                │                                                      │                             │         │    │    └── columns: k:33!null i:34 s:35 crdb_internal_mvcc_timestamp:36 tableoid:37
                 │                                                      │                             │         │    └── filters
                 │                                                      │                             │         │         └── eq
                 │                                                      │                             │         │              ├── variable: k:33
@@ -162,7 +160,6 @@ call
                 │                                                      │                                                           └── cast: VOID [as="_implicit_return":23]
                 │                                                      │                                                                └── null
                 │                                                      └── subquery
-                │                                                           ├── tail-call
                 │                                                           └── project
                 │                                                                ├── columns: "_stmt_exec_5":55
                 │                                                                ├── values
@@ -694,7 +691,6 @@ call
                 │              │              │         └── const: 2 [as=y:9]
                 │              │              └── projections
                 │              │                   └── udf: stmt_if_1 [as=stmt_if_1:10]
-                │              │                        ├── tail-call
                 │              │                        ├── args
                 │              │                        │    ├── variable: x:5
                 │              │                        │    └── variable: y:9
@@ -716,7 +712,6 @@ call
                 │                        │    └── tuple
                 │                        └── projections
                 │                             └── udf: stmt_if_1 [as=stmt_if_1:11]
-                │                                  ├── tail-call
                 │                                  ├── args
                 │                                  │    ├── variable: x:5
                 │                                  │    └── variable: y:4

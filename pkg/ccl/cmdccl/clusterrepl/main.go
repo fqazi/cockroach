@@ -9,13 +9,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl"
+	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/streamclient"
 	"github.com/cockroachdb/cockroach/pkg/cli/exit"
-	"github.com/cockroachdb/cockroach/pkg/crosscluster"
-	"github.com/cockroachdb/cockroach/pkg/crosscluster/streamclient"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -25,13 +26,14 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/span"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 )
 
 var (
 	uri    = flag.String("uri", "", "sql uri")
 	tenant = flag.String("tenant", "", "tenant name")
 
+	parallelScan       = flag.Int("scans", 16, "parallel scan count")
 	batchSize          = flag.Int("batch-size", 1<<20, "batch size")
 	checkpointInterval = flag.Duration("checkpoint-iterval", 10*time.Second, "checkpoint interval")
 	statsInterval      = flag.Duration("stats-interval", 5*time.Second, "period over which to measure throughput")
@@ -71,29 +73,29 @@ func main() {
 		fatalf("tenant name required")
 	}
 
-	uri, err := streamclient.ParseClusterUri(*uri)
+	streamAddr, err := url.Parse(*uri)
 	if err != nil {
 		fatalf("parse: %s", err)
 	}
 
 	ctx := cancelOnShutdown(context.Background())
-	if err := streamPartition(ctx, uri); err != nil {
+	if err := streamPartition(ctx, streamAddr); err != nil {
 		if errors.Is(err, context.Canceled) {
 			exit.WithCode(exit.Interrupted())
 		} else {
-			fatalf("%s", err)
+			fatalf(err.Error())
 		}
 	}
 }
 
-func streamPartition(ctx context.Context, uri streamclient.ClusterUri) error {
+func streamPartition(ctx context.Context, streamAddr *url.URL) error {
 	fmt.Println("creating producer stream")
-	client, err := streamclient.NewPartitionedStreamClient(ctx, uri)
+	client, err := streamclient.NewPartitionedStreamClient(ctx, streamAddr)
 	if err != nil {
 		return err
 	}
 
-	replicationProducerSpec, err := client.CreateForTenant(ctx, roachpb.TenantName(*tenant), streampb.ReplicationProducerRequest{})
+	replicationProducerSpec, err := client.Create(ctx, roachpb.TenantName(*tenant), streampb.ReplicationProducerRequest{})
 	if err != nil {
 		return err
 	}
@@ -108,7 +110,7 @@ func streamPartition(ctx context.Context, uri streamclient.ClusterUri) error {
 	}()
 
 	// We ignore most of this plan. But, it gives us the tenant ID.
-	plan, err := client.PlanPhysicalReplication(ctx, replicationProducerSpec.StreamID)
+	plan, err := client.Plan(ctx, replicationProducerSpec.StreamID)
 	if err != nil {
 		return err
 	}
@@ -118,6 +120,7 @@ func streamPartition(ctx context.Context, uri streamclient.ClusterUri) error {
 	var sps streampb.StreamPartitionSpec
 	sps.Config.MinCheckpointFrequency = *checkpointInterval
 	sps.Config.BatchByteSize = int64(*batchSize)
+	sps.Config.InitialScanParallelism = int32(*parallelScan)
 	sps.Spans = append(sps.Spans, tenantSpan)
 	sps.InitialScanTimestamp = replicationProducerSpec.ReplicationStartTime
 	spsBytes, err := protoutil.Marshal(&sps)
@@ -131,10 +134,10 @@ func streamPartition(ctx context.Context, uri streamclient.ClusterUri) error {
 
 	fmt.Printf("streaming %s (%s) as of %s\n", *tenant, tenantSpan, sps.InitialScanTimestamp)
 	if *noParse {
-		return rawStream(ctx, uri, replicationProducerSpec.StreamID, spsBytes)
+		return rawStream(ctx, streamAddr, replicationProducerSpec.StreamID, spsBytes)
 	}
 
-	sub, err := client.Subscribe(ctx, replicationProducerSpec.StreamID, 1, 1,
+	sub, err := client.Subscribe(ctx, replicationProducerSpec.StreamID, 1,
 		spsBytes,
 		sps.InitialScanTimestamp,
 		nil)
@@ -150,11 +153,11 @@ func streamPartition(ctx context.Context, uri streamclient.ClusterUri) error {
 
 func rawStream(
 	ctx context.Context,
-	uri streamclient.ClusterUri,
+	uri *url.URL,
 	streamID streampb.StreamID,
 	spec streamclient.SubscriptionToken,
 ) error {
-	config, err := pgx.ParseConfig(uri.Serialize())
+	config, err := pgx.ParseConfig(uri.String())
 	if err != nil {
 		return err
 	}
@@ -239,18 +242,19 @@ func subscriptionConsumer(
 					return sub.Err()
 				}
 				switch event.Type() {
-				case crosscluster.KVEvent:
+				case streamingccl.KVEvent:
 					sz = 0
 					for _, kv := range event.GetKVs() {
 						sz += kv.Size()
 					}
-				case crosscluster.SSTableEvent:
+				case streamingccl.SSTableEvent:
 					ssTab := event.GetSSTable()
 					sz = ssTab.Size()
-				case crosscluster.DeleteRangeEvent:
-				case crosscluster.CheckpointEvent:
+				case streamingccl.DeleteRangeEvent:
+				case streamingccl.CheckpointEvent:
 					fmt.Printf("%s checkpoint\n", timeutil.Now().Format(time.RFC3339))
-					for _, r := range event.GetCheckpoint().ResolvedSpans {
+					resolved := event.GetResolvedSpans()
+					for _, r := range resolved {
 						_, err := frontier.Forward(r.Span, r.Timestamp)
 						if err != nil {
 							return err

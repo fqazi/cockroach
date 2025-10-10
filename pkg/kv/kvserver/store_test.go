@@ -33,15 +33,14 @@ import (
 	aload "github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/load"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/node_rac2"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowdispatch"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/storeliveness"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/txnwait"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities/tenantcapabilitiesauthorizer"
 	"github.com/cockroachdb/cockroach/pkg/raft"
@@ -70,11 +69,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"github.com/kr/pretty"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/exp/slices"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -98,7 +94,7 @@ func (s *Store) TestSender() kv.Sender {
 		// that.
 		key, err := keys.Addr(ba.Requests[0].GetInner().Header().Key)
 		if err != nil {
-			log.KvExec.Fatalf(context.Background(), "%v", err)
+			log.Fatalf(context.Background(), "%v", err)
 		}
 
 		ba.RangeID = roachpb.RangeID(1)
@@ -128,7 +124,7 @@ type testStoreOpts struct {
 
 func (opts *testStoreOpts) splits() (_kvs []roachpb.KeyValue, _splits []roachpb.RKey) {
 	kvs, splits := bootstrap.MakeMetadataSchema(
-		keys.SystemSQLCodec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef(), bootstrap.NoOffset,
+		keys.SystemSQLCodec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef(),
 	).GetInitialValues()
 	if !opts.createSystemRanges {
 		return kvs, nil
@@ -189,9 +185,7 @@ func createTestStoreWithoutStart(
 	}
 	rpcContext := rpc.NewContext(ctx, rpcOpts)
 	stopper.SetTracer(cfg.AmbientCtx.Tracer)
-	grpcServer, err := rpc.NewServer(ctx, rpcContext) // never started
-	require.NoError(t, err)
-	drpcServer, err := rpc.NewDRPCServer(ctx, rpcContext) // never started
+	server, err := rpc.NewServer(ctx, rpcContext) // never started
 	require.NoError(t, err)
 
 	// Some tests inject their own Gossip and StorePool, via
@@ -237,38 +231,18 @@ func createTestStoreWithoutStart(
 	cfg.Transport = NewRaftTransport(
 		cfg.AmbientCtx,
 		cfg.Settings,
-		stopper,
-		cfg.Clock,
+		cfg.Tracer(),
 		cfg.NodeDialer,
-		grpcServer,
-		drpcServer,
-		(*node_rac2.AdmittedPiggybacker)(nil),
-		nil, /* PiggybackedAdmittedResponseScheduler */
+		server,
+		stopper,
+		kvflowdispatch.NewDummyDispatch(),
+		NoopStoresFlowControlIntegration{},
+		NoopRaftTransportDisconnectListener{},
 		nil, /* knobs */
 	)
 
-	{
-		livenessInterval, heartbeatInterval := cfg.StoreLivenessDurations()
-		supportGracePeriod := rpcContext.StoreLivenessWithdrawalGracePeriod()
-		options := storeliveness.NewOptions(livenessInterval, heartbeatInterval, supportGracePeriod)
-		transport, err := storeliveness.NewTransport(
-			cfg.AmbientCtx, stopper, cfg.Clock, cfg.NodeDialer, grpcServer, drpcServer, nil, /* knobs */
-		)
-		require.NoError(t, err)
-		knobs := cfg.TestingKnobs.StoreLivenessKnobs
-		cfg.StoreLiveness = storeliveness.NewNodeContainer(stopper, options, transport, knobs)
-	}
-
 	stores := NewStores(cfg.AmbientCtx, cfg.Clock)
 	nodeDesc := &roachpb.NodeDescriptor{NodeID: 1}
-	if cfg.NodeCapacityProvider == nil {
-		// Faster refresh intervals for testing.
-		cfg.NodeCapacityProvider = load.NewNodeCapacityProvider(stopper, stores, load.NodeCapacityProviderConfig{
-			CPUUsageRefreshInterval:    10 * time.Millisecond,
-			CPUCapacityRefreshInterval: 10 * time.Millisecond,
-			CPUUsageMovingAverageAge:   20,
-		})
-	}
 
 	rangeProv := &dummyFirstRangeProvider{}
 	var storeSender struct{ kv.Sender }
@@ -337,6 +311,14 @@ func createTestStoreWithConfig(
 	ctx context.Context, t testing.TB, stopper *stop.Stopper, opts testStoreOpts, cfg *StoreConfig,
 ) *Store {
 	store := createTestStoreWithoutStart(ctx, t, stopper, opts, cfg)
+	// Put an empty system config into gossip.
+	//
+	// TODO(ajwerner): Remove this in 22.2. It's possible it can be removed
+	// already.
+	if err := store.Gossip().AddInfoProto(gossip.KeyDeprecatedSystemConfig,
+		&config.SystemConfigEntries{}, 0); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Start(ctx, stopper); err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +407,11 @@ func TestIterateIDPrefixKeys(t *testing.T) {
 			wanted = append(wanted, seenT{rangeID: rangeID, tombstone: tombstone})
 
 			t.Logf("writing tombstone at rangeID=%d", rangeID)
-			require.NoError(t, stateloader.Make(rangeID).SetRangeTombstone(ctx, eng, tombstone))
+			if err := storage.MVCCPutProto(
+				ctx, eng, keys.RangeTombstoneKey(rangeID), hlc.Timestamp{}, &tombstone, storage.MVCCWriteOptions{},
+			); err != nil {
+				t.Fatal(err)
+			}
 
 			if len(wanted) >= rangeCount {
 				break
@@ -555,7 +541,7 @@ func TestInitializeEngineErrors(t *testing.T) {
 	require.NoError(t, eng.PutUnversioned(roachpb.Key("foo"), []byte("bar")))
 
 	cfg := TestStoreConfig(nil)
-	cfg.Transport = NewDummyRaftTransport(cfg.AmbientCtx, cfg.Settings, cfg.Clock)
+	cfg.Transport = NewDummyRaftTransport(cfg.Settings, cfg.AmbientCtx.Tracer)
 	store := NewStore(ctx, cfg, eng, &roachpb.NodeDescriptor{NodeID: 1})
 
 	// Can't init as haven't bootstrapped.
@@ -630,7 +616,11 @@ func TestStoreAddRemoveRanges(t *testing.T) {
 		t.Error(err)
 	}
 	// Remove range 1.
-	assert.NoError(t, store.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, redact.SafeString(t.Name())))
+	if err := store.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, RemoveOptions{
+		DestroyData: true,
+	}); err != nil {
+		t.Error(err)
+	}
 	// Create a new range (id=2).
 	repl2 := createReplica(store, 2, roachpb.RKey("a"), roachpb.RKey("b"))
 	if err := store.AddReplica(repl2); err != nil {
@@ -642,7 +632,11 @@ func TestStoreAddRemoveRanges(t *testing.T) {
 		t.Fatal("expected error re-adding same range")
 	}
 	// Try to remove range 1 again.
-	require.NoError(t, store.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, redact.SafeString(t.Name())))
+	if err := store.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, RemoveOptions{
+		DestroyData: true,
+	}); err != nil {
+		t.Fatalf("didn't expect error re-removing same range: %v", err)
+	}
 	// Try to add a range with previously-used (but now removed) ID.
 	repl2Dup := createReplica(store, 1, roachpb.RKey("a"), roachpb.RKey("b"))
 	if err := store.AddReplica(repl2Dup); err == nil {
@@ -698,12 +692,10 @@ func TestReplicasByKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep.raftMu.Lock()
 	rep.mu.Lock()
-	desc := *rep.shMu.state.Desc // shallow copy to replace desc wholesale
+	desc := *rep.mu.state.Desc // shallow copy to replace desc wholesale
 	desc.EndKey = roachpb.RKey("e")
-	rep.shMu.state.Desc = &desc
-	rep.raftMu.Unlock()
+	rep.mu.state.Desc = &desc
 	rep.mu.Unlock()
 
 	// Ensure that this shrinkage is recognized by future additions to replicasByKey.
@@ -744,29 +736,26 @@ func TestStoreRemoveReplicaDestroy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rmWithoutData := func() error {
-		repl1.raftMu.Lock()
-		defer repl1.raftMu.Unlock()
-		_, err := store.removeInitializedReplicaRaftMuLocked(
-			ctx, repl1, repl1.Desc().NextReplicaID, redact.SafeString(t.Name()),
-			RemoveOptions{DestroyData: false},
-		)
-		return err
-	}
-	// Can't remove Replica with DestroyData false because this requires the
-	// destroyStatus to already have been set by the caller (but we didn't).
-	require.ErrorContains(t, rmWithoutData(), `replica not marked as destroyed`)
+	// Can't remove Replica with DestroyData false because this requires the destroyStatus
+	// to already have been set by the caller (but we didn't).
+	require.ErrorContains(t, store.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, RemoveOptions{
+		DestroyData: false,
+	}), `replica not marked as destroyed`)
 
 	// Remove the Replica twice, as this should be idempotent.
 	// NB: we rely on this idempotency today (as @tbg found out when he accidentally
 	// removed it).
 	for i := 0; i < 2; i++ {
-		require.NoError(t, store.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, redact.SafeString(t.Name())), "%d", i)
+		require.NoError(t, store.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, RemoveOptions{
+			DestroyData: true,
+		}), "%d", i)
 	}
 
-	// However, if we have DestroyData=false, caller is expected to be the unique
-	// first "destroyer" of the Replica.
-	require.ErrorContains(t, rmWithoutData(), `does not exist`)
+	// However, if we have DestroyData=false, caller is expected to be the unique first "destroyer"
+	// of the Replica.
+	require.ErrorContains(t, store.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, RemoveOptions{
+		DestroyData: false,
+	}), `does not exist`)
 
 	// Verify that removal of a replica marks it as destroyed so that future raft
 	// commands on the Replica will silently be dropped.
@@ -776,7 +765,7 @@ func TestStoreRemoveReplicaDestroy(t *testing.T) {
 	require.Equal(t, errRemoved, err)
 
 	repl1.mu.RLock()
-	expErr := repl1.shMu.destroyStatus.err
+	expErr := repl1.mu.destroyStatus.err
 	repl1.mu.RUnlock()
 
 	if expErr == nil {
@@ -807,7 +796,11 @@ func TestStoreReplicaVisitor(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	assert.NoError(t, store.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, redact.SafeString(t.Name())))
+	if err := store.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, RemoveOptions{
+		DestroyData: true,
+	}); err != nil {
+		t.Error(err)
+	}
 
 	// Add 10 new ranges.
 	const newCount = 10
@@ -884,19 +877,26 @@ func TestMarkReplicaInitialized(t *testing.T) {
 
 	// Clobber the existing range so we can test overlaps that aren't KeyMin or KeyMax.
 	repl1, err := store.GetReplica(1)
-	assert.NoError(t, err)
-	assert.NoError(t, store.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, redact.SafeString(t.Name())))
+	if err != nil {
+		t.Error(err)
+	}
+	if err := store.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, RemoveOptions{
+		DestroyData: true,
+	}); err != nil {
+		t.Error(err)
+	}
 
 	repl := createReplica(store, roachpb.RangeID(2), roachpb.RKey("a"), roachpb.RKey("c"))
 	if err := store.AddReplica(repl); err != nil {
 		t.Fatal(err)
 	}
 
-	newID := roachpb.FullReplicaID{RangeID: 3, ReplicaID: 1}
-	require.NoError(t, stateloader.Make(newID.RangeID).SetRaftReplicaID(
-		ctx, store.TODOEngine(), newID.ReplicaID))
+	newRangeID := roachpb.RangeID(3)
+	const replicaID = 1
+	require.NoError(t,
+		logstore.NewStateLoader(newRangeID).SetRaftReplicaID(ctx, store.TODOEngine(), replicaID))
 
-	r, err := newUninitializedReplica(store, newID)
+	r, err := newUninitializedReplica(store, newRangeID, replicaID)
 	require.NoError(t, err)
 
 	store.mu.Lock()
@@ -922,11 +922,7 @@ func TestMarkReplicaInitialized(t *testing.T) {
 		ReplicaID: 1,
 	}}
 	desc.NextReplicaID = 2
-	func() {
-		r.raftMu.Lock()
-		defer r.raftMu.Unlock()
-		r.setDescRaftMuLocked(ctx, desc)
-	}()
+	r.setDescRaftMuLocked(ctx, desc)
 	expectedResult = "not in uninitReplicas"
 	func() {
 		r.mu.Lock()
@@ -936,7 +932,7 @@ func TestMarkReplicaInitialized(t *testing.T) {
 		}
 	}()
 
-	store.mu.uninitReplicas[newID.RangeID] = r
+	store.mu.uninitReplicas[newRangeID] = r
 	require.NoError(t, store.addToReplicasByRangeIDLocked(r))
 
 	expectedResult = "overlaps with"
@@ -1233,7 +1229,7 @@ func TestStoreSendWithClockOffset(t *testing.T) {
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
 	cfg := TestStoreConfig(hlc.NewClock(timeutil.NewManualTime(timeutil.Unix(0, 123)),
-		time.Millisecond /* maxOffset */, time.Millisecond /* toleratedOffset */, hlc.PanicLogger))
+		time.Millisecond /* maxOffset */, time.Millisecond /* toleratedOffset */))
 	store := createTestStoreWithConfig(ctx, t, stopper, testStoreOpts{createSystemRanges: true}, &cfg)
 	args := getArgs([]byte("a"))
 	// Set args timestamp to exceed max offset.
@@ -1383,7 +1379,7 @@ func TestStoreResolveWriteIntent(t *testing.T) {
 
 	manual := timeutil.NewManualTime(timeutil.Unix(0, 123))
 	cfg := TestStoreConfig(hlc.NewClock(
-		manual, 1000*time.Nanosecond /* maxOffset */, 1000*time.Nanosecond /* toleratedOffset */, hlc.PanicLogger))
+		manual, 1000*time.Nanosecond /* maxOffset */, 1000*time.Nanosecond /* toleratedOffset */))
 	cfg.TestingKnobs.EvalKnobs.TestingEvalFilter =
 		func(filterArgs kvserverbase.FilterArgs) *kvpb.Error {
 			pr, ok := filterArgs.Req.(*kvpb.PushTxnRequest)
@@ -2165,7 +2161,7 @@ func TestStoreSkipLockedTSCache(t *testing.T) {
 				req, resp := ba.Requests[i].GetInner(), ru.GetInner()
 				require.NoError(t, kvpb.ResponseKeyIterate(req, resp, func(k roachpb.Key) {
 					respKeys = append(respKeys, string(k))
-				}, false /* includeLockedNonExisting */))
+				}))
 			}
 			sort.Strings(respKeys) // normalize reverse scan
 			require.Equal(t, []string{"a", "c"}, respKeys)
@@ -2173,11 +2169,11 @@ func TestStoreSkipLockedTSCache(t *testing.T) {
 			// Verify the timestamp cache has been set for "a" and "c", but not for "b".
 			t2TS := makeTS(t2.UnixNano(), 0)
 			rTS, _ := store.tsCache.GetMax(ctx, roachpb.Key("a"), nil)
-			require.Equal(t, t2TS, rTS)
+			require.True(t, rTS.EqOrdering(t2TS))
 			rTS, _ = store.tsCache.GetMax(ctx, roachpb.Key("b"), nil)
 			require.True(t, rTS.Less(t2TS))
 			rTS, _ = store.tsCache.GetMax(ctx, roachpb.Key("c"), nil)
-			require.Equal(t, t2TS, rTS)
+			require.True(t, rTS.EqOrdering(t2TS))
 		})
 	}
 }
@@ -2659,7 +2655,7 @@ func TestStore_HottestReplicasByTenant(t *testing.T) {
 	}
 
 	td := []testData{{1, 2}, {1, 3}, {1, 4}, {1, 5},
-		{3, 1}, {3, 2}, {3, 3}, {3, 4}}
+		{2, 1}, {2, 2}, {2, 3}, {2, 4}}
 
 	acc := NewTenantReplicaAccumulator(aload.Queries)
 
@@ -2685,7 +2681,7 @@ func TestStore_HottestReplicasByTenant(t *testing.T) {
 	for i := 0; i < iterationsNum; i++ {
 		go func() {
 			require.NotNil(t, store.HottestReplicasByTenant(roachpb.MustMakeTenantID(1)))
-			require.NotNil(t, store.HottestReplicasByTenant(roachpb.MustMakeTenantID(3)))
+			require.NotNil(t, store.HottestReplicasByTenant(roachpb.MustMakeTenantID(2)))
 			wg.Done()
 		}()
 	}
@@ -2749,8 +2745,14 @@ func TestMaybeRemove(t *testing.T) {
 	store.WaitForInit()
 
 	repl, err := store.GetReplica(1)
-	assert.NoError(t, err)
-	assert.NoError(t, store.RemoveReplica(ctx, repl, repl.Desc().NextReplicaID, redact.SafeString(t.Name())))
+	if err != nil {
+		t.Error(err)
+	}
+	if err := store.RemoveReplica(ctx, repl, repl.Desc().NextReplicaID, RemoveOptions{
+		DestroyData: true,
+	}); err != nil {
+		t.Error(err)
+	}
 	// MaybeRemove is called.
 	removedRng := <-fq.maybeRemovedRngs
 	if removedRng != repl.RangeID {
@@ -2774,9 +2776,8 @@ func TestStoreGCThreshold(t *testing.T) {
 			t.Fatal(err)
 		}
 		repl.mu.Lock()
-		gcThreshold := *repl.shMu.state.GCThreshold
-		pgcThreshold, err := stateloader.Make(repl.RangeID).LoadGCThreshold(
-			context.Background(), store.StateEngine())
+		gcThreshold := *repl.mu.state.GCThreshold
+		pgcThreshold, err := repl.mu.stateLoader.LoadGCThreshold(context.Background(), store.TODOEngine())
 		repl.mu.Unlock()
 		if err != nil {
 			t.Fatal(err)
@@ -2828,13 +2829,12 @@ func TestRaceOnTryGetOrCreateReplicas(t *testing.T) {
 		wg.Add(1)
 		go func(rid roachpb.ReplicaID) {
 			defer wg.Done()
-			if r, _, _ := s.getOrCreateReplica(ctx, roachpb.FullReplicaID{
-				RangeID: 42, ReplicaID: rid,
-			}, &roachpb.ReplicaDescriptor{
+			r, _, _ := s.getOrCreateReplica(ctx, 42, rid, &roachpb.ReplicaDescriptor{
 				NodeID:    2,
 				StoreID:   2,
 				ReplicaID: 2,
-			}); r != nil {
+			})
+			if r != nil {
 				r.raftMu.Unlock()
 			}
 		}(roachpb.ReplicaID(i))
@@ -2862,8 +2862,14 @@ func TestStoreRangePlaceholders(t *testing.T) {
 
 	// Clobber the existing range so we can test non-overlapping placeholders.
 	repl1, err := s.GetReplica(1)
-	assert.NoError(t, err)
-	assert.NoError(t, s.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, redact.SafeString(t.Name())))
+	if err != nil {
+		t.Error(err)
+	}
+	if err := s.RemoveReplica(ctx, repl1, repl1.Desc().NextReplicaID, RemoveOptions{
+		DestroyData: true,
+	}); err != nil {
+		t.Error(err)
+	}
 
 	repID := roachpb.RangeID(2)
 	rep := createReplica(s, repID, roachpb.RKeyMin, roachpb.RKey("c"))
@@ -2995,7 +3001,9 @@ func TestStoreRemovePlaceholderOnRaftIgnored(t *testing.T) {
 	repl1, err := s.GetReplica(1)
 	desc := repl1.Desc()
 	require.NoError(t, err)
-	require.NoError(t, s.RemoveReplica(ctx, repl1, desc.NextReplicaID, redact.SafeString(t.Name())))
+	require.NoError(t, s.RemoveReplica(ctx, repl1, desc.NextReplicaID, RemoveOptions{
+		DestroyData: true,
+	}))
 
 	// Wrap the snapshot in a minimal header. The request will be dropped because
 	// replica 2 is not in the ConfState.
@@ -3364,10 +3372,9 @@ func TestReserveSnapshotFullnessLimit(t *testing.T) {
 	desc.Capacity.Available = 1
 	desc.Capacity.Used = desc.Capacity.Capacity - desc.Capacity.Available
 
-	sd := s.cfg.StorePool.GetStoreDetail(desc.StoreID)
-	sd.Lock()
-	sd.Desc = desc
-	sd.Unlock()
+	s.cfg.StorePool.DetailsMu.Lock()
+	s.cfg.StorePool.GetStoreDetailLocked(desc.StoreID).Desc = desc
+	s.cfg.StorePool.DetailsMu.Unlock()
 
 	if n := s.ReservationCount(); n != 0 {
 		t.Fatalf("expected 0 reservations, but found %d", n)
@@ -3389,10 +3396,9 @@ func TestReserveSnapshotFullnessLimit(t *testing.T) {
 	// available disk space should be rejected.
 	desc.Capacity.Available = desc.Capacity.Capacity / 2
 	desc.Capacity.Used = desc.Capacity.Capacity - desc.Capacity.Available
-	sd = s.cfg.StorePool.GetStoreDetail(desc.StoreID)
-	sd.Lock()
-	sd.Desc = desc
-	sd.Unlock()
+	s.cfg.StorePool.DetailsMu.Lock()
+	s.cfg.StorePool.GetStoreDetailLocked(desc.StoreID).Desc = desc
+	s.cfg.StorePool.DetailsMu.Unlock()
 
 	if n := s.ReservationCount(); n != 0 {
 		t.Fatalf("expected 0 reservations, but found %d", n)
@@ -4073,14 +4079,12 @@ func TestManuallyEnqueueUninitializedReplica(t *testing.T) {
 	tc := testContext{}
 	tc.Start(ctx, t, stopper)
 
-	repl, _, _ := tc.store.getOrCreateReplica(ctx, roachpb.FullReplicaID{
-		RangeID: 42, ReplicaID: 7,
-	}, &roachpb.ReplicaDescriptor{
+	repl, _, _ := tc.store.getOrCreateReplica(ctx, 42, 7, &roachpb.ReplicaDescriptor{
 		NodeID:    tc.store.NodeID(),
 		StoreID:   tc.store.StoreID(),
 		ReplicaID: 7,
 	})
-	_, err := tc.store.Enqueue(
+	_, _, err := tc.store.Enqueue(
 		ctx, "replicaGC", repl, true /* skipShouldQueue */, false, /* async */
 	)
 	require.Error(t, err)
@@ -4099,91 +4103,17 @@ func TestStoreGetOrCreateReplicaWritesRaftReplicaID(t *testing.T) {
 	tc := testContext{}
 	tc.Start(ctx, t, stopper)
 
-	repl, created, err := tc.store.getOrCreateReplica(ctx, roachpb.FullReplicaID{
-		RangeID: 42, ReplicaID: 7,
-	}, &roachpb.ReplicaDescriptor{
-		NodeID:    tc.store.NodeID(),
-		StoreID:   tc.store.StoreID(),
-		ReplicaID: 7,
-	})
+	repl, created, err := tc.store.getOrCreateReplica(
+		ctx, 42, 7, &roachpb.ReplicaDescriptor{
+			NodeID:    tc.store.NodeID(),
+			StoreID:   tc.store.StoreID(),
+			ReplicaID: 7,
+		})
 	require.NoError(t, err)
 	require.True(t, created)
-	replicaID, err := stateloader.Make(repl.RangeID).LoadRaftReplicaID(
-		ctx, tc.store.StateEngine())
+	replicaID, err := repl.mu.stateLoader.LoadRaftReplicaID(ctx, tc.store.TODOEngine())
 	require.NoError(t, err)
-	require.Equal(t, kvserverpb.RaftReplicaID{ReplicaID: 7}, replicaID)
-}
-
-// TestSplitPreApplyInitializesTruncatedState ensures that the Raft truncated
-// state for the RHS is correctly initialized when calling splitPreApply.
-func TestSplitPreApplyInitializesTruncatedState(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	manual := timeutil.NewManualTime(timeutil.Unix(0, 10))
-	clock := hlc.NewClockForTesting(manual)
-
-	db := storage.NewDefaultInMemForTesting()
-	defer db.Close()
-	batch := db.NewBatch()
-	defer batch.Close()
-
-	startKey := roachpb.Key("0000")
-	endKey := roachpb.Key("9999")
-	desc := roachpb.RangeDescriptor{
-		RangeID:  99,
-		StartKey: roachpb.RKey(startKey),
-		EndKey:   roachpb.RKey(endKey),
-	}
-	desc.AddReplica(1, 1, roachpb.VOTER_FULL)
-
-	sl := stateloader.Make(desc.RangeID)
-	// Write the range state that will be consulted and copied during the split.
-	lease := roachpb.Lease{
-		Replica:       desc.InternalReplicas[0],
-		Term:          10,
-		MinExpiration: hlc.Timestamp{WallTime: 100},
-	}
-	err := sl.SetLease(ctx, batch, nil, lease)
-	require.NoError(t, err)
-
-	// Set up the store and LHS replica.
-	cfg := TestStoreConfig(clock)
-	stopper := stop.NewStopper()
-	defer stopper.Stop(ctx)
-	store := createTestStoreWithConfig(ctx, t, stopper, testStoreOpts{}, &cfg)
-	lhsRepl := createReplica(store, desc.RangeID, desc.StartKey, desc.EndKey)
-
-	// Construct the split trigger.
-	splitKey := roachpb.RKey("5555")
-	leftDesc, rightDesc := desc, desc
-	leftDesc.EndKey = splitKey
-	rightDesc.RangeID++
-	rightDesc.StartKey = splitKey
-	rightDesc.InternalReplicas = slices.Clone(leftDesc.InternalReplicas)
-	rightDesc.InternalReplicas[0].ReplicaID++
-
-	// Create an uninitialized replica for the RHS. splitPreApply expects this.
-	_, _, err = store.getOrCreateReplica(ctx, roachpb.FullReplicaID{
-		RangeID:   rightDesc.RangeID,
-		ReplicaID: rightDesc.InternalReplicas[0].ReplicaID,
-	}, &rightDesc.InternalReplicas[0])
-	require.NoError(t, err)
-
-	split := roachpb.SplitTrigger{
-		LeftDesc:  leftDesc,
-		RightDesc: rightDesc,
-	}
-
-	splitPreApply(ctx, lhsRepl, batch, split, nil)
-
-	// Verify that the RHS truncated state is initialized as expected.
-	rsl := stateloader.Make(rightDesc.RangeID)
-	truncState, err := rsl.LoadRaftTruncatedState(ctx, batch)
-	require.NoError(t, err)
-	require.Equal(t, stateloader.RaftInitialLogIndex, int(truncState.Index))
-	require.Equal(t, stateloader.RaftInitialLogTerm, int(truncState.Term))
+	require.Equal(t, &kvserverpb.RaftReplicaID{ReplicaID: 7}, replicaID)
 }
 
 func BenchmarkStoreGetReplica(b *testing.B) {
@@ -4199,54 +4129,5 @@ func BenchmarkStoreGetReplica(b *testing.B) {
 				b.Fatal(err)
 			}
 		}
-	})
-}
-
-// TestNewNodeCapacityProviderCluster tests the basic functionality of the
-// NodeCapacityProvider with a real cluster.
-func TestNewNodeCapacityProviderCluster(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	numNodes := 3
-	numStoresPerNode := 2
-	var storeSpecs []base.StoreSpec
-	for i := 0; i < numStoresPerNode; i++ {
-		storeSpecs = append(storeSpecs, base.StoreSpec{InMemory: true})
-	}
-	serverArgs := base.TestServerArgs{
-		Knobs: base.TestingKnobs{
-			NodeCapacityProviderKnobs: &load.NodeCapacityProviderTestingKnobs{
-				CpuUsageRefreshInterval:    1 * time.Millisecond,
-				CpuCapacityRefreshInterval: 1 * time.Millisecond,
-			},
-		}, StoreSpecs: storeSpecs}
-	tcArgs := base.TestClusterArgs{
-		ParallelStart:   true,
-		ReplicationMode: base.ReplicationManual, // saves time
-		ServerArgsPerNode: map[int]base.TestServerArgs{
-			0: serverArgs,
-			1: serverArgs,
-		},
-	}
-
-	ctx := context.Background()
-	tc := serverutils.StartCluster(t, numNodes, tcArgs)
-	defer tc.Stopper().Stop(ctx)
-	store, err := tc.Server(0).GetStores().(*Stores).GetStore(tc.Server(0).GetFirstStoreID())
-	require.NoError(t, err)
-	testutils.SucceedsSoon(t, func() error {
-		storeDesc, err := store.Descriptor(ctx, false /*useCached*/)
-		require.NoError(t, err)
-		nc := storeDesc.NodeCapacity
-		require.Equal(t, int32(numStoresPerNode), nc.NumStores)
-		if nc.NodeCPURateUsage == 0 || nc.NodeCPURateCapacity == 0 || nc.StoresCPURate == 0 {
-			return errors.Newf(
-				"CPU usage or capacity is 0: node cpu rate usage %v, node cpu rate capacity %v, stores cpu rate %v",
-				nc.NodeCPURateUsage, nc.NodeCPURateCapacity, nc.StoresCPURate)
-		}
-		// TODO(wenyihu6): NodeCPURateCapacity <= NodeCPURateUsage fails on CI and
-		// requires more investigation.
-		return nil
 	})
 }

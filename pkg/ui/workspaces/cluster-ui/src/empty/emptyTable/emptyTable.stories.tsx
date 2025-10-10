@@ -3,16 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { storiesOf } from "@storybook/react";
 import React from "react";
-
-import { Button } from "src/button";
-
-import emptyListResultsImg from "../../assets/emptyState/empty-list-results.svg";
-import notFoundImg from "../../assets/emptyState/not-found-404.svg";
-import SpinIcon from "../../icon/spin";
+import { storiesOf } from "@storybook/react";
 
 import { EmptyTable } from "./emptyTable";
+import emptyListResultsImg from "../../assets/emptyState/empty-list-results.svg";
+import notFoundImg from "../../assets/emptyState/not-found-404.svg";
+import { Button } from "src/button";
+import SpinIcon from "../../icon/spin";
 
 storiesOf("EmptyTablePlaceholder", module)
   .add("default", () => <EmptyTable />)

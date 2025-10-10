@@ -3,13 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import noop from "lodash/noop";
 import React from "react";
 import Select, { Props, OptionsType } from "react-select";
-import { StylesConfig } from "react-select/src/styles";
-
+import { noop } from "lodash";
 import { CheckboxOption } from "../multiSelectCheckbox/multiSelectCheckbox";
 import { filterLabel } from "../queryFilter/filterClasses";
+import { StylesConfig } from "react-select/src/styles";
 
 export type FilterCheckboxOptionItem = { label: string; value: string };
 export type FilterCheckboxOptionsType = OptionsType<FilterCheckboxOptionItem>;
@@ -19,7 +18,7 @@ export type FilterCheckboxOptionProps = {
   // onSelectionChanged callback function is called with all selected options.
   onSelectionChanged?: (options: OptionsType<FilterCheckboxOptionItem>) => void;
   triggerClear?: (fn: () => void) => void;
-} & Props<FilterCheckboxOptionItem, true>;
+} & Props;
 
 export const FilterCheckboxOption = (
   props: FilterCheckboxOptionProps,
@@ -64,7 +63,7 @@ export const FilterCheckboxOption = (
   return (
     <div>
       <div className={filterLabel.margin}>{label}</div>
-      <Select<FilterCheckboxOptionItem, true>
+      <Select
         {...selectProps}
         isMulti
         options={options}

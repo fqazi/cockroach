@@ -3,16 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { all, call, put, takeEvery } from "redux-saga/effects";
-
 import { cockroach } from "src/js/protos";
+import { resetSQLStats } from "src/util/api";
+import { all, call, put, takeEvery } from "redux-saga/effects";
+import { RESET_SQL_STATS, resetSQLStatsFailedAction } from "./sqlStatsActions";
 import {
   invalidateAllStatementDetails,
   invalidateStatements,
 } from "src/redux/apiReducers";
-import { resetSQLStats } from "src/util/api";
-
-import { RESET_SQL_STATS, resetSQLStatsFailedAction } from "./sqlStatsActions";
 
 import ResetSQLStatsRequest = cockroach.server.serverpb.ResetSQLStatsRequest;
 

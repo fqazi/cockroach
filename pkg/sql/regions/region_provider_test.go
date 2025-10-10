@@ -188,7 +188,7 @@ type fakeLeaseManager struct {
 
 func (f fakeLeaseManager) AcquireByName(
 	ctx context.Context,
-	timestamp lease.ReadTimestamp,
+	timestamp hlc.Timestamp,
 	parentID descpb.ID,
 	parentSchemaID descpb.ID,
 	name string,
@@ -197,7 +197,7 @@ func (f fakeLeaseManager) AcquireByName(
 }
 
 func (f fakeLeaseManager) Acquire(
-	ctx context.Context, timestamp lease.ReadTimestamp, id descpb.ID,
+	ctx context.Context, timestamp hlc.Timestamp, id descpb.ID,
 ) (lease.LeasedDescriptor, error) {
 	if err, ok := f.errs[id]; ok {
 		return nil, err
@@ -208,18 +208,6 @@ func (f fakeLeaseManager) Acquire(
 
 func (f fakeLeaseManager) IncGaugeAfterLeaseDuration(gauge lease.AfterLeaseDurationGauge) func() {
 	return func() {}
-}
-
-func (f fakeLeaseManager) GetSafeReplicationTS() hlc.Timestamp {
-	return hlc.Timestamp{}
-}
-
-func (f fakeLeaseManager) GetLeaseGeneration() int64 {
-	return 0
-}
-
-func (f fakeLeaseManager) GetReadTimestamp(timestamp hlc.Timestamp) lease.ReadTimestamp {
-	return lease.TimestampToReadTimestamp(timestamp)
 }
 
 var _ descs.LeaseManager = (*fakeLeaseManager)(nil)
@@ -248,7 +236,6 @@ func (d fakeSystemDatabase) Adding() bool               { return false }
 func (d fakeSystemDatabase) ForEachUDTDependentForHydration(func(t *types.T) error) error {
 	return nil
 }
-func (d fakeSystemDatabase) MaybeRequiresTypeHydration() bool { return false }
 
 type fakeLeasedDescriptor struct {
 	catalog.Descriptor
@@ -292,7 +279,6 @@ func (d fakeRegionEnum) Adding() bool               { return false }
 func (d fakeRegionEnum) ForEachUDTDependentForHydration(func(t *types.T) error) error {
 	return nil
 }
-func (d fakeRegionEnum) MaybeRequiresTypeHydration() bool { return false }
 func (d fakeRegionEnum) AsEnumTypeDescriptor() catalog.EnumTypeDescriptor {
 	if d.isNotEnum {
 		return nil

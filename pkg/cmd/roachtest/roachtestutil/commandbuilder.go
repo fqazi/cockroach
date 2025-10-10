@@ -18,9 +18,6 @@ type Command struct {
 	Binary    string
 	Arguments []string
 	Flags     map[string]*string
-	UseEquals bool
-	// EnvVars e.g. COCKROACH_RANDOM_SEED=%d ./workload ...
-	EnvVars map[string]*string
 }
 
 // NewCommand builds a command. The format parameter can take
@@ -37,13 +34,7 @@ func NewCommand(format string, args ...interface{}) *Command {
 		Binary:    parts[0],
 		Arguments: parts[1:],
 		Flags:     make(map[string]*string),
-		EnvVars:   make(map[string]*string),
 	}
-}
-
-func (c *Command) WithEqualsSyntax() *Command {
-	c.UseEquals = true
-	return c
 }
 
 func (c *Command) Arg(format string, args ...interface{}) *Command {
@@ -97,26 +88,15 @@ func (c *Command) ITEFlag(condition bool, name string, trueVal, falseVal interfa
 	return c.Flag(name, falseVal)
 }
 
-func (c *Command) EnvVar(name string, val interface{}) *Command {
-	c.EnvVars[name] = stringP(fmt.Sprint(val))
-	return c
-}
-
 // String returns a canonical string representation of the command
 // which can be passed to `cluster.Run`.
 func (c *Command) String() string {
 	flags := make([]string, 0, len(c.Flags))
 	names := make([]string, 0, len(c.Flags))
-	envVars := make([]string, 0, len(c.EnvVars))
 	for name := range c.Flags {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-
-	flagJoinSymbol := " "
-	if c.UseEquals {
-		flagJoinSymbol = "="
-	}
 
 	for _, name := range names {
 		val := c.Flags[name]
@@ -130,16 +110,13 @@ func (c *Command) String() string {
 		if val != nil {
 			parts = append(parts, *val)
 		}
-		flags = append(flags, strings.Join(parts, flagJoinSymbol))
+		flags = append(flags, strings.Join(parts, " "))
 	}
 
-	for name, val := range c.EnvVars {
-		envVars = append(envVars, fmt.Sprintf("%s=%s", name, *val))
-	}
-
-	cmd := append(envVars,
-		append([]string{c.Binary},
-			append(c.Arguments, flags...)...)...)
+	cmd := append(
+		[]string{c.Binary},
+		append(c.Arguments, flags...)...,
+	)
 
 	return strings.Join(cmd, " ")
 }

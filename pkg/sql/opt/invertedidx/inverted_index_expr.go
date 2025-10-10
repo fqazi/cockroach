@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/norm"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/props"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
@@ -90,15 +89,11 @@ func TryFilterInvertedIndex(
 ) {
 	// Attempt to constrain the prefix columns, if there are any. If they cannot
 	// be constrained to single values, the index cannot be used.
-	columns, notNullCols := idxconstraint.IndexPrefixCols(tabID, index)
-	if len(columns) > 0 {
-		constraint, filters, ok = idxconstraint.ConstrainIndexPrefixCols(
-			ctx, evalCtx, factory, columns, notNullCols, filters,
-			optionalFilters, tabID, index, checkCancellation,
-		)
-		if !ok {
-			return nil, nil, nil, nil, false
-		}
+	constraint, filters, ok = constrainPrefixColumns(
+		evalCtx, factory, filters, optionalFilters, tabID, index, checkCancellation,
+	)
+	if !ok {
+		return nil, nil, nil, nil, false
 	}
 
 	config := index.GeoConfig()
@@ -194,7 +189,6 @@ func TryFilterInvertedIndex(
 // optimization allows us to avoid scanning over some trigrams of the constant
 // string. See similarityTrigramsToScan for more details.
 func TryFilterInvertedIndexBySimilarity(
-	ctx context.Context,
 	evalCtx *eval.Context,
 	f *norm.Factory,
 	filters memo.FiltersExpr,
@@ -205,8 +199,10 @@ func TryFilterInvertedIndexBySimilarity(
 	checkCancellation func(),
 ) (_ *constraint.Constraint, remainingFilters memo.FiltersExpr, ok bool) {
 	md := f.Metadata()
+	tabMeta := md.TableMeta(tabID)
 	columnCount := index.ExplicitColumnCount()
-	prefixColumnCount := index.PrefixColumnCount()
+	prefixColumnCount := index.NonInvertedPrefixColumnCount()
+	ps := tabMeta.IndexPartitionLocality(index.Ordinal())
 
 	// The indexed column must be of a string-like type.
 	srcColOrd := index.InvertedColumn().InvertedSourceColumnOrdinal()
@@ -228,13 +224,6 @@ func TryFilterInvertedIndexBySimilarity(
 	// First, we attempt to build a constraint from a similarity filter on the
 	// inverted column. We search for expressions of the form `s % 'foo'` or
 	// `'foo' % s`, where s is the indexed column.
-	//
-	// TODO(mgartner): Currently we only look for the first similarity filter.
-	// We could improve query plans in some cases by looking for multiple
-	// similarity filters and picking the one that requires the fewest trigrams
-	// to be scanned, or by building a constrained scan for each similarity
-	// filter and letting the optimizer determine the lowest cost trigrams to
-	// scan.
 	var con *constraint.Constraint
 	for i := range filters {
 		sim, isSim := filters[i].Condition.(*memo.ModExpr)
@@ -263,7 +252,8 @@ func TryFilterInvertedIndexBySimilarity(
 			continue
 		}
 
-		keyCtx := constraint.KeyContext{Ctx: ctx, EvalCtx: evalCtx}
+		var keyCtx constraint.KeyContext
+		keyCtx.EvalCtx = evalCtx
 		keyCtx.Columns.Init(cols[prefixColumnCount:])
 
 		var spans constraint.Spans
@@ -272,8 +262,8 @@ func TryFilterInvertedIndexBySimilarity(
 			// Create a key for the trigram. The trigram is encoded so that it
 			// can be correctly compared to histogram upper bounds, which are
 			// also encoded. The byte slice is pre-sized to hold the trigram
-			// plus three extra bytes for the prefix, escape, and terminator.
-			k := make([]byte, 0, len(trgms[j])+3)
+			// plus two extra bytes for the prefix and terminator.
+			k := make([]byte, 0, len(trgms[j])+2)
 			k = encoding.EncodeStringAscending(k, trgms[j])
 			key := constraint.MakeKey(tree.NewDEncodedKey(tree.DEncodedKey(k)))
 
@@ -298,16 +288,47 @@ func TryFilterInvertedIndexBySimilarity(
 
 	// If the index is a multi-column index, then we need to constrain the
 	// prefix columns.
+	//
+	// Consolidation of a constraint converts contiguous spans into a single
+	// span. By definition, the consolidated span would have different start and
+	// end keys and could not be used for multi-column inverted index scans.
+	// Therefore, we only generate and check the unconsolidated constraint,
+	// allowing the optimizer to plan multi-column inverted index scans in more
+	// cases.
+	//
+	// For example, the consolidated constraint for (x IN (1, 2, 3)) is:
+	//
+	//   /x: [/1 - /3]
+	//   Prefix: 0
+	//
+	// The unconsolidated constraint for the same expression is:
+	//
+	//   /x: [/1 - /1] [/2 - /2] [/3 - /3]
+	//   Prefix: 1
+	//
 	var prefixConstraint *constraint.Constraint
-	prefixConstraint, remainingFilters, ok = idxconstraint.ConstrainIndexPrefixCols(
-		ctx, evalCtx, f, cols, notNullCols, filters,
-		optionalFilters, tabID, index, checkCancellation,
+	var ic idxconstraint.Instance
+	ic.Init(
+		filters, optionalFilters,
+		cols, notNullCols, tabMeta.ComputedCols,
+		tabMeta.ColsInComputedColsExpressions,
+		false, /* consolidate */
+		evalCtx, f, ps, checkCancellation,
 	)
-	if !ok {
+	prefixConstraint = ic.UnconsolidatedConstraint()
+	if prefixConstraint.Prefix(evalCtx) != prefixColumnCount {
+		// The prefix columns must be constrained to single values.
 		return nil, nil, false
 	}
-	prefixConstraint.Combine(ctx, evalCtx, con, checkCancellation)
-	return prefixConstraint, remainingFilters, true
+
+	// The constraint is a pointer to a field of ic. Make a copy of the
+	// constraint so that we no longer reference ic and it can be GC'd.
+	prefixConstraintCopy := *prefixConstraint
+
+	// Combine the prefix constraint and the inverted column constraint.
+	prefixConstraintCopy.Combine(evalCtx, con, checkCancellation)
+	remainingFilters = ic.RemainingFilters()
+	return &prefixConstraintCopy, remainingFilters, true
 }
 
 func extractConstStringDatum(expr opt.ScalarExpr) (string, bool) {
@@ -424,7 +445,7 @@ func similarityTrigramsToScan(s string, similarityThreshold float64) []string {
 			i++
 		}
 
-		// If there are still trigrams to remove, remove trigrams at the end of
+		// If there are still trigrams to remove, remove trigrams as the end of
 		// the slice.
 		if toRemove > 0 {
 			trgms = trgms[:len(trgms)-toRemove]
@@ -450,7 +471,7 @@ func TryJoinInvertedIndex(
 	index cat.Index,
 	inputCols opt.ColSet,
 ) opt.ScalarExpr {
-	if index.Type() != idxtype.INVERTED {
+	if !index.IsInverted() {
 		return nil
 	}
 
@@ -632,6 +653,85 @@ func evalInvertedExpr(
 	default:
 		return evalInvertedExprLeaf(expr)
 	}
+}
+
+// constrainPrefixColumns attempts to build a constraint for the non-inverted
+// prefix columns of the given index. If a constraint is successfully built, it
+// is returned along with remaining filters and ok=true. The function is only
+// successful if it can generate a constraint where all spans have the same
+// start and end keys for all non-inverted prefix columns. This is required for
+// building spans for scanning multi-column inverted indexes (see
+// span.Builder.SpansFromInvertedSpans).
+//
+// If the index is a single-column inverted index, there are no prefix columns
+// to constrain, and ok=true is returned.
+func constrainPrefixColumns(
+	evalCtx *eval.Context,
+	factory *norm.Factory,
+	filters memo.FiltersExpr,
+	optionalFilters memo.FiltersExpr,
+	tabID opt.TableID,
+	index cat.Index,
+	checkCancellation func(),
+) (constraint *constraint.Constraint, remainingFilters memo.FiltersExpr, ok bool) {
+	tabMeta := factory.Metadata().TableMeta(tabID)
+	prefixColumnCount := index.NonInvertedPrefixColumnCount()
+	ps := tabMeta.IndexPartitionLocality(index.Ordinal())
+
+	// If this is a single-column inverted index, there are no prefix columns to
+	// constrain.
+	if prefixColumnCount == 0 {
+		return nil, filters, true
+	}
+
+	prefixColumns := make([]opt.OrderingColumn, prefixColumnCount)
+	var notNullCols opt.ColSet
+	for i := range prefixColumns {
+		col := index.Column(i)
+		colID := tabID.ColumnID(col.Ordinal())
+		prefixColumns[i] = opt.MakeOrderingColumn(colID, col.Descending)
+		if !col.IsNullable() {
+			notNullCols.Add(colID)
+		}
+	}
+
+	// Consolidation of a constraint converts contiguous spans into a single
+	// span. By definition, the consolidated span would have different start and
+	// end keys and could not be used for multi-column inverted index scans.
+	// Therefore, we only generate and check the unconsolidated constraint,
+	// allowing the optimizer to plan multi-column inverted index scans in more
+	// cases.
+	//
+	// For example, the consolidated constraint for (x IN (1, 2, 3)) is:
+	//
+	//   /x: [/1 - /3]
+	//   Prefix: 0
+	//
+	// The unconsolidated constraint for the same expression is:
+	//
+	//   /x: [/1 - /1] [/2 - /2] [/3 - /3]
+	//   Prefix: 1
+	//
+	var ic idxconstraint.Instance
+	ic.Init(
+		filters, optionalFilters,
+		prefixColumns, notNullCols, tabMeta.ComputedCols,
+		tabMeta.ColsInComputedColsExpressions,
+		false, /* consolidate */
+		evalCtx, factory, ps, checkCancellation,
+	)
+	constraint = ic.UnconsolidatedConstraint()
+	if constraint.Prefix(evalCtx) < prefixColumnCount {
+		// If all of the constraint spans do not have the same start and end keys
+		// for all columns, the index cannot be used.
+		return nil, nil, false
+	}
+
+	// Make a copy of constraint so that the idxconstraint.Instance is not
+	// referenced.
+	copy := *constraint
+	remainingFilters = ic.RemainingFilters()
+	return &copy, remainingFilters, true
 }
 
 type invertedFilterPlanner interface {

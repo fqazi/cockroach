@@ -28,7 +28,7 @@ func Example_shout_before_log() {
 		panic(err)
 	}
 	cfg.Sinks.Stderr.Filter = severity.WARNING
-	cleanup, err := log.ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+	cleanup, err := log.ApplyConfig(cfg)
 	if err != nil {
 		panic(err)
 	}
@@ -40,7 +40,7 @@ func Example_shout_before_log() {
 	log.OrigStderr = os.Stdout
 	defer func() { log.OrigStderr = origStderr }()
 
-	log.Dev.Shout(context.Background(), severity.INFO, "hello world")
+	log.Shout(context.Background(), severity.INFO, "hello world")
 
 	// output:
 	// *

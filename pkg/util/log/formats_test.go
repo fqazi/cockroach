@@ -61,11 +61,11 @@ func TestFormatRedaction(t *testing.T) {
 							// Validate and apply the config.
 							require.NoError(t, config.Validate(&sc.logDir))
 							TestingResetActive()
-							cleanupFn, err := ApplyConfig(config, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+							cleanupFn, err := ApplyConfig(config)
 							require.NoError(t, err)
 							defer cleanupFn()
 
-							Dev.Infof(ctx, "safe2 %s", "secret3")
+							Infof(ctx, "safe2 %s", "secret3")
 							FlushFiles()
 
 							contents, err := os.ReadFile(getDebugLogFileName(t))

@@ -48,13 +48,13 @@ func TestInitialKeys(t *testing.T) {
 		var nonDescKeys int
 		if systemTenant {
 			codec = keys.SystemSQLCodec
-			nonDescKeys = 17
+			nonDescKeys = 16
 		} else {
 			codec = keys.MakeSQLCodec(roachpb.MustMakeTenantID(5))
 			nonDescKeys = 8
 		}
 
-		ms := bootstrap.MakeMetadataSchema(codec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef(), bootstrap.NoOffset)
+		ms := bootstrap.MakeMetadataSchema(codec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef())
 		kv, _ /* splits */ := ms.GetInitialValues()
 		expected := nonDescKeys + keysPerDesc*ms.SystemDescriptorCount()
 		if actual := len(kv); actual != expected {
@@ -129,7 +129,7 @@ func TestInitialKeysAndSplits(t *testing.T) {
 			}
 
 			ms := bootstrap.MakeMetadataSchema(
-				codec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef(), bootstrap.NoOffset,
+				codec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef(),
 			)
 			kvs, splits := ms.GetInitialValues()
 

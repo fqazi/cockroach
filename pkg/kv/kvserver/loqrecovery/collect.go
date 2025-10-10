@@ -6,12 +6,10 @@
 package loqrecovery
 
 import (
-	"cmp"
 	"context"
-	"fmt"
 	"io"
 	"math"
-	"slices"
+	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -42,10 +40,8 @@ type CollectionStats struct {
 // maxConcurrency is the maximum parallelism that will be used when fanning out
 // RPCs to nodes in the cluster. A value of 0 disables concurrency. A negative
 // value configures no limit for concurrency.
-// If logOutput is not nil, this function will write when a node is visited,
-// and when a node needs to be revisited.
 func CollectRemoteReplicaInfo(
-	ctx context.Context, c serverpb.RPCAdminClient, maxConcurrency int, logOutput io.Writer,
+	ctx context.Context, c serverpb.AdminClient, maxConcurrency int,
 ) (loqrecoverypb.ClusterReplicaInfo, CollectionStats, error) {
 	cc, err := c.RecoveryCollectReplicaInfo(ctx, &serverpb.RecoveryCollectReplicaInfoRequest{
 		MaxConcurrency: int32(maxConcurrency),
@@ -69,10 +65,6 @@ func CollectRemoteReplicaInfo(
 		if r := info.GetReplicaInfo(); r != nil {
 			stores[r.StoreID] = struct{}{}
 			nodes[r.NodeID] = struct{}{}
-
-			if _, ok := replInfoMap[r.NodeID]; !ok && logOutput != nil {
-				_, _ = fmt.Fprintf(logOutput, "Started getting replica info for node_id:%d.\n", r.NodeID)
-			}
 			replInfoMap[r.NodeID] = append(replInfoMap[r.NodeID], *r)
 		} else if d := info.GetRangeDescriptor(); d != nil {
 			descriptors = append(descriptors, *d)
@@ -80,11 +72,6 @@ func CollectRemoteReplicaInfo(
 			// If server had to restart a fan-out work because of error and retried,
 			// then we discard partial data for the node.
 			delete(replInfoMap, s.NodeID)
-			if logOutput != nil {
-				_, _ = fmt.Fprintf(logOutput, "Discarding replica info for node_id:%d."+
-					"The node will be revisted.\n", s.NodeID)
-			}
-
 		} else if m := info.GetMetadata(); m != nil {
 			metadata = *m
 		} else {
@@ -100,8 +87,8 @@ func CollectRemoteReplicaInfo(
 		}
 		replInfos = append(replInfos, loqrecoverypb.NodeReplicaInfo{Replicas: replInfo})
 	}
-	slices.SortFunc(replInfos, func(a, b loqrecoverypb.NodeReplicaInfo) int {
-		return cmp.Compare(a.Replicas[0].NodeID, b.Replicas[0].NodeID)
+	sort.Slice(replInfos, func(i, j int) bool {
+		return replInfos[i].Replicas[0].NodeID < replInfos[j].Replicas[0].NodeID
 	})
 	// We don't want to process data outside of safe version range for this CLI
 	// binary. RPC allows us to communicate with a cluster that is newer than
@@ -158,10 +145,7 @@ func CollectStoresReplicaInfo(
 			return loqrecoverypb.ClusterReplicaInfo{}, CollectionStats{}, errors.New("can't collect info from stored that belong to different clusters")
 		}
 		nodes[ident.NodeID] = struct{}{}
-		// TODO(sep-raft-log): use different readers when the raft and state machine
-		// engines are separate. Since the engines are immutable in this path, there
-		// is no question whether to and in which order to grab engine snapshots.
-		if err := visitStoreReplicas(ctx, reader, reader, ident.StoreID, ident.NodeID,
+		if err := visitStoreReplicas(ctx, reader, ident.StoreID, ident.NodeID, version,
 			func(info loqrecoverypb.ReplicaInfo) error {
 				replicas = append(replicas, info)
 				return nil
@@ -181,21 +165,19 @@ func CollectStoresReplicaInfo(
 
 func visitStoreReplicas(
 	ctx context.Context,
-	state, raft storage.Reader,
+	reader storage.Reader,
 	storeID roachpb.StoreID,
 	nodeID roachpb.NodeID,
+	targetVersion clusterversion.ClusterVersion,
 	send func(info loqrecoverypb.ReplicaInfo) error,
 ) error {
-	if err := kvstorage.IterateRangeDescriptorsFromDisk(ctx, state, func(desc roachpb.RangeDescriptor) error {
+	if err := kvstorage.IterateRangeDescriptorsFromDisk(ctx, reader, func(desc roachpb.RangeDescriptor) error {
 		rsl := stateloader.Make(desc.RangeID)
-		rstate, err := rsl.Load(ctx, state, &desc)
+		rstate, err := rsl.Load(ctx, reader, &desc)
 		if err != nil {
 			return err
 		}
-		// TODO(pav-kv): the LoQ recovery flow uses only the applied index, and the
-		// HardState.Commit loaded here is unused. Consider removing. Make sure this
-		// doesn't break compatibility for ReplicaInfo unmarshalling.
-		hstate, err := rsl.LoadHardState(ctx, raft)
+		hstate, err := rsl.LoadHardState(ctx, reader)
 		if err != nil {
 			return err
 		}
@@ -204,17 +186,16 @@ func visitStoreReplicas(
 		// at potentially uncommitted entries as we have no way to determine their
 		// outcome, and they will become committed as soon as the replica is
 		// designated as a survivor.
-		// TODO(sep-raft-log): decide which LogID to read from. If the raft and
-		// state machine readers are slightly out of sync, the LogIDs may mismatch.
-		// For the heuristics here, it would probably make sense to read from all
-		// LogIDs with unapplied entries.
 		rangeUpdates, err := GetDescriptorChangesFromRaftLog(
-			ctx, desc.RangeID, rstate.RaftAppliedIndex+1, math.MaxInt64, raft)
+			ctx, desc.RangeID, rstate.RaftAppliedIndex+1, math.MaxInt64, reader)
 		if err != nil {
 			return err
 		}
 
-		localIsLeaseholder := rstate.Lease != nil && rstate.Lease.Replica.StoreID == storeID
+		var localIsLeaseholder bool
+		if targetVersion.IsActive(clusterversion.V23_1) {
+			localIsLeaseholder = rstate.Lease != nil && rstate.Lease.Replica.StoreID == storeID
+		}
 
 		return send(loqrecoverypb.ReplicaInfo{
 			StoreID:                  storeID,

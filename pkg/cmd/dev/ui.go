@@ -17,6 +17,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	// ossFlag is the name of the boolean long (GNU-style) flag that builds only
+	// the open-source parts of the UI.
+	ossFlag = "oss"
+)
+
 // makeUICmd initializes the top-level 'ui' subcommand.
 func makeUICmd(d *dev) *cobra.Command {
 	uiCmd := &cobra.Command{
@@ -32,7 +38,6 @@ func makeUICmd(d *dev) *cobra.Command {
 	uiCmd.AddCommand(makeUIE2eCmd(d))
 	uiCmd.AddCommand(makeMirrorDepsCmd(d))
 	uiCmd.AddCommand(makeUIStorybookCmd(d))
-	uiCmd.AddCommand(makeUICrdbApiClientCmd(d))
 
 	return uiCmd
 }
@@ -55,8 +60,6 @@ type UIDirectories struct {
 	protoOss string
 	// protoCcl is the absolute path to ./pkg/ui/workspaces/db-console/ccl/src/js/.
 	protoCcl string
-	// crdbJsProto is the absolute path to ./pkg/ui/workspaces/crdb-js-proto/.
-	crdbApiClient string
 }
 
 // getUIDirs computes the absolute path to the root of each UI sub-project.
@@ -67,15 +70,14 @@ func getUIDirs(d *dev) (*UIDirectories, error) {
 	}
 
 	return &UIDirectories{
-		workspace:     workspace,
-		root:          filepath.Join(workspace, "./pkg/ui"),
-		clusterUI:     filepath.Join(workspace, "./pkg/ui/workspaces/cluster-ui"),
-		dbConsole:     filepath.Join(workspace, "./pkg/ui/workspaces/db-console"),
-		e2eTests:      filepath.Join(workspace, "./pkg/ui/workspaces/e2e-tests"),
-		eslintPlugin:  filepath.Join(workspace, "./pkg/ui/workspaces/eslint-plugin-crdb"),
-		protoOss:      filepath.Join(workspace, "./pkg/ui/workspaces/db-console/src/js"),
-		protoCcl:      filepath.Join(workspace, "./pkg/ui/workspaces/db-console/ccl/src/js"),
-		crdbApiClient: filepath.Join(workspace, "./pkg/ui/workspaces/crdb-api-client"),
+		workspace:    workspace,
+		root:         filepath.Join(workspace, "./pkg/ui"),
+		clusterUI:    filepath.Join(workspace, "./pkg/ui/workspaces/cluster-ui"),
+		dbConsole:    filepath.Join(workspace, "./pkg/ui/workspaces/db-console"),
+		e2eTests:     filepath.Join(workspace, "./pkg/ui/workspaces/e2e-tests"),
+		eslintPlugin: filepath.Join(workspace, "./pkg/ui/workspaces/eslint-plugin-crdb"),
+		protoOss:     filepath.Join(workspace, "./pkg/ui/workspaces/db-console/src/js"),
+		protoCcl:     filepath.Join(workspace, "./pkg/ui/workspaces/db-console/ccl/src/js"),
 	}, nil
 }
 
@@ -117,7 +119,6 @@ func (d *dev) assertNoLinkedNpmDeps(targets []buildTarget) error {
 		uiDirs.clusterUI,
 		uiDirs.dbConsole,
 		uiDirs.e2eTests,
-		uiDirs.crdbApiClient,
 	}
 
 	type LinkedPackage struct {
@@ -282,6 +283,11 @@ Replaces 'make ui-watch'.`,
 				return err
 			}
 
+			isOss, err := cmd.Flags().GetBool(ossFlag)
+			if err != nil {
+				return err
+			}
+
 			// Ensure node dependencies are up-to-date.
 			err = d.exec.CommandContextInheritingStdStreams(
 				ctx,
@@ -298,11 +304,9 @@ Replaces 'make ui-watch'.`,
 			args := []string{
 				"build",
 				"//pkg/ui/workspaces/cluster-ui:cluster-ui-lib",
-				"//pkg/ui/workspaces/db-console/ccl/src/js:crdb-protobuf-client-ccl-lib",
-				"//pkg/ui/workspaces/db-console/src/js:crdb-protobuf-client_files",
-				"//pkg/ui/workspaces/db-console/src/js:crdb-protobuf-client",
-				"//pkg/ui/workspaces/db-console/ccl/src/js:crdb-protobuf-client-ccl_files",
-				"//pkg/ui/workspaces/db-console/ccl/src/js:crdb-protobuf-client-ccl",
+			}
+			if !isOss {
+				args = append(args, "//pkg/ui/workspaces/db-console/ccl/src/js:crdb-protobuf-client-ccl-lib")
 			}
 			logCommand("bazel", args...)
 			err = d.exec.CommandContextInheritingStdStreams(ctx, "bazel", args...)
@@ -312,7 +316,7 @@ Replaces 'make ui-watch'.`,
 				return err
 			}
 
-			if err := arrangeFilesForWatchers(d); err != nil {
+			if err := arrangeFilesForWatchers(d, isOss); err != nil {
 				log.Fatalf("failed to arrange files for watchers: %v", err)
 				return err
 			}
@@ -369,6 +373,13 @@ Replaces 'make ui-watch'.`,
 				}
 			}
 
+			var webpackDist string
+			if isOss {
+				webpackDist = "oss"
+			} else {
+				webpackDist = "ccl"
+			}
+
 			args = []string{
 				"--dir",
 				dirs.dbConsole,
@@ -379,7 +390,7 @@ Replaces 'make ui-watch'.`,
 				// Polyfill WEBPACK_SERVE for webpack v4; it's set in webpack v5 via
 				// `webpack serve`.
 				"--env.WEBPACK_SERVE",
-				"--env.dist=ccl",
+				"--env.dist=" + webpackDist,
 				"--env.target=" + dbTarget,
 				"--port", port,
 			}
@@ -405,6 +416,7 @@ Replaces 'make ui-watch'.`,
 	watchCmd.Flags().Int16P(portFlag, "p", 3000, "port to serve UI on")
 	watchCmd.Flags().String(dbTargetFlag, "http://localhost:8080", "url to proxy DB requests to")
 	watchCmd.Flags().Bool(secureFlag, false, "serve via HTTPS")
+	watchCmd.Flags().Bool(ossFlag, false, "build only the open-source parts of the UI")
 	watchCmd.Flags().StringArray(
 		clusterUiDestinationsFlag,
 		[]string{},
@@ -461,7 +473,7 @@ func makeUIStorybookCmd(d *dev) *cobra.Command {
 				return err
 			}
 
-			if err := arrangeFilesForWatchers(d); err != nil {
+			if err := arrangeFilesForWatchers(d /* ossOnly */, false); err != nil {
 				log.Fatalf("failed to arrange files for watchers: %v", err)
 				return err
 			}
@@ -524,74 +536,6 @@ func makeUIStorybookCmd(d *dev) *cobra.Command {
 	storybookCmd.Flags().String(projectFlag, "db-console", "db-console, cluster-ui")
 
 	return storybookCmd
-}
-
-// makeUICrdbApiClientCmd initializes the 'ui crdb-api-client' subcommand. which
-// generates JS protobuf client package and hoists it to source tree.
-func makeUICrdbApiClientCmd(d *dev) *cobra.Command {
-	return &cobra.Command{
-		Use:   "crdb-api-client",
-		Short: "Build crdb-api-client library",
-		Long:  ``,
-		Args:  cobra.MinimumNArgs(0),
-		RunE: func(cmd *cobra.Command, commandLine []string) error {
-			// Create a context that cancels when OS signals come in.
-			ctx, stop := signal.NotifyContext(d.cli.Context(), os.Interrupt, os.Kill)
-			defer stop()
-			bazelBin, err := d.getBazelBin(d.cli.Context(), []string{})
-			if err != nil {
-				return err
-			}
-			dstDirs, err := getUIDirs(d)
-			if err != nil {
-				return err
-			}
-
-			// Ensure node dependencies are up-to-date.
-			err = d.exec.CommandContextInheritingStdStreams(
-				ctx,
-				"pnpm",
-				"--dir",
-				dstDirs.root,
-				"install",
-			)
-			if err != nil {
-				log.Fatalf("failed to fetch node dependencies: %v", err)
-			}
-
-			args := []string{
-				"build",
-				"//pkg/ui/workspaces/crdb-api-client:crdb-api-client",
-			}
-
-			logCommand("bazel", args...)
-			err = d.exec.CommandContextInheritingStdStreams(ctx, "bazel", args...)
-			if err != nil {
-				log.Fatalf("failed to build crdb-api-client target: %v", err)
-				return err
-			}
-
-			// Hoist generated output files back to source tree.
-			crdbApiClientSrc := filepath.Join(bazelBin, "pkg", "ui", "workspaces", "crdb-api-client", "crdb-api-client")
-			crdbApiClientPaths := []string{"dist", "index.js", "index.ts"}
-
-			for _, relPath := range crdbApiClientPaths {
-				err = d.os.RemoveAll(filepath.Join(dstDirs.crdbApiClient, relPath))
-				if err != nil {
-					return err
-				}
-				err = d.os.CopyAll(
-					filepath.Join(crdbApiClientSrc, relPath),
-					filepath.Join(dstDirs.crdbApiClient, relPath),
-				)
-				if err != nil {
-					return err
-				}
-			}
-
-			return nil
-		},
-	}
 }
 
 func makeUILintCmd(d *dev) *cobra.Command {
@@ -671,9 +615,6 @@ func makeUICleanCmd(d *dev) *cobra.Command {
 				filepath.Join(uiDirs.dbConsole, "dist"),
 				filepath.Join(uiDirs.clusterUI, "dist"),
 				filepath.Join(uiDirs.eslintPlugin, "dist"),
-				filepath.Join(uiDirs.crdbApiClient, "dist"),
-				filepath.Join(uiDirs.crdbApiClient, "index.js"),
-				filepath.Join(uiDirs.crdbApiClient, "index.ts"),
 			}
 			if all {
 				workspace, err := d.getWorkspace(d.cli.Context())
@@ -690,7 +631,6 @@ func makeUICleanCmd(d *dev) *cobra.Command {
 					filepath.Join(uiDirs.clusterUI, "node_modules"),
 					filepath.Join(uiDirs.e2eTests, "node_modules"),
 					filepath.Join(uiDirs.eslintPlugin, "node_modules"),
-					filepath.Join(uiDirs.crdbApiClient, "node_modules"),
 				)
 			}
 
@@ -724,7 +664,7 @@ func makeUICleanCmd(d *dev) *cobra.Command {
 // mode) to be executed from directly within a pkg/ui/workspaces/... directory.
 //
 // See https://github.com/bazelbuild/rules_nodejs/issues/2028
-func arrangeFilesForWatchers(d *dev) error {
+func arrangeFilesForWatchers(d *dev, ossOnly bool) error {
 	bazelBin, err := d.getBazelBin(d.cli.Context(), []string{})
 	if err != nil {
 		return err
@@ -750,6 +690,10 @@ func arrangeFilesForWatchers(d *dev) error {
 		ossDst := filepath.Join(dbConsoleDst, relPath)
 		if err := d.os.CopyFile(filepath.Join(dbConsoleSrc, relPath), ossDst); err != nil {
 			return err
+		}
+
+		if ossOnly {
+			continue
 		}
 
 		cclDst := filepath.Join(dbConsoleCclDst, relPath)
@@ -820,7 +764,7 @@ Replaces 'make ui-test' and 'make ui-test-watch'.`,
 					return err
 				}
 
-				err = arrangeFilesForWatchers(d)
+				err = arrangeFilesForWatchers(d, false /* ossOnly */)
 				if err != nil {
 					// nolint:errwrap
 					return fmt.Errorf("unable to arrange files properly for watch-mode testing: %+v", err)

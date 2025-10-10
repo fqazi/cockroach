@@ -3,29 +3,23 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { assert } from "chai";
-import classNames from "classnames/bind";
-import { mount, ReactWrapper } from "enzyme";
-import each from "lodash/each";
-import sortBy from "lodash/sortBy";
-import sumBy from "lodash/sumBy";
 import React from "react";
-
-import styles from "src/sortabletable/sortabletable.module.scss";
+import _ from "lodash";
+import { assert } from "chai";
+import { mount, ReactWrapper } from "enzyme";
+import classNames from "classnames/bind";
 import {
   SortedTable,
   ColumnDescriptor,
   ISortedTablePagination,
   SortSetting,
 } from "src/sortedtable";
+import styles from "src/sortabletable/sortabletable.module.scss";
 
 const cx = classNames.bind(styles);
 
 class TestRow {
-  constructor(
-    public name: string,
-    public value: number,
-  ) {}
+  constructor(public name: string, public value: number) {}
 }
 
 const columns: ColumnDescriptor<TestRow>[] = [
@@ -40,7 +34,7 @@ const columns: ColumnDescriptor<TestRow>[] = [
     title: "second",
     cell: tr => tr.value.toString(),
     sort: tr => tr.value,
-    rollup: trs => sumBy(trs, tr => tr.value),
+    rollup: trs => _.sumBy(trs, tr => tr.value),
   },
 ];
 
@@ -122,7 +116,7 @@ describe("<SortedTable>", function () {
     let wrapper = makeTable(data, undefined);
     const assertMatches = (expected: TestRow[]) => {
       const rows = wrapper.find("tbody");
-      each(expected, (rowData, dataIndex) => {
+      _.each(expected, (rowData, dataIndex) => {
         const row = rows.childAt(dataIndex);
         assert.equal(
           row.childAt(0).childAt(0).text(),
@@ -141,14 +135,14 @@ describe("<SortedTable>", function () {
       ascending: true,
       columnTitle: "first",
     });
-    assertMatches(sortBy(data, r => r.name));
+    assertMatches(_.sortBy(data, r => r.name));
     wrapper.setProps({
       uiSortSetting: {
         ascending: true,
         columnTitle: "second",
       } as SortSetting,
     });
-    assertMatches(sortBy(data, r => r.value));
+    assertMatches(_.sortBy(data, r => r.value));
   });
 
   describe("with expandableConfig", function () {

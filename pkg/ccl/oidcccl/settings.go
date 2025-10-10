@@ -7,16 +7,14 @@ package oidcccl
 
 import (
 	"bytes"
-	"crypto/x509"
 	"encoding/json"
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/errors"
-	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/coreos/go-oidc"
 )
 
 // All cluster settings necessary for the OIDC feature.
@@ -37,11 +35,6 @@ const (
 	OIDCGenerateClusterSSOTokenUseTokenSettingName = baseOIDCSettingName + "generate_cluster_sso_token.use_token"
 	OIDCGenerateClusterSSOTokenSQLHostSettingName  = baseOIDCSettingName + "generate_cluster_sso_token.sql_host"
 	OIDCGenerateClusterSSOTokenSQLPortSettingName  = baseOIDCSettingName + "generate_cluster_sso_token.sql_port"
-	oidcAuthClientTimeoutSettingName               = baseOIDCSettingName + "client.timeout"
-	oidcProviderCustomCASettingName                = baseOIDCSettingName + "provider.custom_ca"
-	OIDCAuthZEnabledSettingName                    = baseOIDCSettingName + "authorization.enabled"
-	OIDCAuthGroupClaimSettingName                  = baseOIDCSettingName + "group_claim"
-	OIDCAuthUserinfoGroupKeySettingName            = baseOIDCSettingName + "userinfo_group_key"
 )
 
 // OIDCEnabled enables or disabled OIDC login for the DB Console.
@@ -74,44 +67,6 @@ var OIDCClientSecret = settings.RegisterStringSetting(
 	settings.WithPublic,
 	settings.WithReportable(false),
 	settings.Sensitive,
-)
-
-// OIDCAuthClientTimeout is the client timeout for all the external calls made
-// during OIDC authentication (e.g. authorization code flow, etc.).
-var OIDCAuthClientTimeout = settings.RegisterDurationSetting(
-	settings.ApplicationLevel,
-	oidcAuthClientTimeoutSettingName,
-	"sets the client timeout for external calls made during OIDC authentication "+
-		"(e.g. authorization code flow, etc.)",
-	15*time.Second,
-	settings.WithPublic,
-)
-
-// OIDCAuthZEnabled enables authorization for OIDC SSO.
-var OIDCAuthZEnabled = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	OIDCAuthZEnabledSettingName, // "server.oidc_authentication.authorization.enabled"
-	"enables role synchronization based on group claims in OIDC tokens",
-	false,
-)
-
-// OIDCAuthGroupClaim is the name of the OIDC claim that contains the groups
-var OIDCAuthGroupClaim = settings.RegisterStringSetting(
-	settings.ApplicationLevel,
-	OIDCAuthGroupClaimSettingName, // "server.oidc_authentication.group_claim"
-	"sets the name of the OIDC claim that contains groups used for authorization",
-	"groups",
-)
-
-// OIDCAuthUserinfoGroupKey is the name of the field in the userinfo response
-// which contains the groups
-// This is an optional fallback for when access_tokens that don't contain a
-// groups claim are used during OIDC auth.
-var OIDCAuthUserinfoGroupKey = settings.RegisterStringSetting(
-	settings.ApplicationLevel,
-	OIDCAuthUserinfoGroupKeySettingName, // "server.oidc_authentication.userinfo_group_key"
-	"sets the field name in userinfo JSON containing the groups claim for authorization",
-	"groups",
 )
 
 type redirectURLConf struct {
@@ -334,9 +289,9 @@ var OIDCGenerateClusterSSOTokenUseToken = settings.RegisterEnumSetting(
 	OIDCGenerateClusterSSOTokenUseTokenSettingName,
 	"selects which OIDC callback token to use for cluster SSO",
 	"id_token",
-	map[tokenToUse]string{
-		useIdToken:     "id_token",
-		useAccessToken: "access_token",
+	map[int64]string{
+		int64(useIdToken):     "id_token",
+		int64(useAccessToken): "access_token",
 	},
 )
 
@@ -358,26 +313,3 @@ var OIDCGenerateClusterSSOTokenSQLPort = settings.RegisterIntSetting(
 	26257,
 	settings.NonNegativeIntWithMaximum(65535),
 )
-
-// OIDCProviderCustomCA is the custom root CA for verifying certificates while
-// authenticating through the OIDC provider.
-var OIDCProviderCustomCA = settings.RegisterStringSetting(
-	settings.ApplicationLevel,
-	oidcProviderCustomCASettingName,
-	"sets the PEM encoded custom root CA for verifying certificates while authenticating "+
-		"through the OIDC provider",
-	"",
-	settings.WithReportable(false),
-	settings.Sensitive,
-	settings.WithValidateString(validateOIDCProviderCACert),
-	settings.WithPublic,
-)
-
-func validateOIDCProviderCACert(values *settings.Values, s string) error {
-	if len(s) != 0 {
-		if ok := x509.NewCertPool().AppendCertsFromPEM([]byte(s)); !ok {
-			return errors.Newf("OIDC provider custom CA certificate not valid")
-		}
-	}
-	return nil
-}

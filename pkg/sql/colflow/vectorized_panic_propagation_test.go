@@ -49,7 +49,7 @@ func TestVectorizedInternalPanic(t *testing.T) {
 	col := colexec.NewBufferingColumnarizerForTests(testAllocator, &flowCtx, 0 /* processorID */, input)
 	vee := newTestVectorizedInternalPanicEmitter(col)
 	mat := colexec.NewMaterializer(
-		nil, /* streamingMemAcc */
+		nil, /* allocator */
 		&flowCtx,
 		1, /* processorID */
 		colexecargs.OpWithMetaInfo{Root: vee},
@@ -86,7 +86,7 @@ func TestNonVectorizedPanicPropagation(t *testing.T) {
 	col := colexec.NewBufferingColumnarizerForTests(testAllocator, &flowCtx, 0 /* processorID */, input)
 	nvee := newTestNonVectorizedPanicEmitter(col)
 	mat := colexec.NewMaterializer(
-		nil, /* streamingMemAcc */
+		nil, /* allocator */
 		&flowCtx,
 		1, /* processorID */
 		colexecargs.OpWithMetaInfo{Root: nvee},

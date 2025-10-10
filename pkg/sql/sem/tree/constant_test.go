@@ -118,7 +118,7 @@ func TestNumericConstantVerifyAndResolveAvailableTypes(t *testing.T) {
 		// Make sure it can be resolved as each of those types.
 		for _, availType := range avail {
 			ctx := context.Background()
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
+			semaCtx := tree.MakeSemaContext()
 			if res, err := c.ResolveAsType(ctx, &semaCtx, availType); err != nil {
 				t.Errorf("%d: expected resolving %v as available type %s would succeed, found %v",
 					i, c.ExactString(), availType, err)
@@ -227,7 +227,7 @@ func TestStringConstantVerifyAvailableTypes(t *testing.T) {
 				continue
 			}
 
-			semaCtx := tree.MakeSemaContext(nil /* resolver */)
+			semaCtx := tree.MakeSemaContext()
 			if _, err := test.c.ResolveAsType(context.Background(), &semaCtx, availType); err != nil {
 				if !strings.Contains(err.Error(), "could not parse") &&
 					!strings.Contains(err.Error(), "invalid input syntax") {
@@ -386,13 +386,6 @@ func mustParseDTSQuery(t *testing.T, s string) tree.Datum {
 	}
 	return d
 }
-func mustParseDLTree(t *testing.T, s string) tree.Datum {
-	d, err := tree.ParseDLTree(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return d
-}
 func mustParseDArrayOfType(typ *types.T) func(t *testing.T, s string) tree.Datum {
 	return func(t *testing.T, s string) tree.Datum {
 		evalContext := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
@@ -429,7 +422,6 @@ var parseFuncs = map[*types.T]func(*testing.T, string) tree.Datum{
 	types.RefCursor:        mustParseDRefCursor,
 	types.TSQuery:          mustParseDTSQuery,
 	types.TSVector:         mustParseDTSVector,
-	types.LTree:            mustParseDLTree,
 	types.BytesArray:       mustParseDArrayOfType(types.Bytes),
 	types.DecimalArray:     mustParseDArrayOfType(types.Decimal),
 	types.FloatArray:       mustParseDArrayOfType(types.Float),
@@ -482,12 +474,12 @@ func TestStringConstantResolveAvailableTypes(t *testing.T) {
 		{
 			c: tree.NewStrVal("true"),
 			parseOptions: typeSet(types.String, types.BPChar, types.Bytes, types.Bool, types.Jsonb,
-				types.TSVector, types.TSQuery, types.RefCursor, types.LTree),
+				types.TSVector, types.TSQuery, types.RefCursor),
 		},
 		{
 			c: tree.NewStrVal("2010-09-28"),
 			parseOptions: typeSet(types.String, types.BPChar, types.Bytes, types.Date,
-				types.Timestamp, types.TimestampTZ, types.TSVector, types.TSQuery, types.RefCursor, types.LTree),
+				types.Timestamp, types.TimestampTZ, types.TSVector, types.TSQuery, types.RefCursor),
 		},
 		{
 			c: tree.NewStrVal("2010-09-28 12:00:00.1"),
@@ -502,7 +494,7 @@ func TestStringConstantResolveAvailableTypes(t *testing.T) {
 		{
 			c: tree.NewStrVal("PT12H2M"),
 			parseOptions: typeSet(types.String, types.BPChar, types.Bytes, types.Interval,
-				types.TSVector, types.TSQuery, types.RefCursor, types.LTree),
+				types.TSVector, types.TSQuery, types.RefCursor),
 		},
 		{
 			c:            tree.NewBytesStrVal("abc 世界"),
@@ -554,7 +546,6 @@ func TestStringConstantResolveAvailableTypes(t *testing.T) {
 				types.TSVector,
 				types.TSQuery,
 				types.RefCursor,
-				types.LTree,
 			),
 		},
 		{
@@ -623,7 +614,7 @@ func TestStringConstantResolveAvailableTypes(t *testing.T) {
 		{
 			c: tree.NewStrVal(`18e7b17e-4ead-4e27-bfd5-bb6d11261bb6`),
 			parseOptions: typeSet(types.String, types.BPChar, types.Bytes, types.Uuid,
-				types.TSVector, types.TSQuery, types.RefCursor, types.LTree),
+				types.TSVector, types.TSQuery, types.RefCursor),
 		},
 		{
 			c: tree.NewStrVal(`{18e7b17e-4ead-4e27-bfd5-bb6d11261bb6, 18e7b17e-4ead-4e27-bfd5-bb6d11261bb7}`),
@@ -711,9 +702,8 @@ func TestStringConstantResolveAvailableTypes(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
 	evalCtx := eval.NewTestingEvalContext(cluster.MakeTestingClusterSettings())
-	defer evalCtx.Stop(ctx)
+	defer evalCtx.Stop(context.Background())
 	for i, test := range testCases {
 		t.Run(test.c.String(), func(t *testing.T) {
 			parseableCount := 0
@@ -735,17 +725,11 @@ func TestStringConstantResolveAvailableTypes(t *testing.T) {
 					continue
 				}
 
-				// TODO(#22513): Skip JsonpathFamily for now, since it will resolve to a
-				// string but in the future we don't want to.
-				if availType.Family() == types.JsonpathFamily {
-					continue
-				}
-
-				semaCtx := tree.MakeSemaContext(nil /* resolver */)
-				typedExpr, err := test.c.ResolveAsType(ctx, &semaCtx, availType)
+				semaCtx := tree.MakeSemaContext()
+				typedExpr, err := test.c.ResolveAsType(context.Background(), &semaCtx, availType)
 				var res tree.Datum
 				if err == nil {
-					res, err = eval.Expr(ctx, evalCtx, typedExpr)
+					res, err = eval.Expr(context.Background(), evalCtx, typedExpr)
 				}
 				if err != nil {
 					if !strings.Contains(err.Error(), "could not parse") &&
@@ -768,9 +752,7 @@ func TestStringConstantResolveAvailableTypes(t *testing.T) {
 						i, availType, test.c, res)
 				} else {
 					expectedDatum := parseFuncs[availType](t, test.c.RawString())
-					if cmp, err := res.Compare(ctx, evalCtx, expectedDatum); err != nil {
-						t.Fatal(err)
-					} else if cmp != 0 {
+					if res.Compare(evalCtx, expectedDatum) != 0 {
 						t.Errorf("%d: type %s expected to be resolved from the tree.StrVal %v to tree.Datum %v"+
 							", found %v",
 							i, availType, test.c, expectedDatum, res)

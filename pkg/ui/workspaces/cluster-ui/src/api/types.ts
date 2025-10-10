@@ -25,19 +25,3 @@ export function createInitialState<T>(
     ...overrides,
   };
 }
-
-export type PaginationRequest = {
-  pageSize: number;
-  pageNum: number;
-};
-
-export type PaginationState = {
-  pageSize: number;
-  pageNum: number;
-  totalResults: number;
-};
-
-export type ResultsWithPagination<T> = {
-  results: T;
-  pagination: PaginationState;
-};

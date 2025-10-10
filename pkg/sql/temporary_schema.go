@@ -36,7 +36,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	io_prometheus_client "github.com/prometheus/client_model/go"
 )
 
@@ -89,15 +88,6 @@ var (
 	}
 )
 
-func (p *planner) InsertTemporarySchema(
-	tempSchemaName string, databaseID descpb.ID, schemaID descpb.ID,
-) {
-	p.sessionDataMutatorIterator.applyOnEachMutator(func(m sessionDataMutator) {
-		m.SetTemporarySchemaName(tempSchemaName)
-		m.SetTemporarySchemaIDForDatabase(uint32(databaseID), uint32(schemaID))
-	})
-}
-
 func (p *planner) getOrCreateTemporarySchema(
 	ctx context.Context, db catalog.DatabaseDescriptor,
 ) (catalog.SchemaDescriptor, error) {
@@ -121,7 +111,10 @@ func (p *planner) getOrCreateTemporarySchema(
 	if err := p.txn.Run(ctx, b); err != nil {
 		return nil, err
 	}
-	p.InsertTemporarySchema(tempSchemaName, db.GetID(), id)
+	p.sessionDataMutatorIterator.applyOnEachMutator(func(m sessionDataMutator) {
+		m.SetTemporarySchemaName(tempSchemaName)
+		m.SetTemporarySchemaIDForDatabase(uint32(db.GetID()), uint32(id))
+	})
 	return p.byIDGetterBuilder().WithoutNonPublic().Get().Schema(ctx, id)
 }
 
@@ -299,15 +292,15 @@ func cleanupTempSchemaObjects(
 					if _, ok := tblDescsByID[d.ID]; ok {
 						return nil
 					}
-					dTableDesc, err := descsCol.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Table(ctx, d.ID)
+					dTableDesc, err := descsCol.ByID(txn.KV()).WithoutNonPublic().Get().Table(ctx, d.ID)
 					if err != nil {
 						return err
 					}
-					db, err := descsCol.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Database(ctx, dTableDesc.GetParentID())
+					db, err := descsCol.ByID(txn.KV()).WithoutNonPublic().Get().Database(ctx, dTableDesc.GetParentID())
 					if err != nil {
 						return err
 					}
-					sc, err := descsCol.ByIDWithoutLeased(txn.KV()).WithoutNonPublic().Get().Schema(ctx, dTableDesc.GetParentSchemaID())
+					sc, err := descsCol.ByID(txn.KV()).WithoutNonPublic().Get().Schema(ctx, dTableDesc.GetParentSchemaID())
 					if err != nil {
 						return err
 					}
@@ -365,7 +358,7 @@ func cleanupTempSchemaObjects(
 				query.WriteString(tbName.FQString())
 			}
 			query.WriteString(" CASCADE")
-			_, err = txn.ExecEx(ctx, redact.Sprintf("delete-temp-%s", toDelete.typeName), txn.KV(), override, query.String())
+			_, err = txn.ExecEx(ctx, "delete-temp-"+toDelete.typeName, txn.KV(), override, query.String())
 			if err != nil {
 				return err
 			}
@@ -450,7 +443,7 @@ func makeTemporaryObjectCleanerMetrics() *temporaryObjectCleanerMetrics {
 func (c *TemporaryObjectCleaner) doTemporaryObjectCleanup(
 	ctx context.Context, closerCh <-chan struct{},
 ) error {
-	defer log.Dev.Infof(ctx, "completed temporary object cleanup job")
+	defer log.Infof(ctx, "completed temporary object cleanup job")
 	// Wrap the retry functionality with the default arguments.
 	retryFunc := func(ctx context.Context, do func() error) error {
 		return retry.WithMaxAttempts(
@@ -465,7 +458,7 @@ func (c *TemporaryObjectCleaner) doTemporaryObjectCleanup(
 			func() error {
 				err := do()
 				if err != nil {
-					log.Dev.Warningf(ctx, "error during schema cleanup, retrying: %v", err)
+					log.Warningf(ctx, "error during schema cleanup, retrying: %v", err)
 				}
 				return err
 			},
@@ -485,7 +478,7 @@ func (c *TemporaryObjectCleaner) doTemporaryObjectCleanup(
 		// For the system tenant we will check if the lease is held. For tenants
 		// every single POD will try to execute this clean up logic.
 		if !isLeaseHolder {
-			log.Dev.Infof(ctx, "skipping temporary object cleanup run as it is not the leaseholder")
+			log.Infof(ctx, "skipping temporary object cleanup run as it is not the leaseholder")
 			return nil
 		}
 	}
@@ -503,7 +496,7 @@ func (c *TemporaryObjectCleaner) doTemporaryObjectCleanup(
 	c.metrics.ActiveCleaners.Inc(1)
 	defer c.metrics.ActiveCleaners.Dec(1)
 
-	log.Dev.Infof(ctx, "running temporary object cleanup background job")
+	log.Infof(ctx, "running temporary object cleanup background job")
 	var sessionIDs map[clusterunique.ID]struct{}
 	if err := c.db.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
 		sessionIDs = make(map[clusterunique.ID]struct{})
@@ -542,7 +535,7 @@ func (c *TemporaryObjectCleaner) doTemporaryObjectCleanup(
 				}
 				if isTempSchema, sessionID, err := temporarySchemaSessionID(e.GetName()); err != nil {
 					// This should not cause an error.
-					log.Dev.Warningf(ctx, "could not parse %q as temporary schema name", e.GetName())
+					log.Warningf(ctx, "could not parse %q as temporary schema name", e.GetName())
 				} else if isTempSchema {
 					sessionIDs[sessionID] = struct{}{}
 				}
@@ -553,10 +546,10 @@ func (c *TemporaryObjectCleaner) doTemporaryObjectCleanup(
 		return err
 	}
 
-	log.Dev.Infof(ctx, "found %d temporary schemas", len(sessionIDs))
+	log.Infof(ctx, "found %d temporary schemas", len(sessionIDs))
 
 	if len(sessionIDs) == 0 {
-		log.Dev.Infof(ctx, "early exiting temporary schema cleaner as no temporary schemas were found")
+		log.Infof(ctx, "early exiting temporary schema cleaner as no temporary schemas were found")
 		return nil
 	}
 
@@ -600,7 +593,7 @@ func (c *TemporaryObjectCleaner) doTemporaryObjectCleanup(
 				)
 			}); err != nil {
 				// Log error but continue trying to delete the rest.
-				log.Dev.Warningf(ctx, "failed to clean temp objects under session %q: %v", sessionID, err)
+				log.Warningf(ctx, "failed to clean temp objects under session %q: %v", sessionID, err)
 				c.metrics.SchemasDeletionError.Inc(1)
 			} else {
 				c.metrics.SchemasDeletionSuccess.Inc(1)
@@ -627,7 +620,7 @@ func (c *TemporaryObjectCleaner) Start(ctx context.Context, stopper *stop.Stoppe
 			select {
 			case <-nextTickCh:
 				if err := c.doTemporaryObjectCleanup(ctx, stopper.ShouldQuiesce()); err != nil {
-					log.Dev.Warningf(ctx, "failed to clean temp objects: %v", err)
+					log.Warningf(ctx, "failed to clean temp objects: %v", err)
 				}
 			case <-stopper.ShouldQuiesce():
 				return
@@ -638,7 +631,7 @@ func (c *TemporaryObjectCleaner) Start(ctx context.Context, stopper *stop.Stoppe
 				c.testingKnobs.OnTempObjectsCleanupDone()
 			}
 			nextTick = nextTick.Add(TempObjectCleanupInterval.Get(&c.settings.SV))
-			log.Dev.Infof(ctx, "temporary object cleaner next scheduled to run at %s", nextTick)
+			log.Infof(ctx, "temporary object cleaner next scheduled to run at %s", nextTick)
 		}
 	})
 }

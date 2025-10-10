@@ -287,8 +287,7 @@ func dumpPatchArgsForRepo(repoName string) error {
 func buildFileProtoModeForRepo(repoName string) string {
 	// Only generate code for protos in these three directories.
 	if repoName == "com_github_cockroachdb_errors" ||
-		repoName == "com_github_prometheus_client_model" ||
-		repoName == "com_github_cockroachdb_changefeedpb" {
+		repoName == "com_github_prometheus_client_model" {
 		return "default"
 	}
 	return "disable_global"
@@ -296,22 +295,20 @@ func buildFileProtoModeForRepo(repoName string) string {
 
 func dumpBuildDirectivesForRepo(repoName string) {
 	var directives []string
-	// Common directives for proto resolution.
+	// Common directives for proto resolution, including generating with our
+	// internal compiler.
 	protoDirectives := []string{
-		"gazelle:go_proto_compilers @com_github_cockroachdb_cockroach//pkg/cmd/protoc-gen-gogoroach:protoc-gen-gogoroach_compiler",
-		"gazelle:go_grpc_compilers  @com_github_cockroachdb_cockroach//pkg/cmd/protoc-gen-gogoroach:protoc-gen-gogoroach_grpc_compiler",
-	}
-	// Generate .pb.go with our internal compiler.
-	gogoDirectives := append(protoDirectives, []string{
 		"gazelle:resolve proto proto gogoproto/gogo.proto @com_github_gogo_protobuf//gogoproto:gogo_proto",
-		"gazelle:resolve proto go   gogoproto/gogo.proto @com_github_gogo_protobuf//gogoproto",
-	}...)
+		"gazelle:resolve proto go gogoproto/gogo.proto @com_github_gogo_protobuf//gogoproto",
+		"gazelle:go_proto_compilers @com_github_cockroachdb_cockroach//pkg/cmd/protoc-gen-gogoroach:protoc-gen-gogoroach_compiler",
+		"gazelle:go_grpc_compilers @com_github_cockroachdb_cockroach//pkg/cmd/protoc-gen-gogoroach:protoc-gen-gogoroach_grpc_compiler",
+	}
 
-	if repoName == "com_github_cockroachdb_errors" {
-		directives = append(directives, gogoDirectives...)
-	} else if repoName == "com_github_prometheus_client_model" ||
-		repoName == "com_github_cockroachdb_changefeedpb" {
+	if repoName == "com_github_cockroachdb_pebble" {
+		directives = append(directives, "gazelle:build_tags invariants")
+	} else if repoName == "com_github_cockroachdb_errors" {
 		directives = append(directives, protoDirectives...)
+	} else if repoName == "com_github_prometheus_client_model" {
 		directives = append(directives,
 			"gazelle:resolve go go github.com/golang/protobuf/ptypes/timestamp @com_github_golang_protobuf//ptypes/timestamp:go_default_library")
 	} else if repoName == "io_opentelemetry_go_proto_otlp" {
@@ -377,11 +374,6 @@ func dumpNewDepsBzl(
 # The ` + "`remote` " + `can be EITHER a URL, or an absolute local path to a clone, such
 # as ` + "`/Users/ricky/go/src/github.com/cockroachdb/sentry-go`" + `. Bazel will clone
 # from the remote and check out the commit you specify.
-#
-# If the dependency has a WORKSPACE and BUILD.bazel files, you can build against
-# it directly using the --override_repository flag. For example:
-#   dev build short -- --override_repository=com_github_cockroachdb_pebble=~/go/src/github.com/cockroachdb/pebble
-# In Pebble, ` + "`make gen-bazel`" + ` can be used to generate the necessary files.
 
 def go_deps():
     # NOTE: We ensure that we pin to these specific dependencies by calling

@@ -5,6 +5,7 @@
 
 // {{/*
 //go:build execgen_template
+// +build execgen_template
 
 //
 // This file is the execgen template for sort.eg.go. It's formatted in a
@@ -109,7 +110,7 @@ type sort_TYPE_DIR_HANDLES_NULLSOp struct {
 }
 
 func (s *sort_TYPE_DIR_HANDLES_NULLSOp) init(
-	ctx context.Context, allocator *colmem.Allocator, col *coldata.Vec, order []int,
+	ctx context.Context, allocator *colmem.Allocator, col coldata.Vec, order []int,
 ) {
 	s.sortCol = col.TemplateType()
 	// {{if .CanAbbreviate}}

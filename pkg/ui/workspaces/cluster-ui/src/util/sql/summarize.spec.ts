@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import { assert } from "chai";
-
 import { summarize, computeOrUseStmtSummary } from "./summarize";
 
 describe("summarize", () => {

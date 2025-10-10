@@ -82,8 +82,6 @@ var connAuthConf = settings.RegisterStringSetting(
 	"",
 	settings.WithValidateString(checkHBASyntaxBeforeUpdatingSetting),
 	settings.WithPublic,
-	settings.WithReportable(false),
-	settings.Sensitive,
 )
 
 // loadLocalHBAConfigUponRemoteSettingChange initializes the local
@@ -250,26 +248,11 @@ func ParseAndNormalize(val string) (*hba.Conf, error) {
 	return conf, nil
 }
 
-type hbaEntryType string
-
-const (
-	jwtHBAEntry         hbaEntryType = "jwt_token"
-	certHBAEntry        hbaEntryType = "cert"
-	passwordHBAEntry    hbaEntryType = "password"
-	ldapHBAEntry        hbaEntryType = "ldap"
-	gssHBAEntry         hbaEntryType = "gss"
-	scramSHA256HBAEntry hbaEntryType = "scram-sha-256"
-)
-
-func (h hbaEntryType) string() string {
-	return string(h)
-}
-
 var insecureEntry = hba.Entry{
 	ConnType: hba.ConnHostAny,
 	User:     []rulebasedscanner.String{{Value: "all", Quoted: false}},
 	Address:  hba.AnyAddr{},
-	Method:   rulebasedscanner.String{Value: "insecure"},
+	Method:   rulebasedscanner.String{Value: "--insecure"},
 }
 
 var sessionRevivalEntry = hba.Entry{
@@ -283,7 +266,7 @@ var jwtAuthEntry = hba.Entry{
 	ConnType: hba.ConnHostAny,
 	User:     []rulebasedscanner.String{{Value: "all", Quoted: false}},
 	Address:  hba.AnyAddr{},
-	Method:   rulebasedscanner.String{Value: jwtHBAEntry.string()},
+	Method:   rulebasedscanner.String{Value: "jwt_token"},
 }
 
 var rootEntry = hba.Entry{

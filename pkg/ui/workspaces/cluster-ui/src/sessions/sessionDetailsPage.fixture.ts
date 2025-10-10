@@ -4,13 +4,6 @@
 // included in the /LICENSE file.
 
 import { createMemoryHistory } from "history";
-
-import {
-  CancelSessionRequestMessage,
-  CancelQueryRequestMessage,
-} from "src/api/terminateQueryApi";
-import { sessionAttr } from "src/util/constants";
-
 import { SessionDetailsProps } from "./sessionDetails";
 import {
   activeSession,
@@ -18,6 +11,11 @@ import {
   idleSession,
   idleTransactionSession,
 } from "./sessionsPage.fixture";
+import { sessionAttr } from "src/util/constants";
+import {
+  CancelSessionRequestMessage,
+  CancelQueryRequestMessage,
+} from "src/api/terminateQueryApi";
 
 const history = createMemoryHistory({ initialEntries: ["/sessions"] });
 

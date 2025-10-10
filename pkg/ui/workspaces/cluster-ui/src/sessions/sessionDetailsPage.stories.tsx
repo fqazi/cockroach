@@ -3,11 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { storiesOf } from "@storybook/react";
 import React from "react";
+import { storiesOf } from "@storybook/react";
 
 import { withBackground, withRouterProvider } from "src/storybook/decorators";
-
 import { SessionDetails } from "./sessionDetails";
 import {
   sessionDetailsActiveStmtPropsFixture,

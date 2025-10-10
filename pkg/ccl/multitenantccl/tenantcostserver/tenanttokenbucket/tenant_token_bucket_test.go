@@ -48,10 +48,10 @@ func (ts *testState) String() string {
 			[]string{
 				"Burst Limit: %.10g",
 				"Refill Rate: %.10g",
-				"Current Tokens: %.10g",
-				"Average Tokens: %.10g",
+				"Current RUs: %.10g",
+				"Average RUs: %.10g",
 			}, "\n"),
-		ts.TokenBurstLimit, ts.TokenRefillRate, ts.TokenCurrent, ts.TokenCurrentAvg,
+		ts.RUBurstLimit, ts.RURefillRate, ts.RUCurrent, ts.RUCurrentAvg,
 	)
 }
 
@@ -71,7 +71,8 @@ func (ts *testState) reconfigure(t *testing.T, d *datadriven.TestData) string {
 		d.Fatalf(t, "failed to unmarshal reconfigure values: %v", err)
 	}
 	ts.State.Reconfigure(
-		context.Background(), roachpb.TenantID{}, vals.Current, vals.Rate, vals.Limit)
+		context.Background(), roachpb.TenantID{}, vals.Current, vals.Rate, vals.Limit,
+		time.Time{}, 0, time.Time{}, 0)
 	return ts.String()
 }
 
@@ -91,7 +92,7 @@ func (ts *testState) update(t *testing.T, d *datadriven.TestData) string {
 
 func (ts *testState) request(t *testing.T, d *datadriven.TestData) string {
 	var vals struct {
-		Tokens float64
+		RU     float64
 		Period string
 	}
 	vals.Period = "10s"
@@ -99,21 +100,21 @@ func (ts *testState) request(t *testing.T, d *datadriven.TestData) string {
 		d.Fatalf(t, "failed to unmarshal init values: %v", err)
 	}
 	req := kvpb.TokenBucketRequest{
-		RequestedTokens:     vals.Tokens,
+		RequestedRU:         vals.RU,
 		TargetRequestPeriod: parseDuration(t, d, vals.Period),
 	}
 	resp := ts.State.Request(context.Background(), &req)
 	return fmt.Sprintf(
 		strings.Join(
 			[]string{
-				"Granted: %.10g tokens",
+				"Granted: %.10g RU",
 				"Trickle duration: %s",
-				"Fallback rate: %.10g tokens/s",
+				"Fallback rate: %.10g RU/s",
 				"%s",
 			},
 			"\n",
 		),
-		resp.GrantedTokens,
+		resp.GrantedRU,
 		resp.TrickleDuration,
 		resp.FallbackRate,
 		ts.String(),

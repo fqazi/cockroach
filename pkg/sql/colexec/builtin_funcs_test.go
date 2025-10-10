@@ -108,7 +108,7 @@ func TestBasicBuiltinFunctions(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		log.Dev.Infof(ctx, "%s", tc.desc)
+		log.Infof(ctx, "%s", tc.desc)
 		colexectestutils.RunTests(t, testAllocator, []colexectestutils.Tuples{tc.inputTuples}, tc.outputTuples, colexectestutils.OrderedVerifier,
 			func(input []colexecop.Operator) (colexecop.Operator, error) {
 				return colexectestutils.CreateTestProjectingOperator(
@@ -218,9 +218,9 @@ func BenchmarkCompareSpecializedOperators(b *testing.B) {
 	}
 	inputCols := []int{0, 1, 2}
 	p := &colexectestutils.MockTypeContext{Typs: typs}
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	semaCtx.IVarContainer = p
-	typedExpr, err := tree.TypeCheck(ctx, expr, &semaCtx, types.AnyElement)
+	typedExpr, err := tree.TypeCheck(ctx, expr, &semaCtx, types.Any)
 	if err != nil {
 		b.Fatal(err)
 	}

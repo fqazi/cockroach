@@ -3,36 +3,33 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Button, Icon, InlineAlert } from "@cockroachlabs/ui-components";
-import classnames from "classnames/bind";
-import classNames from "classnames/bind";
-import moment from "moment-timezone";
 import React from "react";
 import { Link } from "react-router-dom";
-
-import emptyListResultsImg from "src/assets/emptyState/empty-list-results.svg";
+import classnames from "classnames/bind";
+import { Button, Icon, InlineAlert } from "@cockroachlabs/ui-components";
 import { Button as CancelButton } from "src/button";
-import { EmptyTable } from "src/empty";
-import { ColumnDescriptor, SortedTable, SortSetting } from "src/sortedtable";
+import { SummaryCard } from "src/summaryCard";
 import {
   ActivateDiagnosticsModalRef,
   DiagnosticStatusBadge,
 } from "src/statementsDiagnostics";
-import { SummaryCard } from "src/summaryCard";
+import emptyListResultsImg from "src/assets/emptyState/empty-list-results.svg";
+import { filterByTimeScale, getDiagnosticsStatus } from "./diagnosticsUtils";
+import { EmptyTable } from "src/empty";
+import styles from "./diagnosticsView.module.scss";
+import { StatementDiagnosticsReport, withBasePath } from "../../api";
 import {
   TimeScale,
   timeScale1hMinOptions,
   TimeScaleDropdown,
 } from "src/timeScaleDropdown";
-import timeScaleStyles from "src/timeScaleDropdown/timeScale.module.scss";
-
-import { StatementDiagnosticsReport, withBasePath } from "../../api";
-import { FormattedTimescale } from "../../timeScaleDropdown/formattedTimeScale";
-import { Timestamp } from "../../timestamp";
+import { ColumnDescriptor, SortedTable, SortSetting } from "src/sortedtable";
 import { DATE_FORMAT_24_TZ } from "../../util";
-
-import { filterByTimeScale, getDiagnosticsStatus } from "./diagnosticsUtils";
-import styles from "./diagnosticsView.module.scss";
+import { Timestamp } from "../../timestamp";
+import moment from "moment-timezone";
+import { FormattedTimescale } from "../../timeScaleDropdown/formattedTimeScale";
+import timeScaleStyles from "src/timeScaleDropdown/timeScale.module.scss";
+import classNames from "classnames/bind";
 
 const timeScaleStylesCx = classNames.bind(timeScaleStyles);
 

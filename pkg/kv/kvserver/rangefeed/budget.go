@@ -228,7 +228,7 @@ func (f *FeedBudget) Close(ctx context.Context) {
 	f.closed.Do(func() {
 		f.mu.Lock()
 		f.mu.closed = true
-		f.mu.memBudget.Clear(ctx)
+		f.mu.memBudget.Close(ctx)
 		close(f.stopC)
 		f.mu.Unlock()
 	})
@@ -248,7 +248,7 @@ type SharedBudgetAllocation struct {
 func (a *SharedBudgetAllocation) Use(ctx context.Context) {
 	if a != nil {
 		if atomic.AddInt32(&a.refCount, 1) == 1 {
-			log.KvDistribution.Fatalf(ctx, "unexpected shared memory allocation usage increase after free")
+			log.Fatalf(ctx, "unexpected shared memory allocation usage increase after free")
 		}
 	}
 }
@@ -322,18 +322,16 @@ func NewBudgetFactory(ctx context.Context, config BudgetFactoryConfig) *BudgetFa
 		return nil
 	}
 	metrics := NewFeedBudgetMetrics(config.histogramWindowInterval)
-	systemRangeMonitor := mon.NewMonitorInheritWithLimit(
-		mon.MakeName("rangefeed-system-monitor"), systemRangeFeedBudget, config.rootMon,
-		true, /* longLiving */
-	)
+	systemRangeMonitor := mon.NewMonitorInheritWithLimit("rangefeed-system-monitor",
+		systemRangeFeedBudget, config.rootMon)
 	systemRangeMonitor.SetMetrics(metrics.SystemBytesCount, nil /* maxHist */)
 	systemRangeMonitor.Start(ctx, config.rootMon,
 		mon.NewStandaloneBudget(systemRangeFeedBudget))
 
 	rangeFeedPoolMonitor := mon.NewMonitorInheritWithLimit(
-		mon.MakeName("rangefeed-monitor"), config.totalRangeFeedBudget, config.rootMon,
-		true, /* longLiving */
-	)
+		"rangefeed-monitor",
+		config.totalRangeFeedBudget,
+		config.rootMon)
 	rangeFeedPoolMonitor.SetMetrics(metrics.SharedBytesCount, nil /* maxHist */)
 	rangeFeedPoolMonitor.StartNoReserved(ctx, config.rootMon)
 

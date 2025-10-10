@@ -69,7 +69,7 @@ func TestSQLTypesIntegration(t *testing.T) {
 			rows := make(rowenc.EncDatumRows, numRows)
 			for i := 0; i < numRows; i++ {
 				rows[i] = make(rowenc.EncDatumRow, 1)
-				rows[i][0] = rowenc.DatumToEncDatumUnsafe(typ, randgen.RandDatum(rng, typ, true /* nullOk */))
+				rows[i][0] = rowenc.DatumToEncDatum(typ, randgen.RandDatum(rng, typ, true /* nullOk */))
 			}
 			typs := []*types.T{typ}
 			source := execinfra.NewRepeatableRowSource(typs, rows)
@@ -78,13 +78,13 @@ func TestSQLTypesIntegration(t *testing.T) {
 
 			c, err := colserde.NewArrowBatchConverter(typs, colserde.BiDirectional, testMemAcc)
 			require.NoError(t, err)
-			defer c.Close(ctx)
+			defer c.Release(ctx)
 			r, err := colserde.NewRecordBatchSerializer(typs)
 			require.NoError(t, err)
 			arrowOp := newArrowTestOperator(columnarizer, c, r, typs)
 
 			materializer := NewMaterializer(
-				nil, /* streamingMemAcc */
+				nil, /* allocator */
 				flowCtx,
 				1, /* processorID */
 				colexecargs.OpWithMetaInfo{Root: arrowOp},
@@ -98,7 +98,7 @@ func TestSQLTypesIntegration(t *testing.T) {
 				require.Nil(t, meta)
 				numActualRows++
 				require.Equal(t, len(expectedRow), len(actualRow))
-				cmp, err := expectedRow[0].Compare(ctx, typ, &da, &evalCtx, &actualRow[0])
+				cmp, err := expectedRow[0].Compare(typ, &da, &evalCtx, &actualRow[0])
 				require.NoError(t, err)
 				require.Equal(t, 0, cmp)
 			}

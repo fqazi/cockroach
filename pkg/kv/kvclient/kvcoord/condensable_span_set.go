@@ -6,9 +6,8 @@
 package kvcoord
 
 import (
-	"cmp"
 	"context"
-	"slices"
+	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -122,7 +121,7 @@ func (s *condensableSpanSet) maybeCondense(
 		ri.Seek(ctx, roachpb.RKey(sp.Key), Ascending)
 		if !ri.Valid() {
 			// We haven't modified s.s yet, so it is safe to return.
-			log.Dev.Warningf(ctx, "failed to condense lock spans: %v", ri.Error())
+			log.Warningf(ctx, "failed to condense lock spans: %v", ri.Error())
 			return false
 		}
 		rangeID := ri.Desc().RangeID
@@ -138,7 +137,7 @@ func (s *condensableSpanSet) maybeCondense(
 
 	// Sort the buckets by size and collapse from largest to smallest
 	// until total size of uncondensed spans no longer exceeds threshold.
-	slices.SortFunc(buckets, func(a, b spanBucket) int { return -cmp.Compare(a.bytes, b.bytes) })
+	sort.Slice(buckets, func(i, j int) bool { return buckets[i].bytes > buckets[j].bytes })
 	s.s = localSpans // reset to hold just the local spans; will add newly condensed and remainder
 	for _, bucket := range buckets {
 		// Condense until we get to half the threshold.
@@ -158,7 +157,7 @@ func (s *condensableSpanSet) maybeCondense(
 				// If we didn't fatal here then we would need to ensure that the
 				// spans were restored or a transaction could lose part of its
 				// lock footprint.
-				log.Dev.Fatalf(ctx, "failed to condense lock spans: "+
+				log.Fatalf(ctx, "failed to condense lock spans: "+
 					"combining span %s yielded invalid result", s)
 			}
 		}

@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/server/dumpstore"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -34,13 +33,6 @@ const jemallocFileNamePrefix = "jeprof"
 // jemallocFileNameSuffix is the file name extension of jemalloc profile dumps.
 const jemallocFileNameSuffix = ".jeprof"
 
-var jemallCombinedFileSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"server.jemalloc.total_dump_size_limit",
-	"maximum combined disk size of preserved jemalloc profiles",
-	32<<20, // 32MiB
-)
-
 // NewNonGoAllocProfiler creates a NonGoAllocProfiler. dir is the
 // directory in which profiles are to be stored.
 func NewNonGoAllocProfiler(
@@ -50,7 +42,7 @@ func NewNonGoAllocProfiler(
 		return nil, errors.AssertionFailedf("need to specify dir for NewHeapProfiler")
 	}
 
-	dumpStore := dumpstore.NewStore(dir, jemallCombinedFileSize, st)
+	dumpStore := dumpstore.NewStore(dir, maxCombinedFileSize, st)
 
 	hp := &NonGoAllocProfiler{
 		profiler: makeProfiler(
@@ -61,9 +53,9 @@ func NewNonGoAllocProfiler(
 	}
 
 	if jemallocHeapDump != nil {
-		log.Dev.Infof(ctx, "writing jemalloc profiles to %s at least every %s", dir, hp.resetInterval())
+		log.Infof(ctx, "writing jemalloc profiles to %s at least every %s", dir, hp.resetInterval())
 	} else {
-		log.Dev.Infof(ctx, `to enable jmalloc profiling: "export MALLOC_CONF=prof:true" or "ln -s prof:true /etc/malloc.conf"`)
+		log.Infof(ctx, `to enable jmalloc profiling: "export MALLOC_CONF=prof:true" or "ln -s prof:true /etc/malloc.conf"`)
 	}
 
 	return hp, nil
@@ -81,7 +73,7 @@ func takeJemallocProfile(ctx context.Context, path string, _ ...interface{}) (su
 		return true
 	}
 	if err := jemallocHeapDump(path); err != nil {
-		log.Dev.Warningf(ctx, "error writing jemalloc heap %s: %v", path, err)
+		log.Warningf(ctx, "error writing jemalloc heap %s: %v", path, err)
 		return false
 	}
 	return true

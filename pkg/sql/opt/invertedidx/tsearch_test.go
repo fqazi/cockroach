@@ -20,7 +20,7 @@ import (
 )
 
 func TestTryFilterTSVector(t *testing.T) {
-	semaCtx := tree.MakeSemaContext(nil /* resolver */)
+	semaCtx := tree.MakeSemaContext()
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.NewTestingEvalContext(st)
 

@@ -28,7 +28,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/upgrade"
-	"github.com/cockroachdb/cockroach/pkg/util/stop"
+	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 )
 
 // planHookFn is a function that can intercept a statement being planned and
@@ -37,11 +37,13 @@ import (
 //
 // To intercept a statement the function should return a non-nil function for
 // `fn` as well as the appropriate sqlbase.ResultColumns describing the results
-// it will return (if any). `fn` will be called in a goroutine during the
-// `Start` phase of plan execution.
+// it will return (if any). If the hook plan requires sub-plans to be planned
+// and started by the usual machinery (e.g. to run a subquery), it must return
+// then as well. `fn` will be called in a goroutine during the `Start` phase of
+// plan execution.
 type planHookFn func(
 	context.Context, tree.Statement, PlanHookState,
-) (fn PlanHookRowFn, header colinfo.ResultColumns, avoidBuffering bool, err error)
+) (fn PlanHookRowFn, header colinfo.ResultColumns, subplans []planNode, avoidBuffering bool, err error)
 
 // PlanHookTypeCheckFn is a function that can intercept a statement being
 // prepared and type check its arguments. It exists in parallel to PlanHookFn.
@@ -62,10 +64,11 @@ type PlanHookTypeCheckFn func(
 // PlanHookRowFn describes the row-production for hook-created plans. The
 // channel argument is used to return results to the plan's runner. It's
 // a blocking channel, so implementors should be careful to only use blocking
-// sends on it when necessary.
+// sends on it when necessary. Any subplans returned by the hook when initially
+// called are passed back, planned and started, for the RowFn's use.
 //
 // TODO(dt): should this take runParams like a normal planNode.Next?
-type PlanHookRowFn func(context.Context, chan<- tree.Datums) error
+type PlanHookRowFn func(context.Context, []planNode, chan<- tree.Datums) error
 
 type planHook struct {
 	name      string
@@ -74,6 +77,10 @@ type planHook struct {
 }
 
 var planHooks []planHook
+
+func (p *planner) RunParams(ctx context.Context) runParams {
+	return runParams{ctx, p.ExtendedEvalContext(), p}
+}
 
 // PlanHookState exposes the subset of planner needed by plan hooks.
 // We pass this as one interface, rather than individually passing each field or
@@ -87,6 +94,7 @@ var planHooks []planHook
 // that gets passed back due to this inversion of roles.
 type PlanHookState interface {
 	resolver.SchemaResolver
+	RunParams(ctx context.Context) runParams
 	SemaCtx() *tree.SemaContext
 	ExtendedEvalContext() *extendedEvalContext
 	SessionData() *sessiondata.SessionData
@@ -114,7 +122,7 @@ type PlanHookState interface {
 	SpanConfigReconciler() spanconfig.Reconciler
 	SpanStatsConsumer() keyvisualizer.SpanStatsConsumer
 	BufferClientNotice(ctx context.Context, notice pgnotice.Notice)
-	SendClientNotice(ctx context.Context, notice pgnotice.Notice, immediateFlush bool) error
+	SendClientNotice(ctx context.Context, notice pgnotice.Notice) error
 	Txn() *kv.Txn
 	LookupTenantInfo(ctx context.Context, tenantSpec *tree.TenantSpec, op string) (*mtinfopb.TenantInfo, error)
 	GetAvailableTenantID(ctx context.Context, name roachpb.TenantName) (roachpb.TenantID, error)
@@ -144,13 +152,12 @@ func ClearPlanHooks() {
 // provided function during Start and serves the results it returns over the
 // channel.
 type hookFnNode struct {
-	zeroInputPlanNode
 	optColumnsSlot
 
-	name    string
-	f       PlanHookRowFn
-	header  colinfo.ResultColumns
-	stopper *stop.Stopper
+	name     string
+	f        PlanHookRowFn
+	header   colinfo.ResultColumns
+	subplans []planNode
 
 	run hookFnRun
 }
@@ -159,45 +166,46 @@ var _ planNode = &hookFnNode{}
 
 // hookFnRun contains the run-time state of hookFnNode during local execution.
 type hookFnRun struct {
-	// resultsCh is used to communicate both the progress of the function and
-	// its final result (this depends on the implementation). This channel is
-	// never closed.
 	resultsCh chan tree.Datums
-	// errCh will be closed when the worker goroutine exits.
-	errCh chan error
+	errCh     chan error
 
 	row tree.Datums
 }
 
 func newHookFnNode(
-	name string, fn PlanHookRowFn, header colinfo.ResultColumns, stopper *stop.Stopper,
+	name string, fn PlanHookRowFn, header colinfo.ResultColumns, subplans []planNode,
 ) *hookFnNode {
-	return &hookFnNode{name: name, f: fn, header: header, stopper: stopper}
+	return &hookFnNode{name: name, f: fn, header: header, subplans: subplans}
 }
 
 func (f *hookFnNode) startExec(params runParams) error {
+	// TODO(dan): Make sure the resultCollector is set to flush after every row.
 	f.run.resultsCh = make(chan tree.Datums)
 	f.run.errCh = make(chan error)
-	if err := f.stopper.RunAsyncTaskEx(
-		params.ctx,
-		stop.TaskOpts{
-			TaskName: f.name,
-			SpanOpt:  stop.ChildSpan,
-		},
-		func(ctx context.Context) {
-			defer close(f.run.errCh)
-			err := f.f(ctx, f.run.resultsCh)
-			select {
-			case <-ctx.Done():
-			case f.run.errCh <- err:
-			}
-		},
-	); err != nil {
-		// The async task is not started due to server shutdown, so we need to
-		// explicitly close the channel ourselves.
+	// Start a new span for the execution of the hook's plan. This is particularly
+	// important since that execution might outlive the span in params.ctx.
+	// Generally speaking, the subplan is not supposed to outlive the caller since
+	// hookFnNode.Next() is supposed to be called until the subplan is exhausted.
+	// However, there's no strict protocol in place about the goroutines that the
+	// subplan might spawn. For example, if the subplan creates a DistSQL flow,
+	// the cleanup of that flow might race with an error bubbling up to Next(). In
+	// particular, there seem to be races around context cancelation, as Next()
+	// listens for cancellation for better or worse.
+	//
+	// TODO(andrei): We should implement a protocol where the hookFnNode doesn't
+	// listen for cancellation and guarantee Next() doesn't return false until the
+	// subplan has completely shutdown.
+	subplanCtx, sp := tracing.ChildSpan(params.ctx, f.name)
+	go func() {
+		defer sp.Finish()
+		err := f.f(subplanCtx, f.subplans, f.run.resultsCh)
+		select {
+		case <-params.ctx.Done():
+		case f.run.errCh <- err:
+		}
 		close(f.run.errCh)
-		return err
-	}
+		close(f.run.resultsCh)
+	}()
 	return nil
 }
 
@@ -215,8 +223,7 @@ func (f *hookFnNode) Next(params runParams) (bool, error) {
 func (f *hookFnNode) Values() tree.Datums { return f.run.row }
 
 func (f *hookFnNode) Close(ctx context.Context) {
-	if f.run.errCh != nil {
-		// Block until the worker goroutine exits.
-		<-f.run.errCh
+	for _, sub := range f.subplans {
+		sub.Close(ctx)
 	}
 }

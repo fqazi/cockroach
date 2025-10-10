@@ -127,7 +127,6 @@ func (s *ColBatchDirectScan) DrainMeta() []execinfrapb.ProducerMetadata {
 	meta.Metrics = execinfrapb.GetMetricsMeta()
 	meta.Metrics.BytesRead = s.GetBytesRead()
 	meta.Metrics.RowsRead = s.GetRowsRead()
-	meta.Metrics.StageID = s.stageID
 	trailingMeta = append(trailingMeta, *meta)
 	return trailingMeta
 }
@@ -182,13 +181,12 @@ func NewColBatchDirectScan(
 	kvFetcherMemAcc *mon.BoundAccount,
 	flowCtx *execinfra.FlowCtx,
 	processorID int32,
-	stageID int32,
 	spec *execinfrapb.TableReaderSpec,
 	post *execinfrapb.PostProcessSpec,
 	typeResolver *descs.DistSQLTypeResolver,
 ) (*ColBatchDirectScan, []*types.T, error) {
 	base, bsHeader, tableArgs, err := newColBatchScanBase(
-		ctx, kvFetcherMemAcc, flowCtx, processorID, stageID, spec, post, typeResolver,
+		ctx, kvFetcherMemAcc, flowCtx, processorID, spec, post, typeResolver,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -210,15 +208,12 @@ func NewColBatchDirectScan(
 		bsHeader,
 		&fetchSpec,
 		spec.Reverse,
-		tableArgs.RequiresRawMVCCValues(),
 		spec.LockingStrength,
 		spec.LockingWaitPolicy,
 		spec.LockingDurability,
 		flowCtx.EvalCtx.SessionData().LockTimeout,
-		flowCtx.EvalCtx.SessionData().DeadlockTimeout,
 		kvFetcherMemAcc,
 		flowCtx.EvalCtx.TestingKnobs.ForceProductionValues,
-		spec.FetchSpec.External,
 	)
 	var hasDatumVec bool
 	for _, t := range tableArgs.typs {

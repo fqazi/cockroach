@@ -39,13 +39,6 @@ type MemoryMonitoringProfiler struct {
 const memMonitoringFileNamePrefix = "memmonitoring"
 const memMonitoringFileNameSuffix = ".txt"
 
-var memMonitoringCombinedFileSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"server.mem_monitoring.total_dump_size_limit",
-	"maximum combined disk size of preserved mem monitoring profiles",
-	4<<20, // 4MiB
-)
-
 // NewMemoryMonitoringProfiler returns a new MemoryMonitoringProfiler. dir is
 // the directory in which memory monitoring dumps are to be stored.
 func NewMemoryMonitoringProfiler(
@@ -55,7 +48,7 @@ func NewMemoryMonitoringProfiler(
 		return nil, errors.AssertionFailedf("need to specify dir for MemoryMonitoringProfiler")
 	}
 
-	dumpStore := dumpstore.NewStore(dir, memMonitoringCombinedFileSize, st)
+	dumpStore := dumpstore.NewStore(dir, maxCombinedFileSize, st)
 	mmp := &MemoryMonitoringProfiler{
 		profiler: makeProfiler(
 			newProfileStore(dumpStore, memMonitoringFileNamePrefix, memMonitoringFileNameSuffix, st),
@@ -63,7 +56,7 @@ func NewMemoryMonitoringProfiler(
 			envMemprofInterval,
 		),
 	}
-	log.Dev.Infof(ctx, "writing memory monitoring dumps to %s at least every %s", log.SafeManaged(dir), mmp.resetInterval())
+	log.Infof(ctx, "writing memory monitoring dumps to %s at least every %s", log.SafeManaged(dir), mmp.resetInterval())
 	return mmp, nil
 }
 
@@ -87,22 +80,22 @@ func takeMemoryMonitoringDump(
 	ctx context.Context, path string, args ...interface{},
 ) (success bool) {
 	if len(args) != 1 {
-		log.Dev.Errorf(ctx, "%v", errors.AssertionFailedf("expected exactly 1 argument (root memory monitor), got %d", len(args)))
+		log.Errorf(ctx, "%v", errors.AssertionFailedf("expected exactly 1 argument (root memory monitor), got %d", len(args)))
 		return false
 	}
 	root, ok := args[0].(*mon.BytesMonitor)
 	if !ok {
-		log.Dev.Errorf(ctx, "%v", errors.AssertionFailedf("expected *mon.BytesMonitor, got %T", args[0]))
+		log.Errorf(ctx, "%v", errors.AssertionFailedf("expected *mon.BytesMonitor, got %T", args[0]))
 		return false
 	}
 	f, err := os.Create(path)
 	if err != nil {
-		log.Dev.Warningf(ctx, "error creating memory monitoring dump %s: %v", path, err)
+		log.Warningf(ctx, "error creating memory monitoring dump %s: %v", path, err)
 		return false
 	}
 	defer f.Close()
 	if err = root.TraverseTree(getMonitorStateCb(f)); err != nil {
-		log.Dev.Warningf(ctx, "error traversing memory monitoring tree for dump %s: %v", path, err)
+		log.Warningf(ctx, "error traversing memory monitoring tree for dump %s: %v", path, err)
 		return false
 	}
 	return true

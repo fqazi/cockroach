@@ -6,7 +6,6 @@
 package partition
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -21,9 +20,10 @@ import (
 )
 
 func TestPrefixSorter(t *testing.T) {
+
 	defer leaktest.AfterTest(t)()
-	ctx := context.Background()
-	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := eval.MakeTestingEvalContext(st)
 	const (
 		local  = true
 		remote = false
@@ -104,7 +104,7 @@ func TestPrefixSorter(t *testing.T) {
 			index := &testcat.Index{}
 			index.SetPartitions(partitions)
 			// Make the PrefixSorter.
-			ps := GetSortedPrefixes(ctx, index, localPartitions, &evalCtx)
+			ps := GetSortedPrefixes(index, localPartitions, &evalCtx)
 
 			// Run the tests.
 			if res := ps.String(); res != tc.expected {

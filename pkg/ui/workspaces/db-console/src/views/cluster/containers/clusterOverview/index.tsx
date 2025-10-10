@@ -3,23 +3,22 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { util } from "@cockroachlabs/cluster-ui";
-import { Skeleton } from "antd";
 import classNames from "classnames";
-import { format } from "d3-format";
+import d3 from "d3";
 import React from "react";
 import { Helmet } from "react-helmet";
 import { connect } from "react-redux";
 import { createSelector } from "reselect";
 
-import { refreshNodes, refreshLiveness } from "src/redux/apiReducers";
-import { nodeSumsSelector } from "src/redux/nodes";
 import { AdminUIState } from "src/redux/state";
-import EmailSubscription from "src/views/dashboard/emailSubscription";
-import OverviewListAlerts from "src/views/shared/containers/alerts/overviewListAlerts";
+import { nodeSumsSelector } from "src/redux/nodes";
+import { util } from "@cockroachlabs/cluster-ui";
 import createChartComponent from "src/views/shared/util/d3-react";
-
 import capacityChart from "./capacity";
+import spinner from "assets/spinner.gif";
+import { refreshNodes, refreshLiveness } from "src/redux/apiReducers";
+import OverviewListAlerts from "src/views/shared/containers/alerts/overviewListAlerts";
+import EmailSubscription from "src/views/dashboard/emailSubscription";
 import "./cluster.styl";
 import {
   CapacityUsageTooltip,
@@ -41,7 +40,7 @@ interface CapacityUsageProps {
   usableCapacity: number;
 }
 
-const formatPercentage = format("0.1%");
+const formatPercentage = d3.format("0.1%");
 
 function renderCapacityUsage(props: CapacityUsageProps) {
   const { Bytes } = util;
@@ -277,22 +276,21 @@ class ClusterSummary extends React.Component<ClusterSummaryProps, {}> {
   }
 
   render() {
-    const children = [
-      ...renderCapacityUsage(this.props.capacityUsage),
-      ...renderNodeLiveness(this.props.nodeLiveness),
-      ...renderReplicationStatus(this.props.replicationStatus),
-    ];
+    const children = [];
+
+    if (this.props.loading) {
+      children.push(<img className="visualization__spinner" src={spinner} />);
+    } else {
+      children.push(
+        ...renderCapacityUsage(this.props.capacityUsage),
+        ...renderNodeLiveness(this.props.nodeLiveness),
+        ...renderReplicationStatus(this.props.replicationStatus),
+      );
+    }
 
     return (
       <section className="cluster-summary">
-        <Skeleton
-          loading={this.props.loading}
-          active
-          // This styling is necessary because this section is a grid.
-          style={{ gridColumn: "1 / span all" }}
-        >
-          {React.Children.toArray(children)}
-        </Skeleton>
+        {React.Children.toArray(children)}
       </section>
     );
   }

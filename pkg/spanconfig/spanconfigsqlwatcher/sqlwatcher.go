@@ -125,7 +125,7 @@ func (s *SQLWatcher) watch(
 			return buf.add(event)
 		}()
 		if err != nil {
-			log.Dev.Warningf(ctx, "error adding event %v: %v", event, err)
+			log.Warningf(ctx, "error adding event %v: %v", event, err)
 			select {
 			case <-ctx.Done():
 				// The context is canceled when the rangefeed is being closed, which
@@ -195,15 +195,6 @@ func (s *SQLWatcher) watchForDescriptorUpdates(
 			// Event for a tombstone on a tombstone -- nothing for us to do here.
 			return
 		}
-		// Skip over any modifications to the descriptor update tracking key, this
-		// is transaction information for the lease manager only.
-		if isUpdateKey, err := s.codec.DecodeDescUpdateKey(ev.Key); isUpdateKey || err != nil {
-			if err != nil {
-				log.Dev.Warningf(ctx, "failed to decode descriptor update key: %v", err)
-			}
-			return
-		}
-
 		value := ev.Value
 		if !ev.Value.IsPresent() {
 			// The descriptor was deleted.
@@ -247,7 +238,7 @@ func (s *SQLWatcher) watchForDescriptorUpdates(
 		return nil, err
 	}
 
-	log.Dev.Infof(ctx, "established range feed over system.descriptors starting at time %s", startTS)
+	log.Infof(ctx, "established range feed over system.descriptors starting at time %s", startTS)
 	return rf, nil
 }
 
@@ -306,12 +297,7 @@ func (s *SQLWatcher) watchForZoneConfigUpdates(
 		return nil, err
 	}
 
-	log.Dev.Infof(ctx, "established range feed over system.zones starting at time %s", startTS)
-
-	if s.knobs != nil && s.knobs.OnWatchForZoneConfigUpdatesEstablished != nil {
-		s.knobs.OnWatchForZoneConfigUpdatesEstablished()
-	}
-
+	log.Infof(ctx, "established range feed over system.zones starting at time %s", startTS)
 	return rf, nil
 }
 
@@ -407,6 +393,6 @@ func (s *SQLWatcher) watchForProtectedTimestampUpdates(
 		return nil, err
 	}
 
-	log.Dev.Infof(ctx, "established range feed over system.protected_ts_records starting at time %s", startTS)
+	log.Infof(ctx, "established range feed over system.protected_ts_records starting at time %s", startTS)
 	return rf, nil
 }

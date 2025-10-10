@@ -4,18 +4,16 @@
 // included in the /LICENSE file.
 
 import { expectSaga } from "redux-saga-test-plan";
-import * as matchers from "redux-saga-test-plan/matchers";
 import { throwError } from "redux-saga-test-plan/providers";
-
+import * as matchers from "redux-saga-test-plan/matchers";
 import { getLiveness } from "src/api/livenessApi";
-
-import { getLivenessResponse } from "./liveness.fixtures";
-import { actions, reducer, LivenessState } from "./liveness.reducer";
 import {
   receivedLivenessSaga,
   refreshLivenessSaga,
   requestLivenessSaga,
 } from "./liveness.sagas";
+import { actions, reducer, LivenessState } from "./liveness.reducer";
+import { getLivenessResponse } from "./liveness.fixtures";
 
 describe("Liveness sagas", () => {
   const livenessResponse = getLivenessResponse();

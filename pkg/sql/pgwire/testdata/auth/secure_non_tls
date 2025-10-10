@@ -34,9 +34,9 @@ ok
 
 # Now testuser can log in.
 
-connect password=abc user=testuser sslmode=disable show_authentication_method
+connect password=abc user=testuser sslmode=disable
 ----
-ok defaultdb cert-password
+ok defaultdb
 
 # But not with the wrong password.
 

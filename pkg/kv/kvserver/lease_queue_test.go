@@ -215,116 +215,6 @@ func TestLeaseQueueExpirationLeasesOnly(t *testing.T) {
 	st := cluster.MakeTestingClusterSettings()
 	kvserver.ExpirationLeasesOnly.Override(ctx, &st.SV, false) // override metamorphism
 
-	testutils.RunValues(t, "lease-type", roachpb.EpochAndLeaderLeaseType(), func(t *testing.T, leaseType roachpb.LeaseType) {
-		kvserver.OverrideDefaultLeaseType(ctx, &st.SV, leaseType)
-
-		tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
-			ServerArgs: base.TestServerArgs{
-				// Speed up the lease queue, which switches the lease type.
-				Settings:        st,
-				ScanMinIdleTime: time.Millisecond,
-				ScanMaxIdleTime: time.Millisecond,
-			},
-		})
-		defer tc.Stopper().Stop(ctx)
-		require.NoError(t, tc.WaitForFullReplication())
-		db := tc.Server(0).DB()
-		sqlDB := tc.ServerConn(0)
-
-		// Split off a few ranges so we have something to work with.
-		scratchKey := tc.ScratchRange(t)
-		for i := 0; i <= 255; i++ {
-			splitKey := append(scratchKey.Clone(), byte(i))
-			require.NoError(t, db.AdminSplit(ctx, splitKey, hlc.MaxTimestamp))
-		}
-
-		countLeases := func() (epoch, leader, expiration int64) {
-			for i := 0; i < tc.NumServers(); i++ {
-				require.NoError(t, tc.Server(i).GetStores().(*kvserver.Stores).VisitStores(func(s *kvserver.Store) error {
-					require.NoError(t, s.ComputeMetrics(ctx))
-					epoch += s.Metrics().LeaseEpochCount.Value()
-					leader += s.Metrics().LeaseLeaderCount.Value()
-					expiration += s.Metrics().LeaseExpirationCount.Value()
-					return nil
-				}))
-			}
-			return
-		}
-
-		// We expect to have both expiration and leader/epoch leases (based on the
-		// version of the test) at the start, since the meta and liveness ranges
-		// require expiration leases. However, it's possible that there are a few
-		// other stray expiration leases too, since lease transfers use expiration
-		// leases as well.
-		epochLeases, leaderLeases, expLeases := countLeases()
-		switch leaseType {
-		case roachpb.LeaseLeader:
-			require.Zero(t, epochLeases)
-			require.NotZero(t, leaderLeases)
-		case roachpb.LeaseEpoch:
-			require.NotZero(t, epochLeases)
-			require.Zero(t, leaderLeases)
-		default:
-			panic("unexpected")
-		}
-		require.NotZero(t, expLeases)
-		initialExpLeases := expLeases
-		t.Logf("initial: epochLeases=%d leaderLeases=%d expLeases=%d", epochLeases, leaderLeases, expLeases)
-
-		// Switch to expiration leases and wait for them to change.
-		_, err := sqlDB.ExecContext(ctx, `SET CLUSTER SETTING kv.expiration_leases_only.enabled = true`)
-		require.NoError(t, err)
-		require.Eventually(t, func() bool {
-			epochLeases, leaderLeases, expLeases = countLeases()
-			t.Logf("enabling: epochLeases=%d leaderLeases=%d expLeases=%d", epochLeases, leaderLeases, expLeases)
-			return epochLeases == 0 && leaderLeases == 0 && expLeases > 0
-		}, 30*time.Second, 500*time.Millisecond) // accommodate stress/deadlock builds
-
-		// Run a scan across the ranges, just to make sure they work.
-		scanCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		_, err = db.Scan(scanCtx, scratchKey, scratchKey.PrefixEnd(), 1)
-		require.NoError(t, err)
-
-		// Switch back to epoch or leader leases (based on the test variant) and
-		// wait for them to change. We still expect to have some required expiration
-		// leases, but they should be at or below the number of expiration leases we
-		// had at the start (primarily the meta and liveness ranges, but possibly a
-		// few more since lease transfers also use expiration leases).
-		_, err = sqlDB.ExecContext(ctx, `SET CLUSTER SETTING kv.expiration_leases_only.enabled = false`)
-		require.NoError(t, err)
-		require.Eventually(t, func() bool {
-			epochLeases, leaderLeases, expLeases = countLeases()
-			t.Logf("disabling: epochLeases=%d leaderLeases=%d expLeases=%d", epochLeases, leaderLeases, expLeases)
-
-			switch leaseType {
-			case roachpb.LeaseLeader:
-				return epochLeases == 0 && leaderLeases > 0 && expLeases > 0 && expLeases <= initialExpLeases
-			case roachpb.LeaseEpoch:
-				return epochLeases > 0 && leaderLeases == 0 && expLeases > 0 && expLeases <= initialExpLeases
-			default:
-				panic("unexpected")
-			}
-		}, 30*time.Second, 500*time.Millisecond)
-	})
-}
-
-// TestLeaseQueueSwitchesLeaseType tests that changing the value of the
-// kv.raft.leader_fortification.fraction_enabled cluster setting switches leases
-// on non-system ranges between epoch-based leases and leader leases.
-func TestLeaseQueueSwitchesLeaseType(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	skip.UnderRace(t) // too slow under stressrace
-	skip.UnderDeadlock(t)
-	skip.UnderShort(t)
-
-	ctx := context.Background()
-	st := cluster.MakeTestingClusterSettings()
-	kvserver.ExpirationLeasesOnly.Override(ctx, &st.SV, false)                 // override metamorphism
-	kvserver.RaftLeaderFortificationFractionEnabled.Override(ctx, &st.SV, 0.0) // override metamorphism
-
 	tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			// Speed up the lease queue, which switches the lease type.
@@ -347,13 +237,12 @@ func TestLeaseQueueSwitchesLeaseType(t *testing.T) {
 		require.NoError(t, db.AdminSplit(ctx, splitKey, hlc.MaxTimestamp))
 	}
 
-	countLeases := func() (epoch, leader, expiration int64) {
+	countLeases := func() (epoch int64, expiration int64) {
 		for i := 0; i < tc.NumServers(); i++ {
 			require.NoError(t, tc.Server(i).GetStores().(*kvserver.Stores).VisitStores(func(s *kvserver.Store) error {
 				require.NoError(t, s.ComputeMetrics(ctx))
-				epoch += s.Metrics().LeaseEpochCount.Value()
-				leader += s.Metrics().LeaseLeaderCount.Value()
 				expiration += s.Metrics().LeaseExpirationCount.Value()
+				epoch += s.Metrics().LeaseEpochCount.Value()
 				return nil
 			}))
 		}
@@ -361,132 +250,42 @@ func TestLeaseQueueSwitchesLeaseType(t *testing.T) {
 	}
 
 	// We expect to have both expiration and epoch leases at the start, since the
-	// meta and liveness ranges require expiration leases. However, we should have
-	// no leader leases.
-	epochLeases, leaderLeases, expLeases := countLeases()
+	// meta and liveness ranges require expiration leases. However, it's possible
+	// that there are a few other stray expiration leases too, since lease
+	// transfers use expiration leases as well.
+	epochLeases, expLeases := countLeases()
 	require.NotZero(t, epochLeases)
-	require.Zero(t, leaderLeases)
 	require.NotZero(t, expLeases)
-	t.Logf("initial: epochLeases=%d leaderLeases=%d expLeases=%d", epochLeases, leaderLeases, expLeases)
+	initialExpLeases := expLeases
+	t.Logf("initial: epochLeases=%d expLeases=%d", epochLeases, expLeases)
 
-	waitForLeasesToSwitch := func(name string, someEpoch, someLeader bool) {
-		require.Eventually(t, func() bool {
-			epochLeases, leaderLeases, expLeases = countLeases()
-			t.Logf("%s: epochLeases=%d leaderLeases=%d expLeases=%d", name, epochLeases, leaderLeases, expLeases)
-			return ((epochLeases > 0) == someEpoch) && ((leaderLeases > 0) == someLeader)
-		}, 30*time.Second, 500*time.Millisecond) // accommodate stress/deadlock builds
-
-		// Run a scan across the ranges, just to make sure they work.
-		scanCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		_, err := db.Scan(scanCtx, scratchKey, scratchKey.PrefixEnd(), 1)
-		require.NoError(t, err)
-	}
-
-	// Switch 100% of ranges to use leader fortification, which should allow them
-	// to switch to leader leases, except for the system ranges, which still
-	// require expiration-based leases.
-	_, err := sqlDB.ExecContext(ctx, `SET CLUSTER SETTING kv.raft.leader_fortification.fraction_enabled = 1.00`)
+	// Switch to expiration leases and wait for them to change.
+	_, err := sqlDB.ExecContext(ctx, `SET CLUSTER SETTING kv.expiration_leases_only.enabled = true`)
 	require.NoError(t, err)
-	waitForLeasesToSwitch("100%", false /* someEpoch */, true /* someLeader */)
-
-	// Switch to 50% of ranges using leader fortification, and by extension, leader
-	// leases. The other 50% should switch back to epoch-based leases.
-	_, err = sqlDB.ExecContext(ctx, `SET CLUSTER SETTING kv.raft.leader_fortification.fraction_enabled = 0.50`)
-	require.NoError(t, err)
-	waitForLeasesToSwitch("50%", true /* someEpoch */, true /* someLeader */)
-
-	// Disable leader leases, even on ranges using raft fortification. All leader
-	// leases should switch back to epoch-based leases.
-	_, err = sqlDB.ExecContext(ctx, `SET CLUSTER SETTING kv.leases.leader_leases.enabled = false`)
-	require.NoError(t, err)
-	waitForLeasesToSwitch("disabled", true /* someEpoch */, false /* someLeader */)
-}
-
-// TestUpdateLastUpdateTimesUsingStoreLiveness tests that `lastUpdateTimes` is
-// updated when the leader is supported by a follower in store liveness even if
-// it's not updating the map upon receiving followers' messages.
-func TestUpdateLastUpdateTimesUsingStoreLiveness(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	skip.UnderRace(t) // too slow under stressrace
-	skip.UnderDeadlock(t)
-	skip.UnderShort(t)
-
-	ctx := context.Background()
-	st := cluster.MakeTestingClusterSettings()
-	// This test is only relevant for leader leases.
-	kvserver.OverrideDefaultLeaseType(ctx, &st.SV, roachpb.LeaseLeader)
-
-	manualClock := hlc.NewHybridManualClock()
-	knobs := base.TestingKnobs{
-		Server: &server.TestingKnobs{
-			WallClock: manualClock,
-		},
-		Store: &kvserver.StoreTestingKnobs{
-			// Disable updating the `lastUpdateTimes` map when the leader receives
-			// messages from followers. This is to simulate the leader not
-			// sending/receiving any messages because it doesn't have any updates. We
-			// only want to do this for ranges that use leader leases (read: we want
-			// to omit the meta ranges/NodeLiveness range which always use expiration
-			// based leases and don't partake in fortification).
-			//
-			// Also see updateLastUpdateTimesUsingStoreLivenessRLocked which is the
-			// method being tested here.
-			DisableUpdateLastUpdateTimesMapOnRaftGroupStep: func(r *kvserver.Replica) bool {
-				return r.SupportFromEnabled(r.DescRLocked())
-			},
-		},
-	}
-
-	tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
-			// Speed up the lease queue, which switches the lease type.
-			Settings:        st,
-			ScanMinIdleTime: time.Millisecond,
-			ScanMaxIdleTime: time.Millisecond,
-			Knobs:           knobs,
-		},
-	})
-	defer tc.Stopper().Stop(ctx)
-	require.NoError(t, tc.WaitForFullReplication())
-
-	db := tc.Server(0).DB()
-	// Split off a few ranges so we have something to work with.
-	scratchKey := tc.ScratchRange(t)
-	for i := 0; i <= 16; i++ {
-		splitKey := append(scratchKey.Clone(), byte(i))
-		require.NoError(t, db.AdminSplit(ctx, splitKey, hlc.MaxTimestamp))
-	}
-
-	// Increment the manual clock to ensure that all followers are initially
-	// considered inactive.
-	manualClock.Increment(time.Second.Nanoseconds() * 3)
-
-	// Make sure that the replicas are considered active.
 	require.Eventually(t, func() bool {
-		allActive := true
-		for i := 0; i < tc.NumServers(); i++ {
-			store, err := tc.Server(i).GetStores().(*kvserver.Stores).
-				GetStore(tc.Server(i).GetFirstStoreID())
-			require.NoError(t, err)
+		epochLeases, expLeases = countLeases()
+		t.Logf("enabling: epochLeases=%d expLeases=%d", epochLeases, expLeases)
+		return epochLeases == 0 && expLeases > 0
+	}, 30*time.Second, 500*time.Millisecond) // accomodate stress/deadlock builds
 
-			store.VisitReplicas(func(r *kvserver.Replica) (wantMore bool) {
-				leader := tc.GetRaftLeader(t, r.Desc().StartKey)
+	// Run a scan across the ranges, just to make sure they work.
+	scanCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, err = db.Scan(scanCtx, scratchKey, scratchKey.PrefixEnd(), 1)
+	require.NoError(t, err)
 
-				// Any replica that is not active will cause this check to repeat.
-				if !leader.IsFollowerActiveSince(r.ReplicaID(), leader.Clock().PhysicalTime(),
-					time.Second) {
-					allActive = false
-				}
-
-				return true
-			})
-		}
-
-		return allActive
-	}, 45*time.Second, 1*time.Second) // accommodate stress
+	// Switch back to epoch leases and wait for them to change. We still expect to
+	// have some required expiration leases, but they should be at or below the
+	// number of expiration leases we had at the start (primarily the meta and
+	// liveness ranges, but possibly a few more since lease transfers also use
+	// expiration leases).
+	_, err = sqlDB.ExecContext(ctx, `SET CLUSTER SETTING kv.expiration_leases_only.enabled = false`)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		epochLeases, expLeases = countLeases()
+		t.Logf("disabling: epochLeases=%d expLeases=%d", epochLeases, expLeases)
+		return epochLeases > 0 && expLeases > 0 && expLeases <= initialExpLeases
+	}, 30*time.Second, 500*time.Millisecond)
 }
 
 // TestLeaseQueueRaceReplicateQueue asserts that the replicate/lease queue will
@@ -533,9 +332,9 @@ func TestLeaseQueueRaceReplicateQueue(t *testing.T) {
 	// replica in the replicate queue synchronously. The lease queue processing
 	// should block on the block mutex above, causing the replicate queue to
 	// return a AllocatorTokenErr trying to process the replica.
-	_, _ = repl.Store().Enqueue(ctx, "lease", repl, true /* skipShouldQueue */, true /* async */)
+	_, _, _ = repl.Store().Enqueue(ctx, "lease", repl, true /* skipShouldQueue */, true /* async */)
 	<-blocked
-	processErr, _ := repl.Store().Enqueue(ctx, "replicate", repl, true /* skipShouldQueue */, false /* async */)
+	_, processErr, _ := repl.Store().Enqueue(ctx, "replicate", repl, true /* skipShouldQueue */, false /* async */)
 	require.ErrorIs(t, processErr, plan.NewErrAllocatorToken("lease"))
 }
 

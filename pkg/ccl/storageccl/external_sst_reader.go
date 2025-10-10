@@ -17,11 +17,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/ioctx"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/sstable"
-	"github.com/cockroachdb/pebble/vfs"
 )
 
 // RemoteSSTs lets external SSTables get iterated directly in some cases,
@@ -77,7 +75,6 @@ func newMemPebbleSSTReader(
 ) (storage.SimpleMVCCIterator, error) {
 
 	inMemorySSTs := make([][]byte, 0, len(storeFiles))
-	memAcc := mon.NewStandaloneUnlimitedAccount()
 
 	for _, sf := range storeFiles {
 		f, _, err := getFileWithRetry(ctx, sf.FilePath, sf.Store)
@@ -90,7 +87,7 @@ func newMemPebbleSSTReader(
 			return nil, err
 		}
 		if encryption != nil {
-			content, err = DecryptFile(ctx, content, encryption.Key, memAcc)
+			content, err = DecryptFile(ctx, content, encryption.Key, nil /* mm */)
 			if err != nil {
 				return nil, err
 			}
@@ -218,7 +215,7 @@ func (r *sstReader) Close() error {
 }
 
 // Stat returns the size of the file.
-func (r *sstReader) Stat() (vfs.FileInfo, error) {
+func (r *sstReader) Stat() (os.FileInfo, error) {
 	return r.sz, nil
 }
 
@@ -302,10 +299,9 @@ func (r *sstReader) ReadAt(p []byte, offset int64) (int, error) {
 
 type sizeStat int64
 
-func (s sizeStat) Size() int64          { return int64(s) }
-func (sizeStat) IsDir() bool            { panic(errors.AssertionFailedf("unimplemented")) }
-func (sizeStat) ModTime() time.Time     { panic(errors.AssertionFailedf("unimplemented")) }
-func (sizeStat) Mode() os.FileMode      { panic(errors.AssertionFailedf("unimplemented")) }
-func (sizeStat) Name() string           { panic(errors.AssertionFailedf("unimplemented")) }
-func (sizeStat) Sys() interface{}       { panic(errors.AssertionFailedf("unimplemented")) }
-func (sizeStat) DeviceID() vfs.DeviceID { panic(errors.AssertionFailedf("unimplemented")) }
+func (s sizeStat) Size() int64      { return int64(s) }
+func (sizeStat) IsDir() bool        { panic(errors.AssertionFailedf("unimplemented")) }
+func (sizeStat) ModTime() time.Time { panic(errors.AssertionFailedf("unimplemented")) }
+func (sizeStat) Mode() os.FileMode  { panic(errors.AssertionFailedf("unimplemented")) }
+func (sizeStat) Name() string       { panic(errors.AssertionFailedf("unimplemented")) }
+func (sizeStat) Sys() interface{}   { panic(errors.AssertionFailedf("unimplemented")) }

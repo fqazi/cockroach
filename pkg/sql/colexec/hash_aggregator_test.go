@@ -412,7 +412,7 @@ func TestHashAggregator(t *testing.T) {
 	defer evalCtx.Stop(context.Background())
 	rng, _ := randutil.NewTestRand()
 	for _, tc := range hashAggregatorTestCases {
-		log.Dev.Infof(context.Background(), "%s", tc.name)
+		log.Infof(context.Background(), "%s", tc.name)
 		constructors, constArguments, outputTypes, err := colexecagg.ProcessAggregations(
 			context.Background(), &evalCtx, nil /* semaCtx */, tc.spec.Aggregations, tc.typs,
 		)
@@ -429,6 +429,7 @@ func TestHashAggregator(t *testing.T) {
 			func(sources []colexecop.Operator) (colexecop.Operator, error) {
 				args := &colexecagg.NewAggregatorArgs{
 					Allocator:      testAllocator,
+					MemAccount:     testMemAcc,
 					Input:          sources[0],
 					InputTypes:     tc.typs,
 					Spec:           tc.spec,
@@ -512,7 +513,7 @@ func BenchmarkHashAggregatorInputTuplesTracking(b *testing.B) {
 								DiskQueueCfg:       queueCfg,
 								FDSemaphore:        &colexecop.TestingSemaphore{},
 								DiskAcc:            testDiskAcc,
-								DiskQueueMemAcc:    testMemAcc,
+								ConverterMemAcc:    testMemAcc,
 							},
 						)
 					},
@@ -578,7 +579,7 @@ func BenchmarkHashAggregatorPartialOrder(b *testing.B) {
 				DiskQueueCfg:       queueCfg,
 				FDSemaphore:        &colexecop.TestingSemaphore{},
 				DiskAcc:            testDiskAcc,
-				DiskQueueMemAcc:    testMemAcc,
+				ConverterMemAcc:    testMemAcc,
 			},
 		)
 	}

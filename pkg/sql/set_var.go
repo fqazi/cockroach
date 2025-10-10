@@ -26,12 +26,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
-	"github.com/dustin/go-humanize"
 )
 
 // setVarNode represents a SET {SESSION | LOCAL} statement.
 type setVarNode struct {
-	zeroInputPlanNode
 	name  string
 	local bool
 	v     sessionVar
@@ -40,9 +38,7 @@ type setVarNode struct {
 }
 
 // resetAllNode represents a RESET ALL statement.
-type resetAllNode struct {
-	zeroInputPlanNode
-}
+type resetAllNode struct{}
 
 // SetVar sets session variables.
 // Privileges: None.
@@ -205,8 +201,8 @@ func (p *planner) resetAllSessionVars(ctx context.Context) error {
 		if v.Set == nil && v.RuntimeSet == nil && v.SetWithPlanner == nil {
 			continue
 		}
-		// For Postgres compatibility, don't reset some settings here.
-		if v.NoResetAll {
+		// For Postgres compatibility, Don't reset `role` here.
+		if varName == "role" {
 			continue
 		}
 		hasDefault, defVal := getSessionVarDefaultString(
@@ -369,8 +365,6 @@ func makeTimeoutVarGetter(
 			}
 		case *tree.DInt:
 			timeout = time.Duration(*v) * time.Millisecond
-		default:
-			return "", newVarValueError(varName, values[0].String())
 		}
 		return timeout.String(), nil
 	}
@@ -428,20 +422,6 @@ func lockTimeoutVarSet(ctx context.Context, m sessionDataMutator, s string) erro
 	}
 
 	m.SetLockTimeout(timeout)
-	return nil
-}
-
-func deadlockTimeoutVarSet(ctx context.Context, m sessionDataMutator, s string) error {
-	timeout, err := validateTimeoutVar(
-		m.data.GetIntervalStyle(),
-		s,
-		"deadlock_timeout",
-	)
-	if err != nil {
-		return err
-	}
-
-	m.SetDeadlockTimeout(timeout)
 	return nil
 }
 
@@ -524,34 +504,4 @@ func newVarValueError(varName, actualVal string, allowedVals ...string) (err err
 func newCannotChangeParameterError(varName string) error {
 	return pgerror.Newf(pgcode.CantChangeRuntimeParam,
 		"parameter %q cannot be changed", varName)
-}
-
-func makeByteSizeVarGetter(
-	varName string,
-) func(
-	ctx context.Context, evalCtx *extendedEvalContext, values []tree.TypedExpr, txn *kv.Txn) (string, error) {
-	return func(
-		ctx context.Context, evalCtx *extendedEvalContext, values []tree.TypedExpr, txn *kv.Txn,
-	) (string, error) {
-		if len(values) != 1 {
-			return "", newSingleArgVarError(varName)
-		}
-		d, err := eval.Expr(ctx, &evalCtx.Context, values[0])
-		if err != nil {
-			return "", err
-		}
-
-		switch v := eval.UnwrapDatum(ctx, &evalCtx.Context, d).(type) {
-		case *tree.DString:
-			return string(*v), nil
-		case *tree.DInt:
-			size := int64(*v)
-			if size < 0 {
-				return "", errors.Newf("%s cannot be set to a negative value", varName)
-			}
-			return humanize.IBytes(uint64(size)), nil
-		default:
-			return "", newVarValueError(varName, values[0].String())
-		}
-	}
 }

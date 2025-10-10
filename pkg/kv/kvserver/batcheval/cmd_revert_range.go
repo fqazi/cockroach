@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
@@ -87,7 +86,7 @@ func isEmptyKeyTimeRange(
 		UpperBound:   to,
 		MinTimestamp: since.Next(), // make exclusive
 		MaxTimestamp: until,
-		ReadCategory: fs.BatchEvalReadCategory,
+		ReadCategory: storage.BatchEvalReadCategory,
 	})
 	if err != nil {
 		return false, err

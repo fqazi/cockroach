@@ -14,12 +14,10 @@
  * it should be given the full redux treatment with unique modification actions.
  */
 
-import { util } from "@cockroachlabs/cluster-ui";
-import clone from "lodash/clone";
-import isNil from "lodash/isNil";
+import _ from "lodash";
+import { createSelector, Selector } from "reselect";
 import { Action } from "redux";
 import { call, takeEvery } from "redux-saga/effects";
-import { createSelector, Selector } from "reselect";
 
 import { PayloadAction } from "src/interfaces/action";
 
@@ -50,8 +48,7 @@ function saveToSessionStorage(data: LocalSettingData) {
   try {
     sessionStorage.setItem(`${STORAGE_PREFIX}/${data.key}`, value);
   } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn(util.maybeError(e).message);
+    console.warn(e.message);
   }
 }
 
@@ -71,14 +68,14 @@ export function localSettingsReducer(
   state: LocalSettingsState = {},
   action: Action,
 ): LocalSettingsState {
-  if (isNil(action)) {
+  if (_.isNil(action)) {
     return state;
   }
 
   switch (action.type) {
     case SET_UI_VALUE: {
       const { payload } = action as PayloadAction<LocalSettingData>;
-      state = clone(state);
+      state = _.clone(state);
       state[payload.key] = payload.value;
       return state;
     }

@@ -15,7 +15,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/cli/cliflags"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -86,12 +85,12 @@ func setupLogging(ctx context.Context, cmd *cobra.Command, isServerCmd, applyCon
 	// flag) is passed without argument, see below.
 	commandSpecificDefaultLegacyStderrOverride := severity.INFO
 
-	if isDemoCmd(cmd) || cmd == genMetricListCmd || cmd == debugTimeSeriesDumpCmd {
+	if isDemoCmd(cmd) || cmd == genMetricListCmd {
 		// `cockroach demo` and `cockroach gen metric-list` are special:
 		// they start a server, but without
 		// disk and interactively. We don't want to litter the console
 		// with warning or error messages unless overridden; however,
-		// should the command encounter a log.Dev.Fatal event, we want
+		// should the command encounter a log.Fatal event, we want
 		// to inform the user (who is guaranteed to be looking at the screen).
 		//
 		// NB: this can be overridden from the command line as usual.
@@ -177,31 +176,15 @@ func setupLogging(ctx context.Context, cmd *cobra.Command, isServerCmd, applyCon
 	}
 
 	// Configuration is ready to be applied. Ensure that the output log
-	// directories exist. We also initialize write metrics for each directory.
-	fileSinkMetricsForDir := make(map[string]log.FileSinkMetrics)
+	// directories exist.
 	if err := h.Config.IterateDirectories(func(logDir string) error {
-		if err := os.MkdirAll(logDir, 0755); err != nil {
-			return errors.Wrap(err, "unable to create log directory")
-		}
-		writeStatsCollector, err := serverCfg.DiskWriteStats.GetOrCreateCollector(logDir)
-		if err != nil {
-			return errors.Wrap(err, "unable to get stats collector for log directory")
-		}
-		if _, ok := fileSinkMetricsForDir[logDir]; !ok {
-			logBytesWritten := writeStatsCollector.CreateStat(fs.CRDBLogWriteCategory)
-			metric := log.FileSinkMetrics{LogBytesWritten: logBytesWritten}
-			fileSinkMetricsForDir[logDir] = metric
-		}
-		return nil
+		return os.MkdirAll(logDir, 0755)
 	}); err != nil {
-		return err
+		return errors.Wrap(err, "unable to create log directory")
 	}
 
 	// Configuration ready and directories exist; apply it.
-	fatalOnLogStall := func() bool {
-		return fs.MaxSyncDurationFatalOnExceeded.Get(&serverCfg.Settings.SV)
-	}
-	logShutdownFn, err := log.ApplyConfig(h.Config, fileSinkMetricsForDir, fatalOnLogStall)
+	logShutdownFn, err := log.ApplyConfig(h.Config)
 	if err != nil {
 		return err
 	}
@@ -240,7 +223,6 @@ func setupLogging(ctx context.Context, cmd *cobra.Command, isServerCmd, applyCon
 	serverCfg.GoroutineDumpDirName = filepath.Join(outputDirectory, base.GoroutineDumpDir)
 	serverCfg.HeapProfileDirName = filepath.Join(outputDirectory, base.HeapProfileDir)
 	serverCfg.CPUProfileDirName = filepath.Join(outputDirectory, base.CPUProfileDir)
-	serverCfg.ExecutionTraceDirName = filepath.Join(outputDirectory, base.ExecutionTraceDir)
 	serverCfg.InflightTraceDirName = filepath.Join(outputDirectory, base.InflightTraceDir)
 
 	return nil
@@ -463,16 +445,14 @@ func addPredefinedLogFiles(c *logconfig.Config) {
 const predefinedLogFiles = `
 sinks:
  file-groups:
+  kv-distribution:        { channels: KV_DISTRIBUTION }
   default:
     channels:
       INFO: [DEV, OPS]
       WARNING: all except [DEV, OPS]
-  changefeed:             { channels: CHANGEFEED }
-  health:                 { channels: HEALTH }
-  kv-distribution:        { channels: KV_DISTRIBUTION }
-  kv-exec:                { channels: KV_EXEC }
+  health:                 { channels: HEALTH  }
   pebble:                 { channels: STORAGE }
-  security:               { channels: [PRIVILEGES, USER_ADMIN], auditable: true }
+  security:               { channels: [PRIVILEGES, USER_ADMIN], auditable: true  }
   sql-auth:               { channels: SESSIONS, auditable: true }
   sql-audit:              { channels: SENSITIVE_ACCESS, auditable: true }
   sql-exec:               { channels: SQL_EXEC }

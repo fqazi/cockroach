@@ -3,16 +3,15 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
-import { format as d3Format } from "d3-format";
-import { scaleLinear } from "d3-scale";
 import React from "react";
+import classNames from "classnames/bind";
+import { scaleLinear } from "d3-scale";
+import { format as d3Format } from "d3-format";
 
 import { stdDevLong, longToInt, NumericStat } from "src/util";
-
-import styles from "./barCharts.module.scss";
+import { Tooltip } from "@cockroachlabs/ui-components";
 import { clamp, normalizeClosedDomain } from "./utils";
+import styles from "./barCharts.module.scss";
 
 const cx = classNames.bind(styles);
 

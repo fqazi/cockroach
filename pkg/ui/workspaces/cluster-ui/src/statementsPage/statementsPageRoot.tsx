@@ -4,21 +4,19 @@
 // included in the /LICENSE file.
 
 import React from "react";
-
-import { Anchor } from "src/anchor";
+import { StatementViewType } from "./statementPageTypes";
 import { Option } from "src/selectWithDescription/selectWithDescription";
 import { SQLActivityRootControls } from "src/sqlActivityRootControls/sqlActivityRootControls";
 import {
   StatementsPage,
   StatementsPageProps,
 } from "src/statementsPage/statementsPage";
-import { statementsSql } from "src/util/docs";
-
 import {
   ActiveStatementsView,
   ActiveStatementsViewProps,
 } from "./activeStatementsView";
-import { StatementViewType } from "./statementPageTypes";
+import { statementsSql } from "src/util/docs";
+import { Anchor } from "src/anchor";
 
 export type StatementsPageRootProps = {
   fingerprintsPageProps: StatementsPageProps;

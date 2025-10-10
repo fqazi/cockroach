@@ -3,37 +3,23 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { util, Loading } from "@cockroachlabs/cluster-ui";
-import * as protos from "@cockroachlabs/crdb-protobuf-client";
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import { deviation as d3Deviation, mean as d3Mean } from "d3-array";
-import capitalize from "lodash/capitalize";
-import filter from "lodash/filter";
-import flatMap from "lodash/flatMap";
-import flow from "lodash/flow";
-import isEmpty from "lodash/isEmpty";
-import isUndefined from "lodash/isUndefined";
-import map from "lodash/map";
-import max from "lodash/max";
-import sortBy from "lodash/sortBy";
-import union from "lodash/union";
-import values from "lodash/values";
+import { deviation as d3Deviation, mean as d3Mean } from "d3";
+import _, { capitalize } from "lodash";
 import moment from "moment-timezone";
-import { common } from "protobufjs";
 import React, { Fragment } from "react";
 import { Helmet } from "react-helmet";
 import { connect } from "react-redux";
-import { withRouter, RouteComponentProps } from "react-router-dom";
 import { createSelector } from "reselect";
+import { withRouter, RouteComponentProps } from "react-router-dom";
+import * as protos from "@cockroachlabs/crdb-protobuf-client";
+import NodeLivenessStatus = protos.cockroach.kv.kvserver.liveness.livenesspb.NodeLivenessStatus;
 
-import { InlineAlert } from "src/components";
 import {
   CachedDataReducerState,
   refreshConnectivity,
   refreshLiveness,
   refreshNodes,
 } from "src/redux/apiReducers";
-import { connectivitySelector } from "src/redux/connectivity";
 import {
   NodesSummary,
   nodesSummarySelector,
@@ -41,25 +27,24 @@ import {
   selectNodeRequestStatus,
 } from "src/redux/nodes";
 import { AdminUIState } from "src/redux/state";
+import { util } from "@cockroachlabs/cluster-ui";
 import { trackFilter, trackCollapseNodes } from "src/util/analytics";
-import { getDataFromServer } from "src/util/dataFromServer";
-import { getMatchParamByName } from "src/util/query";
 import {
   getFilters,
   localityToString,
   NodeFilterList,
   NodeFilterListProps,
 } from "src/views/reports/components/nodeFilterList";
-
+import { Loading } from "@cockroachlabs/cluster-ui";
 import { Latency } from "./latency";
 import { Legend } from "./legend";
 import Sort from "./sort";
+import { getMatchParamByName } from "src/util/query";
 import "./network.styl";
-
-import NodeLivenessStatus = protos.cockroach.kv.kvserver.liveness.livenesspb.NodeLivenessStatus;
-import IConnectivity = cockroach.server.serverpb.NetworkConnectivityResponse.IConnectivity;
-import IPeer = cockroach.server.serverpb.NetworkConnectivityResponse.IPeer;
-import IDuration = common.IDuration;
+import { connectivitySelector } from "src/redux/connectivity";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
+import { getDataFromServer } from "src/util/dataFromServer";
+import { InlineAlert } from "src/components";
 
 interface NetworkOwnProps {
   nodesSummary: NodesSummary;
@@ -102,10 +87,10 @@ interface INetworkState {
 
 function contentAvailable(nodesSummary: NodesSummary) {
   return (
-    !isUndefined(nodesSummary) &&
-    !isEmpty(nodesSummary.nodeStatuses) &&
-    !isEmpty(nodesSummary.nodeStatusByID) &&
-    !isEmpty(nodesSummary.nodeIDs)
+    !_.isUndefined(nodesSummary) &&
+    !_.isEmpty(nodesSummary.nodeStatuses) &&
+    !_.isEmpty(nodesSummary.nodeStatusByID) &&
+    !_.isEmpty(nodesSummary.nodeIDs)
   );
 }
 
@@ -185,8 +170,8 @@ export class Network extends React.Component<NetworkProps, INetworkState> {
       data.indexOf(value) === -1
         ? [...data, value]
         : data.length === 1
-          ? null
-          : data.filter((m: string | number) => m !== value);
+        ? null
+        : data.filter((m: string | number) => m !== value);
     trackFilter(capitalize(key), value);
     this.setState({
       filter: {
@@ -259,15 +244,15 @@ export class Network extends React.Component<NetworkProps, INetworkState> {
     const mean = d3Mean(latencies);
     const sortParams = this.getSortParams(displayIdentities);
     let stddev = d3Deviation(latencies);
-    if (isUndefined(stddev)) {
+    if (_.isUndefined(stddev)) {
       stddev = 0;
     }
     // If there is no stddev, we should not display a legend. So there is no
     // need to set these values.
     const stddevPlus1 = stddev > 0 ? mean + stddev : 0;
     const stddevPlus2 = stddev > 0 ? stddevPlus1 + stddev : 0;
-    const stddevMinus1 = stddev > 0 ? max([mean - stddev, 0]) : 0;
-    const stddevMinus2 = stddev > 0 ? max([stddevMinus1 - stddev, 0]) : 0;
+    const stddevMinus1 = stddev > 0 ? _.max([mean - stddev, 0]) : 0;
+    const stddevMinus2 = stddev > 0 ? _.max([stddevMinus1 - stddev, 0]) : 0;
     const latencyTable = (
       <Latency
         displayIdentities={this.filteredDisplayIdentities(displayIdentities)}
@@ -374,17 +359,16 @@ export class Network extends React.Component<NetworkProps, INetworkState> {
   getDisplayIdentities = (identityByID: Map<number, Identity>): Identity[] => {
     const { match } = this.props;
     const nodeId = getMatchParamByName(match, "node_id");
-    const identityContent = sortBy(
-      Array.from(identityByID.values()),
+    const identityContent = _.chain(Array.from(identityByID.values())).sortBy(
       identity => identity.nodeID,
     );
-    const sort = this.getSortParams(identityContent);
+    const sort = this.getSortParams(identityContent.value());
     if (sort.some(x => x.id === nodeId)) {
-      return sortBy(identityContent, identity =>
-        getValueFromString(nodeId, identity.locality, true),
-      );
+      return identityContent
+        .sortBy(identity => getValueFromString(nodeId, identity.locality, true))
+        .value();
     }
-    return identityContent;
+    return identityContent.value();
   };
 
   renderContent(
@@ -401,7 +385,7 @@ export class Network extends React.Component<NetworkProps, INetworkState> {
 
     // Combine Node Ids known by gossip client (from `connectivity`) and from
     // Nodes api to make sure we show all known nodes.
-    const knownNodeIds = union(
+    const knownNodeIds = _.union(
       Object.keys(nodesSummary.livenessByNodeID),
       Object.keys(connections),
     );
@@ -410,7 +394,7 @@ export class Network extends React.Component<NetworkProps, INetworkState> {
     const identityByID: Map<number, Identity> = new Map();
 
     knownNodeIds.forEach(nodeId => {
-      const nodeIdInt = parseInt(nodeId);
+      const nodeIdInt = _.parseInt(nodeId);
       const status = nodesSummary.nodeStatusByID[nodeId];
       identityByID.set(nodeIdInt, {
         nodeID: nodeIdInt,
@@ -440,15 +424,15 @@ export class Network extends React.Component<NetworkProps, INetworkState> {
     const displayIdentities: Identity[] =
       this.getDisplayIdentities(identityByID);
 
-    const latencies = flow([
-      values,
-      (vals: IConnectivity[]) => flatMap(vals, v => Object.values(v.peers)),
-      (vals: IPeer[]) => flatMap(vals, v => v.latency),
-      (vals: IDuration[]) => filter(vals, v => v && v.nanos),
-      (vals: IDuration[]) => map(vals, v => util.NanoToMilli(v.nanos)),
-    ])(connections);
+    const latencies: number[] = _.chain(connections)
+      .values()
+      .flatMap(v => Object.values(v.peers))
+      .flatMap(v => v.latency)
+      .filter(v => v !== undefined && v.nanos !== undefined)
+      .map(v => util.NanoToMilli(v.nanos))
+      .value();
 
-    if (isEmpty(identityByID)) {
+    if (_.isEmpty(identityByID)) {
       return <h2 className="base-heading">No nodes match the filters</h2>;
     }
     if (knownNodeIds.length < 2) {

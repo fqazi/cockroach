@@ -3,13 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { storiesOf } from "@storybook/react";
 import React from "react";
-
-import { Anchor } from "src/components";
-import { styledWrapper } from "src/util/decorators";
+import { storiesOf } from "@storybook/react";
 
 import { InlineAlert } from "./inlineAlert";
+import { styledWrapper } from "src/util/decorators";
+import { Anchor } from "src/components";
 
 storiesOf("InlineAlert", module)
   .addDecorator(styledWrapper({ padding: "24px" }))

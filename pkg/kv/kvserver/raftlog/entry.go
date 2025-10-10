@@ -23,41 +23,34 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-// EncodingOf determines the EntryEncoding for a given Entry. When
-// EntryEncoding is one of the WithACAndPriority encodings, the
-// raftpb.Priority is populated.
-func EncodingOf(ent raftpb.Entry) (EntryEncoding, raftpb.Priority, error) {
+// EncodingOf determines the EntryEncoding for a given Entry.
+func EncodingOf(ent raftpb.Entry) (EntryEncoding, error) {
 	if len(ent.Data) == 0 {
 		// An empty command.
-		return EntryEncodingEmpty, 0, nil
+		return EntryEncodingEmpty, nil
 	}
 
 	switch ent.Type {
 	case raftpb.EntryConfChange:
-		return EntryEncodingRaftConfChange, 0, nil
+		return EntryEncodingRaftConfChange, nil
 	case raftpb.EntryConfChangeV2:
-		return EntryEncodingRaftConfChangeV2, 0, nil
+		return EntryEncodingRaftConfChangeV2, nil
 	case raftpb.EntryNormal:
 	default:
-		return 0, 0, errors.AssertionFailedf("unknown EntryType %d", ent.Type)
+		return 0, errors.AssertionFailedf("unknown EntryType %d", ent.Type)
 	}
 
-	encoding := ent.Data[0] & encodingMask
-	switch encoding {
+	switch ent.Data[0] {
 	case entryEncodingStandardWithACPrefixByte:
-		return EntryEncodingStandardWithAC, 0, nil
+		return EntryEncodingStandardWithAC, nil
 	case entryEncodingSideloadedWithACPrefixByte:
-		return EntryEncodingSideloadedWithAC, 0, nil
+		return EntryEncodingSideloadedWithAC, nil
 	case entryEncodingStandardWithoutACPrefixByte:
-		return EntryEncodingStandardWithoutAC, 0, nil
+		return EntryEncodingStandardWithoutAC, nil
 	case entryEncodingSideloadedWithoutACPrefixByte:
-		return EntryEncodingSideloadedWithoutAC, 0, nil
-	case entryEncodingStandardWithACAndPriorityPrefixByte:
-		return EntryEncodingStandardWithACAndPriority, getPriority(ent.Data[0]), nil
-	case entryEncodingSideloadedWithACAndPriorityPrefixByte:
-		return EntryEncodingSideloadedWithACAndPriority, getPriority(ent.Data[0]), nil
+		return EntryEncodingSideloadedWithoutAC, nil
 	default:
-		return 0, 0, errors.AssertionFailedf("unknown command encoding version %d", ent.Data[0])
+		return 0, errors.AssertionFailedf("unknown command encoding version %d", ent.Data[0])
 	}
 }
 
@@ -122,11 +115,11 @@ func NewEntryFromRawValue(b []byte) (*Entry, error) {
 	return e, nil
 }
 
-// RaftEntryFromRawValue decodes a raft.Entry from a raw MVCC value.
+// raftEntryFromRawValue decodes a raft.Entry from a raw MVCC value.
 //
 // Same as NewEntryFromRawValue, but doesn't decode the command and doesn't use
 // the pool of entries.
-func RaftEntryFromRawValue(b []byte) (raftpb.Entry, error) {
+func raftEntryFromRawValue(b []byte) (raftpb.Entry, error) {
 	var meta enginepb.MVCCMetadata
 	if err := protoutil.Unmarshal(b, &meta); err != nil {
 		return raftpb.Entry{}, errors.Wrap(err, "decoding raft log MVCCMetadata")
@@ -139,7 +132,7 @@ func RaftEntryFromRawValue(b []byte) (raftpb.Entry, error) {
 }
 
 func (e *Entry) load() error {
-	typ, _, err := EncodingOf(e.Entry)
+	typ, err := EncodingOf(e.Entry)
 	if err != nil {
 		return err
 	}
@@ -155,8 +148,7 @@ func (e *Entry) load() error {
 		AsV2() raftpb.ConfChangeV2
 	}
 	switch typ {
-	case EntryEncodingStandardWithAC, EntryEncodingSideloadedWithAC,
-		EntryEncodingStandardWithACAndPriority, EntryEncodingSideloadedWithACAndPriority:
+	case EntryEncodingStandardWithAC, EntryEncodingSideloadedWithAC:
 		e.ID, raftCmdBytes = DecomposeRaftEncodingStandardOrSideloaded(e.Entry.Data)
 		e.ApplyAdmissionControl = true
 	case EntryEncodingStandardWithoutAC, EntryEncodingSideloadedWithoutAC:

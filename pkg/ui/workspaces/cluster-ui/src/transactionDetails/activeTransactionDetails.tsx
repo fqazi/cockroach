@@ -5,28 +5,30 @@
 
 import { ArrowLeft } from "@cockroachlabs/icons";
 import { Col, Row } from "antd";
+import "antd/lib/col/style";
+import "antd/lib/row/style";
 import classNames from "classnames/bind";
 import React, { useEffect } from "react";
 import Helmet from "react-helmet";
 import { Link, match, useHistory } from "react-router-dom";
+import { Button } from "src/button";
+import { commonStyles } from "src/common";
+import { SqlBox, SqlBoxSize } from "src/sql/box";
+import { SummaryCard, SummaryCardItem } from "src/summaryCard";
 
 import {
   ActiveTransaction,
   ExecutionContentionDetails,
 } from "src/activeExecutions";
 import { StatusIcon } from "src/activeExecutions/statusIcon";
-import { Button } from "src/button";
-import { commonStyles } from "src/common";
-import { WaitTimeInsightsPanel } from "src/detailsPanels/waitTimeInsightsPanel";
-import { SqlBox, SqlBoxSize } from "src/sql/box";
-import { SummaryCard, SummaryCardItem } from "src/summaryCard";
 import summaryCardStyles from "src/summaryCard/summaryCard.module.scss";
-import { executionIdAttr, DATE_FORMAT_24_TZ } from "src/util";
 import { getMatchParamByName } from "src/util/query";
+import { executionIdAttr, DATE_FORMAT_24_TZ } from "src/util";
 
 import styles from "../statementDetails/statementDetails.module.scss";
-import { Timestamp } from "../timestamp";
+import { WaitTimeInsightsPanel } from "src/detailsPanels/waitTimeInsightsPanel";
 import { capitalize, Duration } from "../util/format";
+import { Timestamp } from "../timestamp";
 const cx = classNames.bind(styles);
 const summaryCardStylesCx = classNames.bind(summaryCardStyles);
 
@@ -103,12 +105,12 @@ export const ActiveTransactionDetails: React.FC<
           <Col className="gutter-row" span={24}>
             <SqlBox
               value={transaction?.query || RECENT_STATEMENT_NOT_FOUND_MESSAGE}
-              size={SqlBoxSize.CUSTOM}
+              size={SqlBoxSize.custom}
             />
           </Col>
         </Row>
         {transaction && (
-          <Row gutter={24}>
+          <Row gutter={24} type="flex">
             <Col className="gutter-row" span={12}>
               <SummaryCard className={cx("summary-card")}>
                 <SummaryCardItem

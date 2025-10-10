@@ -33,7 +33,6 @@ import (
 )
 
 type alterTableSetLocalityNode struct {
-	zeroInputPlanNode
 	n         tree.AlterTableLocality
 	tableDesc *tabledesc.Mutable
 	dbDesc    catalog.DatabaseDescriptor
@@ -66,7 +65,7 @@ func (p *planner) AlterTableLocality(
 	}
 
 	// Ensure that the database is multi-region enabled.
-	dbDesc, err := p.Descriptors().ByIDWithoutLeased(p.txn).WithoutNonPublic().Get().Database(ctx, tableDesc.GetParentID())
+	dbDesc, err := p.Descriptors().ByID(p.txn).WithoutNonPublic().Get().Database(ctx, tableDesc.GetParentID())
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +80,7 @@ func (p *planner) AlterTableLocality(
 	}
 
 	// Disallow schema changes if this table's schema is locked.
-	if err := p.checkSchemaChangeIsAllowed(ctx, tableDesc, n); err != nil {
+	if err := checkTableSchemaUnlocked(tableDesc); err != nil {
 		return nil, err
 	}
 
@@ -115,7 +114,7 @@ func (n *alterTableSetLocalityNode) alterTableLocalityGlobalToRegionalByTable(
 		)
 	}
 
-	dbDesc, err := params.p.Descriptors().ByIDWithoutLeased(params.p.txn).WithoutNonPublic().Get().Database(params.ctx, n.tableDesc.ParentID)
+	dbDesc, err := params.p.Descriptors().ByID(params.p.txn).WithoutNonPublic().Get().Database(params.ctx, n.tableDesc.ParentID)
 	if err != nil {
 		return err
 	}
@@ -177,7 +176,7 @@ func (n *alterTableSetLocalityNode) alterTableLocalityRegionalByTableToRegionalB
 		)
 	}
 
-	dbDesc, err := params.p.Descriptors().ByIDWithoutLeased(params.p.txn).WithoutNonPublic().Get().Database(params.ctx, n.tableDesc.ParentID)
+	dbDesc, err := params.p.Descriptors().ByID(params.p.txn).WithoutNonPublic().Get().Database(params.ctx, n.tableDesc.ParentID)
 	if err != nil {
 		return err
 	}
@@ -384,23 +383,6 @@ func (n *alterTableSetLocalityNode) alterTableLocalityToRegionalByRow(
 		newColumnDefaultExpr = &s
 		newColumnID = &col.ID
 	}
-
-	// Disallow changing the region column if the table is using a FK constraint
-	// to determine values for the region column.
-	if n.tableDesc.RBRUsingConstraint != descpb.ConstraintID(0) {
-		originalColName, err := n.tableDesc.GetRegionalByRowTableRegionColumnName()
-		if err != nil {
-			return err
-		}
-		if partColName != originalColName {
-			return pgerror.Newf(
-				pgcode.InvalidTableDefinition,
-				`cannot change the REGIONAL BY ROW column from %s to %s when "%s" is set`,
-				originalColName, partColName, catpb.RBRUsingConstraintTableSettingName,
-			)
-		}
-	}
-
 	return n.alterTableLocalityFromOrToRegionalByRow(
 		params,
 		tabledesc.LocalityConfigRegionalByRow(newLocality.RegionalByRowColumn),
@@ -475,12 +457,6 @@ func (n *alterTableSetLocalityNode) alterTableLocalityFromOrToRegionalByRow(
 		},
 	); err != nil {
 		return err
-	}
-
-	// When altering the table from REGIONAL BY ROW, automatically unset the RBR
-	// using constraint.
-	if newLocalityConfig.GetRegionalByRow() == nil {
-		n.tableDesc.RBRUsingConstraint = descpb.ConstraintID(0)
 	}
 
 	return params.p.writeSchemaChange(
@@ -697,7 +673,7 @@ func setNewLocalityConfig(
 	kvTrace bool,
 ) error {
 	getMultiRegionTypeDesc := func() (*typedesc.Mutable, error) {
-		dbDesc, err := descsCol.ByIDWithoutLeased(txn).WithoutNonPublic().Get().Database(ctx, desc.GetParentID())
+		dbDesc, err := descsCol.ByID(txn).WithoutNonPublic().Get().Database(ctx, desc.GetParentID())
 		if err != nil {
 			return nil, err
 		}

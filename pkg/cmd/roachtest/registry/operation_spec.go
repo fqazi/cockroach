@@ -7,7 +7,6 @@ package registry
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
@@ -25,27 +24,7 @@ const (
 	OperationRequiresNodes OperationDependency = iota
 	OperationRequiresPopulatedDatabase
 	OperationRequiresZeroUnavailableRanges
-	OperationRequiresZeroUnderreplicatedRanges
-	OperationRequiresLDRJobRunning
-	OperationRequiresRunningBackupJob
-	OperationRequiresRunningRestoreJob
-)
-
-// OperationIsolation specifies to what extent the operation runner will try
-// to isolate this operation runner from other operations.
-type OperationIsolation int
-
-const (
-	// OperationCanRunConcurrently denotes operations that can run concurrently
-	// with themselves as well as with other operations.
-	OperationCanRunConcurrently OperationIsolation = iota
-	// OperationCannotRunConcurrentlyWithItself denotes operations that cannot run
-	// concurrently with other iterations of itself, but can run concurrently with
-	// other operations.
-	OperationCannotRunConcurrentlyWithItself
-	// OperationCannotRunConcurrently denotes operations that cannot run concurrently
-	// in any capacity, and lock out all other operations while they run.
-	OperationCannotRunConcurrently
+	OperationRequiresZeroLaggingRanges
 )
 
 // OperationCleanup specifies an operation that
@@ -76,6 +55,8 @@ type OperationSpec struct {
 	// operation to work. This will be used in filtering eligible operations to
 	// run. Multiple dependencies could be specified, and any schedulers will take
 	// care of ensuring those dependencies are met before running Run().
+	//
+	// TODO(bilal): Unused.
 	Dependencies []OperationDependency
 
 	// CanRunConcurrently specifies whether this operation is safe to run
@@ -83,25 +64,13 @@ type OperationSpec struct {
 	// instance, a random-index addition is safe to run concurrently with most
 	// other operations like node kills, while a drop would need to run on its own
 	// and will have CanRunConcurrently = false.
-	CanRunConcurrently OperationIsolation
-
-	// WaitBeforeCleanup specifies the amount of time to wait before running
-	// the cleanup function. This overrides the default wait time set by the flag
-	// --wait-before-cleanup.
-	WaitBeforeCleanup time.Duration
+	//
+	// TODO(bilal): Unused.
+	CanRunConcurrently bool
 
 	// Run is the operation function. It returns an OperationCleanup if this
 	// operation requires additional cleanup steps afterwards (eg. dropping an
 	// extra column that was created). A nil return value indicates no cleanup
 	// necessary
 	Run func(ctx context.Context, o operation.Operation, c cluster.Cluster) OperationCleanup
-}
-
-// NamePrefix returns the first part of `o.Name` after splitting with delimiter `/`
-func (o *OperationSpec) NamePrefix() string {
-	parts := strings.Split(o.Name, "/")
-	if len(parts) > 0 {
-		return parts[0]
-	}
-	return o.Name
 }

@@ -43,20 +43,20 @@ func TestAutoDecryptFS(t *testing.T) {
 		memFS := vfs.WithLogging(vfs.NewMem(), func(format string, args ...interface{}) {
 			fmt.Fprintf(&buf, dir+": "+format+"\n", args...)
 		})
-		env, err := fs.InitEnv(context.Background(), memFS, "" /* dir */, fs.EnvConfig{}, nil /* statsCollector */)
+		env, err := fs.InitEnv(context.Background(), memFS, "" /* dir */, fs.EnvConfig{})
 		require.NoError(t, err)
 		require.NoError(t, env.MkdirAll(dir, 0755))
 		return env, nil
 	}
 
-	var decryptFS autoDecryptFS
-	decryptFS.Init([]string{path1, path2}, resolveFn)
+	var fs autoDecryptFS
+	fs.Init([]string{path1, path2}, resolveFn)
 	defer func() {
-		require.NoError(t, decryptFS.Close())
+		require.NoError(t, fs.Close())
 	}()
 
 	create := func(pathElems ...string) {
-		file, err := decryptFS.Create(filepath.Join(pathElems...), fs.UnspecifiedWriteCategory)
+		file, err := fs.Create(filepath.Join(pathElems...))
 		require.NoError(t, err)
 		file.Close()
 	}
@@ -64,7 +64,7 @@ func TestAutoDecryptFS(t *testing.T) {
 	create(dir, "foo")
 	create(path1, "bar")
 	create(path2, "baz")
-	require.NoError(t, decryptFS.MkdirAll(filepath.Join(path2, "a", "b"), 0755))
+	require.NoError(t, fs.MkdirAll(filepath.Join(path2, "a", "b"), 0755))
 	create(path2, "a", "b", "xx")
 
 	// Check that operations inside the two paths happen using the resolved FSes.
@@ -72,13 +72,11 @@ func TestAutoDecryptFS(t *testing.T) {
 	expected := `
 $TMPDIR/path1: mkdir-all:  0777
 $TMPDIR/path1: lock: LOCK
-$TMPDIR/path1: open: STORAGE_MIN_VERSION
 $TMPDIR/path1: mkdir-all: $TMPDIR/path1 0755
 $TMPDIR/path1: create: $TMPDIR/path1/bar
 $TMPDIR/path1: close: $TMPDIR/path1/bar
 $TMPDIR/foo/path2: mkdir-all:  0777
 $TMPDIR/foo/path2: lock: LOCK
-$TMPDIR/foo/path2: open: STORAGE_MIN_VERSION
 $TMPDIR/foo/path2: mkdir-all: $TMPDIR/foo/path2 0755
 $TMPDIR/foo/path2: create: $TMPDIR/foo/path2/baz
 $TMPDIR/foo/path2: close: $TMPDIR/foo/path2/baz

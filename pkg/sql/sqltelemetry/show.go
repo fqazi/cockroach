@@ -57,12 +57,6 @@ const (
 	SuperRegions
 	// CreateExternalConnection represents the SHOW CREATE EXTERNAL CONNECTION command.
 	CreateExternalConnection
-	// ExternalConnection represents the SHOW EXTERNAL CONNECTION command.
-	ExternalConnection
-	// LogicalReplicationJobs represents the SHOW LOGICAL REPLICATION JOBS command.
-	LogicalReplicationJobs
-	// InspectErrors represents the SHOW INSPECT ERRORS command.
-	InspectErrors
 )
 
 var showTelemetryNameMap = map[ShowTelemetryType]string{
@@ -86,9 +80,6 @@ var showTelemetryNameMap = map[ShowTelemetryType]string{
 	FullTableScans:           "full_table_scans",
 	SuperRegions:             "super_regions",
 	CreateExternalConnection: "create_external_connection",
-	ExternalConnection:       "external_connection",
-	LogicalReplicationJobs:   "logical_replication_jobs",
-	InspectErrors:            "inspect_errors",
 }
 
 func (s ShowTelemetryType) String() string {

@@ -35,20 +35,20 @@ func (r *Replica) gossipFirstRangeLocked(ctx context.Context) {
 	}
 	log.Event(ctx, "gossiping sentinel and first range")
 	if log.V(1) {
-		log.KvDistribution.Infof(ctx, "gossiping sentinel from store %d, r%d", r.store.StoreID(), r.RangeID)
+		log.Infof(ctx, "gossiping sentinel from store %d, r%d", r.store.StoreID(), r.RangeID)
 	}
 	if err := r.store.Gossip().AddInfo(
 		gossip.KeySentinel, r.store.ClusterID().GetBytes(),
 		r.store.cfg.SentinelGossipTTL()); err != nil {
-		log.KvDistribution.Errorf(ctx, "failed to gossip sentinel: %+v", err)
+		log.Errorf(ctx, "failed to gossip sentinel: %+v", err)
 	}
 	if log.V(1) {
-		log.KvDistribution.Infof(ctx, "gossiping first range from store %d, r%d: %s",
-			r.store.StoreID(), r.RangeID, r.shMu.state.Desc.Replicas())
+		log.Infof(ctx, "gossiping first range from store %d, r%d: %s",
+			r.store.StoreID(), r.RangeID, r.mu.state.Desc.Replicas())
 	}
 	if err := r.store.Gossip().AddInfoProto(
-		gossip.KeyFirstRangeDescriptor, r.shMu.state.Desc, configGossipTTL); err != nil {
-		log.KvDistribution.Errorf(ctx, "failed to gossip first range metadata: %+v", err)
+		gossip.KeyFirstRangeDescriptor, r.mu.state.Desc, configGossipTTL); err != nil {
+		log.Errorf(ctx, "failed to gossip first range metadata: %+v", err)
 	}
 }
 
@@ -105,49 +105,23 @@ func (r *Replica) MaybeGossipNodeLivenessRaftMuLocked(
 		return errors.Errorf("unexpected intents on node liveness span %s: %+v", span, result.Local.EncounteredIntents)
 	}
 	kvs := br.Responses[0].GetInner().(*kvpb.ScanResponse).Rows
-
 	log.VEventf(ctx, 2, "gossiping %d node liveness record(s) from span %s", len(kvs), span)
-	if len(kvs) == 1 {
-		// Parse the value to both confirm it's well-formatted and to extract the
-		// node ID from it. We could instead derive the node ID from the key and
-		// skip unmarshaling the value at all, which would be (marginally) faster,
-		// but that would be a greater change from how this code has historically
-		// worked and it's not likely to be a huge difference.
-		kv := kvs[0]
-		var kvLiveness livenesspb.Liveness
+	for _, kv := range kvs {
+		var kvLiveness, gossipLiveness livenesspb.Liveness
 		if err := kv.Value.GetProto(&kvLiveness); err != nil {
 			return errors.Wrapf(err, "failed to unmarshal liveness value %s", kv.Key)
 		}
 		key := gossip.MakeNodeLivenessKey(kvLiveness.NodeID)
-		valBytes, err := kv.Value.GetBytes()
-		if err != nil {
-			return errors.Wrapf(err, "failed to GetBytes to gossip node liveness for %s", kv.Key)
-		}
-		if err := r.store.Gossip().AddInfoIfNotRedundant(key, valBytes); err != nil {
-			return errors.Wrapf(err, "failed to gossip node liveness for %s", kv.Key)
-		}
-	} else {
-		// Same code as above, but for more than one liveness record. Allocate a
-		// slice that can be passed to a bulk gossip operation rather than taking
-		// and releasing the gossip mutex separately for each.
-		gossipInfos := make([]gossip.InfoToAdd, 0, len(kvs))
-		for _, kv := range kvs {
-			var kvLiveness livenesspb.Liveness
-			if err := kv.Value.GetProto(&kvLiveness); err != nil {
-				return errors.Wrapf(err, "failed to unmarshal liveness value %s", kv.Key)
+		// Look up liveness from gossip; skip gossiping anew if unchanged.
+		if err := r.store.Gossip().GetInfoProto(key, &gossipLiveness); err == nil {
+			if gossipLiveness == kvLiveness && r.store.Gossip().InfoOriginatedHere(key) {
+				continue
 			}
-			key := gossip.MakeNodeLivenessKey(kvLiveness.NodeID)
-			valBytes, err := kv.Value.GetBytes()
-			if err != nil {
-				return errors.Wrapf(err, "failed to GetBytes to gossip node liveness for %s", kv.Key)
-			}
-			gossipInfos = append(gossipInfos, gossip.InfoToAdd{Key: key, Val: valBytes})
 		}
-		if err := r.store.Gossip().BulkAddInfoIfNotRedundant(gossipInfos); err != nil {
-			return errors.Wrapf(err, "failed to gossip node liveness for %d keys", len(kvs))
+		if err := r.store.Gossip().AddInfoProto(key, &kvLiveness, 0); err != nil {
+			return errors.Wrapf(err, "failed to gossip node liveness (%+v)", kvLiveness)
 		}
 	}
-
 	return nil
 }
 
@@ -176,7 +150,7 @@ func (r *Replica) getLeaseForGossip(ctx context.Context) (bool, *kvpb.Error) {
 					}
 				default:
 					// Any other error is worth being logged visibly.
-					log.KvDistribution.Warningf(ctx, "could not acquire lease for range gossip: %s", pErr)
+					log.Warningf(ctx, "could not acquire lease for range gossip: %s", pErr)
 				}
 			}
 		}); err != nil {
@@ -198,7 +172,7 @@ func (r *Replica) maybeGossipFirstRange(ctx context.Context) *kvpb.Error {
 	// so we error out below.
 	if gossipClusterID, err := r.store.Gossip().GetClusterID(); err == nil {
 		if gossipClusterID != r.store.ClusterID() {
-			log.KvDistribution.Fatalf(
+			log.Fatalf(
 				ctx, "store %d belongs to cluster %s, but attempted to join cluster %s via gossip",
 				r.store.StoreID(), r.store.ClusterID(), gossipClusterID)
 		}
@@ -207,11 +181,11 @@ func (r *Replica) maybeGossipFirstRange(ctx context.Context) *kvpb.Error {
 	// Gossip the cluster ID from all replicas of the first range; there
 	// is no expiration on the cluster ID.
 	if log.V(1) {
-		log.KvDistribution.Infof(ctx, "gossiping cluster ID %q from store %d, r%d", r.store.ClusterID(),
+		log.Infof(ctx, "gossiping cluster ID %q from store %d, r%d", r.store.ClusterID(),
 			r.store.StoreID(), r.RangeID)
 	}
 	if err := r.store.Gossip().AddClusterID(r.store.ClusterID()); err != nil {
-		log.KvDistribution.Errorf(ctx, "failed to gossip cluster ID: %+v", err)
+		log.Errorf(ctx, "failed to gossip cluster ID: %+v", err)
 	}
 
 	hasLease, pErr := r.getLeaseForGossip(ctx)

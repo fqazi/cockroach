@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import React from "react";
-
 import { TextInput, Button } from "src/components";
 import { isValidEmail } from "src/util/validation/isValidEmail";
 

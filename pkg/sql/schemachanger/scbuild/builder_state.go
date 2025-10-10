@@ -9,7 +9,6 @@ import (
 	"context"
 	"sort"
 
-	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -35,13 +34,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/plpgsqltree"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/plpgsqltree/utils"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
+	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"github.com/lib/pq/oid"
 )
 
@@ -49,6 +48,9 @@ var _ scbuildstmt.BuilderState = (*builderState)(nil)
 
 // QueryByID implements the scbuildstmt.BuilderState interface.
 func (b *builderState) QueryByID(id catid.DescID) scbuildstmt.ElementResultSet {
+	if id == catid.InvalidDescID {
+		return nil
+	}
 	b.ensureDescriptor(id)
 	c := b.descCache[id]
 	if c.cachedCollection == nil {
@@ -61,7 +63,7 @@ func (b *builderState) QueryByID(id catid.DescID) scbuildstmt.ElementResultSet {
 func (b *builderState) Ensure(e scpb.Element, target scpb.TargetStatus, meta scpb.TargetMetadata) {
 	dst := b.getExistingElementState(e)
 	switch target {
-	case scpb.ToAbsent, scpb.ToPublic, scpb.TransientAbsent, scpb.TransientPublic:
+	case scpb.ToAbsent, scpb.ToPublic, scpb.Transient:
 		// Sanity check.
 	default:
 		panic(errors.AssertionFailedf("unsupported target %s", target.Status()))
@@ -107,15 +109,10 @@ func (b *builderState) Ensure(e scpb.Element, target scpb.TargetStatus, meta scp
 	// of it and investigate it further if needed.
 	if dst.current == scpb.Status_ABSENT &&
 		dst.target == scpb.ToAbsent &&
-		(target == scpb.ToPublic || target == scpb.TransientAbsent) &&
+		(target == scpb.ToPublic || target == scpb.Transient) &&
 		dst.metadata.IsLinkedToSchemaChange() {
-		panic(scerrors.NotImplementedErrorf(
-			nil,
-			redact.Sprintf(
-				"attempt to revive a ghost element: [elem=%v],[current=ABSENT],[target=ToAbsent],[newTarget=%v]",
-				dst.element.String(), target.Status(),
-			),
-		))
+		panic(scerrors.NotImplementedErrorf(nil, "attempt to revive a ghost element:"+
+			" [elem=%v],[current=ABSENT],[target=ToAbsent],[newTarget=%v]", dst.element.String(), target.Status()))
 	}
 
 	// Henceforth all possibilities lead to the target and metadata being
@@ -155,7 +152,7 @@ func (b *builderState) Ensure(e scpb.Element, target scpb.TargetStatus, meta scp
 		// the transient path so it can be done but we must take care to migrate
 		// the current status to its transient equivalent if need be in order to
 		// avoid the possibility of a future transition to PUBLIC.
-		if target == scpb.TransientAbsent {
+		if target == scpb.Transient {
 			var ok bool
 			dst.current, ok = scpb.GetTransientEquivalent(dst.current)
 			if !ok {
@@ -166,7 +163,7 @@ func (b *builderState) Ensure(e scpb.Element, target scpb.TargetStatus, meta scp
 			}
 		}
 		return
-	case scpb.TransientAbsent:
+	case scpb.Transient:
 		// Here the new target is either to-absent, which effectively undoes the
 		// incumbent target, or it's to-public. In both cases if the current
 		// status is TRANSIENT_ we need to migrate it to its non-transient
@@ -284,28 +281,6 @@ func (b *builderState) LogEventForExistingTarget(e scpb.Element) {
 		panic(errors.AssertionFailedf("no target set for element %s in builder state", key))
 	}
 	es.withLogEvent = true
-}
-
-// LogEventForExistingPayload implements the scbuildstmt.BuilderState interface.
-func (b *builderState) LogEventForExistingPayload(e scpb.Element, payload logpb.EventPayload) {
-	id := screl.GetDescID(e)
-	key := screl.ElementString(e)
-
-	c, ok := b.descCache[id]
-	if !ok {
-		panic(errors.AssertionFailedf(
-			"elements for descriptor ID %d not found in builder state, %s expected", id, key))
-	}
-	i, ok := c.elementIndexMap[key]
-	if !ok {
-		panic(errors.AssertionFailedf("element %s expected in builder state but not found", key))
-	}
-	es := &b.output[i]
-	if es.target == scpb.InvalidTarget {
-		panic(errors.AssertionFailedf("no target set for element %s in builder state", key))
-	}
-	es.withLogEvent = true
-	es.maybePayload = payload
 }
 
 var _ scbuildstmt.PrivilegeChecker = (*builderState)(nil)
@@ -500,64 +475,6 @@ func (b *builderState) NextTableConstraintID(tableID catid.DescID) (ret catid.Co
 	return ret
 }
 
-// NextTableTriggerID implements the scbuildstmt.TableHelpers interface.
-func (b *builderState) NextTableTriggerID(tableID catid.DescID) (ret catid.TriggerID) {
-	{
-		b.ensureDescriptor(tableID)
-		desc := b.descCache[tableID].desc
-		tbl, ok := desc.(catalog.TableDescriptor)
-		if !ok {
-			panic(errors.AssertionFailedf("Expected table descriptor for ID %d, instead got %s",
-				desc.GetID(), desc.DescriptorType()))
-		}
-		ret = tbl.GetNextTriggerID()
-		if ret == 0 {
-			ret = 1
-		}
-	}
-	// Consult all present element in case they have a larger TriggerID field.
-	b.QueryByID(tableID).ForEach(func(
-		_ scpb.Status, _ scpb.TargetStatus, e scpb.Element,
-	) {
-		v, _ := screl.Schema.GetAttribute(screl.TriggerID, e)
-		if id, ok := v.(catid.TriggerID); ok {
-			if id < catid.TriggerID(scbuildstmt.TableTentativeIdsStart) && id >= ret {
-				ret = id + 1
-			}
-		}
-	})
-	return ret
-}
-
-// NextTablePolicyID implements the scbuildstmt.TableHelpers interface.
-func (b *builderState) NextTablePolicyID(tableID catid.DescID) (ret catid.PolicyID) {
-	{
-		b.ensureDescriptor(tableID)
-		desc := b.descCache[tableID].desc
-		tbl, ok := desc.(catalog.TableDescriptor)
-		if !ok {
-			panic(errors.AssertionFailedf("Expected table descriptor for ID %d, instead got %s",
-				desc.GetID(), desc.DescriptorType()))
-		}
-		ret = tbl.GetNextPolicyID()
-		if ret == 0 {
-			ret = 1
-		}
-	}
-	// Consult all present element in case they have a larger PolicyID field.
-	b.QueryByID(tableID).ForEach(func(
-		_ scpb.Status, _ scpb.TargetStatus, e scpb.Element,
-	) {
-		v, _ := screl.Schema.GetAttribute(screl.PolicyID, e)
-		if id, ok := v.(catid.PolicyID); ok {
-			if id < catid.PolicyID(scbuildstmt.TableTentativeIdsStart) && id >= ret {
-				ret = id + 1
-			}
-		}
-	})
-	return ret
-}
-
 // NextTableTentativeIndexID implements the scbuildstmt.TableHelpers interface.
 func (b *builderState) NextTableTentativeIndexID(tableID catid.DescID) (ret catid.IndexID) {
 	ret = catid.IndexID(scbuildstmt.TableTentativeIdsStart)
@@ -731,7 +648,7 @@ func (b *builderState) ResolveTypeRef(ref tree.ResolvableTypeReference) scpb.Typ
 }
 
 func newTypeT(t *types.T) scpb.TypeT {
-	return scpb.TypeT{Type: t, ClosedTypeIDs: typedesc.GetTypeDescriptorClosure(t).Ordered(), TypeName: t.SQLString()}
+	return scpb.TypeT{Type: t, ClosedTypeIDs: typedesc.GetTypeDescriptorClosure(t).Ordered()}
 }
 
 // WrapExpression implements the scbuildstmt.TableHelpers interface.
@@ -837,37 +754,31 @@ func (b *builderState) WrapExpression(tableID catid.DescID, expr tree.Expr) *scp
 }
 
 // ComputedColumnExpression implements the scbuildstmt.TableHelpers interface.
-func (b *builderState) ComputedColumnExpression(
-	tbl *scpb.Table, d *tree.ColumnTableDef, exprContext tree.SchemaExprContext,
-) (tree.Expr, *types.T) {
+func (b *builderState) ComputedColumnExpression(tbl *scpb.Table, d *tree.ColumnTableDef) tree.Expr {
 	_, _, ns := scpb.FindNamespace(b.QueryByID(tbl.TableID))
 	tn := tree.MakeTableNameFromPrefix(b.NamePrefix(tbl), tree.Name(ns.Name))
 	b.ensureDescriptor(tbl.TableID)
 	// TODO(postamar): this doesn't work when referencing newly added columns.
-	expr, typ, err := schemaexpr.ValidateComputedColumnExpression(
+	expr, _, err := schemaexpr.ValidateComputedColumnExpression(
 		b.ctx,
 		b.descCache[tbl.TableID].desc.(catalog.TableDescriptor),
 		d,
 		&tn,
-		exprContext,
+		tree.ComputedColumnExprContext(d.IsVirtual()),
 		b.semaCtx,
 		b.clusterSettings.Version.ActiveVersion(b.ctx),
 	)
 	if err != nil {
 		// This may be referencing newly added columns, so cheat and return
 		// a not implemented error.
-		if pgerror.GetPGCode(err) == pgcode.UndefinedColumn {
-
-			panic(errors.Wrapf(errors.WithSecondaryError(scerrors.NotImplementedError(d), err),
-				"computed column validation error"))
-		}
-		panic(err)
+		panic(errors.Wrapf(errors.WithSecondaryError(scerrors.NotImplementedError(d), err),
+			"computed column validation error"))
 	}
 	parsedExpr, err := parser.ParseExpr(expr)
 	if err != nil {
 		panic(err)
 	}
-	return parsedExpr, typ
+	return parsedExpr
 }
 
 // PartialIndexPredicateExpression implements the scbuildstmt.TableHelpers interface.
@@ -1022,6 +933,9 @@ func (b *builderState) ResolveTargetObject(
 	if sc.SchemaKind() == catalog.SchemaVirtual {
 		panic(sqlerrors.NewCannotModifyVirtualSchemaError(sc.GetName()))
 	}
+	if sc.SchemaKind() == catalog.SchemaTemporary {
+		panic(unimplemented.NewWithIssue(104687, "cannot create UDFs under a temporary schema"))
+	}
 	b.ensureDescriptor(sc.GetID())
 	b.checkOwnershipOrPrivilegesOnSchemaDesc(objName.ObjectNamePrefix, sc, scbuildstmt.ResolveParams{RequiredPrivilege: requiredSchemaPriv})
 	return b.QueryByID(db.GetID()), b.QueryByID(sc.GetID())
@@ -1037,7 +951,8 @@ func (b *builderState) checkOwnershipOrPrivilegesOnSchemaDesc(
 ) {
 	switch sc.SchemaKind() {
 	case catalog.SchemaTemporary:
-		// Nothing needs to be done.
+		panic(pgerror.Newf(pgcode.InsufficientPrivilege,
+			"%s permission denied for schema %q", p.RequiredPrivilege.DisplayName(), name))
 	case catalog.SchemaPublic, catalog.SchemaVirtual:
 		if p.RequireOwnership {
 			if ok, err := b.auth.HasOwnership(b.ctx, sc); err != nil {
@@ -1099,9 +1014,6 @@ func (b *builderState) ResolveUserDefinedTypeType(
 	default:
 		panic(errors.AssertionFailedf("unknown type kind %s", typ.GetKind()))
 	}
-	if p.RequireOwnership {
-		b.mustOwn(typ.GetID())
-	}
 	return b.QueryByID(typ.GetID())
 }
 
@@ -1112,9 +1024,6 @@ func (b *builderState) ResolveRelation(
 	c := b.resolveRelation(name, p)
 	if c == nil {
 		return nil
-	}
-	if p.RequireOwnership {
-		b.mustOwn(c.desc.GetID())
 	}
 	return b.QueryByID(c.desc.GetID())
 }
@@ -1211,23 +1120,6 @@ func (b *builderState) ResolveTable(
 	if rel, ok := c.desc.(catalog.TableDescriptor); !ok || !rel.IsTable() {
 		panic(pgerror.Newf(pgcode.WrongObjectType, "%q is not a table", c.desc.GetName()))
 	}
-	if p.RequireOwnership {
-		b.mustOwn(c.desc.GetID())
-	}
-	return b.QueryByID(c.desc.GetID())
-}
-
-// ResolvePhysicalTable implements the scbuildstmt.NameResolver interface.
-func (b *builderState) ResolvePhysicalTable(
-	name *tree.UnresolvedObjectName, p scbuildstmt.ResolveParams,
-) scbuildstmt.ElementResultSet {
-	c := b.resolveRelation(name, p)
-	if c == nil {
-		return nil
-	}
-	if rel, ok := c.desc.(catalog.TableDescriptor); !ok || !rel.IsPhysicalTable() {
-		panic(pgerror.Newf(pgcode.WrongObjectType, "%q is not a table, view, or sequence", c.desc.GetName()))
-	}
 	return b.QueryByID(c.desc.GetID())
 }
 
@@ -1242,9 +1134,6 @@ func (b *builderState) ResolveSequence(
 	if rel, ok := c.desc.(catalog.TableDescriptor); !ok || !rel.IsSequence() {
 		panic(pgerror.Newf(pgcode.WrongObjectType, "%q is not a sequence", c.desc.GetName()))
 	}
-	if p.RequireOwnership {
-		b.mustOwn(c.desc.GetID())
-	}
 	return b.QueryByID(c.desc.GetID())
 }
 
@@ -1258,9 +1147,6 @@ func (b *builderState) ResolveView(
 	}
 	if rel, ok := c.desc.(catalog.TableDescriptor); !ok || !rel.IsView() {
 		panic(pgerror.Newf(pgcode.WrongObjectType, "%q is not a view", c.desc.GetName()))
-	}
-	if p.RequireOwnership {
-		b.mustOwn(c.desc.GetID())
 	}
 	return b.QueryByID(c.desc.GetID())
 }
@@ -1461,59 +1347,9 @@ func (b *builderState) ResolveRoutine(
 	}
 
 	fnID := funcdesc.UserDefinedFunctionOIDToID(ol.Oid)
-	if p.RequireOwnership {
-		b.mustOwn(fnID)
-	}
+	b.mustOwn(fnID)
 	b.ensureDescriptor(fnID)
 	return b.QueryByID(fnID)
-}
-
-func (b *builderState) ResolveTrigger(
-	relationID catid.DescID, triggerName tree.Name, p scbuildstmt.ResolveParams,
-) scbuildstmt.ElementResultSet {
-	b.ensureDescriptor(relationID)
-	rel := b.descCache[relationID].desc.(catalog.TableDescriptor)
-	elts := b.QueryByID(rel.GetID())
-	var triggerID catid.TriggerID
-	elts.ForEach(func(_ scpb.Status, _ scpb.TargetStatus, e scpb.Element) {
-		if t, ok := e.(*scpb.TriggerName); ok && t.Name == string(triggerName) {
-			triggerID = t.TriggerID
-		}
-	})
-	if triggerID == 0 {
-		if p.IsExistenceOptional {
-			return nil
-		}
-		panic(sqlerrors.NewUndefinedTriggerError(string(triggerName), rel.GetName()))
-	}
-	return elts.Filter(func(_ scpb.Status, _ scpb.TargetStatus, e scpb.Element) bool {
-		id, _ := screl.Schema.GetAttribute(screl.TriggerID, e)
-		return id != nil && id.(catid.TriggerID) == triggerID
-	})
-}
-
-func (b *builderState) ResolvePolicy(
-	tableID catid.DescID, policyName tree.Name, p scbuildstmt.ResolveParams,
-) scbuildstmt.ElementResultSet {
-	b.ensureDescriptor(tableID)
-	tbl := b.descCache[tableID].desc.(catalog.TableDescriptor)
-	elems := b.QueryByID(tbl.GetID())
-	var policyID catid.PolicyID
-	elems.ForEach(func(_ scpb.Status, _ scpb.TargetStatus, e scpb.Element) {
-		if t, ok := e.(*scpb.PolicyName); ok && t.Name == string(policyName) {
-			policyID = t.PolicyID
-		}
-	})
-	if policyID == 0 {
-		if p.IsExistenceOptional {
-			return nil
-		}
-		panic(sqlerrors.NewUndefinedPolicyError(string(policyName), tbl.GetName()))
-	}
-	return elems.Filter(func(_ scpb.Status, _ scpb.TargetStatus, e scpb.Element) bool {
-		id, _ := screl.Schema.GetAttribute(screl.PolicyID, e)
-		return id != nil && id.(catid.PolicyID) == policyID
-	})
 }
 
 func (b *builderState) newCachedDesc(id descpb.ID) *cachedDesc {
@@ -1546,10 +1382,8 @@ func (b *builderState) resolveBackReferences(c *cachedDesc) {
 	case catalog.DatabaseDescriptor:
 		if !d.HasPublicSchemaWithDescriptor() {
 			panic(scerrors.NotImplementedErrorf(nil, /* n */
-				redact.Sprintf(
-					"database %q (%d) with a descriptorless public schema",
-					d.GetName(), d.GetID()),
-			))
+				"database %q (%d) with a descriptorless public schema",
+				d.GetName(), d.GetID()))
 		}
 		// Handle special case of database children, which may include temporary
 		// schemas, which aren't explicitly referenced in the database's schemas
@@ -1591,22 +1425,12 @@ func (b *builderState) resolveBackReferences(c *cachedDesc) {
 // For newly created descriptors, it merely creates a zero-valued *cacheDesc entry;
 // For existing descriptors, it creates and populate the *cacheDesc entry and
 // decompose it into elements (as tracked in b.output).
-// For descriptorless IDs associated with named ranges, it creates and populates
-// a descriptorless *cacheDesc entry -- decomposing it into NamedRangeZoneConfig
-// elements (as tracked in b.output).
 func (b *builderState) ensureDescriptor(id catid.DescID) {
 	if _, found := b.descCache[id]; found {
 		return
 	}
 	if b.newDescriptors.Contains(id) {
 		b.descCache[id] = b.newCachedDescForNewDesc()
-		return
-	}
-	// For pseudo-table IDs used in named ranges, we take precaution to avoid
-	// reading the descriptor (readDescriptor) as these IDs are descriptor-less.
-	_, ok := zonepb.NamedZonesByID[uint32(id)]
-	if ok {
-		b.ensurePseudoDescriptor(id)
 		return
 	}
 
@@ -1656,33 +1480,12 @@ func (b *builderState) ensureDescriptor(id catid.DescID) {
 	}
 }
 
-func (b *builderState) ensurePseudoDescriptor(id catid.DescID) {
-	crossRefLookupFn := func(id catid.DescID) catalog.Descriptor {
-		return nil
-	}
-	visitorFn := func(status scpb.Status, e scpb.Element) {
-		b.addNewElementState(elementState{
-			element: e,
-			initial: status,
-			current: status,
-			target:  scpb.AsTargetStatus(status),
-		})
-	}
-	b.descCache[id] = b.newCachedDesc(id)
-	scdecomp.WalkNamedRanges(b.ctx, nil, crossRefLookupFn, visitorFn,
-		b.commentGetter, b.zoneConfigReader, b.evalCtx.Settings.Version.ActiveVersion(b.ctx), id)
-}
-
 func (b *builderState) readDescriptor(id catid.DescID) catalog.Descriptor {
-	_, ok := zonepb.NamedZonesByID[uint32(id)]
-	if ok {
-		return nil
-	}
 	if id == catid.InvalidDescID {
 		panic(errors.AssertionFailedf("invalid descriptor ID %d", id))
 	}
 	if id == keys.SystemPublicSchemaID || id == keys.PublicSchemaIDForBackup || id == keys.PublicSchemaID {
-		panic(scerrors.NotImplementedErrorf(nil /* n */, redact.Sprintf("descriptorless public schema %d", id)))
+		panic(scerrors.NotImplementedErrorf(nil /* n */, "descriptorless public schema %d", id))
 	}
 	if tempSchema := b.tempSchemas[id]; tempSchema != nil {
 		return tempSchema
@@ -1722,7 +1525,7 @@ func (b *builderState) BuildUserPrivilegesFromDefaultPrivileges(
 	dbDefaultPrivDesc := dbDesc.GetDefaultPrivilegeDescriptor()
 
 	var scDefaultPrivDesc catalog.DefaultPrivilegeDescriptor
-	if sc != nil && !sc.IsTemporary {
+	if sc != nil {
 		b.ensureDescriptor(sc.SchemaID)
 		scDesc, err := catalog.AsSchemaDescriptor(b.descCache[sc.SchemaID].desc)
 		if err != nil {
@@ -1767,21 +1570,10 @@ func (b *builderState) WrapFunctionBody(
 	fnID descpb.ID,
 	bodyStr string,
 	lang catpb.Function_Language,
-	returnType tree.ResolvableTypeReference,
 	refProvider scbuildstmt.ReferenceProvider,
 ) *scpb.FunctionBody {
-	// Trigger functions do not analyze SQL statements beyond parsing, so type and
-	// sequence names should not be replaced during trigger-function creation.
-	var lazilyEvalSQL bool
-	if returnType != nil {
-		if typ, ok := returnType.(*types.T); ok && typ.Identical(types.Trigger) {
-			lazilyEvalSQL = true
-		}
-	}
-	if !lazilyEvalSQL {
-		bodyStr = b.replaceSeqNamesWithIDs(bodyStr, lang)
-		bodyStr = b.serializeUserDefinedTypes(bodyStr, lang)
-	}
+	bodyStr = b.replaceSeqNamesWithIDs(bodyStr, lang)
+	bodyStr = b.serializeUserDefinedTypes(bodyStr, lang)
 	fnBody := &scpb.FunctionBody{
 		FunctionID: fnID,
 		Body:       bodyStr,
@@ -1814,17 +1606,17 @@ func (b *builderState) WrapFunctionBody(
 		panic(err)
 	}
 
-	fnBody.UsesFunctionIDs = refProvider.ReferencedRoutines().Ordered()
+	if err := refProvider.ForEachFunctionReference(func(id descpb.ID) error {
+		fnBody.UsesFunctionIDs = append(fnBody.UsesFunctionIDs,
+			id)
+		return nil
+	}); err != nil {
+		panic(err)
+	}
+
 	fnBody.UsesSequenceIDs = refProvider.ReferencedSequences().Ordered()
 	fnBody.UsesTypeIDs = refProvider.ReferencedTypes().Ordered()
 	return fnBody
-}
-
-func (b *builderState) ReplaceSeqTypeNamesInStatements(
-	queryStr string, lang catpb.Function_Language,
-) string {
-	newQueryStr := b.replaceSeqNamesWithIDs(queryStr, lang)
-	return b.serializeUserDefinedTypes(newQueryStr, lang)
 }
 
 func (b *builderState) replaceSeqNamesWithIDs(
@@ -1880,7 +1672,7 @@ func (b *builderState) replaceSeqNamesWithIDs(
 		}
 		stmts = plstmt.AST
 
-		v := plpgsqltree.SQLStmtVisitor{Fn: replaceSeqFunc}
+		v := utils.SQLStmtVisitor{Fn: replaceSeqFunc}
 		newStmt := plpgsqltree.Walk(&v, stmts)
 		fmtCtx.FormatNode(newStmt)
 	default:
@@ -1996,12 +1788,12 @@ func (b *builderState) serializeUserDefinedTypes(
 		}
 		stmts = plstmt.AST
 
-		v := plpgsqltree.SQLStmtVisitor{Fn: replaceFunc}
+		v := utils.SQLStmtVisitor{Fn: replaceFunc}
 		newStmt := plpgsqltree.Walk(&v, stmts)
 		// Some PLpgSQL statements (i.e., declarations), may contain type
 		// annotations containing the UDT. We need to walk the AST to replace them,
 		// too.
-		v2 := plpgsqltree.TypeRefVisitor{Fn: replaceTypeFunc}
+		v2 := utils.TypeRefVisitor{Fn: replaceTypeFunc}
 		newStmt = plpgsqltree.Walk(&v2, newStmt)
 		fmtCtx.FormatNode(newStmt)
 	default:

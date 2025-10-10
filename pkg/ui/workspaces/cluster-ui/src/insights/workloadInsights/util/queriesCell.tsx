@@ -3,12 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
 import React from "react";
-
+import { Tooltip } from "@cockroachlabs/ui-components";
 import { limitStringArray } from "src/util";
-
+import classNames from "classnames/bind";
 import styles from "./workloadInsights.module.scss";
 
 const cx = classNames.bind(styles);

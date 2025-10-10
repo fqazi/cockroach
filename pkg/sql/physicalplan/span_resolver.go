@@ -10,7 +10,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvclient"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
@@ -133,7 +132,7 @@ var _ SpanResolver = &spanResolver{}
 func NewSpanResolver(
 	st *cluster.Settings,
 	distSender *kvcoord.DistSender,
-	nodeDescs kvclient.NodeDescStore,
+	nodeDescs kvcoord.NodeDescStore,
 	nodeID roachpb.NodeID,
 	locality roachpb.Locality,
 	clock *hlc.Clock,
@@ -243,13 +242,13 @@ func (it *spanResolverIterator) Seek(
 		if (reverse && desc.ContainsKeyInverted(seekKey)) ||
 			(!reverse && desc.ContainsKey(seekKey)) {
 			if log.V(1) {
-				log.Dev.Infof(ctx, "not seeking (key=%s); existing descriptor %s", seekKey, desc)
+				log.Infof(ctx, "not seeking (key=%s); existing descriptor %s", seekKey, desc)
 			}
 			return
 		}
 	}
 	if log.V(1) {
-		log.Dev.Infof(ctx, "seeking (key=%s)", seekKey)
+		log.Infof(ctx, "seeking (key=%s)", seekKey)
 	}
 	it.it.Seek(ctx, seekKey, scanDir)
 }

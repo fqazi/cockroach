@@ -3,10 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import sample from "lodash/sample";
+import _ from "lodash";
 
 import { randomName } from "./randomName";
 
 export function randomRole(): string {
-  return sample(["root", "admin", "public", randomName()]);
+  return _.sample(["root", "admin", "public", randomName()]);
 }

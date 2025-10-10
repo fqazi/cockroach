@@ -1,4 +1,3 @@
-# LogicTest: !local-prepared
 statement ok
 CREATE TABLE priv_t (pk INT PRIMARY KEY);
 CREATE TABLE no_priv_t (pk INT PRIMARY KEY);
@@ -129,16 +128,6 @@ query TTTT
 SELECT current_user(), current_user, session_user(), session_user
 ----
 root  root  root  root
-
-query T
-SHOW is_superuser
-----
-on
-
-# Verify that RESET ALL does not change is_superuser.
-
-statement ok
-RESET ALL
 
 query T
 SHOW is_superuser

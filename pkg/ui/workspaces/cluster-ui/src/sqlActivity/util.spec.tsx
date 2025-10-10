@@ -3,17 +3,15 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
-import Long from "long";
-
-import { mockStmtStats, Stmt } from "src/api/testUtils";
-import { Filters } from "src/queryFilter/filter";
 import {
   convertRawStmtsToAggregateStatistics,
   filterStatementsData,
   getAppsFromStmtsResponse,
 } from "src/sqlActivity/util";
-
+import { mockStmtStats, Stmt } from "src/api/testUtils";
+import { Filters } from "src/queryFilter/filter";
+import Long from "long";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { INTERNAL_APP_NAME_PREFIX, unset } from "../util";
 
 describe("filterStatementsData", () => {

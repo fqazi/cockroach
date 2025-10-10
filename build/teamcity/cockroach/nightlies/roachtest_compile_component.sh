@@ -15,7 +15,7 @@ if [ "$#" -eq 0 ]; then
   echo ""
   echo "Usage: $(basename $0) [--with-coverage] <os/arch/component>"
   echo "  where os is one of: linux"
-  echo "        arch is one of: amd64, arm64, amd64-fips, s390x"
+  echo "        arch is one of: amd64, arm64, amd64-fips"
   echo "        component is one of: cockroach, cockroach-ea, workload, libgeos, roachtest"
   echo "  --with-coverage enables go code coverage instrumentation (only applies to cockroach binaries)"
   exit 1
@@ -66,17 +66,17 @@ artifacts=()
 case "$component" in
   cockroach)
     # Cockroach binary.
-    bazel_args=(--config force_build_cdeps --config pgo --norun_validations //pkg/cmd/cockroach $crdb_extra_flags)
+    bazel_args=(--config force_build_cdeps //pkg/cmd/cockroach $crdb_extra_flags)
     artifacts=("pkg/cmd/cockroach/cockroach_/cockroach:bin/cockroach.$os-$arch")
     ;;
   cockroach-ea)
-    # Cockroach binary with enabled assertions (EA).
-    bazel_args=(--config force_build_cdeps --config pgo --norun_validations //pkg/cmd/cockroach --crdb_test $crdb_extra_flags)
-    artifacts=("pkg/cmd/cockroach/cockroach_/cockroach:bin/cockroach-ea.$os-$arch")
+    # Cockroach-short with enabled assertions (EA).
+    bazel_args=(--config force_build_cdeps //pkg/cmd/cockroach-short --crdb_test $crdb_extra_flags)
+    artifacts=("pkg/cmd/cockroach-short/cockroach-short_/cockroach-short:bin/cockroach-ea.$os-$arch")
     ;;
   workload)
     # Workload binary.
-    bazel_args=(--config force_build_cdeps --norun_validations //pkg/cmd/workload)
+    bazel_args=(--config force_build_cdeps //pkg/cmd/workload)
     artifacts=("pkg/cmd/workload/workload_/workload:bin/workload.$os-$arch")
     ;;
   libgeos)
@@ -100,12 +100,7 @@ case "$component" in
     ;;
   roachprod)
       # Roachprod binary.
-      # This binary is built to support the logic behind `roachprod update`.
-      # Hence, we do not need to add `--crdb_test` to the build args as we do
-      # for `roachtest`. Adding the build flag causes the binary to log
-      # metamorphic vars on each command invocation, which is not ideal from a
-      # user experience perspective.
-      bazel_args=(//pkg/cmd/roachprod)
+      bazel_args=(//pkg/cmd/roachprod --crdb_test)
       artifacts=("pkg/cmd/roachprod/roachprod_/roachprod:bin/roachprod.$os-$arch")
       ;;
   *)
@@ -116,8 +111,8 @@ esac
 
 echo "Building $os/$arch/$component..."
 
-bazel build --config $config -c opt "${bazel_args[@]}"
-BAZEL_BIN=$(bazel info bazel-bin --config $config -c opt)
+bazel build --config $config --config ci -c opt "${bazel_args[@]}"
+BAZEL_BIN=$(bazel info bazel-bin --config $config --config ci -c opt)
 for artifact in "${artifacts[@]}"; do
   src=${artifact%%:*}
   dst=${artifact#*:}

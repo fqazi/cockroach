@@ -3,16 +3,15 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Tooltip } from "@cockroachlabs/ui-components";
-import classNames from "classnames/bind";
 import React from "react";
+import classNames from "classnames/bind";
 
-import { Anchor } from "src/anchor";
 import { Badge } from "src/badge";
+import { Anchor } from "src/anchor";
+import { Tooltip } from "@cockroachlabs/ui-components";
 import { statementDiagnostics } from "src/util";
-
-import styles from "./diagnosticStatusBadge.module.scss";
 import { DiagnosticStatuses } from "./diagnosticStatuses";
+import styles from "./diagnosticStatusBadge.module.scss";
 
 interface OwnProps {
   status: DiagnosticStatuses;

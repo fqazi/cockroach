@@ -59,7 +59,7 @@ func (afs *autoDecryptFS) Close() error {
 	return nil
 }
 
-func (afs *autoDecryptFS) Create(name string, category vfs.DiskWriteCategory) (vfs.File, error) {
+func (afs *autoDecryptFS) Create(name string) (vfs.File, error) {
 	name, err := filepath.Abs(name)
 	if err != nil {
 		return nil, err
@@ -68,7 +68,7 @@ func (afs *autoDecryptFS) Create(name string, category vfs.DiskWriteCategory) (v
 	if err != nil {
 		return nil, err
 	}
-	return fs.Create(name, category)
+	return fs.Create(name)
 }
 
 func (afs *autoDecryptFS) Link(oldname, newname string) error {
@@ -99,9 +99,7 @@ func (afs *autoDecryptFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, e
 	return fs.Open(name, opts...)
 }
 
-func (afs *autoDecryptFS) OpenReadWrite(
-	name string, category vfs.DiskWriteCategory, opts ...vfs.OpenOption,
-) (vfs.File, error) {
+func (afs *autoDecryptFS) OpenReadWrite(name string, opts ...vfs.OpenOption) (vfs.File, error) {
 	name, err := filepath.Abs(name)
 	if err != nil {
 		return nil, err
@@ -110,7 +108,7 @@ func (afs *autoDecryptFS) OpenReadWrite(
 	if err != nil {
 		return nil, err
 	}
-	return fs.OpenReadWrite(name, category, opts...)
+	return fs.OpenReadWrite(name, opts...)
 }
 
 func (afs *autoDecryptFS) OpenDir(name string) (vfs.File, error) {
@@ -157,9 +155,7 @@ func (afs *autoDecryptFS) Rename(oldname, newname string) error {
 	return fs.Rename(oldname, newname)
 }
 
-func (afs *autoDecryptFS) ReuseForWrite(
-	oldname, newname string, category vfs.DiskWriteCategory,
-) (vfs.File, error) {
+func (afs *autoDecryptFS) ReuseForWrite(oldname, newname string) (vfs.File, error) {
 	oldname, err := filepath.Abs(oldname)
 	if err != nil {
 		return nil, err
@@ -172,7 +168,7 @@ func (afs *autoDecryptFS) ReuseForWrite(
 	if err != nil {
 		return nil, err
 	}
-	return fs.ReuseForWrite(oldname, newname, category)
+	return fs.ReuseForWrite(oldname, newname)
 }
 
 func (afs *autoDecryptFS) MkdirAll(dir string, perm os.FileMode) error {
@@ -211,7 +207,7 @@ func (afs *autoDecryptFS) List(dir string) ([]string, error) {
 	return fs.List(dir)
 }
 
-func (afs *autoDecryptFS) Stat(name string) (vfs.FileInfo, error) {
+func (afs *autoDecryptFS) Stat(name string) (os.FileInfo, error) {
 	name, err := filepath.Abs(name)
 	if err != nil {
 		return nil, err
@@ -245,11 +241,6 @@ func (afs *autoDecryptFS) GetDiskUsage(path string) (vfs.DiskUsage, error) {
 		return vfs.DiskUsage{}, err
 	}
 	return fs.GetDiskUsage(path)
-}
-
-// Unwrap is part of the vfs.FS interface.
-func (afs *autoDecryptFS) Unwrap() vfs.FS {
-	return nil
 }
 
 // maybeSwitchFS finds the first ancestor of path that is registered as an

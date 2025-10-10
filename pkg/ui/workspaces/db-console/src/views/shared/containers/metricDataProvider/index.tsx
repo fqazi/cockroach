@@ -3,37 +3,19 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import {
-  util,
-  TimeWindow,
-  TimeScale,
-  findClosestTimeScale,
-  defaultTimeScaleOptions,
-} from "@cockroachlabs/cluster-ui";
-import { History } from "history";
-import isEqual from "lodash/isEqual";
-import isNil from "lodash/isNil";
-import isObject from "lodash/isObject";
-import map from "lodash/map";
+import _ from "lodash";
 import Long from "long";
 import moment from "moment-timezone";
 import React from "react";
 import { connect } from "react-redux";
 import { createSelector } from "reselect";
-
-import { PayloadAction } from "src/interfaces/action";
 import * as protos from "src/js/protos";
-import { refreshSettings } from "src/redux/apiReducers";
-import {
-  selectResolution10sStorageTTL,
-  selectResolution30mStorageTTL,
-} from "src/redux/clusterSettings";
 import {
   MetricsQuery,
   requestMetrics as requestMetricsAction,
 } from "src/redux/metrics";
 import { AdminUIState } from "src/redux/state";
-import { adjustTimeScale, selectMetricsTime } from "src/redux/timeScale";
+import { util } from "@cockroachlabs/cluster-ui";
 import { findChildrenOfType } from "src/util/find";
 import {
   Metric,
@@ -41,6 +23,20 @@ import {
   MetricsDataComponentProps,
   QueryTimeInfo,
 } from "src/views/shared/components/metricQuery";
+import { PayloadAction } from "src/interfaces/action";
+import {
+  TimeWindow,
+  TimeScale,
+  findClosestTimeScale,
+  defaultTimeScaleOptions,
+} from "@cockroachlabs/cluster-ui";
+import { History } from "history";
+import { refreshSettings } from "src/redux/apiReducers";
+import { adjustTimeScale, selectMetricsTime } from "src/redux/timeScale";
+import {
+  selectResolution10sStorageTTL,
+  selectResolution30mStorageTTL,
+} from "src/redux/clusterSettings";
 
 /**
  * queryFromProps is a helper method which generates a TimeSeries Query data
@@ -55,7 +51,7 @@ function queryFromProps(
   let downsampler = protos.cockroach.ts.tspb.TimeSeriesQueryAggregator.MAX;
 
   // Compute derivative function.
-  if (!isNil(metricProps.derivative)) {
+  if (!_.isNil(metricProps.derivative)) {
     derivative = metricProps.derivative;
   } else if (metricProps.rate) {
     derivative = protos.cockroach.ts.tspb.TimeSeriesQueryDerivative.DERIVATIVE;
@@ -65,7 +61,7 @@ function queryFromProps(
         .NON_NEGATIVE_DERIVATIVE;
   }
   // Compute downsample function.
-  if (!isNil(metricProps.downsampler)) {
+  if (!_.isNil(metricProps.downsampler)) {
     downsampler = metricProps.downsampler;
   } else if (metricProps.downsampleMax) {
     downsampler = protos.cockroach.ts.tspb.TimeSeriesQueryAggregator.MAX;
@@ -73,7 +69,7 @@ function queryFromProps(
     downsampler = protos.cockroach.ts.tspb.TimeSeriesQueryAggregator.MIN;
   }
   // Compute aggregation function.
-  if (!isNil(metricProps.aggregator)) {
+  if (!_.isNil(metricProps.aggregator)) {
     sourceAggregator = metricProps.aggregator;
   } else if (metricProps.aggregateMax) {
     sourceAggregator = protos.cockroach.ts.tspb.TimeSeriesQueryAggregator.MAX;
@@ -169,7 +165,7 @@ class MetricsDataProvider extends React.Component<
         Metric,
       );
       // Construct a query for each found selector child.
-      return map(selectors, s => queryFromProps(s.props, child.props));
+      return _.map(selectors, s => queryFromProps(s.props, child.props));
     },
   );
 
@@ -200,7 +196,7 @@ class MetricsDataProvider extends React.Component<
     }
     const { metrics, requestMetrics, id } = props;
     const nextRequest = metrics && metrics.nextRequest;
-    if (!nextRequest || !isEqual(nextRequest, request)) {
+    if (!nextRequest || !_.isEqual(nextRequest, request)) {
       requestMetrics(id, request);
     }
   }
@@ -224,7 +220,7 @@ class MetricsDataProvider extends React.Component<
       if (
         data &&
         request &&
-        isEqual(request.queries, this.requestMessage(this.props).queries)
+        _.isEqual(request.queries, this.requestMessage(this.props).queries)
       ) {
         return data;
       }
@@ -258,7 +254,7 @@ const timeInfoSelector = createSelector(
   selectResolution30mStorageTTL,
   selectMetricsTime,
   (sTTL, mTTL, metricsTime) => {
-    if (!isObject(metricsTime.currentWindow)) {
+    if (!_.isObject(metricsTime.currentWindow)) {
       return null;
     }
     const { start: startMoment, end: endMoment } = metricsTime.currentWindow;

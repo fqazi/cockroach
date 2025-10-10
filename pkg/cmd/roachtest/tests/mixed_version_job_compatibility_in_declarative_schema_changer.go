@@ -10,7 +10,6 @@ import (
 	gosql "database/sql"
 	"math/rand"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
@@ -28,15 +27,11 @@ func registerDeclarativeSchemaChangerJobCompatibilityInMixedVersion(r registry.R
 	// This test requires us to come back and change the stmts in executeSupportedDDLs to be those
 	// supported in the "previous" major release.
 	r.Add(registry.TestSpec{
-		Name:    "declarative_schema_changer/job-compatibility-mixed-version-V253-V254",
-		Owner:   registry.OwnerSQLFoundations,
-		Cluster: r.MakeClusterSpec(4),
-		// Disabled on IBM because s390x is only built on master and mixed-version
-		// is impossible to test as of 05/2025.
-		CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
-		Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
-		Monitor:          true,
-		Randomized:       true,
+		Name:             "declarative_schema_changer/job-compatibility-mixed-version-V232-V241",
+		Owner:            registry.OwnerSQLFoundations,
+		Cluster:          r.MakeClusterSpec(4),
+		CompatibleClouds: registry.AllExceptAWS,
+		Suites:           registry.Suites(registry.Nightly),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runDeclarativeSchemaChangerJobCompatibilityInMixedVersion(ctx, t, c)
 		},
@@ -60,6 +55,12 @@ func setShortJobIntervalsStep(
 func setShortGCTTLInSystemZoneConfig(
 	ctx context.Context, l *logger.Logger, r *rand.Rand, h *mixedversion.Helper,
 ) error {
+	if err := setTenantSetting(
+		l, r, h, "sql.virtual_cluster.feature_access.zone_configs.enabled", true,
+	); err != nil {
+		return err
+	}
+
 	// Ensure the system database has a longer TTL interval, which is needed to avoid
 	// flakes on system database queries for upgrades.
 	if err := h.Exec(r, "ALTER DATABASE system CONFIGURE ZONE USING gc.ttlseconds=60;"); err != nil {
@@ -68,8 +69,8 @@ func setShortGCTTLInSystemZoneConfig(
 	return h.Exec(r, "ALTER RANGE default CONFIGURE ZONE USING gc.ttlseconds = 1;")
 }
 
-// executeSupportedDDLs tests all stmts which had DSC support added in the
-// previous major version.
+// executeSupportedDDLs tests all stmts supported in V23_1.
+// Stmts here is based on set up in testSetupResetStep.
 func executeSupportedDDLs(
 	ctx context.Context,
 	c cluster.Cluster,
@@ -96,7 +97,7 @@ func executeSupportedDDLs(
 	// here because these connnections are managed by the mixedversion
 	// framework, which already closes them at the end of the test.
 	testUtils, err := newCommonTestUtils(
-		ctx, t, c, connectFunc, helper.DefaultService().Descriptor.Nodes,
+		ctx, t, c, connectFunc, helper.DefaultService().Descriptor.Nodes, false, false,
 	)
 	if err != nil {
 		return err
@@ -108,19 +109,30 @@ func executeSupportedDDLs(
 		return err
 	}
 
-	// DDLs supported in V25_3.
-	v253DDLs := []string{
-		`ALTER TABLE testdb.testsc.t2 ALTER COLUMN i DROP NOT NULL`,
-	}
-
-	// DDLs supported in V25_4.
-	v254DDLs := []string{
-		`TRUNCATE testdb.testsc.t3`,
-		`ALTER TABLE testdb.testsc.t2 RENAME TO t2_renamed`,
-		`ALTER TABLE testdb.testsc.t2_renamed RENAME TO t2`,
-		`ALTER TABLE testdb.testsc.t2 ALTER COLUMN j SET ON UPDATE 1`,
-		`ALTER TABLE testdb.testsc.t2 RENAME COLUMN k TO k_renamed`,
-		`ALTER TABLE testdb.testsc.t2 RENAME COLUMN k_renamed TO k`,
+	// DDLs supported in V23_2.
+	v232DDLs := []string{
+		`COMMENT ON DATABASE testdb IS 'this is a database comment'`,
+		`COMMENT ON SCHEMA testdb.testsc IS 'this is a schema comment'`,
+		`COMMENT ON TABLE testdb.testsc.t IS 'this is a table comment'`,
+		`COMMENT ON COLUMN testdb.testsc.t.i IS 'this is a column comment'`,
+		`COMMENT ON INDEX testdb.testsc.t@idx IS 'this is a index comment'`,
+		`COMMENT ON CONSTRAINT check_j ON testdb.testsc.t IS 'this is a constraint comment'`,
+		`ALTER TABLE testdb.testsc.t ADD COLUMN k INT DEFAULT 35`,
+		`ALTER TABLE testdb.testsc.t DROP COLUMN k`,
+		`ALTER TABLE testdb.testsc.t2 ADD PRIMARY KEY (i)`,
+		`ALTER TABLE testdb.testsc.t2 ALTER PRIMARY KEY USING COLUMNS (j)`,
+		`CREATE FUNCTION fn(a INT) RETURNS INT AS 'SELECT a*a' LANGUAGE SQL`,
+		`CREATE INDEX ON testdb.testsc.t3 (i)`,
+		`ALTER TABLE testdb.testsc.t2 ALTER COLUMN k SET NOT NULL`,
+		`ALTER TABLE testdb.testsc.t2 ALTER PRIMARY KEY USING COLUMNS (k) USING HASH`,
+		`ALTER TABLE testdb.testsc.t3 ADD CONSTRAINT j_unique UNIQUE WITHOUT INDEX (k)`,
+		`ALTER TABLE testdb.testsc.t3 ADD CONSTRAINT j_unique_not_valid UNIQUE WITHOUT INDEX (k) NOT VALID`,
+		`ALTER TABLE testdb.testsc.t3 ADD CONSTRAINT fk FOREIGN KEY (j) REFERENCES testdb.testsc.t2 (j)`,
+		`ALTER TABLE testdb.testsc.t3 ADD CONSTRAINT fk_not_valid FOREIGN KEY (j) REFERENCES testdb.testsc.t2 (j) NOT VALID`,
+		`ALTER TABLE testdb.testsc.t3 ADD CONSTRAINT check_positive CHECK (j > 0)`,
+		`ALTER TABLE testdb.testsc.t3 ADD CONSTRAINT check_positive_not_valid CHECK (j > 0) NOT VALID`,
+		`ALTER TABLE testdb.testsc.t3 DROP CONSTRAINT check_positive`,
+		`ALTER TABLE testdb.testsc.t3 VALIDATE CONSTRAINT check_positive_not_valid`,
 	}
 
 	// Used to clean up our CREATE-d elements after we are done with them.
@@ -135,28 +147,12 @@ func executeSupportedDDLs(
 		`DROP SCHEMA testdb.testsc`,
 		`DROP DATABASE testdb CASCADE`,
 		`DROP OWNED BY foo`,
+		`DROP FUNCTION fn`,
 	}
 
-	clusterVersion, err := helper.ClusterVersion(r)
-	if err != nil {
-		return err
-	}
-	if clusterVersion.AtLeast(clusterversion.V25_3.Version()) {
-		for _, ddl := range v253DDLs {
-			if err := helper.ExecWithGateway(r, nodes, ddl); err != nil {
-				return err
-			}
-		}
-	}
-	if clusterVersion.AtLeast(clusterversion.V25_4.Version()) {
-		for _, ddl := range v254DDLs {
-			if err := helper.ExecWithGateway(r, nodes, ddl); err != nil {
-				return err
-			}
-		}
-	}
+	ddls := append(v232DDLs, cleanup...)
 
-	for _, ddl := range cleanup {
+	for _, ddl := range ddls {
 		if err := helper.ExecWithGateway(r, nodes, ddl); err != nil {
 			return err
 		}
@@ -190,7 +186,6 @@ func runDeclarativeSchemaChangerJobCompatibilityInMixedVersion(
 				return err
 			}
 		}
-
 		setUpQuery := `
 CREATE DATABASE IF NOT EXISTS testdb;
 CREATE SCHEMA IF NOT EXISTS testdb.testsc;
@@ -214,6 +209,10 @@ CREATE VIEW IF NOT EXISTS testdb.testsc.v AS (SELECT i*2 FROM testdb.testsc.t);
 		// buried by the fallback.
 		for _, node := range c.All() {
 			if err := helper.ExecWithGateway(r, option.NodeListOption{node}, "SET use_declarative_schema_changer = unsafe_always"); err != nil {
+				return err
+			}
+			// We also need to set experimental_enable_unique_without_index_constraints - since we will be testing this syntax.
+			if err := helper.ExecWithGateway(r, option.NodeListOption{node}, "SET experimental_enable_unique_without_index_constraints = true"); err != nil {
 				return err
 			}
 		}

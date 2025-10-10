@@ -14,5 +14,5 @@ import React, { ExoticComponent } from "react";
  * > by pretending to be a normal component."
  * */
 export const normalizeConnectedComponent =
-  (ConnectedComponent: ExoticComponent) =>
-  (props: React.ComponentProps<any>) => <ConnectedComponent {...props} />;
+  (ConnectedComponent: ExoticComponent) => (props: React.ComponentProps<any>) =>
+    <ConnectedComponent {...props} />;

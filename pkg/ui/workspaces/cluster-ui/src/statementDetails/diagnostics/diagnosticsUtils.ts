@@ -3,16 +3,14 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import { TimeScale, toDateRange } from "src/timeScaleDropdown";
+import { DiagnosticStatuses } from "src/statementsDiagnostics";
+import { StatementDiagnosticsReport } from "../../api";
 import moment from "moment-timezone";
 
-import { DiagnosticStatuses } from "src/statementsDiagnostics";
-import { TimeScale, toDateRange } from "src/timeScaleDropdown";
-
-import { StatementDiagnosticsReport } from "../../api";
-
-export function getDiagnosticsStatus(diagnosticsRequest: {
-  completed: boolean;
-}): DiagnosticStatuses {
+export function getDiagnosticsStatus(
+  diagnosticsRequest: StatementDiagnosticsReport,
+): DiagnosticStatuses {
   if (diagnosticsRequest.completed) {
     return "READY";
   }

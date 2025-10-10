@@ -3,13 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
-import Long from "long";
-import React, { useEffect } from "react";
-
 import { GetTraceResponse } from "src/api";
+import Long from "long";
 import { Loading } from "src/loading";
-
+import React, { useEffect } from "react";
+import classNames from "classnames/bind";
 import styles from "../snapshot.module.scss";
 const cx = classNames.bind(styles);
 

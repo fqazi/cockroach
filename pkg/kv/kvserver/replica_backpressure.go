@@ -19,31 +19,11 @@ import (
 
 var backpressureLogLimiter = log.Every(500 * time.Millisecond)
 
-// backpressureRangeHardCap is a hard cap on the absolute size a range is
-// allowed to grow to before backpressure will be applied to all writes. This
-// absolute value takes precedence over any user-defined zone configuration
-// value in conjunction with the backpressureRangeSizeMultiplier. It is intended
-// to be the last defense against absurdly large ranges, in cases where
-// backpressure is disabled by setting backpressureRangeSizeMultiplier to 0, or
-// doesn't apply due to the backpressureByteTolerance[1], or a user has
-// fat-fingered a zone configuration.
-//
-// [1] See comment on backpressureByteTolerance about the risk of disabling
-// backpressure with that setting.
-var backpressureRangeHardCap = settings.RegisterByteSizeSetting(
-	settings.SystemOnly,
-	"kv.range.range_size_hard_cap",
-	"hard cap on the maximum size a range is allowed to grow to without"+
-		"splitting before writes to the range are blocked. Takes precedence over all other configurations",
-	8<<30, /* 8 GiB */
-	settings.ByteSizeWithMinimum(64<<20 /* 64 MiB */),
-	settings.WithPublic,
-)
-
 // backpressureRangeSizeMultiplier is the multiple of range_max_bytes that a
 // range's size must grow to before backpressure will be applied on writes. Set
 // to 0 to disable backpressure altogether.
-var backpressureRangeSizeMultiplier = settings.RegisterFloatSetting(settings.SystemOnly,
+var backpressureRangeSizeMultiplier = settings.RegisterFloatSetting(
+	settings.SystemOnly,
 	"kv.range.backpressure_range_size_multiplier",
 	"multiple of range_max_bytes that a range is allowed to grow to without "+
 		"splitting before writes to that range are blocked, or 0 to disable",
@@ -88,11 +68,9 @@ var backpressureByteTolerance = settings.RegisterByteSizeSetting(
 // to be backpressured.
 var backpressurableSpans = []roachpb.Span{
 	{Key: keys.TimeseriesPrefix, EndKey: keys.TimeseriesKeyMax},
-	// Exclude the span_configurations table to avoid
-	// catch-22 situations where protected timestamp updates or garbage
-	// collection TTL updates are blocked by backpressure.
-	{Key: keys.SystemConfigTableDataMax, EndKey: keys.SpanConfigTableMin},
-	{Key: keys.SpanConfigTableMax, EndKey: keys.TableDataMax},
+	// Backpressure from the end of the system config forward instead of
+	// over all table data to avoid backpressuring unsplittable ranges.
+	{Key: keys.SystemConfigTableDataMax, EndKey: keys.TableDataMax},
 }
 
 // canBackpressureBatch returns whether the provided BatchRequest is eligible
@@ -120,14 +98,11 @@ func canBackpressureBatch(ba *kvpb.BatchRequest) bool {
 	return false
 }
 
-// signallerForBatch returns the signaller to use for this batch in the
-// following priorities:
-// 1. If the batch contains a request uses poison.Policy_Wait, we will return
-// neverTripSignaller.
-// 2. If the replica is leaderless for a time longer than the threshold in
-// `kv.replica_raft.leaderless_unavailable_threshold`, use the
-// leaderlessWatcher signal.
-// 3. Otherwise, use the replica's breaker's signaller
+// signallerForBatch returns the signaller to use for this batch. This is the
+// Replica's breaker's signaller except if any request in the batch uses
+// poison.Policy_Wait, in which case it's a neverTripSignaller. In particular,
+// `(signaller).C() == nil` signals that the request bypasses the circuit
+// breakers.
 func (r *Replica) signallerForBatch(ba *kvpb.BatchRequest) signaller {
 	for _, ru := range ba.Requests {
 		req := ru.GetInner()
@@ -135,14 +110,6 @@ func (r *Replica) signallerForBatch(ba *kvpb.BatchRequest) signaller {
 			return neverTripSignaller{}
 		}
 	}
-
-	// If the leaderless watcher indicates that this replica is leaderless for a
-	// long time, use it as the signal.
-	if r.LeaderlessWatcher.IsUnavailable() {
-		return r.LeaderlessWatcher
-	}
-
-	// Otherwise, use the replica's breaker.
 	return r.breaker.Signal()
 }
 
@@ -151,32 +118,17 @@ func (r *Replica) signallerForBatch(ba *kvpb.BatchRequest) signaller {
 // relation to the split size. The method returns true if the range is more
 // than backpressureRangeSizeMultiplier times larger than the split size but not
 // larger than that by more than backpressureByteTolerance (see that comment for
-// further explanation). It ensures that writes are always backpressured if the
-// range's size is already larger than the absolute maximum we'll allow.
+// further explanation).
 func (r *Replica) shouldBackpressureWrites() bool {
-	r.mu.RLock()
-	size := r.shMu.state.Stats.Total()
-	rangeMaxBytes := r.mu.conf.RangeMaxBytes
-	largestPreviousMaxRangeSize := r.mu.largestPreviousMaxRangeSizeBytes
-	r.mu.RUnlock()
-
-	// Check if the current range's size is already over the absolute maximum
-	// we'll allow. Don't bother with any multipliers/byte tolerance calculations
-	// if it is.
-	rangeSizeHardCap := backpressureRangeHardCap.Get(&r.store.cfg.Settings.SV)
-
-	if size >= rangeSizeHardCap {
-		return true
-	}
-
 	mult := backpressureRangeSizeMultiplier.Get(&r.store.cfg.Settings.SV)
 	if mult == 0 {
 		// Disabled.
 		return false
 	}
 
-	exceeded, bytesOver := exceedsMultipleOfSplitSize(mult, rangeMaxBytes,
-		largestPreviousMaxRangeSize, size)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	exceeded, bytesOver := r.exceedsMultipleOfSplitSizeRLocked(mult)
 	if !exceeded {
 		return false
 	}
@@ -200,26 +152,17 @@ func (r *Replica) maybeBackpressureBatch(ctx context.Context, ba *kvpb.BatchRequ
 	for first := true; r.shouldBackpressureWrites(); first = false {
 		if first {
 			r.store.metrics.BackpressuredOnSplitRequests.Inc(1)
-			defer r.store.metrics.BackpressuredOnSplitRequests.Dec(1) //nolint:deferloop
+			defer r.store.metrics.BackpressuredOnSplitRequests.Dec(1)
 
 			if backpressureLogLimiter.ShouldLog() {
-				log.KvExec.Warningf(ctx, "applying backpressure to limit range growth on batch %s", ba)
+				log.Warningf(ctx, "applying backpressure to limit range growth on batch %s", ba)
 			}
 		}
 
 		// Register a callback on an ongoing split for this range in the splitQueue.
 		splitC := make(chan error, 1)
-		if !r.store.splitQueue.MaybeAddCallback(r.RangeID, processCallback{
-			onEnqueueResult: func(rank int, err error) {},
-			onProcessResult: func(err error) {
-				select {
-				case splitC <- err:
-				default:
-					// Drop the error if the channel is already full. This prevents
-					// blocking if the callback is invoked multiple times.
-					return
-				}
-			},
+		if !r.store.splitQueue.MaybeAddCallback(r.RangeID, func(err error) {
+			splitC <- err
 		}) {
 			// No split ongoing. We may have raced with its completion. There's
 			// no good way to prevent this race, so we conservatively allow the

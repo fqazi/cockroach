@@ -12,7 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/featureflag"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
-	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -26,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
@@ -35,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
-	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -45,7 +42,7 @@ import (
 var createStatsPostEvents = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"sql.stats.post_events.enabled",
-	"if set, an event is logged for every successful CREATE STATISTICS job",
+	"if set, an event is logged for every CREATE STATISTICS job",
 	false,
 	settings.WithPublic)
 
@@ -74,7 +71,7 @@ var nonIndexJSONHistograms = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"sql.stats.non_indexed_json_histograms.enabled",
 	"set to true to collect table statistics histograms on non-indexed JSON columns",
-	false,
+	true,
 	settings.WithPublic)
 
 var automaticJobCheckBeforeCreatingJob = settings.RegisterBoolSetting(
@@ -82,23 +79,40 @@ var automaticJobCheckBeforeCreatingJob = settings.RegisterBoolSetting(
 	"sql.stats.automatic_job_check_before_creating_job.enabled",
 	"set to true to perform the autostats job check before creating the job, instead of in the same "+
 		"transaction as creating the job",
-	true)
-
-var errorOnConcurrentCreateStats = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"sql.stats.error_on_concurrent_create_stats.enabled",
-	"set to true to error on concurrent CREATE STATISTICS jobs, instead of skipping them",
-	false,
-	settings.WithPublic)
+	false)
 
 const nonIndexColHistogramBuckets = 2
+
+// StubTableStats generates "stub" statistics for a table which are missing
+// statistics on virtual computed columns, multi-column stats, and histograms,
+// and have 0 for all values.
+func StubTableStats(
+	desc catalog.TableDescriptor, name string,
+) ([]*stats.TableStatisticProto, error) {
+	colStats, err := createStatsDefaultColumns(
+		context.Background(), desc, false /* virtColEnabled */, false, /* multiColEnabled */
+		false,                            /* nonIndexJSONHistograms */
+		nonIndexColHistogramBuckets, nil, /* evalCtx */
+	)
+	if err != nil {
+		return nil, err
+	}
+	statistics := make([]*stats.TableStatisticProto, len(colStats))
+	for i, colStat := range colStats {
+		statistics[i] = &stats.TableStatisticProto{
+			TableID:   desc.GetID(),
+			Name:      name,
+			ColumnIDs: colStat.ColumnIDs,
+		}
+	}
+	return statistics, nil
+}
 
 // createStatsNode is a planNode implemented in terms of a function. The
 // runJob function starts a Job during Start, and the remainder of the
 // CREATE STATISTICS planning and execution is performed within the jobs
 // framework.
 type createStatsNode struct {
-	zeroInputPlanNode
 	tree.CreateStats
 
 	// p is the "outer planner" from planning the CREATE STATISTICS
@@ -114,12 +128,6 @@ type createStatsNode struct {
 	// If it is false, the flow for create statistics is planned directly; this
 	// is used when the statement is under EXPLAIN or EXPLAIN ANALYZE.
 	runAsJob bool
-
-	// whereSpans are the spans corresponding to the WHERE clause, if any.
-	whereSpans roachpb.Spans
-
-	// whereIndexID is the index to use to collect statistics with a WHERE clause.
-	whereIndexID descpb.IndexID
 }
 
 func (n *createStatsNode) startExec(params runParams) error {
@@ -141,23 +149,15 @@ func (n *createStatsNode) runJob(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	details := record.Details.(jobspb.CreateStatsDetails)
 
 	jobCheckBefore := automaticJobCheckBeforeCreatingJob.Get(n.p.ExecCfg().SV())
-	if n.Name == jobspb.AutoStatsName || n.Name == jobspb.AutoPartialStatsName {
+	if n.Name == jobspb.AutoStatsName {
 		if jobCheckBefore {
 			// Don't start the job if there is already a CREATE STATISTICS job running.
 			// (To handle race conditions we check this again after the job starts,
 			// but this check is used to prevent creating a large number of jobs that
 			// immediately fail).
-			if err := checkRunningJobs(
-				ctx, nil /* job */, n.p, n.Name == jobspb.AutoPartialStatsName, n.p.ExecCfg().JobRegistry,
-				details.Table.ID,
-			); err != nil {
-				if !errorOnConcurrentCreateStats.Get(n.p.ExecCfg().SV()) && errors.Is(err, stats.ConcurrentCreateStatsError) {
-					log.Dev.Infof(ctx, "concurrent create stats job found, skipping")
-					return nil
-				}
+			if err := checkRunningJobs(ctx, nil /* job */, n.p); err != nil {
 				return err
 			}
 		}
@@ -168,24 +168,19 @@ func (n *createStatsNode) runJob(ctx context.Context) error {
 	var job *jobs.StartableJob
 	jobID := n.p.ExecCfg().JobRegistry.MakeJobID()
 	if err := n.p.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) (err error) {
-		if (n.Name == jobspb.AutoStatsName || n.Name == jobspb.AutoPartialStatsName) && !jobCheckBefore {
+		if n.Name == jobspb.AutoStatsName && !jobCheckBefore {
 			// Don't start the job if there is already a CREATE STATISTICS job running.
 			if err := checkRunningJobsInTxn(
-				ctx, nil /* job */, n.p, n.Name == jobspb.AutoPartialStatsName, txn, n.p.ExecCfg().JobRegistry,
-				details.Table.ID,
+				ctx, n.p.EvalContext().Settings, jobspb.InvalidJobID, txn,
 			); err != nil {
 				return err
 			}
 		}
 		return n.p.ExecCfg().JobRegistry.CreateStartableJobWithTxn(ctx, &job, jobID, txn, *record)
 	}); err != nil {
-		if !errorOnConcurrentCreateStats.Get(n.p.ExecCfg().SV()) && errors.Is(err, stats.ConcurrentCreateStatsError) {
-			log.Dev.Infof(ctx, "concurrent create stats job found, skipping")
-			return nil
-		}
 		if job != nil {
 			if cleanupErr := job.CleanupOnRollback(ctx); cleanupErr != nil {
-				log.Dev.Warningf(ctx, "failed to cleanup StartableJob: %v", cleanupErr)
+				log.Warningf(ctx, "failed to cleanup StartableJob: %v", cleanupErr)
 			}
 		}
 		return err
@@ -197,10 +192,7 @@ func (n *createStatsNode) runJob(ctx context.Context) error {
 		if errors.Is(err, stats.ConcurrentCreateStatsError) {
 			// Delete the job so users don't see it and get confused by the error.
 			if delErr := n.p.ExecCfg().JobRegistry.DeleteTerminalJobByID(ctx, job.ID()); delErr != nil {
-				log.Dev.Warningf(ctx, "failed to delete job: %v", delErr)
-			}
-			if !errorOnConcurrentCreateStats.Get(n.p.ExecCfg().SV()) {
-				return nil
+				log.Warningf(ctx, "failed to delete job: %v", delErr)
 			}
 		}
 	}
@@ -210,12 +202,6 @@ func (n *createStatsNode) runJob(ctx context.Context) error {
 // makeJobRecord creates a CreateStats job record which can be used to plan and
 // execute statistics creation.
 func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, error) {
-	// Check tenant-level read-only status first (applies to all tables in tenant).
-	if n.p.ExecCfg().TenantReadOnly {
-		return nil, pgerror.Newf(
-			pgcode.WrongObjectType, "cannot create statistics in read-only tenant")
-	}
-
 	var tableDesc catalog.TableDescriptor
 	var fqTableName string
 	var err error
@@ -258,18 +244,15 @@ func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, erro
 	}
 
 	if n.Options.UsingExtremes && !n.p.SessionData().EnableCreateStatsUsingExtremes {
-		return nil, errors.Errorf(`creating partial statistics at extremes is disabled`)
+		return nil, pgerror.New(pgcode.FeatureNotSupported,
+			"creating partial statistics at extremes is not yet supported",
+		)
 	}
 
-	var whereClause string
 	if n.Options.Where != nil {
-		if n.whereSpans == nil {
-			return nil, errors.AssertionFailedf(
-				"expected whereSpans to be set for statistics with a WHERE clause")
-		}
-		// Safe to use AsString since whereClause is only used to populate the
-		// predicate in system.table_statistics.
-		whereClause = tree.AsString(n.Options.Where.Expr)
+		return nil, pgerror.New(pgcode.FeatureNotSupported,
+			"creating partial statistics with a WHERE clause is not yet supported",
+		)
 	}
 
 	if err := n.p.CheckPrivilege(ctx, tableDesc, privilege.SELECT); err != nil {
@@ -290,14 +273,9 @@ func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, erro
 		}
 		defaultHistogramBuckets := stats.GetDefaultHistogramBuckets(n.p.ExecCfg().SV(), tableDesc)
 		if colStats, err = createStatsDefaultColumns(
-			ctx,
-			tableDesc,
-			virtColEnabled,
-			multiColEnabled,
+			ctx, tableDesc, virtColEnabled, multiColEnabled,
 			nonIndexJSONHistograms.Get(n.p.ExecCfg().SV()),
-			n.Options.UsingExtremes,
-			defaultHistogramBuckets,
-			n.p.EvalContext(),
+			defaultHistogramBuckets, n.p.EvalContext(),
 		); err != nil {
 			return nil, err
 		}
@@ -319,11 +297,6 @@ func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, erro
 					"set cluster setting sql.stats.virtual_computed_columns.enabled to collect statistics "+
 						"on virtual columns",
 				)
-			}
-			if typFam := columns[i].GetType().Family(); n.Options.UsingExtremes &&
-				(typFam == types.BoolFamily || typFam == types.EnumFamily) &&
-				!n.p.SessionData().EnableCreateStatsUsingExtremesBoolEnum {
-				return nil, pgerror.Newf(pgcode.FeatureNotSupported, "creating partial statistics at extremes on bool and enum columns is disabled")
 			}
 			columnIDs[i] = columns[i].GetID()
 		}
@@ -371,9 +344,6 @@ func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, erro
 	if n.Name == jobspb.AutoStatsName {
 		// Use a user-friendly description for automatic statistics.
 		description = fmt.Sprintf("Table statistics refresh for %s", fqTableName)
-	} else if n.Name == jobspb.AutoPartialStatsName {
-		// Use a similar user-friendly description for partial statistics.
-		description = fmt.Sprintf("Partial statistics update for %s", fqTableName)
 	} else {
 		// This must be a user query, so use the statement (for consistency with
 		// other jobs triggered by statements).
@@ -394,9 +364,6 @@ func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, erro
 			MaxFractionIdle:  n.Options.Throttling,
 			DeleteOtherStats: deleteOtherStats,
 			UsingExtremes:    n.Options.UsingExtremes,
-			WhereClause:      whereClause,
-			WhereSpans:       n.whereSpans,
-			WhereIndexID:     n.whereIndexID,
 		},
 		Progress: jobspb.CreateStatsProgress{},
 	}, nil
@@ -423,18 +390,13 @@ const maxNonIndexCols = 100
 // If nonIndexJsonHistograms is true, 2-bucket histograms are collected for
 // non-indexed JSON columns.
 //
-// If partialStats is true, we only collect statistics on single columns that
-// are prefixes of forward indexes, and skip over partial, sharded, and
-// implicitly partitioned indexes. Partial statistic creation only supports
-// these columns.
-//
 // In addition to the index columns, we collect stats on up to maxNonIndexCols
 // other columns from the table. We only collect histograms for index columns,
 // plus any other boolean or enum columns (where the "histogram" is tiny).
 func createStatsDefaultColumns(
 	ctx context.Context,
 	desc catalog.TableDescriptor,
-	virtColEnabled, multiColEnabled, nonIndexJSONHistograms, partialStats bool,
+	virtColEnabled, multiColEnabled, nonIndexJSONHistograms bool,
 	defaultHistogramBuckets uint32,
 	evalCtx *eval.Context,
 ) ([]jobspb.CreateStatsDetails_ColStat, error) {
@@ -451,7 +413,8 @@ func createStatsDefaultColumns(
 	// local-only virtual computed column expression is needed.
 	cannotDistribute := make([]bool, len(desc.PublicColumns()))
 	if virtColEnabled {
-		semaCtx := tree.MakeSemaContext(evalCtx.Planner)
+		semaCtx := tree.MakeSemaContext()
+		semaCtx.TypeResolver = evalCtx.Planner
 		exprs, _, err := schemaexpr.MakeComputedExprs(
 			ctx,
 			desc.PublicColumns(),
@@ -534,27 +497,6 @@ func createStatsDefaultColumns(
 		return nil
 	}
 
-	// Only collect statistics on single columns that are prefixes of forward
-	// indexes for partial statistics, and skip over partial, sharded, and
-	// implicitly partitioned indexes.
-	if partialStats {
-		for _, idx := range desc.ActiveIndexes() {
-			if idx.GetType() != idxtype.FORWARD ||
-				idx.IsPartial() ||
-				idx.IsSharded() ||
-				idx.ImplicitPartitioningColumnCount() > 0 {
-				continue
-			}
-			if idx.NumKeyColumns() != 0 {
-				colID := idx.GetKeyColumnID(0)
-				if err := addIndexColumnStatsIfNotExists(colID, false /* isInverted */); err != nil {
-					return nil, err
-				}
-			}
-		}
-		return colStats, nil
-	}
-
 	// Add column stats for the primary key.
 	primaryIdx := desc.GetPrimaryIndex()
 	for i := 0; i < primaryIdx.NumKeyColumns(); i++ {
@@ -607,13 +549,9 @@ func createStatsDefaultColumns(
 
 	// Add column stats for each secondary index.
 	for _, idx := range desc.PublicNonPrimaryIndexes() {
-		if idx.GetType() == idxtype.VECTOR {
-			// Skip vector indexes for now.
-			continue
-		}
 		for j, n := 0, idx.NumKeyColumns(); j < n; j++ {
 			colID := idx.GetKeyColumnID(j)
-			isInverted := idx.GetType() == idxtype.INVERTED && colID == idx.InvertedColumnID()
+			isInverted := idx.GetType() == descpb.IndexDescriptor_INVERTED && colID == idx.InvertedColumnID()
 
 			// Generate stats for each indexed column.
 			if err := addIndexColumnStatsIfNotExists(colID, isInverted); err != nil {
@@ -746,18 +684,10 @@ func (r *createStatsResumer) Resume(ctx context.Context, execCtx interface{}) er
 	// associated txn.
 	jobsPlanner := execCtx.(JobExecContext)
 	details := r.job.Details().(jobspb.CreateStatsDetails)
-	if details.Name == jobspb.AutoStatsName || details.Name == jobspb.AutoPartialStatsName {
-		jobRegistry := jobsPlanner.ExecCfg().JobRegistry
+	if details.Name == jobspb.AutoStatsName {
 		// We want to make sure that an automatic CREATE STATISTICS job only runs if
 		// there are no other CREATE STATISTICS jobs running, automatic or manual.
-		if err := checkRunningJobs(
-			ctx,
-			r.job,
-			jobsPlanner,
-			details.Name == jobspb.AutoPartialStatsName,
-			jobRegistry,
-			details.Table.ID,
-		); err != nil {
+		if err := checkRunningJobs(ctx, r.job, jobsPlanner); err != nil {
 			return err
 		}
 	}
@@ -789,38 +719,13 @@ func (r *createStatsResumer) Resume(ctx context.Context, execCtx interface{}) er
 		}
 
 		dsp := innerP.DistSQLPlanner()
+		planCtx := dsp.NewPlanningCtx(ctx, innerEvalCtx, innerP, txn.KV(), FullDistribution)
 		// CREATE STATS flow doesn't produce any rows and only emits the
 		// metadata, so we can use a nil rowContainerHelper.
 		resultWriter := NewRowResultWriter(nil /* rowContainer */)
-
-		var err error
-		if details.UsingExtremes {
-			for i, colStat := range details.ColumnStats {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				// Plan and run partial stats on multiple columns separately since each
-				// partial stat collection will use a different index and have different
-				// plans.
-				singleColDetails := protoutil.Clone(&details).(*jobspb.CreateStatsDetails)
-				singleColDetails.ColumnStats = []jobspb.CreateStatsDetails_ColStat{colStat}
-				planCtx := dsp.NewPlanningCtx(ctx, innerEvalCtx, innerP, txn.KV(), FullDistribution)
-				if err = dsp.planAndRunCreateStats(
-					ctx, innerEvalCtx, planCtx, innerP.SemaCtx(), txn.KV(), resultWriter, r.job.ID(), *singleColDetails,
-					len(details.ColumnStats), i,
-				); err != nil {
-					break
-				}
-			}
-		} else {
-			planCtx := dsp.NewPlanningCtx(ctx, innerEvalCtx, innerP, txn.KV(), FullDistribution)
-			err = dsp.planAndRunCreateStats(
-				ctx, innerEvalCtx, planCtx, innerP.SemaCtx(), txn.KV(), resultWriter, r.job.ID(), details,
-				1 /* numIndexes */, 0, /* curIndex */
-			)
-		}
-
-		if err != nil {
+		if err := dsp.planAndRunCreateStats(
+			ctx, innerEvalCtx, planCtx, txn.KV(), r.job, resultWriter,
+		); err != nil {
 			// Check if this was a context canceled error and restart if it was.
 			if grpcutil.IsContextCanceled(err) {
 				return jobs.MarkAsRetryJobError(err)
@@ -857,8 +762,6 @@ func (r *createStatsResumer) Resume(ctx context.Context, execCtx interface{}) er
 		return nil
 	}
 
-	// Note that we'll log an event even if the stats collection didn't occur
-	// due to a benign error.
 	// TODO(rytaft): This creates a new transaction for the CREATE STATISTICS
 	// event. It must be different from the CREATE STATISTICS transaction,
 	// because that transaction must be read-only. In the future we may want
@@ -893,20 +796,14 @@ func (r *createStatsResumer) Resume(ctx context.Context, execCtx interface{}) er
 // pending, running, or paused status that started earlier than this one. If
 // there are, checkRunningJobs returns an error. If job is nil, checkRunningJobs
 // just checks if there are any pending, running, or paused CreateStats jobs.
-// If autoPartial is true, checkRunningJobs also checks if there are any other
-// AutoCreatePartialStats jobs in the pending, running, or paused status that
-// started earlier than this one for the same table.
-func checkRunningJobs(
-	ctx context.Context,
-	job *jobs.Job,
-	p JobExecContext,
-	autoPartial bool,
-	jobRegistry *jobs.Registry,
-	tableID descpb.ID,
-) error {
+func checkRunningJobs(ctx context.Context, job *jobs.Job, p JobExecContext) error {
+	jobID := jobspb.InvalidJobID
+	if job != nil {
+		jobID = job.ID()
+	}
 	return p.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) (err error) {
 		if err = checkRunningJobsInTxn(
-			ctx, job, p, autoPartial, txn, jobRegistry, tableID,
+			ctx, p.ExtendedEvalContext().Settings, jobID, txn,
 		); err != nil {
 			return err
 		}
@@ -914,39 +811,12 @@ func checkRunningJobs(
 	})
 }
 
-func checkRunningJobsInTxn(
-	ctx context.Context,
-	job *jobs.Job,
-	p JobExecContext,
-	autoPartial bool,
-	txn isql.Txn,
-	jobRegistry *jobs.Registry,
-	tableID descpb.ID,
-) error {
-	jobID := jobspb.InvalidJobID
-	if job != nil {
-		jobID = job.ID()
-	}
-
-	if err := checkRunningJobsInTxnImpl(
-		ctx, p.ExtendedEvalContext().Settings, jobID, txn,
-	); err != nil {
-		return err
-	}
-	if autoPartial {
-		return checkRunningAutoPartialJobsInTxn(
-			ctx, p.ExtendedEvalContext().Settings, jobID, txn, jobRegistry, tableID,
-		)
-	}
-	return nil
-}
-
-// checkRunningJobsInTxnImpl checks whether there are any other CreateStats jobs
+// checkRunningJobsInTxn checks whether there are any other CreateStats jobs
 // (excluding auto partial stats jobs) in the pending, running, or paused status
-// that started earlier than this one. If there are, checkRunningJobsInTxnImpl
-// returns an error. If jobID is jobspb.InvalidJobID, checkRunningJobsInTxnImpl just
+// that started earlier than this one. If there are, checkRunningJobsInTxn
+// returns an error. If jobID is jobspb.InvalidJobID, checkRunningJobsInTxn just
 // checks if there are any pending, running, or paused CreateStats jobs.
-func checkRunningJobsInTxnImpl(
+func checkRunningJobsInTxn(
 	ctx context.Context, cs *cluster.Settings, jobID jobspb.JobID, txn isql.Txn,
 ) error {
 	exists, err := jobs.RunningJobExists(
@@ -958,41 +828,6 @@ func checkRunningJobsInTxnImpl(
 
 	if exists {
 		return stats.ConcurrentCreateStatsError
-	}
-
-	return nil
-}
-
-// checkRunningAutoPartialJobsInTxn checks whether there are any other
-// AutoCreatePartialStats jobs in the pending, running, or paused status that
-// started earlier than this one for the same table. If there are, an error is
-// returned. If jobID is jobspb.InvalidJobID, checkRunningAutoPartialJobsInTxn
-// just checks if there are any pending, running, or paused
-// AutoCreatePartialStats jobs for the same table.
-func checkRunningAutoPartialJobsInTxn(
-	ctx context.Context,
-	cs *cluster.Settings,
-	jobID jobspb.JobID,
-	txn isql.Txn,
-	jobRegistry *jobs.Registry,
-	tableID descpb.ID,
-) error {
-	autoPartialStatJobIDs, err := jobs.RunningJobs(
-		ctx, cs, jobID, txn, jobspb.TypeAutoCreatePartialStats,
-	)
-	if err != nil {
-		return err
-	}
-
-	for _, id := range autoPartialStatJobIDs {
-		job, err := jobRegistry.LoadJobWithTxn(ctx, id, txn)
-		if err != nil {
-			return err
-		}
-		jobDetails := job.Details().(jobspb.CreateStatsDetails)
-		if jobDetails.Table.ID == tableID {
-			return stats.ConcurrentCreateStatsError
-		}
 	}
 
 	return nil
@@ -1010,5 +845,4 @@ func init() {
 	}
 	jobs.RegisterConstructor(jobspb.TypeCreateStats, createResumerFn, jobs.UsesTenantCostControl)
 	jobs.RegisterConstructor(jobspb.TypeAutoCreateStats, createResumerFn, jobs.UsesTenantCostControl)
-	jobs.RegisterConstructor(jobspb.TypeAutoCreatePartialStats, createResumerFn, jobs.UsesTenantCostControl)
 }

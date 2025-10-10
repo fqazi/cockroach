@@ -13,10 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
-	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
@@ -36,7 +33,7 @@ func (c *connector) runTenantSettingsSubscription(ctx context.Context, startupCh
 			TenantID: c.tenantID,
 		})
 		if err != nil {
-			log.Dev.Warningf(ctx, "error issuing TenantSettings RPC: %v", err)
+			log.Warningf(ctx, "error issuing TenantSettings RPC: %v", err)
 			c.tryForgetClient(ctx, client)
 			continue
 		}
@@ -62,14 +59,14 @@ func (c *connector) runTenantSettingsSubscription(ctx context.Context, startupCh
 					break
 				}
 				// Soft RPC error. Drop client and retry.
-				log.Dev.Warningf(ctx, "error consuming TenantSettings RPC: %v", err)
+				log.Warningf(ctx, "error consuming TenantSettings RPC: %v", err)
 				c.tryForgetClient(ctx, client)
 				break
 			}
 			if e.Error != (errorspb.EncodedError{}) {
 				// Hard logical error.
 				err := errors.DecodeError(ctx, e.Error)
-				log.Dev.Errorf(ctx, "error consuming TenantSettings RPC: %v", err)
+				log.Errorf(ctx, "error consuming TenantSettings RPC: %v", err)
 				if startupCh != nil && errors.Is(err, &kvpb.MissingRecordError{}) && c.earlyShutdownIfMissingTenantRecord {
 					select {
 					case startupCh <- err:
@@ -111,14 +108,14 @@ func (c *connector) runTenantSettingsSubscription(ctx context.Context, startupCh
 			case kvpb.TenantSettingsEvent_METADATA_EVENT:
 				err := c.processMetadataEvent(ctx, e)
 				if err != nil {
-					log.Dev.Errorf(ctx, "error processing tenant settings event: %v", err)
+					log.Errorf(ctx, "error processing tenant settings event: %v", err)
 					reconnect = true
 				}
 
 			case kvpb.TenantSettingsEvent_SETTING_EVENT:
 				settingsReady, err := c.processSettingsEvent(ctx, e)
 				if err != nil {
-					log.Dev.Errorf(ctx, "error processing tenant settings event: %v", err)
+					log.Errorf(ctx, "error processing tenant settings event: %v", err)
 					reconnect = true
 					break
 				}
@@ -134,7 +131,7 @@ func (c *connector) runTenantSettingsSubscription(ctx context.Context, startupCh
 				// servers that send it) because when it is sent it is always
 				// sent prior to the setting overrides.
 				if settingsReady {
-					log.Dev.Infof(ctx, "received initial tenant settings")
+					log.Infof(ctx, "received initial tenant settings")
 
 					if startupCh != nil {
 						select {
@@ -173,7 +170,7 @@ func (c *connector) processMetadataEvent(ctx context.Context, e *kvpb.TenantSett
 	c.metadataMu.serviceMode = mtinfopb.TenantServiceMode(e.ServiceMode)
 	c.metadataMu.clusterInitGracePeriodTS = e.ClusterInitGracePeriodEndTS
 
-	log.Dev.Infof(ctx, "received tenant metadata: name=%q dataState=%v serviceMode=%v clusterInitGracePeriodTS=%s\ncapabilities=%+v",
+	log.Infof(ctx, "received tenant metadata: name=%q dataState=%v serviceMode=%v clusterInitGracePeriodTS=%s\ncapabilities=%+v",
 		c.metadataMu.tenantName, c.metadataMu.dataState, c.metadataMu.serviceMode,
 		timeutil.Unix(c.metadataMu.clusterInitGracePeriodTS, 0), c.metadataMu.capabilities)
 
@@ -196,27 +193,6 @@ func (c *connector) TenantInfo() (tenantcapabilities.Entry, <-chan struct{}) {
 		DataState:          c.metadataMu.dataState,
 		ServiceMode:        c.metadataMu.serviceMode,
 	}, c.metadataMu.notifyCh
-}
-
-// ReadFromTenantInfo allows retrieving the other tenant, if any, from which the
-// calling tenant should configure itself to read, along with the latest
-// timestamp at which it should perform such reads at this time.
-func (c *connector) ReadFromTenantInfo(
-	ctx context.Context,
-) (roachpb.TenantID, hlc.Timestamp, error) {
-	if c.tenantID.IsSystem() {
-		return roachpb.TenantID{}, hlc.Timestamp{}, nil
-	}
-
-	client, err := c.getClient(ctx)
-	if err != nil {
-		return roachpb.TenantID{}, hlc.Timestamp{}, err
-	}
-	resp, err := client.ReadFromTenantInfo(ctx, &serverpb.ReadFromTenantInfoRequest{TenantID: c.tenantID})
-	if err != nil {
-		return roachpb.TenantID{}, hlc.Timestamp{}, err
-	}
-	return resp.ReadFrom, resp.ReadAt, nil
 }
 
 // processSettingsEvent updates the setting overrides based on the event.
@@ -253,7 +229,7 @@ func (c *connector) processSettingsEvent(
 		return false, errors.Newf("unknown precedence value %d", e.Precedence)
 	}
 
-	log.Dev.Infof(ctx, "received %d setting overrides with precedence %v (incremental=%v)", len(e.Overrides), e.Precedence, e.Incremental)
+	log.Infof(ctx, "received %d setting overrides with precedence %v (incremental=%v)", len(e.Overrides), e.Precedence, e.Incremental)
 
 	// If the event is not incremental, clear the map.
 	if !e.Incremental {

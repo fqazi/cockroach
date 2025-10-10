@@ -11,7 +11,6 @@ import (
 	"runtime/pprof"
 
 	"github.com/cockroachdb/cockroach/pkg/server/dumpstore"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -35,25 +34,6 @@ const heapFileNamePrefix = "memprof"
 // heapFileNameSuffix is the suffix of files containing pprof data.
 const heapFileNameSuffix = ".pprof"
 
-var maxCombinedFileSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"server.mem_profile.total_dump_size_limit",
-	"maximum combined disk size of preserved memory profiles",
-	512<<20, // 512MiB
-)
-
-func init() {
-	// This setting definition still exists so as to not break deployment
-	// scripts that set it unconditionally.
-	_ = settings.RegisterByteSizeSetting(
-		settings.ApplicationLevel,
-		"server.heap_profile.total_dump_size_limit",
-		"use server.mem_profile.total_dump_size_limit instead",
-		512<<20, // 512MiB
-		settings.Retired,
-	)
-}
-
 // NewHeapProfiler creates a HeapProfiler. dir is the directory in which
 // profiles are to be stored.
 func NewHeapProfiler(ctx context.Context, dir string, st *cluster.Settings) (*HeapProfiler, error) {
@@ -71,7 +51,7 @@ func NewHeapProfiler(ctx context.Context, dir string, st *cluster.Settings) (*He
 		),
 	}
 
-	log.Dev.Infof(ctx,
+	log.Infof(ctx,
 		"writing go heap profiles to %s at least every %s", log.SafeManaged(dir), hp.resetInterval())
 
 	return hp, nil
@@ -88,12 +68,12 @@ func takeHeapProfile(ctx context.Context, path string, _ ...interface{}) (succes
 	// Try writing a go heap profile.
 	f, err := os.Create(path)
 	if err != nil {
-		log.Dev.Warningf(ctx, "error creating go heap profile %s: %v", path, err)
+		log.Warningf(ctx, "error creating go heap profile %s: %v", path, err)
 		return false
 	}
 	defer f.Close()
 	if err = pprof.WriteHeapProfile(f); err != nil {
-		log.Dev.Warningf(ctx, "error writing go heap profile %s: %v", path, err)
+		log.Warningf(ctx, "error writing go heap profile %s: %v", path, err)
 		return false
 	}
 	return true

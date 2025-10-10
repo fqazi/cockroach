@@ -76,15 +76,6 @@ type TSMatchesVectorQueryOp struct{}
 // TSMatchesQueryVectorOp is a BinaryEvalOp.
 type TSMatchesQueryVectorOp struct{}
 
-type (
-	// DistanceVectorOp is a BinaryEvalOp.
-	DistanceVectorOp struct{}
-	// CosDistanceVectorOp is a BinaryEvalOp.
-	CosDistanceVectorOp struct{}
-	// NegInnerProductVectorOp is a BinaryEvalOp.
-	NegInnerProductVectorOp struct{}
-)
-
 // AppendToMaybeNullArrayOp is a BinaryEvalOp.
 type AppendToMaybeNullArrayOp struct {
 	Typ *types.T
@@ -184,8 +175,6 @@ type (
 	PlusDecimalPGLSNOp struct{}
 	// PlusPGLSNDecimalOp is a BinaryEvalOp.
 	PlusPGLSNDecimalOp struct{}
-	// PlusPGVectorOp is a BinaryEvalOp.
-	PlusPGVectorOp struct{}
 )
 
 type (
@@ -241,8 +230,6 @@ type (
 	MinusPGLSNDecimalOp struct{}
 	// MinusPGLSNOp is a BinaryEvalOp.
 	MinusPGLSNOp struct{}
-	// MinusPGVectorOp is a BinaryEvalOp.
-	MinusPGVectorOp struct{}
 )
 type (
 	// MultDecimalIntOp is a BinaryEvalOp.
@@ -267,8 +254,6 @@ type (
 	MultIntervalFloatOp struct{}
 	// MultIntervalIntOp is a BinaryEvalOp.
 	MultIntervalIntOp struct{}
-	// MultPGVectorOp is a BinaryEvalOp.
-	MultPGVectorOp struct{}
 )
 
 type (
@@ -325,8 +310,6 @@ type (
 	ConcatStringOp struct{}
 	// ConcatVarBitOp is a BinaryEvalOp.
 	ConcatVarBitOp struct{}
-	// ConcatLTreeOp is a BinaryEvalOp.
-	ConcatLTreeOp struct{}
 )
 
 type (
@@ -394,26 +377,8 @@ type ContainsArrayOp struct{}
 // ContainsJsonbOp is a BinaryEvalOp.
 type ContainsJsonbOp struct{}
 
-// ContainsLTreeOp is a BinaryEvalOp.
-type ContainsLTreeOp struct{}
-
-// ContainsLTreeArrayOp is a BinaryEvalOp.
-type ContainsLTreeArrayOp struct{}
-
 // ContainedByArrayOp is a BinaryEvalOp.
 type ContainedByArrayOp struct{}
 
 // ContainedByJsonbOp is a BinaryEvalOp.
 type ContainedByJsonbOp struct{}
-
-// ContainedByLTreeOp is a BinaryEvalOp.
-type ContainedByLTreeOp struct{}
-
-// ContainedByLTreeArrayOp is a BinaryEvalOp.
-type ContainedByLTreeArrayOp struct{}
-
-// FirstContainsLTreeOp is a BinaryEvalOp.
-type FirstContainsLTreeOp struct{}
-
-// FirstContainedByLTreeOp is a BinaryEvalOp.
-type FirstContainedByLTreeOp struct{}

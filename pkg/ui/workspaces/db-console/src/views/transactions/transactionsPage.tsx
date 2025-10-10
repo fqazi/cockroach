@@ -3,6 +3,23 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import { connect } from "react-redux";
+import { createSelector } from "reselect";
+import { RouteComponentProps, withRouter } from "react-router-dom";
+import {
+  createSelectorForCachedDataField,
+  refreshNodes,
+  refreshTxns,
+  refreshUserSQLRoles,
+} from "src/redux/apiReducers";
+import { resetSQLStatsAction } from "src/redux/sqlStats";
+import { CachedDataReducerState } from "src/redux/cachedDataReducer";
+import { AdminUIState } from "src/redux/state";
+import { selectHasAdminRole } from "src/redux/user";
+import { StatementsResponseMessage } from "src/util/api";
+
+import { PrintTime } from "src/views/reports/containers/range/print";
+
 import {
   Filters,
   defaultFilters,
@@ -15,37 +32,22 @@ import {
   TransactionsPageRootProps,
   api,
 } from "@cockroachlabs/cluster-ui";
-import { connect } from "react-redux";
-import { RouteComponentProps, withRouter } from "react-router-dom";
-import { bindActionCreators } from "redux";
-import { createSelector } from "reselect";
-
-import { trackApplySearchCriteriaAction } from "src/redux/analyticsActions";
-import {
-  createSelectorForCachedDataField,
-  refreshNodes,
-  refreshTxns,
-  refreshUserSQLRoles,
-} from "src/redux/apiReducers";
-import { LocalSetting } from "src/redux/localsettings";
 import { nodeRegionsByIDSelector } from "src/redux/nodes";
-import { resetSQLStatsAction } from "src/redux/sqlStats";
-import { AdminUIState } from "src/redux/state";
 import { setGlobalTimeScaleAction } from "src/redux/statements";
-import { selectTimeScale } from "src/redux/timeScale";
-import { selectHasAdminRole } from "src/redux/user";
-import { PrintTime } from "src/views/reports/containers/range/print";
-
+import { LocalSetting } from "src/redux/localsettings";
+import { bindActionCreators } from "redux";
 import {
   activeTransactionsPageActionCreators,
   mapStateToActiveTransactionsPageProps,
 } from "./activeTransactionsSelectors";
+import { selectTimeScale } from "src/redux/timeScale";
+import { trackApplySearchCriteriaAction } from "src/redux/analyticsActions";
 
 // selectLastReset returns a string displaying the last time the statement
 // statistics were reset.
 export const selectLastReset = createSelector(
   (state: AdminUIState) => state.cachedData.transactions,
-  state => {
+  (state: CachedDataReducerState<StatementsResponseMessage>) => {
     if (!state?.data) {
       return "unknown";
     }
@@ -56,7 +58,7 @@ export const selectLastReset = createSelector(
 
 const selectOldestDate = createSelector(
   (state: AdminUIState) => state.cachedData.transactions,
-  txns => {
+  (txns: CachedDataReducerState<StatementsResponseMessage>) => {
     return txns?.data?.oldest_aggregated_ts_returned;
   },
 );
@@ -152,8 +154,7 @@ const TransactionsPageConnected = withRouter(
     StateProps,
     DispatchProps,
     RouteComponentProps,
-    TransactionsPageRootProps,
-    AdminUIState
+    TransactionsPageRootProps
   >(
     (state: AdminUIState, props: RouteComponentProps) => ({
       fingerprintsPageProps: {

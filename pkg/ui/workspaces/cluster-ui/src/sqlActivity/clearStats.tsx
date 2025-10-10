@@ -3,23 +3,21 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import classNames from "classnames/bind";
 import React, { useCallback, useState } from "react";
-
-import { Modal } from "../modal";
 import { StatisticType } from "../statsTableUtil/statsTableUtil";
-import { Text } from "../text";
-
+import classNames from "classnames/bind";
 import styles from "./sqlActivity.module.scss";
+import { Modal } from "../modal";
+import { Text } from "../text";
 
 const cx = classNames.bind(styles);
 
-interface ClearStatsProps {
+interface clearStatsProps {
   resetSQLStats: () => void;
   tooltipType: StatisticType;
 }
 
-const ClearStats = (props: ClearStatsProps): React.ReactElement => {
+const ClearStats = (props: clearStatsProps): React.ReactElement => {
   const [visible, setVisible] = useState(false);
   const onOkHandler = useCallback(() => {
     props.resetSQLStats();

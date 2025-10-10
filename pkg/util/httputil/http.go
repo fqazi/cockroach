@@ -22,12 +22,8 @@ const (
 	AcceptHeader = "Accept"
 	// AcceptEncodingHeader is the canonical header name for accept encoding.
 	AcceptEncodingHeader = "Accept-Encoding"
-	// ContentDispositionHeader is the canonical header name for content disposition.
-	ContentDispositionHeader = "Content-Disposition"
 	// ContentEncodingHeader is the canonical header name for content type.
 	ContentEncodingHeader = "Content-Encoding"
-	// MIMEWildcard represents the wildcard MIME type that accepts any content type.
-	MIMEWildcard = "*"
 	// ContentTypeHeader is the canonical header name for content type.
 	ContentTypeHeader = "Content-Type"
 	// JSONContentType is the JSON content type.

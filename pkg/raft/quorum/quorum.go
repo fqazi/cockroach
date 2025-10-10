@@ -20,8 +20,6 @@ package quorum
 import (
 	"math"
 	"strconv"
-
-	pb "github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 )
 
 // Index is a Raft log position.
@@ -37,13 +35,12 @@ func (i Index) String() string {
 // AckedIndexer allows looking up a commit index for a given ID of a voter
 // from a corresponding MajorityConfig.
 type AckedIndexer interface {
-	AckedIndex(voterID pb.PeerID) (idx Index, found bool)
+	AckedIndex(voterID uint64) (idx Index, found bool)
 }
 
-type mapAckIndexer map[pb.PeerID]Index
+type mapAckIndexer map[uint64]Index
 
-// AckedIndex implements AckedIndexer interface.
-func (m mapAckIndexer) AckedIndex(id pb.PeerID) (Index, bool) {
+func (m mapAckIndexer) AckedIndex(id uint64) (Index, bool) {
 	idx, ok := m[id]
 	return idx, ok
 }

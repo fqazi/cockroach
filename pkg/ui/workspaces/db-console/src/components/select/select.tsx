@@ -3,12 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import * as React from "react";
 import {
   default as AntSelect,
   SelectProps as AntSelectProps,
 } from "antd/es/select";
 import cn from "classnames";
-import * as React from "react";
 
 import "./select.styl";
 

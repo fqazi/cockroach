@@ -4,7 +4,6 @@
 // included in the /LICENSE file.
 
 import React from "react";
-
 import { Anchor } from "src/anchor";
 import {
   distSql,

@@ -4,12 +4,11 @@
 // included in the /LICENSE file.
 
 /* eslint-disable react/jsx-key */
-import { CaretDown } from "@cockroachlabs/icons";
-import { storiesOf } from "@storybook/react";
 import React from "react";
+import { storiesOf } from "@storybook/react";
 
 import { Button, ButtonProps } from "src/button";
-
+import { CaretDown } from "@cockroachlabs/icons";
 import { Text, TextTypes } from "../text";
 
 const sizes: ButtonProps["size"][] = ["default", "small"];

@@ -6,10 +6,8 @@
 # to tests below that contain computed column references. Filters referencing
 # virtual computed columns are rewritten with the computed expression so that
 # they can be pushed into Projects and filter directly above Scans, allowing
-# constrained scans to be generated (see the InlineSelectVirtualColumns
-# normalization rule). Similarly, predicates referencing virtual computed
-# columns are rewritten to reference only non-virtual columns (see
-# buildPartialIndexPredicate in optbuilder).
+# constrained scans to be generated. Similarly, predicates referencing virtual
+# computed columns are rewritten to reference only non-virtual columns.
 
 predtest vars=(a int, b int as (a + 10) virtual)
 a + 10 IS NOT NULL

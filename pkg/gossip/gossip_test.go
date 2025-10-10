@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"math"
 	"net"
 	"reflect"
 	"strconv"
@@ -50,49 +49,6 @@ func TestGossipInfoStore(t *testing.T) {
 	if _, err := g.GetInfo("s2"); err == nil {
 		t.Errorf("expected error fetching nonexistent key \"s2\"")
 	}
-
-	g.mu.Lock()
-	if info := g.mu.is.getInfo("s"); info == nil || info.TTLStamp == math.MaxInt64 {
-		t.Errorf("expected info to be present and have finite TTL: %+v", info)
-	}
-	g.mu.Unlock()
-
-	if err := g.AddInfoIfNotRedundant("s", slice); err != nil {
-		t.Error(err)
-	}
-	if val, err := g.GetInfo("s"); !bytes.Equal(val, slice) || err != nil {
-		t.Errorf("error fetching string: %v", err)
-	}
-
-	g.mu.Lock()
-	if info := g.mu.is.getInfo("s"); info == nil || info.TTLStamp != math.MaxInt64 {
-		t.Errorf("expected info be updated with an infinite TTL: %+v", info)
-	}
-	g.mu.Unlock()
-
-	slice2 := []byte("b2")
-	err := g.BulkAddInfoIfNotRedundant([]InfoToAdd{
-		{Key: "s", Val: slice},
-		{Key: "s2", Val: slice2},
-	})
-	if err != nil {
-		t.Error(err)
-	}
-	if val, err := g.GetInfo("s"); !bytes.Equal(val, slice) || err != nil {
-		t.Errorf("error fetching string: %v", err)
-	}
-	if val, err := g.GetInfo("s2"); !bytes.Equal(val, slice2) || err != nil {
-		t.Errorf("error fetching string: %v", err)
-	}
-
-	g.mu.Lock()
-	if info := g.mu.is.getInfo("s"); info == nil || info.TTLStamp != math.MaxInt64 {
-		t.Errorf("expected info be updated with an infinite TTL: %+v", info)
-	}
-	if info := g.mu.is.getInfo("s2"); info == nil || info.TTLStamp != math.MaxInt64 {
-		t.Errorf("expected info be written with an infinite TTL: %+v", info)
-	}
-	g.mu.Unlock()
 }
 
 // TestGossipMoveNode verifies that if a node is moved to a new address, it
@@ -448,7 +404,7 @@ func TestGossipMostDistant(t *testing.T) {
 
 			// Connect the network in a loop. This will cut the distance to the most
 			// distant node in half.
-			log.Dev.Infof(context.Background(), "connecting from n%d to n%d", c.from, c.to)
+			log.Infof(context.Background(), "connecting from n%d to n%d", c.from, c.to)
 			connect(nodes[c.from], nodes[c.to], nodesCtx[c.from])
 
 			// Wait for n1 to determine that n6 is now the most distant hops from 9
@@ -529,7 +485,7 @@ func TestGossipNoForwardSelf(t *testing.T) {
 				return err
 			}
 
-			stream, err := NewGRPCGossipClientAdapter(conn).Gossip(ctx)
+			stream, err := NewGossipClient(conn).Gossip(ctx)
 			if err != nil {
 				return err
 			}
@@ -979,231 +935,4 @@ func TestGossipLoopbackInfoPropagation(t *testing.T) {
 		}
 		return nil
 	})
-}
-
-// TestServerSendsHighStampsDiff tests that the server sends high water stamps
-// diffs to the client rather than sending the whole map.
-func TestServerSendsHighStampsDiff(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	stopper := stop.NewStopper()
-	defer stopper.Stop(context.Background())
-
-	// Shared cluster ID by all gossipers (this ensures that the gossipers
-	// don't talk to servers from unrelated tests by accident).
-	clusterID := uuid.MakeV4()
-
-	// Start local and remote gossip servers.
-	local, localCxt := startGossip(clusterID, 1 /* nodeID */, stopper, t, metric.NewRegistry())
-	remote, remoteCxt := startGossip(clusterID, 2 /* nodeID */, stopper, t, metric.NewRegistry())
-	local.manage(localCxt)
-	remote.manage(remoteCxt)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Create a client to the remote node.
-	c := newClient(log.MakeTestingAmbientCtxWithNewTracer(), remote.GetNodeAddr(), roachpb.Locality{}, makeMetrics())
-
-	conn, err := localCxt.GRPCUnvalidatedDial(c.addr.String(), roachpb.Locality{}).Connect(ctx)
-	require.NoError(t, err)
-
-	stream, err := NewGRPCGossipClientAdapter(conn).Gossip(ctx)
-	require.NoError(t, err)
-
-	requestGossip := func(g *Gossip, stream RPCGossip_GossipClient) Response {
-		err := c.requestGossip(g, stream)
-		require.NoError(t, err)
-		resp := &Response{}
-		resp, err = stream.Recv()
-		require.NoError(t, err)
-		return *resp
-	}
-
-	// Expect that the server will return its high water stamps in the response.
-	testutils.SucceedsSoon(t, func() error {
-		resp := requestGossip(local, stream)
-		local.mu.Lock()
-		currentHighStamps := remote.mu.is.getHighWaterStamps()
-		local.mu.Unlock()
-		if !reflect.DeepEqual(resp.HighWaterStamps, currentHighStamps) {
-			return errors.Errorf(
-				"Expected to receive the server's high water stamps: %+v but received %+v instead.",
-				remote.mu.is.getHighWaterStamps(), resp.HighWaterStamps)
-		}
-		return nil
-	})
-
-	// Since the server high water stamps haven't changed, expect the server to
-	// return an empty map.
-	resp := requestGossip(local, stream)
-	require.Empty(t, resp.HighWaterStamps)
-
-	// Add some info to the server. This causes an increase in the high water
-	// time stamp.
-	err = remote.AddInfo("remote", nil, time.Hour)
-	require.NoError(t, err)
-
-	testutils.SucceedsSoon(t, func() error {
-		resp := requestGossip(local, stream)
-		local.mu.Lock()
-		currentHighStamps := remote.mu.is.getHighWaterStamps()
-		local.mu.Unlock()
-
-		if !reflect.DeepEqual(resp.HighWaterStamps, currentHighStamps) {
-			return errors.Errorf(
-				"Expected to receive the server's high water stamps: %+v but received %+v instead.",
-				remote.mu.is.getHighWaterStamps(), resp.HighWaterStamps)
-		}
-		return nil
-	})
-}
-
-// TestGossipBatching verifies that both server and client gossip updates are
-// batched.
-func TestGossipBatching(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	skip.UnderDeadlock(t, "might be flaky since it relies on some upper-bound timing")
-	skip.UnderRace(t, "might be flaky since it relies on some upper-bound timing")
-
-	stopper := stop.NewStopper()
-	defer stopper.Stop(context.Background())
-
-	// Shared cluster ID by all gossipers
-	clusterID := uuid.MakeV4()
-
-	local, localCtx := startGossip(clusterID, 1, stopper, t, metric.NewRegistry())
-	remote, remoteCtx := startGossip(clusterID, 2, stopper, t, metric.NewRegistry())
-	remote.mu.Lock()
-	rAddr := remote.mu.is.NodeAddr
-	remote.mu.Unlock()
-	local.manage(localCtx)
-	remote.manage(remoteCtx)
-
-	// Start a client connection to the remote node
-	local.mu.Lock()
-	local.startClientLocked(rAddr, roachpb.Locality{}, localCtx)
-	local.mu.Unlock()
-
-	// Wait for connection to be established
-	var c *client
-	testutils.SucceedsSoon(t, func() error {
-		c = local.findClient(func(c *client) bool { return c.addr.String() == rAddr.String() })
-		if c == nil {
-			return fmt.Errorf("client not found")
-		}
-		return nil
-	})
-
-	// Prepare 10,000 keys to gossip. This is a large enough number to allow
-	// batching to kick in.
-	numKeys := 10_000
-	localKeys := make([]string, numKeys)
-	remoteKeys := make([]string, numKeys)
-	for i := 0; i < numKeys; i++ {
-		localKeys[i] = fmt.Sprintf("local-key-%d", i)
-		remoteKeys[i] = fmt.Sprintf("remote-key-%d", i)
-	}
-
-	// Gossip the keys to both local and remote nodes.
-	for i := range numKeys {
-		require.NoError(t, local.AddInfo(localKeys[i], []byte("value"), time.Hour))
-		require.NoError(t, remote.AddInfo(remoteKeys[i], []byte("value"), time.Hour))
-	}
-
-	// Wait for updates to propagate
-	testutils.SucceedsSoon(t, func() error {
-		for i := range numKeys {
-			if _, err := local.GetInfo(remoteKeys[i]); err != nil {
-				return err
-			}
-			if _, err := remote.GetInfo(localKeys[i]); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-
-	// Record the number of messages both the client and the server sent, and
-	// assert that it's within the expected bounds.
-	serverMessagesSentCount := remote.serverMetrics.MessagesSent.Count()
-	clientMessagesSentCount := local.serverMetrics.MessagesSent.Count()
-
-	fmt.Printf("client msgs sent: %+v\n", clientMessagesSentCount)
-	fmt.Printf("server msgs sent: %+v\n", serverMessagesSentCount)
-
-	// upperBoundMessages is the maximum number of sent messages we expect to see.
-	// Note that in reality with batching, we see 3-10 messages sent in this test,
-	// However, in order to avoid flakiness, we set a very high number here. The
-	// test would fail even with this high number if we don't have batching.
-	upperBoundMessages := int64(500)
-	require.LessOrEqual(t, serverMessagesSentCount, upperBoundMessages)
-	require.LessOrEqual(t, clientMessagesSentCount, upperBoundMessages)
-}
-
-// TestCallbacksPendingMetricGoesToZeroOnStop verifies that the CallbacksPending
-// metric is correctly decremented when a callback is unregistered with pending work
-// or when the stopper is stopped.
-func TestCallbacksPendingMetricGoesToZeroOnStop(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	testCases := []struct {
-		name    string
-		cleanup func(g *Gossip, unregister func(), stopper *stop.Stopper, ctx context.Context)
-	}{
-		{
-			name: "unregister callback",
-			cleanup: func(g *Gossip, unregister func(), stopper *stop.Stopper, ctx context.Context) {
-				unregister()
-			},
-		},
-		{
-			name: "stopper shutdown",
-			cleanup: func(g *Gossip, unregister func(), stopper *stop.Stopper, ctx context.Context) {
-				stopper.Stop(ctx)
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			stopper := stop.NewStopper()
-			defer stopper.Stop(ctx)
-			g := NewTest(1, stopper, metric.NewRegistry())
-
-			unregister := g.RegisterCallback("test.*", func(key string, val roachpb.Value, _ int64) {
-				// Do nothing.
-			})
-
-			// Add 100 infos to the gossip that will be processed by the callback.
-			for i := 0; i < 100; i++ {
-				slice := []byte("b1")
-				require.NoError(t, g.AddInfo(fmt.Sprintf("test.key%d", i), slice, time.Hour))
-			}
-
-			// Execute the cleanup action (either unregister or stopper.Stop)
-			// We do this in a goroutine to help cause interesting potential race conditions.
-			go func() {
-				tc.cleanup(g, unregister, stopper, ctx)
-			}()
-
-			// Add another 100 infos to the gossip that will be processed by the callback.
-			// We do this in a goroutine to help cause interesting potential race conditions.
-			go func() {
-				for i := 0; i < 100; i++ {
-					slice := []byte("b2")
-					require.NoError(t, g.AddInfo(fmt.Sprintf("test.key%d", i), slice, time.Hour))
-				}
-			}()
-
-			// Wait for the pending callbacks metric to go to 0.
-			testutils.SucceedsSoon(t, func() error {
-				if g.mu.is.metrics.CallbacksPending.Value() != 0 {
-					return fmt.Errorf("CallbacksPending should be 0, got %d", g.mu.is.metrics.CallbacksPending.Value())
-				}
-				return nil
-			})
-		})
-	}
 }

@@ -77,7 +77,7 @@ func TestIterFileSinks(t *testing.T) {
 
 	// Apply the configuration
 	TestingResetActive()
-	cleanup, err := ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+	cleanup, err := ApplyConfig(cfg)
 	require.NoError(t, err)
 	defer cleanup()
 
@@ -148,7 +148,7 @@ func TestIterHTTPSinks(t *testing.T) {
 
 	// Apply the configuration
 	TestingResetActive()
-	cleanup, err := ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */)
+	cleanup, err := ApplyConfig(cfg)
 	require.NoError(t, err)
 	defer cleanup()
 

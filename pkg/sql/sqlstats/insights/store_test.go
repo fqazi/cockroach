@@ -11,7 +11,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/insightspb"
 	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/stretchr/testify/require"
@@ -46,22 +45,22 @@ func TestStore(t *testing.T) {
 	assertInsightStatementIDs(t, store, []uint64{16, 15})
 }
 
-func addInsight(store *LockingStore, statementIDs []uint64) {
-	stmts := make([]*insightspb.Statement, len(statementIDs))
+func addInsight(store *lockingStore, statementIDs []uint64) {
+	stmts := make([]*Statement, len(statementIDs))
 	for i, id := range statementIDs {
-		stmts[i] = &insightspb.Statement{ID: clusterunique.ID{Uint128: uint128.FromInts(0, id)}}
+		stmts[i] = &Statement{ID: clusterunique.ID{Uint128: uint128.FromInts(0, id)}}
 	}
-	store.addInsight(&insightspb.Insight{
-		Transaction: &insightspb.Transaction{
-			ID: uuid.MakeV4(),
+	store.AddInsight(&Insight{
+		Transaction: &Transaction{
+			ID: uuid.FastMakeV4(),
 		},
 		Statements: stmts,
 	})
 }
 
-func assertInsightStatementIDs(t *testing.T, store *LockingStore, expected []uint64) {
+func assertInsightStatementIDs(t *testing.T, store *lockingStore, expected []uint64) {
 	var actual []uint64
-	store.IterateInsights(context.Background(), func(ctx context.Context, insight *insightspb.Insight) {
+	store.IterateInsights(context.Background(), func(ctx context.Context, insight *Insight) {
 		for _, s := range insight.Statements {
 			actual = append(actual, s.ID.Lo)
 		}

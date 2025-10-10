@@ -3,15 +3,11 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { api as clusterUiApi } from "@cockroachlabs/cluster-ui";
-import flow from "lodash/flow";
-import groupBy from "lodash/groupBy";
-import mapValues from "lodash/mapValues";
-import orderBy from "lodash/orderBy";
-import moment from "moment-timezone";
+import { chain, orderBy } from "lodash";
 import { createSelector } from "reselect";
-
 import { AdminUIState } from "src/redux/state";
+import { api as clusterUiApi } from "@cockroachlabs/cluster-ui";
+import moment from "moment-timezone";
 
 export const selectStatementByFingerprint = createSelector(
   (state: AdminUIState) => state.cachedData.statements.data?.statements,
@@ -58,14 +54,11 @@ export const selectDiagnosticsReportsPerStatement = createSelector(
   selectStatementDiagnosticsReports,
   (
     diagnosticsReports: clusterUiApi.StatementDiagnosticsReport[],
-  ): StatementDiagnosticsDictionary => {
-    return flow(
-      (reports: clusterUiApi.StatementDiagnosticsReport[]) =>
-        groupBy(reports, report => report.statement_fingerprint),
-      diagnosticsByFingerprint =>
-        mapValues(diagnosticsByFingerprint, diagnostics =>
-          orderBy(diagnostics, d => moment(d.requested_at).unix(), ["desc"]),
-        ),
-    )(diagnosticsReports);
-  },
+  ): StatementDiagnosticsDictionary =>
+    chain(diagnosticsReports)
+      .groupBy(diagnosticsReport => diagnosticsReport.statement_fingerprint)
+      .mapValues(diagnostics =>
+        orderBy(diagnostics, d => moment(d.requested_at).unix(), ["desc"]),
+      )
+      .value(),
 );

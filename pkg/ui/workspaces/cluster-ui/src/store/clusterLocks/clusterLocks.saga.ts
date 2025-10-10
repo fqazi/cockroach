@@ -12,18 +12,15 @@ import {
   takeLatest,
 } from "redux-saga/effects";
 
-import { getClusterLocksState } from "src/api/clusterLocksApi";
-
-import { maybeError } from "../../util";
-
 import { actions } from "./clusterLocks.reducer";
+import { getClusterLocksState } from "src/api/clusterLocksApi";
 
 export function* requestClusterLocksSaga(): any {
   try {
     const result = yield call(getClusterLocksState);
     yield put(actions.received(result));
   } catch (e) {
-    yield put(actions.failed(maybeError(e)));
+    yield put(actions.failed(e));
   }
 }
 

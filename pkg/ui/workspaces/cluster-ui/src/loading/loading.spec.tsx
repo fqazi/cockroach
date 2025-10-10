@@ -3,11 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Spinner, InlineAlert } from "@cockroachlabs/ui-components";
+import React from "react";
 import { assert } from "chai";
 import { mount } from "enzyme";
-import React from "react";
-
+import { Spinner, InlineAlert } from "@cockroachlabs/ui-components";
 import { Loading } from "./loading";
 
 const SomeComponent = () => <div>Hello, world!</div>;

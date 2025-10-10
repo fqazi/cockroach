@@ -73,8 +73,7 @@ func searchJiraDocsIssuesSingle(
 	for _, issue := range search.Issues {
 		prNumber, commitSha, err := extractPRNumberCommitFromDocsIssueBody(issue.RenderedFields.Description)
 		if err != nil {
-			fmt.Printf("Error processing issue %s: %v", issue.Key, err)
-			continue // Skip this issue and continue with the next one
+			return 0, 0, err
 		}
 		if prNumber != 0 && commitSha != "" {
 			_, ok := m[prNumber]

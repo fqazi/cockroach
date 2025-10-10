@@ -1,4 +1,4 @@
-// Copyright 2025 The Cockroach Authors.
+// Copyright 2024 The Cockroach Authors.
 //
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
@@ -6,149 +6,198 @@
 package changefeedccl
 
 import (
-	"context"
-	"fmt"
 	"testing"
-	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
+	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/redact"
 	"github.com/stretchr/testify/require"
 )
 
-func TestSaveRateLimiter(t *testing.T) {
+// TestSetupSpansAndFrontier tests that the setupSpansAndFrontier function
+// correctly sets up frontier for the changefeed aggregator frontier.
+func TestSetupSpansAndFrontier(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	ctx := context.Background()
-
-	intervals := map[string]time.Duration{
-		"positive interval":   30 * time.Second,
-		"negative interval":   -30 * time.Second,
-		"zero interval":       0,
-		"very small interval": time.Nanosecond,
-	}
-
-	jitters := map[string]float64{
-		"positive jitter":   0.1,
-		"negative jitter":   -0.1,
-		"zero jitter":       0,
-		"very small jitter": 1e-12,
-	}
-
-	for intervalName, interval := range intervals {
-		for jitterName, jitter := range jitters {
-			t.Run(fmt.Sprintf("%s with %s", intervalName, jitterName), func(t *testing.T) {
-				// Set up the mock clock for testing.
-				now := timeutil.Now()
-				clock := timeutil.NewManualTime(now)
-
-				// Create the save rate limiter.
-				l, err := newSaveRateLimiter(saveRateConfig{
-					name: "test",
-					intervalName: func() redact.SafeValue {
-						return redact.SafeString(intervalName)
-					},
-					interval: func() time.Duration {
-						return interval
-					},
-					jitter: func() float64 {
-						return jitter
-					},
-				}, clock)
-				require.NoError(t, err)
-
-				// A non-positive interval indicates that saving is disabled so we only
-				// need to test that we can't save at all.
-				if interval <= 0 {
-					require.False(t, l.canSave(ctx))
-					clock.Advance(24 * time.Hour)
-					require.False(t, l.canSave(ctx))
-					return
-				}
-
-				// We can do one save right away if the interval.
-				require.True(t, l.canSave(ctx))
-				l.doneSave(0 /* saveDuration */)
-
-				// Can't immediately save again.
-				require.False(t, l.canSave(ctx))
-
-				// Make sure interval and jitter works correctly.
-				var maxJitter time.Duration
-				if jitter > 0 {
-					maxJitter = time.Duration(jitter * float64(interval))
-				}
-				clock.Advance(interval + maxJitter)
-				require.True(t, l.canSave(ctx))
-
-				// Set the save duration to something high to make sure we can't save
-				// due to high average save duration.
-				l.doneSave(time.Hour)
-				clock.Advance(interval + maxJitter)
-				require.False(t, l.canSave(ctx))
-				clock.Advance(time.Hour - (interval + maxJitter))
-				require.True(t, l.canSave(ctx))
-
-				// Set the save duration to something even higher to make sure the
-				// average algorithm works.
-				l.doneSave(2 * time.Hour)
-				clock.Advance(time.Hour)
-				require.False(t, l.canSave(ctx))
-				clock.Advance(time.Hour)
-				require.True(t, l.canSave(ctx))
-				l.doneSave(0 /* saveDuration */)
-			})
-		}
+	for _, tc := range []struct {
+		name             string
+		expectedFrontier hlc.Timestamp
+		watches          []execinfrapb.ChangeAggregatorSpec_Watch
+	}{
+		{
+			name:             "new initial scan",
+			expectedFrontier: hlc.Timestamp{},
+			watches: []execinfrapb.ChangeAggregatorSpec_Watch{
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")},
+					InitialResolved: hlc.Timestamp{},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")},
+					InitialResolved: hlc.Timestamp{},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")},
+					InitialResolved: hlc.Timestamp{},
+				},
+			},
+		},
+		{
+			name:             "incomplete initial scan with non-empty initial resolved in the middle",
+			expectedFrontier: hlc.Timestamp{},
+			watches: []execinfrapb.ChangeAggregatorSpec_Watch{
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")},
+					InitialResolved: hlc.Timestamp{WallTime: 5},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")},
+					InitialResolved: hlc.Timestamp{},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")},
+					InitialResolved: hlc.Timestamp{WallTime: 20},
+				},
+			},
+		},
+		{
+			name:             "incomplete initial scan with non-empty initial resolved in the front",
+			expectedFrontier: hlc.Timestamp{},
+			watches: []execinfrapb.ChangeAggregatorSpec_Watch{
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")},
+					InitialResolved: hlc.Timestamp{},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")},
+					InitialResolved: hlc.Timestamp{WallTime: 10},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")},
+					InitialResolved: hlc.Timestamp{WallTime: 20},
+				},
+			},
+		},
+		{
+			name:             "incomplete initial scan with empty initial resolved in the end",
+			expectedFrontier: hlc.Timestamp{},
+			watches: []execinfrapb.ChangeAggregatorSpec_Watch{
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")},
+					InitialResolved: hlc.Timestamp{WallTime: 10},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")},
+					InitialResolved: hlc.Timestamp{WallTime: 20},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")},
+					InitialResolved: hlc.Timestamp{},
+				},
+			},
+		},
+		{
+			name:             "complete initial scan",
+			expectedFrontier: hlc.Timestamp{WallTime: 5},
+			watches: []execinfrapb.ChangeAggregatorSpec_Watch{
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("b")},
+					InitialResolved: hlc.Timestamp{WallTime: 10},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("b"), EndKey: roachpb.Key("c")},
+					InitialResolved: hlc.Timestamp{WallTime: 20},
+				},
+				{
+					Span:            roachpb.Span{Key: roachpb.Key("c"), EndKey: roachpb.Key("d")},
+					InitialResolved: hlc.Timestamp{WallTime: 5},
+				},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ca := &changeAggregator{
+				spec: execinfrapb.ChangeAggregatorSpec{
+					Watches: tc.watches,
+				},
+			}
+			_, err := ca.setupSpansAndFrontier()
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedFrontier, ca.frontier.Frontier())
+		})
 	}
 }
 
-func TestSaveRateLimiterError(t *testing.T) {
+func makeTS(wt int64) hlc.Timestamp {
+	return hlc.Timestamp{WallTime: wt}
+}
+
+func makeResolvedSpan(
+	start, end string, ts hlc.Timestamp, boundaryType jobspb.ResolvedSpan_BoundaryType,
+) jobspb.ResolvedSpan {
+	return jobspb.ResolvedSpan{
+		Span:         makeSpan(start, end),
+		Timestamp:    ts,
+		BoundaryType: boundaryType,
+	}
+}
+
+func makeSpan(start, end string) roachpb.Span {
+	return roachpb.Span{
+		Key:    roachpb.Key(start),
+		EndKey: roachpb.Key(end),
+	}
+}
+
+func TestSchemaChangeFrontier_ForwardResolvedSpan(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	name := redact.SafeString("test")
-	intervalName := func() redact.SafeValue {
-		return redact.SafeString("interval")
-	}
-	interval := func() time.Duration {
-		return 30 * time.Second
-	}
+	// Create a fresh frontier with no progress.
+	f, err := makeSchemaChangeFrontier(
+		hlc.Timestamp{},
+		makeSpan("a", "f"),
+	)
+	require.NoError(t, err)
+	require.Zero(t, f.Frontier())
 
-	for testName, tc := range map[string]struct {
-		config      saveRateConfig
-		expectedErr string
-	}{
-		"missing name": {
-			config: saveRateConfig{
-				intervalName: intervalName,
-				interval:     interval,
-			},
-			expectedErr: "name is required",
-		},
-		"missing interval name": {
-			config: saveRateConfig{
-				name:     name,
-				interval: interval,
-			},
-			expectedErr: "interval name is required",
-		},
-		"missing interval": {
-			config: saveRateConfig{
-				name:         name,
-				intervalName: intervalName,
-			},
-			expectedErr: "interval is required",
-		},
-	} {
-		t.Run(testName, func(t *testing.T) {
-			if tc.expectedErr == "" {
-				t.Fatal("missing expected error")
-			}
-			_, err := newSaveRateLimiter(tc.config, timeutil.DefaultTimeSource{})
-			require.ErrorContains(t, err, tc.expectedErr)
-		})
-	}
+	t.Run("advance frontier with no boundary", func(t *testing.T) {
+		// Forwarding part of the span space to 10 should not advance the frontier.
+		forwarded, err := f.ForwardResolvedSpan(
+			makeResolvedSpan("a", "b", makeTS(10), jobspb.ResolvedSpan_NONE))
+		require.NoError(t, err)
+		require.False(t, forwarded)
+		require.Zero(t, f.Frontier())
+
+		// Forwarding the rest of the span space to 10 should advance the frontier.
+		forwarded, err = f.ForwardResolvedSpan(
+			makeResolvedSpan("b", "f", makeTS(10), jobspb.ResolvedSpan_NONE))
+		require.NoError(t, err)
+		require.True(t, forwarded)
+		require.Equal(t, makeTS(10), f.Frontier())
+	})
+
+	t.Run("advance frontier with same timestamp and new boundary", func(t *testing.T) {
+		// Forwarding part of the span space to 10 again with a non-NONE boundary
+		// should be considered forwarding the frontier because we're learning
+		// about a new boundary.
+		forwarded, err := f.ForwardResolvedSpan(
+			makeResolvedSpan("c", "f", makeTS(10), jobspb.ResolvedSpan_RESTART))
+		require.NoError(t, err)
+		require.True(t, forwarded)
+		require.Equal(t, makeTS(10), f.Frontier())
+
+		// Forwarding the rest of the span space to 10 again with a non-NONE boundary
+		// should not be considered forwarding the frontier because we already
+		// know about the new boundary.
+		forwarded, err = f.ForwardResolvedSpan(
+			makeResolvedSpan("a", "c", makeTS(10), jobspb.ResolvedSpan_RESTART))
+		require.NoError(t, err)
+		require.False(t, forwarded)
+		require.Equal(t, makeTS(10), f.Frontier())
+	})
 }

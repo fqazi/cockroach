@@ -82,7 +82,7 @@ func redactTableDescriptor(d *descpb.TableDescriptor) (errs []error) {
 	if scs := d.DeclarativeSchemaChangerState; scs != nil {
 		for i := range scs.RelevantStatements {
 			stmt := &scs.RelevantStatements[i]
-			stmt.Statement.Statement = stmt.Statement.RedactedStatement.StripMarkers()
+			stmt.Statement.Statement = stmt.Statement.RedactedStatement
 		}
 		for i := range scs.Targets {
 			t := &scs.Targets[i]
@@ -151,11 +151,8 @@ func redactElement(element scpb.Element) error {
 		e.PhysicalRepresentation = []byte("_")
 	case *scpb.IndexPartitioning:
 		redactPartitioning(&e.PartitioningDescriptor)
-	case *scpb.SecondaryIndex:
-		if e.EmbeddedExpr != nil {
-			return redactExpr(&e.EmbeddedExpr.Expr)
-		}
-		return nil
+	case *scpb.SecondaryIndexPartial:
+		return redactExpr(&e.Expression.Expr)
 	case *scpb.CheckConstraint:
 		return redactExpr(&e.Expression.Expr)
 	case *scpb.ColumnDefaultExpression:
@@ -166,8 +163,6 @@ func redactElement(element scpb.Element) error {
 		if e.ComputeExpr != nil {
 			return redactExpr(&e.ComputeExpr.Expr)
 		}
-	case *scpb.ColumnComputeExpression:
-		return redactExpr(&e.Expression.Expr)
 	case *scpb.FunctionBody:
 		return redactFunctionBodyStr(e.Lang.Lang, &e.Body)
 	}
@@ -224,7 +219,7 @@ func redactFunctionDescriptor(desc *descpb.FunctionDescriptor) (errs []error) {
 	if scs := desc.DeclarativeSchemaChangerState; scs != nil {
 		for i := range scs.RelevantStatements {
 			stmt := &scs.RelevantStatements[i]
-			stmt.Statement.Statement = stmt.Statement.RedactedStatement.StripMarkers()
+			stmt.Statement.Statement = stmt.Statement.RedactedStatement
 		}
 		for i := range scs.Targets {
 			t := &scs.Targets[i]

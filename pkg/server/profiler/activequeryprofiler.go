@@ -12,7 +12,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/server/debug"
 	"github.com/cockroachdb/cockroach/pkg/server/dumpstore"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/util/cgroups"
@@ -59,13 +58,6 @@ const (
 	QueryFileNameSuffix = ".csv"
 )
 
-var activeQueryCombinedFileSize = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"server.active_query.total_dump_size_limit",
-	"maximum combined disk size of preserved active query profiles",
-	64<<20, // 64MiB
-)
-
 // NewActiveQueryProfiler creates a NewQueryProfiler. dir is the directory in which
 // profiles are to be stored.
 func NewActiveQueryProfiler(
@@ -75,17 +67,17 @@ func NewActiveQueryProfiler(
 		return nil, errors.AssertionFailedf("need to specify dir for NewQueryProfiler")
 	}
 
-	dumpStore := dumpstore.NewStore(dir, activeQueryCombinedFileSize, st)
+	dumpStore := dumpstore.NewStore(dir, maxCombinedFileSize, st)
 
 	maxMem, warn, err := memLimitFn()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to detect cgroup memory limit")
 	}
 	if warn != "" {
-		log.Dev.Warningf(ctx, "warning when reading cgroup memory limit: %s", log.SafeManaged(warn))
+		log.Warningf(ctx, "warning when reading cgroup memory limit: %s", log.SafeManaged(warn))
 	}
 
-	log.Dev.Infof(ctx, "writing go query profiles to %s", log.SafeManaged(dir))
+	log.Infof(ctx, "writing go query profiles to %s", log.SafeManaged(dir))
 	qp := &ActiveQueryProfiler{
 		profiler: makeProfiler(
 			newProfileStore(dumpStore, QueryFileNamePrefix, QueryFileNameSuffix, st),
@@ -131,12 +123,12 @@ func (o *ActiveQueryProfiler) shouldDump(ctx context.Context, st *cluster.Settin
 	}
 	cgMemUsage, _, err := memUsageFn()
 	if err != nil {
-		log.Dev.Errorf(ctx, "failed to fetch cgroup memory usage: %v", err)
+		log.Errorf(ctx, "failed to fetch cgroup memory usage: %v", err)
 		return false, 0
 	}
 	cgInactiveFileUsage, _, err := memInactiveFileUsageFn()
 	if err != nil {
-		log.Dev.Errorf(ctx, "failed to fetch cgroup memory inactive file usage: %v", err)
+		log.Errorf(ctx, "failed to fetch cgroup memory inactive file usage: %v", err)
 		return false, 0
 	}
 	curMemUsage := cgMemUsage - cgInactiveFileUsage
@@ -166,7 +158,7 @@ func (o *ActiveQueryProfiler) takeQueryProfile(
 
 	f, err := os.Create(path)
 	if err != nil {
-		log.Dev.Errorf(ctx, "error creating query profile %s: %v", path, err)
+		log.Errorf(ctx, "error creating query profile %s: %v", path, err)
 		return false
 	}
 	defer f.Close()
@@ -174,7 +166,7 @@ func (o *ActiveQueryProfiler) takeQueryProfile(
 	writer := debug.NewActiveQueriesWriter(registry.SerializeAll(), f)
 	err = writer.Write()
 	if err != nil {
-		log.Dev.Errorf(ctx, "error writing active queries to profile: %v", err)
+		log.Errorf(ctx, "error writing active queries to profile: %v", err)
 		return false
 	}
 	return true

@@ -3,13 +3,12 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { Spinner } from "@cockroachlabs/ui-components";
 import React, { useEffect, useState } from "react";
 import Helmet from "react-helmet";
 import { useParams } from "react-router-dom";
-import Select, { Option } from "react-select";
+import Select from "react-select";
+import { Spinner } from "@cockroachlabs/ui-components";
 
-import ErrorCircle from "assets/error-circle.svg";
 import {
   Button,
   CockroachLabsLockupIcon,
@@ -17,6 +16,8 @@ import {
   TextInput,
   TextTypes,
 } from "src/components";
+
+import ErrorCircle from "assets/error-circle.svg";
 import "./jwtAuthToken.styl";
 
 const OIDC_LOGIN_PATH_WITH_JWT = "oidc/v1/login?jwt";
@@ -31,11 +32,6 @@ export type ConnectionInfo = {
   Host: string;
   Port: number;
   Expiry: Date;
-};
-
-type OptionValue = {
-  label: string;
-  value: string;
 };
 
 export const JwtAuthToken = (props: {
@@ -66,7 +62,7 @@ export const JwtAuthToken = (props: {
       setUsername(info.Usernames[0]);
     }
 
-    const usernameOptions: OptionValue[] = info.Usernames.map(u => {
+    const usernameOptions = info.Usernames.map(u => {
       return { label: u, value: u };
     });
 
@@ -85,7 +81,7 @@ export const JwtAuthToken = (props: {
             clearable={false}
             value={username}
             options={usernameOptions}
-            onChange={(option: Option<string>) => setUsername(option.value)}
+            onChange={(option: { value: string }) => setUsername(option.value)}
           />
         </div>
         <TextInput

@@ -3,14 +3,13 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { shallow } from "enzyme";
-import clone from "lodash/clone";
-import moment from "moment-timezone";
 import React from "react";
-
-import * as timewindow from "src/redux/timeScale";
+import { shallow } from "enzyme";
+import moment from "moment-timezone";
+import _ from "lodash";
 
 import { MetricsTimeManagerUnconnected as MetricsTimeManager } from "./";
+import * as timewindow from "src/redux/timeScale";
 
 describe("<MetricsTimeManager>", function () {
   const spy = jest.fn();
@@ -28,7 +27,7 @@ describe("<MetricsTimeManager>", function () {
   const getManager = () =>
     shallow(
       <MetricsTimeManager
-        timeScale={clone(state)}
+        timeScale={_.clone(state)}
         setMetricsMovingWindow={spy}
         now={now}
       />,

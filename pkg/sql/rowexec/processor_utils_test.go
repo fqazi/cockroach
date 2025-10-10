@@ -153,7 +153,6 @@ func (p *ProcessorTest) RunTestCases(
 			ctx,
 			p.config.FlowCtx,
 			processorID,
-			0, /* stageID */
 			&tc.ProcessorCore,
 			&tc.Post,
 			inputs,

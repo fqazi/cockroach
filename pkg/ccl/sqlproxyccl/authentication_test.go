@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl/testutilsccl"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
-	"github.com/cockroachdb/errors"
 	"github.com/jackc/pgproto3/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -141,19 +140,13 @@ func TestAuthenticateThrottled(t *testing.T) {
 	go server(t, sqlServer)
 	go client(t, sqlClient)
 
-	// The error returned from authenticate should be different from the error
-	// received at the client.
-	_, err := authenticate(
-		proxyToClient,
-		proxyToServer,
-		nil, /* proxyBackendKeyData */
+	_, err := authenticate(proxyToClient, proxyToServer, nil, /* proxyBackendKeyData */
 		func(status throttler.AttemptStatus) error {
 			require.Equal(t, throttler.AttemptInvalidCredentials, status)
-			return errors.New("request denied")
-		},
-	)
+			return authThrottledError
+		})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "request denied")
+	require.Contains(t, err.Error(), "too many failed authentication attempts")
 
 	proxyToServer.Close()
 	proxyToClient.Close()
@@ -267,9 +260,7 @@ func TestReadTokenAuthResult(t *testing.T) {
 		cli, srv := net.Pipe()
 
 		go func() {
-			buf, err := (&pgproto3.BindComplete{}).Encode(nil)
-			require.NoError(t, err)
-			_, err = srv.Write(buf)
+			_, err := srv.Write((&pgproto3.BindComplete{}).Encode(nil))
 			require.NoError(t, err)
 		}()
 
@@ -282,9 +273,7 @@ func TestReadTokenAuthResult(t *testing.T) {
 		cli, srv := net.Pipe()
 
 		go func() {
-			buf, err := (&pgproto3.ErrorResponse{Severity: "FATAL", Code: "foo"}).Encode(nil)
-			require.NoError(t, err)
-			_, err = srv.Write(buf)
+			_, err := srv.Write((&pgproto3.ErrorResponse{Severity: "FATAL", Code: "foo"}).Encode(nil))
 			require.NoError(t, err)
 		}()
 
@@ -298,24 +287,16 @@ func TestReadTokenAuthResult(t *testing.T) {
 		crdbBackendKeyData := &pgproto3.BackendKeyData{ProcessID: 42, SecretKey: 99}
 
 		go func() {
-			buf, err := (&pgproto3.AuthenticationOk{}).Encode(nil)
-			require.NoError(t, err)
-			_, err = srv.Write(buf)
+			_, err := srv.Write((&pgproto3.AuthenticationOk{}).Encode(nil))
 			require.NoError(t, err)
 
-			buf, err = (&pgproto3.ParameterStatus{Name: "Server Version", Value: "1.3"}).Encode(nil)
-			require.NoError(t, err)
-			_, err = srv.Write(buf)
+			_, err = srv.Write((&pgproto3.ParameterStatus{Name: "Server Version", Value: "1.3"}).Encode(nil))
 			require.NoError(t, err)
 
-			buf, err = crdbBackendKeyData.Encode(nil)
-			require.NoError(t, err)
-			_, err = srv.Write(buf)
+			_, err = srv.Write(crdbBackendKeyData.Encode(nil))
 			require.NoError(t, err)
 
-			buf, err = (&pgproto3.ReadyForQuery{}).Encode(nil)
-			require.NoError(t, err)
-			_, err = srv.Write(buf)
+			_, err = srv.Write((&pgproto3.ReadyForQuery{}).Encode(nil))
 			require.NoError(t, err)
 		}()
 

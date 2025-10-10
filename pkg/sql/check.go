@@ -24,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/row"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/semenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
@@ -44,7 +43,6 @@ import (
 // reuse an existing kv.Txn safely.
 func validateCheckExpr(
 	ctx context.Context,
-	evalCtx *eval.Context,
 	semaCtx *tree.SemaContext,
 	txn isql.Txn,
 	sessionData *sessiondata.SessionData,
@@ -52,7 +50,7 @@ func validateCheckExpr(
 	tableDesc *tabledesc.Mutable,
 	indexIDForValidation descpb.IndexID,
 ) (violatingRow tree.Datums, formattedCkExpr string, err error) {
-	formattedCkExpr, err = schemaexpr.FormatExprForDisplay(ctx, tableDesc, exprStr, evalCtx, semaCtx, sessionData, tree.FmtParsable)
+	formattedCkExpr, err = schemaexpr.FormatExprForDisplay(ctx, tableDesc, exprStr, semaCtx, sessionData, tree.FmtParsable)
 	if err != nil {
 		return nil, formattedCkExpr, err
 	}
@@ -62,18 +60,12 @@ func validateCheckExpr(
 	if indexIDForValidation != 0 {
 		queryStr = fmt.Sprintf(`SELECT %s FROM [%d AS t]@[%d] WHERE NOT (%s) LIMIT 1`, columns, tableDesc.GetID(), indexIDForValidation, exprStr)
 	}
-	log.Dev.Infof(ctx, "validating check constraint %q with query %q", formattedCkExpr, queryStr)
-
-	// Validation queries use full table scans which we always want to distribute.
-	// See https://github.com/cockroachdb/cockroach/issues/152859.
-	execOverride := sessiondata.NodeUserSessionDataOverride
-	execOverride.AlwaysDistributeFullScans = true
-
+	log.Infof(ctx, "validating check constraint %q with query %q", formattedCkExpr, queryStr)
 	violatingRow, err = txn.QueryRowEx(
 		ctx,
 		"validate check constraint",
 		txn.KV(),
-		execOverride,
+		sessiondata.NodeUserSessionDataOverride,
 		queryStr)
 	if err != nil {
 		return nil, formattedCkExpr, err
@@ -303,7 +295,7 @@ func validateForeignKey(
 			return err
 		}
 
-		log.Dev.Infof(ctx, "validating MATCH FULL FK %q (%q [%v] -> %q [%v]) with query %q",
+		log.Infof(ctx, "validating MATCH FULL FK %q (%q [%v] -> %q [%v]) with query %q",
 			fk.Name,
 			srcTable.Name, colNames,
 			targetTable.GetName(), referencedColumnNames,
@@ -328,7 +320,7 @@ func validateForeignKey(
 		return err
 	}
 
-	log.Dev.Infof(ctx, "validating FK %q (%q [%v] -> %q [%v]) with query %q",
+	log.Infof(ctx, "validating FK %q (%q [%v] -> %q [%v]) with query %q",
 		fk.Name,
 		srcTable.Name, colNames, targetTable.GetName(), referencedColumnNames,
 		query,
@@ -427,7 +419,7 @@ func duplicateRowQuery(
 // constraint defined on the table.
 func (p *planner) RevalidateUniqueConstraintsInCurrentDB(ctx context.Context) error {
 	dbName := p.CurrentDatabase()
-	log.Dev.Infof(ctx, "validating unique constraints in database %s", dbName)
+	log.Infof(ctx, "validating unique constraints in database %s", dbName)
 	db, err := p.Descriptors().ByNameWithLeased(p.Txn()).Get().Database(ctx, dbName)
 	if err != nil {
 		return err
@@ -577,7 +569,7 @@ func RevalidateUniqueConstraintsInTable(
 				user,
 				true, /* preExisting */
 			); err != nil {
-				log.Dev.Errorf(ctx, "validation of unique constraints failed for table %s: %s", tableDesc.GetName(), err)
+				log.Errorf(ctx, "validation of unique constraints failed for table %s: %s", tableDesc.GetName(), err)
 				return errors.Wrapf(err, "for table %s", tableDesc.GetName())
 			}
 		}
@@ -597,13 +589,13 @@ func RevalidateUniqueConstraintsInTable(
 				user,
 				true, /* preExisting */
 			); err != nil {
-				log.Dev.Errorf(ctx, "validation of unique constraints failed for table %s: %s", tableDesc.GetName(), err)
+				log.Errorf(ctx, "validation of unique constraints failed for table %s: %s", tableDesc.GetName(), err)
 				return errors.Wrapf(err, "for table %s", tableDesc.GetName())
 			}
 		}
 	}
 
-	log.Dev.Infof(ctx, "validated all unique constraints in table %s", tableDesc.GetName())
+	log.Infof(ctx, "validated all unique constraints in table %s", tableDesc.GetName())
 	return nil
 }
 
@@ -638,7 +630,7 @@ func validateUniqueConstraint(
 		return err
 	}
 
-	log.Dev.Infof(ctx, "validating unique constraint %q (%q [%v]) with query %q",
+	log.Infof(ctx, "validating unique constraint %q (%q [%v]) with query %q",
 		constraintName,
 		srcTable.GetName(),
 		colNames,
@@ -672,7 +664,7 @@ func validateUniqueConstraint(
 			// An example error that we want to retry is "no inbound stream"
 			// connection error which can occur if the node that is used for the
 			// distributed query goes down.
-			log.Dev.Infof(ctx, "retrying the validation query because of %v", err)
+			log.Infof(ctx, "retrying the validation query because of %v", err)
 			continue
 		}
 		return err
@@ -706,7 +698,7 @@ func validateUniqueConstraint(
 // ValidateTTLScheduledJobsInCurrentDB is part of the EvalPlanner interface.
 func (p *planner) ValidateTTLScheduledJobsInCurrentDB(ctx context.Context) error {
 	dbName := p.CurrentDatabase()
-	log.Dev.Infof(ctx, "validating scheduled jobs in database %s", dbName)
+	log.Infof(ctx, "validating scheduled jobs in database %s", dbName)
 	db, err := p.Descriptors().ByNameWithLeased(p.Txn()).Get().Database(ctx, dbName)
 	if err != nil {
 		return err
@@ -852,7 +844,6 @@ type checkSet = intsets.Fast
 // checkVals for each element in checkSet.
 func checkMutationInput(
 	ctx context.Context,
-	evalCtx *eval.Context,
 	semaCtx *tree.SemaContext,
 	sessionData *sessiondata.SessionData,
 	tabDesc catalog.TableDescriptor,
@@ -864,7 +855,7 @@ func checkMutationInput(
 			"mismatched check constraint columns: expected %d, got %d", checkOrds.Len(), len(checkVals))
 	}
 
-	checks := tabDesc.EnforcedCheckValidators()
+	checks := tabDesc.EnforcedCheckConstraints()
 	colIdx := 0
 	for i := range checks {
 		if !checkOrds.Contains(i) {
@@ -873,8 +864,8 @@ func checkMutationInput(
 
 		if res, err := tree.GetBool(checkVals[colIdx]); err != nil {
 			return err
-		} else if checks[i].IsCheckFailed(res == tree.DBool(true), checkVals[colIdx] == tree.DNull) {
-			return row.CheckFailed(ctx, evalCtx, semaCtx, sessionData, tabDesc, checks[i])
+		} else if !res && checkVals[colIdx] != tree.DNull {
+			return row.CheckFailed(ctx, semaCtx, sessionData, tabDesc, checks[i])
 		}
 		colIdx++
 	}

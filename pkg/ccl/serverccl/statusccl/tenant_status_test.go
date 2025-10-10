@@ -28,8 +28,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/persistedsqlstats/sqlstatstestutil"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -57,11 +57,7 @@ func TestTenantStatusAPI(t *testing.T) {
 	ctx := context.Background()
 
 	var knobs base.TestingKnobs
-
-	sqlStatsKnobs := sqlstats.CreateTestingKnobs()
-	sqlStatsKnobs.SynchronousSQLStats = true
-
-	knobs.SQLStatsKnobs = sqlStatsKnobs
+	knobs.SQLStatsKnobs = sqlstats.CreateTestingKnobs()
 	knobs.SpanConfig = &spanconfig.TestingKnobs{
 		// Some of these subtests expect multiple (uncoalesced) tenant ranges.
 		StoreDisableCoalesceAdjacent: true,
@@ -76,10 +72,6 @@ func TestTenantStatusAPI(t *testing.T) {
 	tdb.Exec(t, "SET CLUSTER SETTING kv.closed_timestamp.target_duration = '10ms'")
 	tdb.Exec(t, "SET CLUSTER SETTING kv.closed_timestamp.side_transport_interval = '10 ms'")
 	tdb.Exec(t, "SET CLUSTER SETTING kv.rangefeed.closed_timestamp_refresh_interval = '10 ms'")
-	// If we happen to enable buffered writes metamorphically, we must have the
-	// split lock reliability enabled (which can be tweaked metamorphically too,
-	// #146387).
-	tdb.Exec(t, "SET CLUSTER SETTING kv.lock_table.unreplicated_lock_reliability.split.enabled = true")
 
 	t.Run("reset_sql_stats", func(t *testing.T) {
 		skip.UnderDeadlockWithIssue(t, 99559)
@@ -125,10 +117,6 @@ func TestTenantStatusAPI(t *testing.T) {
 
 	t.Run("tenant_ranges", func(t *testing.T) {
 		testTenantRangesRPC(ctx, t, testHelper)
-	})
-
-	t.Run("ranges", func(t *testing.T) {
-		testRangesRPC(ctx, t, testHelper)
 	})
 
 	t.Run("tenant_auth_statement", func(t *testing.T) {
@@ -230,7 +218,6 @@ func testTenantSpanStats(ctx context.Context, t *testing.T, helper serverccl.Ten
 
 		makeKey := func(keys ...[]byte) roachpb.Key {
 			return bytes.Join(keys, nil)
-
 		}
 
 		// Create a new range in this tenant.
@@ -402,16 +389,12 @@ func TestTenantCannotSeeNonTenantStats(t *testing.T) {
 	skip.UnderStressWithIssue(t, 113984)
 
 	ctx := context.Background()
-	sqlStatsKnobs := sqlstats.CreateTestingKnobs()
-	sqlStatsKnobs.SynchronousSQLStats = true
 	testCluster := serverutils.StartCluster(t, 3 /* numNodes */, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			Knobs: base.TestingKnobs{
-				SQLStatsKnobs: sqlStatsKnobs,
 				SpanConfig: &spanconfig.TestingKnobs{
 					ManagerDisableJobCreation: true, // TODO(irfansharif): #74919.
-				},
-			},
+				}},
 			DefaultTestTenant: base.TestControlsTenantsExplicitly,
 		},
 	})
@@ -422,11 +405,10 @@ func TestTenantCannotSeeNonTenantStats(t *testing.T) {
 	tenant, sqlDB := serverutils.StartTenant(t, server, base.TestTenantArgs{
 		TenantID: roachpb.MustMakeTenantID(10 /* id */),
 		TestingKnobs: base.TestingKnobs{
-			SQLStatsKnobs: sqlStatsKnobs,
+			SQLStatsKnobs: sqlstats.CreateTestingKnobs(),
 		},
 	})
 
-	appName := "test-app"
 	systemLayer := testCluster.Server(1 /* idx */).SystemLayer()
 
 	tenantStatusServer := tenant.StatusServer().(serverpb.SQLStatusServer)
@@ -447,18 +429,12 @@ func TestTenantCannotSeeNonTenantStats(t *testing.T) {
 		{stmt: `SELECT * FROM posts_t`},
 	}
 
-	_, err := sqlDB.Exec(`SET application_name = $1`, appName)
-	require.NoError(t, err)
 	for _, stmt := range testCaseTenant {
 		_, err := sqlDB.Exec(stmt.stmt)
 		require.NoError(t, err)
 	}
 
-	conn := sqlutils.MakeSQLRunner(tenant.SQLConn(t))
-	sqlstatstestutil.WaitForStatementEntriesAtLeast(t, conn, len(testCaseTenant),
-		sqlstatstestutil.StatementFilter{App: appName})
-
-	err = sqlDB.Close()
+	err := sqlDB.Close()
 	require.NoError(t, err)
 
 	testCaseNonTenant := []testCase{
@@ -474,18 +450,10 @@ func TestTenantCannotSeeNonTenantStats(t *testing.T) {
 
 	sqlDB = systemLayer.SQLConn(t)
 
-	_, err = sqlDB.Exec(`SET application_name = $1`, appName)
-	require.NoError(t, err)
 	for _, stmt := range testCaseNonTenant {
 		_, err = sqlDB.Exec(stmt.stmt)
 		require.NoError(t, err)
 	}
-
-	conn = sqlutils.MakeSQLRunner(systemLayer.SQLConn(t))
-	sqlstatstestutil.WaitForStatementEntriesAtLeast(t, conn, len(testCaseNonTenant), sqlstatstestutil.StatementFilter{
-		App: appName,
-	})
-
 	err = sqlDB.Close()
 	require.NoError(t, err)
 
@@ -528,7 +496,14 @@ func TestTenantCannotSeeNonTenantStats(t *testing.T) {
 
 		var actualStatements []string
 		for _, respStatement := range actual.Statements {
-			if respStatement.Key.KeyData.App != appName {
+			if respStatement.Stats.FailureCount > 0 {
+				// We ignore failed statements here as the INSERT statement can fail and
+				// be automatically retried, confusing the test success check.
+				continue
+			}
+			if strings.HasPrefix(respStatement.Key.KeyData.App, catconstants.InternalAppNamePrefix) {
+				// We ignore internal queries, these are not relevant for the
+				// validity of this test.
 				continue
 			}
 			actualStatements = append(actualStatements, respStatement.Key.KeyData.Query)
@@ -595,24 +570,9 @@ func testResetSQLStatsRPCForTenant(
 
 	}()
 
-	getObsConn := func(tenant serverccl.TestTenant) (*sqlutils.SQLRunner, func()) {
-		pgUrl, cleanupPgUrl := tenant.GetTenant().PGUrl(t)
-		obsConn, cleanupObsConn := sqlstatstestutil.MakeObserverConnection(t, pgUrl)
-		cleanup := func() {
-			cleanupPgUrl()
-			cleanupObsConn()
-		}
-		return obsConn, cleanup
-	}
-
-	testTenantObs, cleanup1 := getObsConn(testCluster.Tenant(serverccl.RandomServer))
-	defer cleanup1()
-	controlTenantObsConn, cleanup2 := getObsConn(controlCluster.Tenant(serverccl.RandomServer))
-	defer cleanup2()
 	for _, flushed := range []bool{false, true} {
 		testTenant := testCluster.Tenant(serverccl.RandomServer)
 		testTenantConn := testTenant.GetTenantConn()
-
 		t.Run(fmt.Sprintf("flushed=%t", flushed), func(t *testing.T) {
 			// Clears the SQL Stats at the end of each test via builtin.
 			defer func() {
@@ -625,20 +585,9 @@ func testResetSQLStatsRPCForTenant(
 				controlCluster.TenantConn(serverccl.RandomServer).Exec(t, stmt)
 			}
 
-			sqlstatstestutil.WaitForStatementEntriesAtLeast(t, testTenantObs, len(stmts))
-			sqlstatstestutil.WaitForStatementEntriesAtLeast(t, controlTenantObsConn, len(stmts))
-
 			if flushed {
-				testTenantServer := testTenant.TenantSQLServer()
-				testTenantServer.GetSQLStatsProvider().MaybeFlush(
-					ctx,
-					testTenant.GetTenant().AppStopper(),
-				)
-				randomTenantServer := controlCluster.TenantSQLServer(serverccl.RandomServer)
-				randomTenantServer.GetSQLStatsProvider().MaybeFlush(
-					ctx,
-					controlCluster.Tenant(0).GetTenant().AppStopper(),
-				)
+				testTenant.TenantSQLStats().MaybeFlush(ctx, testTenant.GetTenant().AppStopper())
+				controlCluster.TenantSQLStats(serverccl.RandomServer).MaybeFlush(ctx, controlCluster.Tenant(0).GetTenant().AppStopper())
 			}
 
 			status := testTenant.TenantStatusSrv()
@@ -921,6 +870,7 @@ WHERE tablename = 'test' AND indexname = $1`
 		requireAfter(t, &resp.Statistics[0].Statistics.Stats.LastRead, &timePreRead)
 		indexName := resp.Statistics[0].IndexName
 		createStmt := cluster.TenantConn(0).QueryStr(t, getCreateStmtQuery, indexName)[0][0]
+		print(createStmt)
 		require.Equal(t, resp.Statistics[0].CreateStatement, createStmt)
 		requireBetween(t, timePreCreate, resp.Statistics[0].CreatedAt, timePreRead)
 	})
@@ -1149,16 +1099,8 @@ func selectClusterSessionIDs(t *testing.T, conn *sqlutils.SQLRunner) []string {
 
 func testTenantStatusCancelSession(t *testing.T, helper serverccl.TenantTestHelper) {
 	// Open a SQL session on tenant SQL pod 0.
-	ctx := context.Background()
-	// Open two different SQL sessions on tenant SQL pod 0.
-	sqlPod0 := helper.TestCluster().TenantDB(0)
-	sqlPod0SessionToCancel, err := sqlPod0.Conn(ctx)
-	require.NoError(t, err)
-	sqlPod0SessionForIntrospection, err := sqlPod0.Conn(ctx)
-	require.NoError(t, err)
-	_, err = sqlPod0SessionToCancel.ExecContext(ctx, "SELECT 1")
-	require.NoError(t, err)
-	introspectionRunner := sqlutils.MakeSQLRunner(sqlPod0SessionForIntrospection)
+	sqlPod0 := helper.TestCluster().TenantConn(0)
+	sqlPod0.Exec(t, "SELECT 1")
 
 	// See the session over HTTP on tenant SQL pod 1.
 	httpPod1 := helper.TestCluster().TenantAdminHTTPClient(t, 1)
@@ -1177,7 +1119,7 @@ func testTenantStatusCancelSession(t *testing.T, helper serverccl.TenantTestHelp
 	// See the session over SQL on tenant SQL pod 0.
 	sessionID := hex.EncodeToString(session.ID)
 	require.Eventually(t, func() bool {
-		return strings.Contains(strings.Join(selectClusterSessionIDs(t, introspectionRunner), ","), sessionID)
+		return strings.Contains(strings.Join(selectClusterSessionIDs(t, sqlPod0), ","), sessionID)
 	}, 5*time.Second, 100*time.Millisecond)
 
 	// Cancel the session over HTTP from tenant SQL pod 1.
@@ -1189,7 +1131,7 @@ func testTenantStatusCancelSession(t *testing.T, helper serverccl.TenantTestHelp
 	// No longer see the session over SQL from tenant SQL pod 0.
 	// (The SQL client maintains an internal connection pool and automatically reconnects.)
 	require.Eventually(t, func() bool {
-		return !strings.Contains(strings.Join(selectClusterSessionIDs(t, introspectionRunner), ","), sessionID)
+		return !strings.Contains(strings.Join(selectClusterSessionIDs(t, sqlPod0), ","), sessionID)
 	}, 5*time.Second, 100*time.Millisecond)
 
 	// Attempt to cancel the session again over HTTP from tenant SQL pod 1, so that we can see the error message.
@@ -1416,7 +1358,8 @@ func testTxnIDResolutionRPC(ctx context.Context, t *testing.T, helper serverccl.
 	t.Run("tenant_cluster", func(t *testing.T) {
 		// Select a different tenant status server here so a pod-to-pod RPC will
 		// happen.
-		status := helper.TestCluster().TenantStatusSrv(2 /* idx */)
+		status :=
+			helper.TestCluster().TenantStatusSrv(2 /* idx */)
 		sqlConn := helper.TestCluster().TenantConn(0 /* idx */)
 		run(sqlConn, status, 1 /* coordinatorNodeID */)
 	})
@@ -1427,10 +1370,20 @@ func testTenantRangesRPC(_ context.Context, t *testing.T, helper serverccl.Tenan
 	tenantB := helper.ControlCluster().TenantStatusSrv(0).(serverpb.TenantStatusServer)
 
 	// Wait for range splits to occur so we get more than just a single range during our tests.
-	waitForRangeSplit(t, tenantA)
-	waitForRangeSplit(t, tenantB)
+	testutils.SucceedsSoon(t, func() error {
+		resp, err := tenantA.TenantRanges(context.Background(), &serverpb.TenantRangesRequest{})
+		if err != nil {
+			return err
+		}
+		for _, ranges := range resp.RangesByLocality {
+			if len(ranges.Ranges) > 1 {
+				return nil
+			}
+		}
+		return errors.New("waiting for tenant range split")
+	})
 
-	t.Run("test TenantRanges respects tenant isolation", func(t *testing.T) {
+	t.Run("test tenant ranges respects tenant isolation", func(t *testing.T) {
 		tenIDA := helper.TestCluster().Tenant(0).GetRPCContext().TenantID
 		tenIDB := helper.ControlCluster().Tenant(0).GetRPCContext().TenantID
 		keySpanForA := keys.MakeTenantSpan(tenIDA)
@@ -1459,7 +1412,7 @@ func testTenantRangesRPC(_ context.Context, t *testing.T, helper serverccl.Tenan
 		}
 	})
 
-	t.Run("test TenantRanges pagination", func(t *testing.T) {
+	t.Run("test tenant ranges pagination", func(t *testing.T) {
 		ctx := context.Background()
 		resp1, err := tenantA.TenantRanges(ctx, &serverpb.TenantRangesRequest{
 			Limit: 1,
@@ -1498,54 +1451,6 @@ func testTenantRangesRPC(_ context.Context, t *testing.T, helper serverccl.Tenan
 			return nil
 		})
 
-	})
-}
-
-func testRangesRPC(_ context.Context, t *testing.T, helper serverccl.TenantTestHelper) {
-	tenantA := helper.TestCluster().TenantStatusSrv(0).(serverpb.TenantStatusServer)
-	tenantB := helper.ControlCluster().TenantStatusSrv(0).(serverpb.TenantStatusServer)
-
-	req := &serverpb.RangesRequest{NodeId: "1"}
-
-	// Wait for range splits to occur so we get more than just a single range during our tests.
-	waitForRangeSplit(t, tenantA)
-	waitForRangeSplit(t, tenantB)
-
-	t.Run("test Ranges respects tenant isolation", func(t *testing.T) {
-		tenIDA := helper.TestCluster().Tenant(0).GetRPCContext().TenantID
-		tenIDB := helper.ControlCluster().Tenant(0).GetRPCContext().TenantID
-		keySpanForA := keys.MakeTenantSpan(tenIDA)
-		keySpanForB := keys.MakeTenantSpan(tenIDB)
-
-		resp, err := tenantA.Ranges(context.Background(), req)
-		require.NoError(t, err)
-		require.NotEmpty(t, resp.Ranges)
-		for _, r := range resp.Ranges {
-			assertStartKeyInRange(t, r.Span.StartKey, keySpanForA.Key)
-			assertEndKeyInRange(t, r.Span.EndKey, keySpanForA.Key, keySpanForA.EndKey)
-		}
-
-		resp, err = tenantB.Ranges(context.Background(), req)
-		require.NoError(t, err)
-		require.NotEmpty(t, resp.Ranges)
-		for _, r := range resp.Ranges {
-			assertStartKeyInRange(t, r.Span.StartKey, keySpanForB.Key)
-			assertEndKeyInRange(t, r.Span.EndKey, keySpanForB.Key, keySpanForB.EndKey)
-		}
-	})
-}
-
-func waitForRangeSplit(t *testing.T, tenant serverpb.TenantStatusServer) {
-	req := &serverpb.RangesRequest{NodeId: "1"}
-	testutils.SucceedsSoon(t, func() error {
-		resp, err := tenant.Ranges(context.Background(), req)
-		if err != nil {
-			return err
-		}
-		if len(resp.Ranges) <= 1 {
-			return errors.New("waiting for tenant range split")
-		}
-		return nil
 	})
 }
 

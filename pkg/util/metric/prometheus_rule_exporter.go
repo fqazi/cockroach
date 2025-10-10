@@ -29,6 +29,7 @@ type PrometheusRuleNode struct {
 }
 
 // PrometheusRuleGroup is a list of recording and alerting rules.
+// swagger:model PrometheusRuleGroup
 type PrometheusRuleGroup struct {
 	Rules []PrometheusRuleNode `yaml:"rules"`
 }
@@ -68,7 +69,7 @@ func (re *PrometheusRuleExporter) ScrapeRegistry(ctx context.Context) {
 	re.ruleRegistry.Each(func(rule Rule) {
 		ruleGroupName, ruleNode := rule.ToPrometheusRuleNode()
 		if ruleGroupName != alertRuleGroupName && ruleGroupName != recordingRuleGroupName {
-			log.Dev.Warning(ctx, "invalid prometheus group name, skipping rule")
+			log.Warning(ctx, "invalid prometheus group name, skipping rule")
 			return
 		}
 

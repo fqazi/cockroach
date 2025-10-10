@@ -9,17 +9,14 @@ import (
 	"net"
 	"reflect"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil/pgdate"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 // SessionData contains session parameters. They are all user-configurable.
@@ -156,10 +153,6 @@ func (s *SessionData) SessionUser() username.SQLUsername {
 	return s.SessionUserProto.Decode()
 }
 
-func (s *SessionData) IsInternalAppName() bool {
-	return strings.HasPrefix(s.ApplicationName, catconstants.InternalAppNamePrefix)
-}
-
 // LocalUnmigratableSessionData contains session parameters that cannot
 // be propagated to remote nodes and cannot be migrated to another
 // session.
@@ -175,9 +168,6 @@ type LocalUnmigratableSessionData struct {
 
 	// IsSSL indicates whether the session is using SSL/TLS.
 	IsSSL bool
-
-	// AuthenticationMethod is the method used to authenticate this session.
-	AuthenticationMethod redact.SafeString
 
 	// ////////////////////////////////////////////////////////////////////////
 	// WARNING: consider whether a session parameter you're adding needs to  //

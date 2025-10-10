@@ -3,8 +3,6 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import moment from "moment-timezone";
-
 import {
   executeInternalSql,
   LARGE_RESULT_SIZE,
@@ -13,6 +11,7 @@ import {
   sqlResultsAreEmpty,
 } from "./sqlApi";
 import { withTimeout } from "./util";
+import moment from "moment-timezone";
 
 export type DatabasesColumns = {
   database_name: string;

@@ -2,8 +2,8 @@
 //
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
-import { LocalityTier } from "src/redux/localities";
 import { showInstructionsBox } from "src/views/clusterviz/components/instructionsBox";
+import { LocalityTier } from "src/redux/localities";
 
 describe("InstructionsBox component", () => {
   describe("showInstructionsBox", () => {

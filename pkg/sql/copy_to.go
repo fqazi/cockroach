@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/encoding/csv"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/redact"
 )
 
 // copyToTranslater translates datums into the appropriate format for CopyTo.
@@ -184,7 +183,7 @@ func runCopyTo(
 
 	it, err := p.InternalSQLTxn().QueryIteratorEx(
 		ctx,
-		redact.RedactableString(tree.AsStringWithFlags(cmd.Stmt, tree.FmtMarkRedactionNode)),
+		cmd.Stmt.String(),
 		p.Txn(),
 		sessiondata.NoSessionDataOverride,
 		q,

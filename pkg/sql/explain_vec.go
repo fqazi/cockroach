@@ -7,7 +7,6 @@ package sql
 
 import (
 	"context"
-	"math"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/colflow"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
@@ -36,7 +35,10 @@ type explainVecNode struct {
 func (n *explainVecNode) startExec(params runParams) error {
 	n.run.values = make(tree.Datums, 1)
 	distSQLPlanner := params.extendedEvalCtx.DistSQLPlanner
-	distribution, _ := params.p.getPlanDistribution(params.ctx, n.plan.main)
+	distribution, _ := getPlanDistribution(
+		params.ctx, params.p.Descriptors().HasUncommittedTypes(),
+		params.extendedEvalCtx.SessionData().DistSQLMode, n.plan.main, &params.p.distSQLVisitor,
+	)
 	outerSubqueries := params.p.curPlan.subqueryPlans
 	planCtx := newPlanningCtxForExplainPurposes(distSQLPlanner, params, n.plan.subqueryPlans, distribution)
 	defer func() {
@@ -53,9 +55,9 @@ func (n *explainVecNode) startExec(params runParams) error {
 	}
 
 	finalizePlanWithRowCount(params.ctx, planCtx, physPlan, n.plan.mainRowCount)
-	flows, flowsCleanup := physPlan.GenerateFlowSpecs()
-	defer flowsCleanup(flows)
-	flowCtx := newFlowCtxForExplainPurposes(params.ctx, params.p)
+	flows := physPlan.GenerateFlowSpecs()
+	flowCtx, cleanup := newFlowCtxForExplainPurposes(params.ctx, params.p)
+	defer cleanup()
 
 	// We want to get the vectorized plan which would be executed with the
 	// current 'vectorize' option. If 'vectorize' is set to 'off', then the
@@ -82,17 +84,17 @@ func (n *explainVecNode) startExec(params runParams) error {
 	return nil
 }
 
-func newFlowCtxForExplainPurposes(ctx context.Context, p *planner) *execinfra.FlowCtx {
+func newFlowCtxForExplainPurposes(
+	ctx context.Context, p *planner,
+) (_ *execinfra.FlowCtx, cleanup func()) {
 	monitor := mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("explain"),
+		Name:     "explain",
 		Settings: p.execCfg.Settings,
 	})
-	// Note that we do not use planner's monitor here in order to not link any
-	// monitors created later to the planner's monitor (since we might not close
-	// the components that use them). This also allows us to not close this
-	// monitor because eventually the whole monitor tree rooted in this monitor
-	// will be garbage collected.
-	monitor.Start(ctx, nil /* pool */, mon.NewStandaloneBudget(math.MaxInt64))
+	monitor.StartNoReserved(ctx, p.Mon())
+	cleanup = func() {
+		monitor.Stop(ctx)
+	}
 	return &execinfra.FlowCtx{
 		NodeID:  p.EvalContext().NodeID,
 		EvalCtx: p.EvalContext(),
@@ -106,7 +108,7 @@ func newFlowCtxForExplainPurposes(ctx context.Context, p *planner) *execinfra.Fl
 		},
 		Descriptors: p.Descriptors(),
 		DiskMonitor: &mon.BytesMonitor{},
-	}
+	}, cleanup
 }
 
 func newPlanningCtxForExplainPurposes(
@@ -143,30 +145,4 @@ func (n *explainVecNode) Next(runParams) (bool, error) {
 func (n *explainVecNode) Values() tree.Datums { return n.run.values }
 func (n *explainVecNode) Close(ctx context.Context) {
 	n.plan.close(ctx)
-}
-
-func (n *explainVecNode) InputCount() int {
-	// We check whether planNode is nil because the input might be represented
-	// physically, which we can't traverse into currently.
-	// TODO(yuzefovich/mgartner): Figure out a way to traverse into physical
-	// plans, if necessary.
-	if n.plan.main.planNode != nil {
-		return 1
-	}
-	return 0
-}
-
-func (n *explainVecNode) Input(i int) (planNode, error) {
-	if i == 0 && n.plan.main.planNode != nil {
-		return n.plan.main.planNode, nil
-	}
-	return nil, errors.AssertionFailedf("input index %d is out of range", i)
-}
-
-func (n *explainVecNode) SetInput(i int, p planNode) error {
-	if i == 0 && n.plan.main.planNode != nil {
-		n.plan.main.planNode = p
-		return nil
-	}
-	return errors.AssertionFailedf("input index %d is out of range", i)
 }

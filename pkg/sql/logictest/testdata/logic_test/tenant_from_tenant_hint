@@ -22,3 +22,4 @@ SET CLUSTER SETTING kv.rangefeed.enabled = true
 
 statement ok
 SET CLUSTER SETTING server.rangelog.ttl = '300s'
+

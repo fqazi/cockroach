@@ -100,7 +100,7 @@ func NewParallelIO(
 	wg.GoCtx(func(ctx context.Context) error {
 		return io.processIO(ctx, numWorkers)
 	})
-	io.metrics.recordParallelIOWorkers(int64(numWorkers))
+
 	return io
 }
 
@@ -162,9 +162,9 @@ var requestQuota = settings.RegisterIntSetting(
 	"changefeed.parallel_io.request_quota",
 	"the number of requests which can be admitted into the parallelio"+
 		" system before blocking the producer",
-	metamorphic.ConstantWithTestChoice[int64](
+	int64(metamorphic.ConstantWithTestChoice(
 		"changefeed.parallel_io.request_quota",
-		128, 16, 32, 64, 256),
+		128, 16, 32, 64, 256).(int)),
 	settings.IntInRange(1, 256),
 	settings.WithVisibility(settings.Reserved),
 )

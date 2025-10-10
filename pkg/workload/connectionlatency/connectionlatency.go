@@ -48,9 +48,6 @@ func (connectionLatency) Meta() workload.Meta { return connectionLatencyMeta }
 // Flags implements the Flagser interface.
 func (c *connectionLatency) Flags() workload.Flags { return c.flags }
 
-// ConnFlags implements the ConnFlagser interface.
-func (c *connectionLatency) ConnFlags() *workload.ConnFlags { return c.connFlags }
-
 // Tables implements the Generator interface.
 func (connectionLatency) Tables() []workload.Table {
 	return nil
@@ -61,6 +58,11 @@ func (c *connectionLatency) Ops(
 	ctx context.Context, urls []string, reg *histogram.Registry,
 ) (workload.QueryLoad, error) {
 	ql := workload.QueryLoad{}
+	_, err := workload.SanitizeUrls(c, c.connFlags.DBOverride, urls)
+	if err != nil {
+		return workload.QueryLoad{}, err
+	}
+
 	for _, url := range urls {
 		op := &connectionOp{
 			url:   url,
@@ -104,7 +106,7 @@ func (o *connectionOp) run(ctx context.Context) error {
 	}
 	defer func() {
 		if err := conn.Close(ctx); err != nil {
-			log.Dev.Warningf(ctx, "%v", err)
+			log.Warningf(ctx, "%v", err)
 		}
 	}()
 	elapsed := timeutil.Since(start)

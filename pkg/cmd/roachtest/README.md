@@ -88,10 +88,8 @@ Especially for OSX users, building a linux CockroachDB binary is an extremely ti
 ```
 # Make a single-node local cluster.
 roachprod create -n 1 local
-# Tell roachprod to place a CockroachDB 23.1.12 Linux binary onto node 1.
-# Alternatively you can choose any other recent release from the
-# releases page: https://www.cockroachlabs.com/docs/releases/
-roachprod stage local release v23.1.12 --os linux --arch amd64
+# Tell roachprod to place a CockroachDB 21.1.5 Linux binary onto node 1.
+roachprod stage local release v21.1.5 --os linux
 # Copy it from (local) node 1 to the current directory
 mv ~/local/1/cockroach cockroach
 # Can now use roachtest with the `--cockroach=./cockroach` flag.
@@ -225,19 +223,3 @@ laptop online. The CI job is run as follows:
   * Changes → Build branch: `<branch>`
   * Parameters → `env.TESTS`: `^<test>$`
   * Parameters → `env.COUNT`: `<runs>`
-
-### Cockroach node logs and artifacts for roachtests running locally
-
-When running tests locally, you may want to inspect cockroach node logs
-`logs/<n>.cockroach.log` or specific channel / stderr logs that are in `<n>.unredacted/`
-e.g.
-* `logs/1.cockroach.log`
-* `logs/1.unredacted/cockroach-kv-distribution.log`
-
-When using roachtest locally, these logs are placed in your home directory in 
-`~/local/<n>/` e.g. `~/local/1/`.
-
-Note: These directories will be cleared when your deployment is being deleted,
-i.e. after your test run. To keep these logs & artifacts use `roachtest run`
-flags `--debug` or `--debug-always` to keep your deployment. See `roachtest run -h`
-for more information.

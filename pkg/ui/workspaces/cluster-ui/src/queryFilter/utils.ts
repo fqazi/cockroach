@@ -3,19 +3,16 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
+import { Filters, defaultFilters } from ".";
 import { Location } from "history";
-
 import {
   ActiveStatementFilters,
   ActiveTransactionFilters,
 } from "src/activeExecutions/types";
-
 import {
   WorkloadInsightEventFilters,
   SchemaInsightEventFilters,
 } from "../insights";
-
-import { Filters, defaultFilters } from ".";
 
 // This function returns a Filters object populated with values from the URL, or null
 // if there were no filters set.

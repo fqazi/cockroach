@@ -11,15 +11,14 @@ import (
 	"io/fs"
 	"math"
 	"strings"
-	"sync/atomic"
 
-	"github.com/cockroachdb/cockroach/pkg/util/debugutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log/channel"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logflags"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -36,11 +35,7 @@ type config struct {
 	// flushWrites can be set asynchronously to force all file output to
 	// be flushed to disk immediately. This is set via SetAlwaysFlush()
 	// and used e.g. in start.go upon encountering errors.
-	flushWrites atomic.Bool
-}
-
-type FileSinkMetrics struct {
-	LogBytesWritten *atomic.Uint64
+	flushWrites syncutil.AtomicBool
 }
 
 var debugLog *loggerT
@@ -68,7 +63,7 @@ func init() {
 	// using TestLogScope.
 	cfg := getTestConfig(nil /* output to files disabled */, true /* mostly inline */)
 
-	if _, err := ApplyConfig(cfg, nil /* fileSinkMetricsForDir */, nil /* fatalOnLogStall */); err != nil {
+	if _, err := ApplyConfig(cfg); err != nil {
 		panic(err)
 	}
 
@@ -83,7 +78,7 @@ func init() {
 //
 // This is used to assert that configuration is performed
 // before logging has been used for the first time.
-func IsActive() (active bool, firstUse debugutil.SafeStack) {
+func IsActive() (active bool, firstUse string) {
 	logging.mu.Lock()
 	defer logging.mu.Unlock()
 	return logging.mu.active, logging.mu.firstUseStack
@@ -92,11 +87,7 @@ func IsActive() (active bool, firstUse debugutil.SafeStack) {
 // ApplyConfig applies the given configuration.
 //
 // The returned logShutdownFn can be used to gracefully shut down logging facilities.
-func ApplyConfig(
-	config logconfig.Config,
-	fileSinkMetricsForDir map[string]FileSinkMetrics,
-	fatalOnLogStall func() bool,
-) (logShutdownFn func(), err error) {
+func ApplyConfig(config logconfig.Config) (logShutdownFn func(), err error) {
 	// Sanity check.
 	if active, firstUse := IsActive(); active {
 		reportOrPanic(context.Background(), nil /* sv */, "logging already active; first use:\n%s", firstUse)
@@ -119,18 +110,6 @@ func ApplyConfig(
 	fd2CaptureCleanupFn := func() {}
 
 	closer := newBufferedSinkCloser()
-
-	// closes the underlying gRPC connection of OTLP sinks.
-	closeOTLPSinks := func() {
-		for _, fc := range sinkInfos {
-			if sink, ok := fc.sink.(*otlpSink); ok {
-				if err := sink.client.Close(); err != nil {
-					fmt.Fprintf(OrigStderr, "# OTLP Sink Cleanup Warning: %s\n", err.Error())
-				}
-			}
-		}
-	}
-
 	// logShutdownFn is the returned cleanup function, whose purpose
 	// is to tear down the work we are doing here.
 	logShutdownFn = func() {
@@ -139,7 +118,6 @@ func ApplyConfig(
 		logging.setChannelLoggers(make(map[Channel]*loggerT), &si)
 		fd2CaptureCleanupFn()
 		secLoggersCancel()
-		closeOTLPSinks()
 		if err := closer.Close(defaultCloserTimeout); err != nil {
 			fmt.Printf("# WARNING: %s\n", err.Error())
 		}
@@ -209,14 +187,7 @@ func ApplyConfig(
 		if err := fakeConfig.Channels.Validate(fakeConfig.CommonSinkConfig.Filter); err != nil {
 			return nil, errors.NewAssertionErrorWithWrappedErrf(err, "programming error: incorrect filter config")
 		}
-
-		// Collect stats for disk writes incurred by logs.
-		var metrics FileSinkMetrics
-		if fileSinkMetricsForDir != nil {
-			metrics = fileSinkMetricsForDir[*fakeConfig.Dir]
-		}
-
-		fileSinkInfo, fileSink, err := newFileSinkInfo("stderr", fakeConfig, metrics)
+		fileSinkInfo, fileSink, err := newFileSinkInfo("stderr", fakeConfig)
 		if err != nil {
 			return nil, err
 		}
@@ -272,7 +243,7 @@ func ApplyConfig(
 	}
 
 	// Apply the stderr sink configuration.
-	logging.stderrSink.noColor.Store(config.Sinks.Stderr.NoColor)
+	logging.stderrSink.noColor.Set(config.Sinks.Stderr.NoColor)
 	if err := logging.stderrSinkInfoTemplate.applyConfig(config.Sinks.Stderr.CommonSinkConfig); err != nil {
 		return nil, err
 	}
@@ -333,18 +304,10 @@ func ApplyConfig(
 		if fileGroupName == "default" {
 			fileGroupName = ""
 		}
-
-		// Collect stats for disk writes incurred by logs.
-		var metrics FileSinkMetrics
-		if fileSinkMetricsForDir != nil {
-			metrics = fileSinkMetricsForDir[*fc.Dir]
-		}
-
-		fileSinkInfo, fileSink, err := newFileSinkInfo(fileGroupName, *fc, metrics)
+		fileSinkInfo, fileSink, err := newFileSinkInfo(fileGroupName, *fc)
 		if err != nil {
 			return nil, err
 		}
-		fileSink.fatalOnLogStall = fatalOnLogStall
 		attachBufferWrapper(fileSinkInfo, fc.CommonSinkConfig.Buffering, closer)
 		attachSinkInfo(fileSinkInfo, &fc.Channels)
 
@@ -379,19 +342,6 @@ func ApplyConfig(
 		attachSinkInfo(httpSinkInfo, &fc.Channels)
 	}
 
-	// Create the OpenTelemetry sinks.
-	for _, fc := range config.Sinks.OTLPServers {
-		if fc.Filter == severity.NONE {
-			continue
-		}
-		otplSinkInfo, err := newOTLPSinkInfo(*fc)
-		if err != nil {
-			return nil, err
-		}
-		attachBufferWrapper(otplSinkInfo, fc.CommonSinkConfig.Buffering, closer)
-		attachSinkInfo(otplSinkInfo, &fc.Channels)
-	}
-
 	// Prepend the interceptor sink to all channels.
 	// We prepend it because we want the interceptors
 	// to see every event before they make their way to disk/network.
@@ -409,7 +359,7 @@ func ApplyConfig(
 // newFileSinkInfo creates a new fileSink and its accompanying sinkInfo
 // from the provided configuration.
 func newFileSinkInfo(
-	fileGroupName string, c logconfig.FileSinkConfig, metrics FileSinkMetrics,
+	fileGroupName string, c logconfig.FileSinkConfig,
 ) (*sinkInfo, *fileSink, error) {
 	info := &sinkInfo{}
 	if err := info.applyConfig(c.CommonSinkConfig); err != nil {
@@ -424,7 +374,6 @@ func newFileSinkInfo(
 		int64(*c.MaxGroupSize),
 		info.getStartLines,
 		fs.FileMode(*c.FilePermissions),
-		metrics.LogBytesWritten,
 	)
 	info.sink = fileSink
 	return info, fileSink, nil
@@ -456,22 +405,6 @@ func newHTTPSinkInfo(c logconfig.HTTPSinkConfig) (*sinkInfo, error) {
 		return nil, err
 	}
 	info.sink = httpSink
-	return info, nil
-}
-
-func newOTLPSinkInfo(c logconfig.OTLPSinkConfig) (*sinkInfo, error) {
-	info := &sinkInfo{}
-
-	if err := info.applyConfig(c.CommonSinkConfig); err != nil {
-		return nil, err
-	}
-	info.applyFilters(c.Channels)
-
-	otlpSink, err := newOTLPSink(c)
-	if err != nil {
-		return nil, err
-	}
-	info.sink = otlpSink
 	return info, nil
 }
 
@@ -580,7 +513,7 @@ func DescribeAppliedConfig() string {
 	}
 
 	// Describe the stderr sink.
-	config.Sinks.Stderr.NoColor = logging.stderrSink.noColor.Load()
+	config.Sinks.Stderr.NoColor = logging.stderrSink.noColor.Get()
 	config.Sinks.Stderr.CommonSinkConfig = logging.stderrSinkInfoTemplate.describeAppliedConfig()
 
 	describeConnections := func(l *loggerT, ch Channel,

@@ -3,17 +3,16 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { StatementLinkTarget } from "@cockroachlabs/cluster-ui";
 import React from "react";
 import { Redirect, match as Match } from "react-router-dom";
-
+import { StatementLinkTarget } from "@cockroachlabs/cluster-ui";
+import { getMatchParamByName } from "src/util/query";
 import {
   appAttr,
   databaseAttr,
   implicitTxnAttr,
   statementAttr,
 } from "src/util/constants";
-import { getMatchParamByName } from "src/util/query";
 
 type Props = {
   match: Match;

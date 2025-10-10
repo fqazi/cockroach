@@ -27,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/regions"
-	"github.com/cockroachdb/cockroach/pkg/sql/schemaobjectlimit"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -59,7 +58,7 @@ func (p *planner) createDatabase(
 	if dbID, err := p.Descriptors().LookupDatabaseID(ctx, p.txn, dbName); err == nil && dbID != descpb.InvalidID {
 		if database.IfNotExists {
 			// Check if the database is in a dropping state
-			desc, err := p.Descriptors().ByIDWithoutLeased(p.txn).Get().Database(ctx, dbID)
+			desc, err := p.Descriptors().ByID(p.txn).Get().Database(ctx, dbID)
 			if err != nil {
 				return nil, false, err
 			}
@@ -189,6 +188,10 @@ func (p *planner) createDatabase(
 
 	}
 
+	if err := p.maybeUpdateSystemDBSurvivalGoal(ctx); err != nil {
+		return nil, false, err
+	}
+
 	return db, true, nil
 }
 
@@ -207,13 +210,6 @@ func (p *planner) createDescriptor(
 			"expected new descriptor, not a modification of version %d",
 			descriptor.OriginalVersion())
 	}
-
-	if err := schemaobjectlimit.CheckMaxSchemaObjects(
-		ctx, p.InternalSQLTxn(), p.Descriptors(), p.execCfg.TableStatsCache, p.execCfg.Settings, 1,
-	); err != nil {
-		return err
-	}
-
 	b := p.Txn().NewBatch()
 	kvTrace := p.ExtendedEvalContext().Tracing.KVTracingEnabled()
 	if err := p.Descriptors().WriteDescToBatch(ctx, kvTrace, descriptor, b); err != nil {
@@ -253,6 +249,19 @@ func TranslateSurvivalGoal(g tree.SurvivalGoal) (descpb.SurvivalGoal, error) {
 	}
 }
 
+// TranslateProtoSurvivalGoal translate a descpb.SurvivalGoal into a
+// tree.SurvivalGoal.
+func TranslateProtoSurvivalGoal(g descpb.SurvivalGoal) (tree.SurvivalGoal, error) {
+	switch g {
+	case descpb.SurvivalGoal_ZONE_FAILURE:
+		return tree.SurvivalGoalZoneFailure, nil
+	case descpb.SurvivalGoal_REGION_FAILURE:
+		return tree.SurvivalGoalRegionFailure, nil
+	default:
+		return 0, errors.Newf("unknown survival goal: %d", g)
+	}
+}
+
 // TranslateDataPlacement translates a tree.DataPlacement into a
 // descpb.DataPlacement.
 func TranslateDataPlacement(g tree.DataPlacement) (descpb.DataPlacement, error) {
@@ -277,11 +286,7 @@ func (p *planner) checkRegionIsCurrentlyActive(
 ) error {
 	var liveRegions LiveClusterRegions
 	if !p.execCfg.Codec.ForSystemTenant() && isSystemDatabase {
-		provider := p.regionsProvider()
-		if provider == nil {
-			return errors.AssertionFailedf("no regions provider available")
-		}
-		systemRegions, err := provider.GetSystemRegions(ctx)
+		systemRegions, err := p.regionsProvider().GetSystemRegions(ctx)
 		if err != nil {
 			return err
 		}

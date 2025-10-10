@@ -3,20 +3,19 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { PayloadAction } from "@reduxjs/toolkit";
 import { all, call, put, takeLatest } from "redux-saga/effects";
-
-import {
-  ErrorWithKey,
-  StmtInsightsReq,
-  getStmtInsightsApi,
-} from "../../../api";
-import { HexStringToInt64String, maybeError } from "../../../util";
 
 import {
   actions,
   FingerprintInsightResponseWithKey,
 } from "./statementFingerprintInsights.reducer";
+import { PayloadAction } from "@reduxjs/toolkit";
+import {
+  ErrorWithKey,
+  StmtInsightsReq,
+  getStmtInsightsApi,
+} from "../../../api";
+import { HexStringToInt64String } from "../../../util";
 
 export function* refreshStatementFingerprintInsightsSaga(
   action: PayloadAction<StmtInsightsReq>,
@@ -37,7 +36,7 @@ export function* requestStatementFingerprintInsightsSaga(
     yield put(actions.received(resultWithKey));
   } catch (e) {
     const err: ErrorWithKey = {
-      err: maybeError(e),
+      err: e,
       key: action.payload.stmtFingerprintId,
     };
     yield put(actions.failed(err));

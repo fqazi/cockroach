@@ -12,7 +12,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/decodeusername"
 	"github.com/cockroachdb/cockroach/pkg/sql/paramparse"
@@ -21,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/roleoption"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
@@ -31,12 +29,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
-	"github.com/cockroachdb/redact"
 )
 
 // alterRoleNode represents an ALTER ROLE ... [WITH] OPTION... statement.
 type alterRoleNode struct {
-	zeroInputPlanNode
 	roleName    username.SQLUsername
 	ifExists    bool
 	isRole      bool
@@ -45,7 +41,6 @@ type alterRoleNode struct {
 
 // alterRoleSetNode represents an `ALTER ROLE ... SET` statement.
 type alterRoleSetNode struct {
-	zeroInputPlanNode
 	roleName username.SQLUsername
 	ifExists bool
 	isRole   bool
@@ -143,7 +138,7 @@ func (p *planner) checkPasswordOptionConstraints(
 }
 
 func (n *alterRoleNode) startExec(params runParams) error {
-	var opName redact.RedactableString
+	var opName string
 	if n.isRole {
 		sqltelemetry.IncIAMAlterCounter(sqltelemetry.Role)
 		opName = "alter-role"
@@ -157,15 +152,6 @@ func (n *alterRoleNode) startExec(params runParams) error {
 	if n.roleName.IsAdminRole() {
 		return pgerror.Newf(pgcode.InsufficientPrivilege,
 			"cannot edit admin role")
-	}
-
-	// Restrict PASSWORD and PROVISIONSRC alterations for provisioned users.
-	if provisioned, err := params.p.UserHasRoleOption(params.ctx, n.roleName, roleoption.PROVISIONSRC); err != nil {
-		return err
-	} else if provisioned &&
-		(n.roleOptions.Contains(roleoption.PROVISIONSRC) || n.roleOptions.Contains(roleoption.PASSWORD)) {
-		return pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
-			"cannot alter PASSWORD/PROVISIONSRC option for provisioned user %s", n.roleName)
 	}
 
 	needMoreChecks := true
@@ -206,7 +192,7 @@ func (n *alterRoleNode) startExec(params runParams) error {
 		opName,
 		params.p.txn,
 		sessiondata.NodeUserSessionDataOverride,
-		fmt.Sprintf("SELECT 1 FROM system.public.%s WHERE username = $1", catconstants.UsersTableName),
+		fmt.Sprintf("SELECT 1 FROM %s WHERE username = $1", sessioninit.UsersTableName),
 		n.roleName,
 	)
 	if err != nil {
@@ -289,23 +275,8 @@ func (*alterRoleNode) Values() tree.Datums          { return tree.Datums{} }
 func (*alterRoleNode) Close(context.Context)        {}
 
 // AlterRoleSet represents a `ALTER ROLE ... SET` statement.
-//
-// Privileges:
-//
-// - CREATEROLE, MODIFYCLUSTERSETTING, MODIFYSQLCLUSTERSETTING privilege;
-// - admin-only if `ALTER ROLE ALL`;
-// - database owner or admin if `ALTER ROLE ALL IN DATABASE SET ...`
+// Privileges: CREATEROLE, MODIFYCLUSTERSETTING, MODIFYSQLCLUSTERSETTING privilege; or admin-only if `ALTER ROLE ALL`.
 func (p *planner) AlterRoleSet(ctx context.Context, n *tree.AlterRoleSet) (planNode, error) {
-	dbDescID := descpb.ID(0)
-	var dbDesc catalog.DatabaseDescriptor
-	if n.DatabaseName != "" {
-		var err error
-		dbDesc, err = p.Descriptors().ByNameWithLeased(p.txn).Get().Database(ctx, string(n.DatabaseName))
-		if err != nil {
-			return nil, err
-		}
-		dbDescID = dbDesc.GetID()
-	}
 	// Note that for Postgres, only superuser can ALTER another superuser.
 	// CockroachDB does not support the superuser role option right now.
 	// However we make it so members of the ADMIN role can only be edited
@@ -314,25 +285,11 @@ func (p *planner) AlterRoleSet(ctx context.Context, n *tree.AlterRoleSet) (planN
 	// modifying their own defaults unless they have CREATEROLE. This is analogous
 	// to our restriction that prevents a user from modifying their own password.
 	if n.AllRoles {
-		hasAdmin, err := p.HasAdminRole(ctx)
-		if err != nil {
+		if hasAdmin, err := p.HasAdminRole(ctx); err != nil {
 			return nil, err
-		}
-		if !hasAdmin {
-			if dbDesc == nil {
-				return nil, pgerror.Newf(pgcode.InsufficientPrivilege,
-					"only users with the admin role are allowed to ALTER ROLE ALL ... SET")
-			}
-			// If the user is not an admin, they must be the owner of the database if
-			// ALL IN DATABASE ... is used
-			isDBOwner, err := p.HasOwnership(ctx, dbDesc)
-			if err != nil {
-				return nil, err
-			}
-			if !isDBOwner {
-				return nil, pgerror.Newf(pgcode.InsufficientPrivilege,
-					"only users with the admin role or the owner of the database is allowed to ALTER ROLE ALL IN DATABASE SET ...")
-			}
+		} else if !hasAdmin {
+			return nil, pgerror.Newf(pgcode.InsufficientPrivilege,
+				"only users with the admin role are allowed to ALTER ROLE ALL ... SET")
 		}
 	} else {
 		canAlterRoleSet, err := p.HasGlobalPrivilegeOrRoleOption(ctx, privilege.CREATEROLE)
@@ -365,6 +322,15 @@ func (p *planner) AlterRoleSet(ctx context.Context, n *tree.AlterRoleSet) (planN
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	dbDescID := descpb.ID(0)
+	if n.DatabaseName != "" {
+		dbDesc, err := p.Descriptors().ByNameWithLeased(p.txn).Get().Database(ctx, string(n.DatabaseName))
+		if err != nil {
+			return nil, err
+		}
+		dbDescID = dbDesc.GetID()
 	}
 
 	setVarKind, varName, sVar, typedValues, err := p.processSetOrResetClause(ctx, n.SetOrReset)
@@ -456,7 +422,7 @@ func (p *planner) processSetOrResetClause(
 }
 
 func (n *alterRoleSetNode) startExec(params runParams) error {
-	var opName redact.RedactableString
+	var opName string
 	if n.isRole {
 		sqltelemetry.IncIAMAlterCounter(sqltelemetry.Role)
 		opName = "alter-role"
@@ -475,19 +441,19 @@ func (n *alterRoleSetNode) startExec(params runParams) error {
 	}
 
 	var deleteQuery = fmt.Sprintf(
-		`DELETE FROM system.public.%s WHERE database_id = $1 AND role_name = $2`,
-		catconstants.DatabaseRoleSettingsTableName,
+		`DELETE FROM %s WHERE database_id = $1 AND role_name = $2`,
+		sessioninit.DatabaseRoleSettingsTableName,
 	)
 
 	var upsertQuery = fmt.Sprintf(`
-UPSERT INTO system.public.%s (database_id, role_name, settings, role_id)
+UPSERT INTO %s (database_id, role_name, settings, role_id)
 VALUES ($1, $2, $3, (
 	SELECT CASE $2
 		WHEN '%s' THEN %d
 		ELSE (SELECT user_id FROM system.users WHERE username = $2)
 	END
 ))`,
-		catconstants.DatabaseRoleSettingsTableName, username.EmptyRole, username.EmptyRoleID,
+		sessioninit.DatabaseRoleSettingsTableName, username.EmptyRole, username.EmptyRoleID,
 	)
 
 	// Instead of inserting an empty settings array, this function will make
@@ -593,7 +559,7 @@ func deepEqualIgnoringOrders(s1, s2 []string) bool {
 // getRoleName resolves the roleName and performs additional validation
 // to make sure the role is safe to edit.
 func (n *alterRoleSetNode) getRoleName(
-	params runParams, opName redact.RedactableString,
+	params runParams, opName string,
 ) (needsUpdate bool, retRoleName username.SQLUsername, err error) {
 	if n.allRoles {
 		return true, username.MakeSQLUsernameFromPreNormalizedString(""), nil
@@ -616,7 +582,7 @@ func (n *alterRoleSetNode) getRoleName(
 		opName,
 		params.p.txn,
 		sessiondata.NodeUserSessionDataOverride,
-		fmt.Sprintf("SELECT 1 FROM system.public.%s WHERE username = $1", catconstants.UsersTableName),
+		fmt.Sprintf("SELECT 1 FROM %s WHERE username = $1", sessioninit.UsersTableName),
 		n.roleName,
 	)
 	if err != nil {
@@ -666,11 +632,11 @@ func (n *alterRoleSetNode) getRoleName(
 //  2. newSettings = {timezone=America/New_York, statement_timeout=10s}
 //  3. err = nil
 func (n *alterRoleSetNode) makeNewSettings(
-	params runParams, opName redact.RedactableString, roleName username.SQLUsername,
+	params runParams, opName string, roleName username.SQLUsername,
 ) (oldSettings []string, newSettings []string, err error) {
 	var selectQuery = fmt.Sprintf(
-		`SELECT settings FROM system.public.%s WHERE database_id = $1 AND role_name = $2`,
-		catconstants.DatabaseRoleSettingsTableName,
+		`SELECT settings FROM %s WHERE database_id = $1 AND role_name = $2`,
+		sessioninit.DatabaseRoleSettingsTableName,
 	)
 	datums, err := params.p.InternalSQLTxn().QueryRowEx(
 		params.ctx,

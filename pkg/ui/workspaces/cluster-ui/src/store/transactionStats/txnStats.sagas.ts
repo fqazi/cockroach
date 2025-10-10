@@ -5,14 +5,10 @@
 
 import { PayloadAction } from "@reduxjs/toolkit";
 import { all, call, put, takeLatest } from "redux-saga/effects";
-
 import {
   getFlushedTxnStatsApi,
   StatementsRequest,
 } from "src/api/statementsApi";
-
-import { maybeError } from "../../util";
-
 import { actions as txnStatsActions } from "./txnStats.reducer";
 
 export function* refreshTxnStatsSaga(
@@ -28,7 +24,7 @@ export function* requestTxnStatsSaga(
     const result = yield call(getFlushedTxnStatsApi, action.payload);
     yield put(txnStatsActions.received(result));
   } catch (e) {
-    yield put(txnStatsActions.failed(maybeError(e)));
+    yield put(txnStatsActions.failed(e));
   }
 }
 

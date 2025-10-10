@@ -18,7 +18,7 @@ import (
 )
 
 func createSomePlan(rangeID int) loqrecoverypb.ReplicaUpdatePlan {
-	planID := uuid.MakeV4()
+	planID := uuid.FastMakeV4()
 	return loqrecoverypb.ReplicaUpdatePlan{
 		PlanID: planID,
 		Updates: []loqrecoverypb.ReplicaUpdate{

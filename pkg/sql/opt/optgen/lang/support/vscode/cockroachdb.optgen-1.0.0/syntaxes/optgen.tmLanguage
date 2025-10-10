@@ -243,7 +243,6 @@
                         UnionAll |
                         IntersectAll |
                         ExceptAll |
-                        Let |
                         Limit |
                         Offset |
                         Max1Row |
@@ -251,17 +250,10 @@
                         ExplainPrivate |
                         ShowTraceForSession |
                         ShowTracePrivate |
-                        Root |
                         RowNumber |
                         RowNumberPrivate |
                         ProjectSet |
                         Sort |
-                        TopK |
-                        VectorSearch |
-                        VectorMutationSearch |
-                        VectorDistance |
-                        VectorCosVectorDistance |
-                        VectorNegInnerProduct |
                         Insert |
                         Update |
                         Upsert |

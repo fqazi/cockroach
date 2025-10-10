@@ -4,6 +4,7 @@
 // included in the /LICENSE file.
 
 //go:build !race
+// +build !race
 
 package kvcoord
 
@@ -11,7 +12,7 @@ import "github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 
 // GRPCTransportFactory is the default TransportFactory, using GRPC.
 func GRPCTransportFactory(nodeDialer *nodedialer.Dialer) TransportFactory {
-	return func(options SendOptions, slice ReplicaSlice) Transport {
+	return func(options SendOptions, slice ReplicaSlice) (Transport, error) {
 		return grpcTransportFactoryImpl(options, nodeDialer, slice)
 	}
 }

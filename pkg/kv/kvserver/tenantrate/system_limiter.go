@@ -17,20 +17,20 @@ type systemLimiter struct {
 	tenantMetrics
 }
 
-func (s systemLimiter) Wait(ctx context.Context, reqInfo tenantcostmodel.BatchInfo) error {
-	if reqInfo.WriteCount > 0 {
+func (s systemLimiter) Wait(ctx context.Context, reqInfo tenantcostmodel.RequestInfo) error {
+	if reqInfo.IsWrite() {
 		s.writeBatchesAdmitted.Inc(1)
-		s.writeRequestsAdmitted.Inc(reqInfo.WriteCount)
-		s.writeBytesAdmitted.Inc(reqInfo.WriteBytes)
+		s.writeRequestsAdmitted.Inc(reqInfo.WriteCount())
+		s.writeBytesAdmitted.Inc(reqInfo.WriteBytes())
 	}
 	return nil
 }
 
-func (s systemLimiter) RecordRead(ctx context.Context, respInfo tenantcostmodel.BatchInfo) {
-	if respInfo.ReadCount > 0 {
+func (s systemLimiter) RecordRead(ctx context.Context, respInfo tenantcostmodel.ResponseInfo) {
+	if respInfo.IsRead() {
 		s.readBatchesAdmitted.Inc(1)
-		s.readRequestsAdmitted.Inc(respInfo.ReadCount)
-		s.readBytesAdmitted.Inc(respInfo.ReadBytes)
+		s.readRequestsAdmitted.Inc(respInfo.ReadCount())
+		s.readBytesAdmitted.Inc(respInfo.ReadBytes())
 	}
 }
 

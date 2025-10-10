@@ -3,10 +3,10 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-import { createMemoryHistory } from "history";
-import noop from "lodash/noop";
 import moment from "moment-timezone";
-
+import { createMemoryHistory } from "history";
+import { noop } from "lodash";
+import { StatementInsightDetailsProps } from "./statementInsightDetails";
 import {
   InsightEventBase,
   InsightExecEnum,
@@ -14,8 +14,6 @@ import {
   StatementStatus,
   StmtInsightEvent,
 } from "../types";
-
-import { StatementInsightDetailsProps } from "./statementInsightDetails";
 
 const insightEventBaseFixture: InsightEventBase = {
   application: "app",
@@ -25,13 +23,13 @@ const insightEventBaseFixture: InsightEventBase = {
   implicitTxn: true,
   insights: [
     {
-      name: InsightNameEnum.SLOW_EXECUTION,
+      name: InsightNameEnum.slowExecution,
       label: "label",
       description: "slow query",
       tooltipDescription: "a really slow query",
     },
     {
-      name: InsightNameEnum.SUBOPTIMAL_PLAN,
+      name: InsightNameEnum.suboptimalPlan,
       label: "label2",
       description: "bad plan",
       tooltipDescription: "a really bad plan",

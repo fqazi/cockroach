@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -40,7 +39,7 @@ func registerTPCHConcurrency(r registry.Registry) {
 		}
 
 		if err := loadTPCHDataset(
-			ctx, t, c, conn, 1 /* sf */, c.NewDeprecatedMonitor(ctx, c.CRDBNodes()),
+			ctx, t, c, conn, 1 /* sf */, c.NewMonitor(ctx, c.CRDBNodes()),
 			c.CRDBNodes(), true, /* disableMergeQueue */
 		); err != nil {
 			t.Fatal(err)
@@ -69,7 +68,7 @@ func registerTPCHConcurrency(r registry.Registry) {
 			t.Fatal(err)
 		}
 		scatterTables(t, conn, tpchTables)
-		err := roachtestutil.WaitFor3XReplication(ctx, t.L(), conn)
+		err := WaitFor3XReplication(ctx, t, t.L(), conn)
 		require.NoError(t, err)
 
 		// Populate the range cache on each node.
@@ -85,7 +84,7 @@ func registerTPCHConcurrency(r registry.Registry) {
 			}
 		}
 
-		m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+		m := c.NewMonitor(ctx, c.CRDBNodes())
 		m.Go(func(ctx context.Context) error {
 			t.Status(fmt.Sprintf("running with concurrency = %d", concurrency))
 			// Run each query once on each connection.
@@ -208,7 +207,6 @@ func registerTPCHConcurrency(r registry.Registry) {
 		CompatibleClouds: registry.Clouds(spec.GCE, spec.Local),
 		Suites:           registry.Suites(registry.Nightly),
 		CockroachBinary:  cockroachBinary,
-		Skip:             "153489. uses ancient tpch fixture",
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runTPCHConcurrency(ctx, t, c, false /* disableStreamer */)
 		},
@@ -224,7 +222,6 @@ func registerTPCHConcurrency(r registry.Registry) {
 		CompatibleClouds: registry.Clouds(spec.GCE, spec.Local),
 		Suites:           registry.Suites(registry.Nightly),
 		CockroachBinary:  cockroachBinary,
-		Skip:             "153489. uses ancient tpch fixture",
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runTPCHConcurrency(ctx, t, c, true /* disableStreamer */)
 		},

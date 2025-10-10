@@ -105,7 +105,7 @@ func testMonotonicInserts(t *testing.T, distSQLMode sessiondatapb.DistSQLExecMod
 	for _, server := range tc.Servers {
 		st := server.ApplicationLayer().ClusterSettings()
 		st.Manual.Store(true)
-		sql.DistSQLClusterExecMode.Override(ctx, &st.SV, distSQLMode)
+		sql.DistSQLClusterExecMode.Override(ctx, &st.SV, int64(distSQLMode))
 		// Let transactions push immediately to detect deadlocks. The test creates a
 		// large amount of contention and dependency cycles, and could take a long
 		// time to complete without this.
@@ -132,7 +132,7 @@ INSERT INTO mono.mono VALUES(-1, '0', -1, -1)`); err != nil {
 	invoke := func(client mtClient) {
 		logPrefix := fmt.Sprintf("%03d.%03d: ", atomic.AddUint64(&idGen, 1), client.ID)
 		l := func(msg string, args ...interface{}) {
-			log.Dev.Infof(ctx, logPrefix+msg /* nolint:fmtsafe */, args...)
+			log.Infof(ctx, logPrefix+msg /* nolint:fmtsafe */, args...)
 		}
 		l("begin")
 		defer l("done")

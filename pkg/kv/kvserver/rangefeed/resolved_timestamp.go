@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -164,10 +165,14 @@ func (rts *resolvedTimestamp) consumeLogicalOp(
 		return rts.intentQ.UpdateTS(t.TxnID, t.Timestamp)
 
 	case *enginepb.MVCCCommitIntentOp:
+		// This assertion can be violated in mixed-version clusters, so make it
+		// fatal only in 24.1, gated by an envvar just in case. See:
+		// https://github.com/cockroachdb/cockroach/issues/104309
+		//
 		// TODO(erikgrinaker): make this unconditionally fatal.
-		fatal := !DisableCommitIntentTimestampAssertion
+		fatal := rts.settings.Version.IsActive(ctx, clusterversion.V24_1Start) &&
+			!DisableCommitIntentTimestampAssertion
 		rts.assertOpAboveRTS(ctx, op, t.Timestamp, fatal)
-
 		return rts.intentQ.DecrRef(t.TxnID, t.Timestamp)
 
 	case *enginepb.MVCCAbortIntentOp:
@@ -224,7 +229,7 @@ func (rts *resolvedTimestamp) consumeLogicalOp(
 		return rts.intentQ.Del(t.TxnID)
 
 	default:
-		log.KvDistribution.Fatalf(ctx, "unknown logical op %T", t)
+		log.Fatalf(ctx, "unknown logical op %T", t)
 		return false
 	}
 }
@@ -237,7 +242,7 @@ func (rts *resolvedTimestamp) recompute(ctx context.Context) bool {
 		return false
 	}
 	if rts.closedTS.Less(rts.resolvedTS) {
-		log.KvDistribution.Fatalf(ctx, "closed timestamp below resolved timestamp: %s < %s",
+		log.Fatalf(ctx, "closed timestamp below resolved timestamp: %s < %s",
 			rts.closedTS, rts.resolvedTS)
 	}
 	newTS := rts.closedTS
@@ -246,7 +251,7 @@ func (rts *resolvedTimestamp) recompute(ctx context.Context) bool {
 	// timestamps cannot be resolved yet.
 	if txn := rts.intentQ.Oldest(); txn != nil {
 		if txn.timestamp.LessEq(rts.resolvedTS) {
-			log.KvDistribution.Fatalf(ctx, "unresolved txn equal to or below resolved timestamp: %s <= %s",
+			log.Fatalf(ctx, "unresolved txn equal to or below resolved timestamp: %s <= %s",
 				txn.timestamp, rts.resolvedTS)
 		}
 		// txn.timestamp cannot be resolved, so the resolved timestamp must be Prev.
@@ -258,7 +263,7 @@ func (rts *resolvedTimestamp) recompute(ctx context.Context) bool {
 	newTS.Logical = 0
 
 	if newTS.Less(rts.resolvedTS) {
-		log.KvDistribution.Fatalf(ctx, "resolved timestamp regression, was %s, recomputed as %s",
+		log.Fatalf(ctx, "resolved timestamp regression, was %s, recomputed as %s",
 			rts.resolvedTS, newTS)
 	}
 	return rts.resolvedTS.Forward(newTS)
@@ -270,8 +275,8 @@ func (rts *resolvedTimestamp) recompute(ctx context.Context) bool {
 func (rts *resolvedTimestamp) assertNoChange(ctx context.Context) {
 	before := rts.resolvedTS
 	changed := rts.recompute(ctx)
-	if changed || before != rts.resolvedTS {
-		log.KvDistribution.Fatalf(ctx, "unexpected resolved timestamp change on recomputation, "+
+	if changed || !before.EqOrdering(rts.resolvedTS) {
+		log.Fatalf(ctx, "unexpected resolved timestamp change on recomputation, "+
 			"was %s, recomputed as %s", before, rts.resolvedTS)
 	}
 }
@@ -289,9 +294,9 @@ func (rts *resolvedTimestamp) assertOpAboveRTS(
 		err := errors.AssertionFailedf(
 			"resolved timestamp %s equal to or above timestamp of operation %v", rts.resolvedTS, &op)
 		if fatal {
-			log.KvDistribution.Fatalf(ctx, "%v", err)
+			log.Fatalf(ctx, "%v", err)
 		} else {
-			log.KvDistribution.Errorf(ctx, "%v", err)
+			log.Errorf(ctx, "%v", err)
 		}
 	}
 }
@@ -364,7 +369,7 @@ func (h unresolvedTxnHeap) Less(i, j int) bool {
 	// container/heap constructs a min-heap by default, so prioritize the txn
 	// with the smaller timestamp. Break ties by comparing IDs to establish a
 	// total order.
-	if h[i].timestamp == h[j].timestamp {
+	if h[i].timestamp.EqOrdering(h[j].timestamp) {
 		return bytes.Compare(h[i].txnID.GetBytes(), h[j].txnID.GetBytes()) < 0
 	}
 	return h[i].timestamp.Less(h[j].timestamp)

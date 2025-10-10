@@ -8,7 +8,6 @@ package sctestdeps
 import (
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descidgen"
@@ -18,8 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scbuild"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -157,23 +154,13 @@ func WithMerger(merger scexec.Merger) Option {
 
 func WithIDGenerator(s serverutils.ApplicationLayerInterface) Option {
 	return optionFunc(func(state *TestState) {
-		state.evalCtx.DescIDGenerator = descidgen.NewGenerator(s.ClusterSettings(), s.Codec(), s.DB())
+		state.idGenerator = descidgen.NewGenerator(s.ClusterSettings(), s.Codec(), s.DB())
 	})
 }
 
 func WithReferenceProviderFactory(f scbuild.ReferenceProviderFactory) Option {
 	return optionFunc(func(state *TestState) {
 		state.refProviderFactory = f
-	})
-}
-
-func WithClusterSettings(cs *cluster.Settings) Option {
-	return optionFunc(func(state *TestState) {
-		state.clusterSettings = cs
-		// Update evalCtx settings if it already exists
-		if state.evalCtx != nil {
-			state.evalCtx.Settings = cs
-		}
 	})
 }
 
@@ -195,16 +182,5 @@ var defaultOptions = []Option{
 		state.merger = &testBackfiller{s: state}
 		state.indexSpanSplitter = &indexSpanSplitter{}
 		state.approximateTimestamp = defaultCreatedAt
-
-		semaCtx := tree.MakeSemaContext(state)
-		semaCtx.SearchPath = &state.SessionData().SearchPath
-		state.semaCtx = &semaCtx
-
-		evalCtx := &eval.Context{
-			SessionDataStack:   sessiondata.NewStack(state.SessionData()),
-			Settings:           state.ClusterSettings(),
-			ClientNoticeSender: state.ClientNoticeSender(),
-		}
-		state.evalCtx = evalCtx
 	}),
 }

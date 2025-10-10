@@ -52,15 +52,14 @@ func TestLookupConstraints(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
 	datadriven.Walk(t, tu.TestDataPath(t), func(t *testing.T, path string) {
-		ctx := context.Background()
-		semaCtx := tree.MakeSemaContext(nil /* resolver */)
+		semaCtx := tree.MakeSemaContext()
 		evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
 		evalCtx.SessionData().VariableInequalityLookupJoinEnabled = true
 
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
 			testCatalog := testcat.New()
 			var f norm.Factory
-			f.Init(ctx, &evalCtx, testCatalog)
+			f.Init(context.Background(), &evalCtx, testCatalog)
 			md := f.Metadata()
 
 			for _, arg := range d.CmdArgs {
@@ -140,7 +139,7 @@ func TestLookupConstraints(t *testing.T) {
 				}
 
 				var cb lookupjoin.ConstraintBuilder
-				cb.Init(ctx, &f, md, f.EvalContext(), rightTable, leftCols, rightCols)
+				cb.Init(&f, md, f.EvalContext(), rightTable, leftCols, rightCols)
 
 				lookupConstraint, _ := cb.Build(index, filters, optionalFilters,
 					memo.FiltersExpr{} /* derivedFkOnFilters */)

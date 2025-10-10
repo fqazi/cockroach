@@ -7,6 +7,7 @@
 // Cockroach binary.
 
 //go:build bazel
+// +build bazel
 
 package distccl
 
@@ -15,14 +16,14 @@ import (
 	_ "embed"
 
 	"github.com/cockroachdb/cockroach/pkg/ui"
-	"github.com/cockroachdb/cockroach/pkg/util/assetbundle"
+	"github.com/cockroachdb/cockroach/pkg/util/targz"
 )
 
-//go:embed assets.tar.zst
+//go:embed assets.tar.gz
 var assets []byte
 
 func init() {
-	fs, err := assetbundle.AsFS(bytes.NewBuffer(assets))
+	fs, err := targz.AsFS(bytes.NewBuffer(assets))
 	if err != nil {
 		panic(err)
 	}

@@ -244,50 +244,6 @@ func TestGetCertificateUserScope(t *testing.T) {
 			require.True(t, userScopes[0].Global)
 		}
 	})
-
-	t.Run("extracts username, tenantName from tenant-name URI SAN", func(t *testing.T) {
-		state := makeFakeTLSState(t, "(CN=foo)uri:crdb://tenant-name/tenant10/user/foo;(CN=CA)")
-		cert := state.PeerCertificates[0]
-		if userScopes, err := security.GetCertificateUserScope(cert); err != nil {
-			t.Error(err)
-		} else {
-			require.Equal(t, 1, len(userScopes))
-			require.Equal(t, "foo", userScopes[0].Username)
-			require.Equal(t, roachpb.TenantName("tenant10"), userScopes[0].TenantName)
-			require.False(t, userScopes[0].Global)
-		}
-	})
-
-	t.Run("extracts username, tenantName from tenant-name URI SAN with URI scheme in upper case", func(t *testing.T) {
-		state := makeFakeTLSState(t, "(CN=foo)uri:CRDB://tenant-name/tenant10/user/foo;(CN=CA)")
-		cert := state.PeerCertificates[0]
-		if userScopes, err := security.GetCertificateUserScope(cert); err != nil {
-			t.Error(err)
-		} else {
-			require.Equal(t, 1, len(userScopes))
-			require.Equal(t, "foo", userScopes[0].Username)
-			require.Equal(t, roachpb.TenantName("tenant10"), userScopes[0].TenantName)
-			require.False(t, userScopes[0].Global)
-		}
-	})
-
-	t.Run("extracts both tenant URI SAN and tenant name URI SAN when both are present", func(t *testing.T) {
-		state := makeFakeTLSState(t, "(CN=foo)uri:crdb://tenant-name/tenant10/user/bar,uri:crdb://tenant/123/user/foo;(CN=CA)")
-		cert := state.PeerCertificates[0]
-		if userScopes, err := security.GetCertificateUserScope(cert); err != nil {
-			t.Error(err)
-		} else {
-			require.Equal(t, 2, len(userScopes))
-
-			require.Equal(t, "bar", userScopes[0].Username)
-			require.Equal(t, roachpb.TenantName("tenant10"), userScopes[0].TenantName)
-			require.False(t, userScopes[0].Global)
-
-			require.Equal(t, "foo", userScopes[1].Username)
-			require.Equal(t, roachpb.MustMakeTenantID(123), userScopes[1].TenantID)
-			require.False(t, userScopes[1].Global)
-		}
-	})
 }
 
 func TestSetCertPrincipalMap(t *testing.T) {
@@ -370,9 +326,9 @@ func TestAuthenticationHook(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer func() { _ = security.SetCertPrincipalMap(nil) }()
 
-	fooUser := "foo"
-	barUser := "bar"
-	blahUser := "blah"
+	fooUser := username.MakeSQLUsernameFromPreNormalizedString("foo")
+	barUser := username.MakeSQLUsernameFromPreNormalizedString("bar")
+	blahUser := username.MakeSQLUsernameFromPreNormalizedString("blah")
 	subjectDNString := "O=Cockroach,OU=Order Processing Team,UID=b8b40653-7f74-4f14-8a61-59f7f3b18184,CN=foo"
 	fieldMismatchSubjectDNString := "O=Cockroach,OU=Marketing Team,UID=b8b40653-7f74-4f14-8a61-59f7f3b18184,CN=foo"
 	subsetSubjectDNString := "O=Cockroach,OU=Order Processing Team,CN=foo"
@@ -383,7 +339,7 @@ func TestAuthenticationHook(t *testing.T) {
 	testCases := []struct {
 		insecure                   bool
 		tlsSpec                    string
-		username                   string
+		username                   username.SQLUsername
 		distinguishedNameString    string
 		principalMap               string
 		buildHookSuccess           bool
@@ -395,21 +351,21 @@ func TestAuthenticationHook(t *testing.T) {
 		expectedErr                string
 	}{
 		// Insecure mode, empty username.
-		{true, "", username.EmptyRole, "", "", true, false, false, roachpb.SystemTenantID, false, false, `user is missing`},
+		{true, "", username.SQLUsername{}, "", "", true, false, false, roachpb.SystemTenantID, false, false, `user is missing`},
 		// Insecure mode, non-empty username.
 		{true, "", fooUser, "", "", true, true, false, roachpb.SystemTenantID, false, false, `user "foo" is not allowed`},
 		// Secure mode, no TLS state.
-		{false, "", username.EmptyRole, "", "", false, false, false, roachpb.SystemTenantID, false, false, `no client certificates in request`},
+		{false, "", username.SQLUsername{}, "", "", false, false, false, roachpb.SystemTenantID, false, false, `no client certificates in request`},
 		// Secure mode, bad user.
-		{false, "(CN=foo)", username.NodeUser, "", "", true, false, false, roachpb.SystemTenantID,
+		{false, "(CN=foo)", username.NodeUserName(), "", "", true, false, false, roachpb.SystemTenantID,
 			false, false, `certificate authentication failed for user "node"`},
 		// Secure mode, node user.
-		{false, "(CN=node)", username.NodeUser, "", "", true, true, true, roachpb.SystemTenantID, false, false, ``},
+		{false, "(CN=node)", username.NodeUserName(), "", "", true, true, true, roachpb.SystemTenantID, false, false, ``},
 		// Secure mode, node cert and unrelated user.
 		{false, "(CN=node)", fooUser, "", "", true, false, false, roachpb.SystemTenantID,
 			false, false, `certificate authentication failed for user "foo"`},
 		// Secure mode, root user.
-		{false, "(CN=root)", username.NodeUser, "", "", true, false, false, roachpb.SystemTenantID,
+		{false, "(CN=root)", username.NodeUserName(), "", "", true, false, false, roachpb.SystemTenantID,
 			false, false, `certificate authentication failed for user "node"`},
 		// Secure mode, tenant cert, foo user.
 		{false, "(OU=Tenants,CN=foo)", fooUser, "", "", true, false, false, roachpb.SystemTenantID,
@@ -455,12 +411,12 @@ func TestAuthenticationHook(t *testing.T) {
 		// matching) having DNS as foo.
 		{false, "(" + fieldMismatchOnlyOnCommonNameString + ")dns:foo", fooUser, subjectDNString, "", true, false, false, roachpb.MustMakeTenantID(123),
 			true, false, `certificate authentication failed for user "foo"`},
-		{false, "(" + rootDNString + ")", username.RootUser, rootDNString, "", true, true, false, roachpb.MustMakeTenantID(123),
+		{false, "(" + rootDNString + ")", username.RootUserName(), rootDNString, "", true, true, false, roachpb.MustMakeTenantID(123),
 			true, false, `user "root" is not allowed`},
-		{false, "(" + nodeDNString + ")", username.NodeUser, nodeDNString, "", true, true, true, roachpb.MustMakeTenantID(123),
+		{false, "(" + nodeDNString + ")", username.NodeUserName(), nodeDNString, "", true, true, true, roachpb.MustMakeTenantID(123),
 			true, false, ""},
 		// tls cert dn matching root dn set, where CN != root
-		{false, "(" + subjectDNString + ")", username.RootUser, subjectDNString, "", true, true, false, roachpb.MustMakeTenantID(123),
+		{false, "(" + subjectDNString + ")", username.RootUserName(), subjectDNString, "", true, true, false, roachpb.MustMakeTenantID(123),
 			true, false, `user "root" is not allowed`},
 		{false, "(" + subjectDNString + ")", fooUser, "", "", true, false, false, roachpb.MustMakeTenantID(123),
 			false, true, `user "foo" does not have a distinguished name set which subject_required cluster setting mandates`},
@@ -484,12 +440,12 @@ func TestAuthenticationHook(t *testing.T) {
 			var roleSubject *ldap.DN
 			if tc.isSubjectRoleOptionOrDNSet {
 				switch tc.username {
-				case username.RootUser:
+				case username.RootUserName():
 					err = security.SetRootSubject(tc.distinguishedNameString)
 					if err != nil {
 						t.Fatalf("could not set root subject DN, err: %v", err)
 					}
-				case username.NodeUser:
+				case username.NodeUserName():
 					err = security.SetNodeSubject(tc.distinguishedNameString)
 					if err != nil {
 						t.Fatalf("could not set node subject DN, err: %v", err)
@@ -506,13 +462,12 @@ func TestAuthenticationHook(t *testing.T) {
 				tc.insecure,
 				makeFakeTLSState(t, tc.tlsSpec),
 				tc.tenantID,
-				"",
 				nil, /* certManager */
 				roleSubject,
 				tc.subjectRequired,
 			)
 			if (err == nil) != tc.buildHookSuccess {
-				t.Fatalf("expected success=%t, got err=%v expected err=%s", tc.buildHookSuccess, err, tc.expectedErr)
+				t.Fatalf("expected success=%t, got err=%v", tc.buildHookSuccess, err)
 			}
 			if err != nil {
 				require.Regexp(t, tc.expectedErr, err.Error())
@@ -520,7 +475,7 @@ func TestAuthenticationHook(t *testing.T) {
 			}
 			err = hook(ctx, tc.username, true /* clientConnection */)
 			if (err == nil) != tc.publicHookSuccess {
-				t.Fatalf("expected success=%t, got err=%v expected err=%s", tc.publicHookSuccess, err, tc.expectedErr)
+				t.Fatalf("expected success=%t, got err=%v", tc.publicHookSuccess, err)
 			}
 			if err != nil {
 				require.Regexp(t, tc.expectedErr, err.Error())
@@ -528,7 +483,7 @@ func TestAuthenticationHook(t *testing.T) {
 			}
 			err = hook(ctx, tc.username, false /* clientConnection */)
 			if (err == nil) != tc.privateHookSuccess {
-				t.Fatalf("expected success=%t, got err=%v, expected err=%s", tc.privateHookSuccess, err, tc.expectedErr)
+				t.Fatalf("expected success=%t, got err=%v", tc.privateHookSuccess, err)
 			}
 			if err != nil {
 				require.Regexp(t, tc.expectedErr, err.Error())

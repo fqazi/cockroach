@@ -28,7 +28,6 @@ import (
 )
 
 type dropDatabaseNode struct {
-	zeroInputPlanNode
 	n      *tree.DropDatabase
 	dbDesc *dbdesc.Mutable
 	d      *dropCascadeState
@@ -214,6 +213,10 @@ func (n *dropDatabaseNode) startExec(params runParams) error {
 		return err
 	}
 
+	if err := p.maybeUpdateSystemDBSurvivalGoal(ctx); err != nil {
+		return err
+	}
+
 	// Log Drop Database event. This is an auditable log event and is recorded
 	// in the same transaction as the table descriptor update.
 	return p.logEvent(ctx,
@@ -293,7 +296,7 @@ func (p *planner) accumulateOwnedSequences(
 				// exist.
 				if errors.Is(err, catalog.ErrDescriptorDropped) ||
 					pgerror.GetPGCode(err) == pgcode.UndefinedTable {
-					log.Dev.Infof(ctx,
+					log.Infof(ctx,
 						"swallowing error for owned sequence that was not found %s", err.Error())
 					continue
 				}

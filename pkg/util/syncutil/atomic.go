@@ -42,27 +42,46 @@ func (f *AtomicFloat64) Add(delta float64) (new float64) {
 }
 
 // StoreIfHigher atomically stores the given value if it is higher than the
-// current value. It returns the old value and whether a swap was carried out.
-func (f *AtomicFloat64) StoreIfHigher(new float64) (old float64, stored bool) {
+// current value (in which case the given value is returned; otherwise the
+// existing value is returned).
+func (f *AtomicFloat64) StoreIfHigher(new float64) (val float64) {
 	newInt := math.Float64bits(new)
 	for {
 		oldInt := f.val.Load()
 		oldFloat := math.Float64frombits(oldInt)
-		if oldFloat >= new {
-			return oldFloat, false
+		if oldFloat > new {
+			return oldFloat
 		}
 		if f.val.CompareAndSwap(oldInt, newInt) {
-			return oldFloat, true
+			return new
 		}
 	}
 }
 
-// CompareAndSwap is atomically replaces the current value with 'new' if the
-// existing value is 'old'. It returns whether this was the case.
-func (f *AtomicFloat64) CompareAndSwap(old, new float64) (swapped bool) {
-	oldInt := math.Float64bits(old)
-	newInt := math.Float64bits(new)
-	return f.val.CompareAndSwap(oldInt, newInt)
+// AtomicBool mimics an atomic boolean.
+type AtomicBool uint32
+
+// Set atomically sets the boolean.
+func (b *AtomicBool) Set(v bool) {
+	s := uint32(0)
+	if v {
+		s = 1
+	}
+	atomic.StoreUint32((*uint32)(b), s)
+}
+
+// Get atomically gets the boolean.
+func (b *AtomicBool) Get() bool {
+	return atomic.LoadUint32((*uint32)(b)) != 0
+}
+
+// Swap atomically swaps the value.
+func (b *AtomicBool) Swap(v bool) bool {
+	wanted := uint32(0)
+	if v {
+		wanted = 1
+	}
+	return atomic.SwapUint32((*uint32)(b), wanted) != 0
 }
 
 // AtomicString gives you atomic-style APIs for string.

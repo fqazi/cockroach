@@ -14,7 +14,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
+	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execopnode"
@@ -29,7 +29,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/optional"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/redact"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -55,7 +55,7 @@ func TestTraceAnalyzer(t *testing.T) {
 			UseDatabase: "test",
 			Knobs: base.TestingKnobs{
 				SQLExecutor: &sql.ExecutorTestingKnobs{
-					TestingSaveFlows: func(stmt string) sql.SaveFlowsFunc {
+					TestingSaveFlows: func(stmt string) func(map[base.SQLInstanceID]*execinfrapb.FlowSpec, execopnode.OpChains, []execinfra.LocalProcessor, bool) error {
 						if stmt != testStmt {
 							return func(map[base.SQLInstanceID]*execinfrapb.FlowSpec, execopnode.OpChains, []execinfra.LocalProcessor, bool) error {
 								return nil
@@ -78,10 +78,13 @@ func TestTraceAnalyzer(t *testing.T) {
 
 	const gatewayNode = 0
 	srv, s := tc.Server(gatewayNode), tc.ApplicationLayer(gatewayNode)
-	if srv.DeploymentMode().IsExternal() {
-		require.NoError(t, srv.GrantTenantCapabilities(
-			ctx, serverutils.TestTenantID(),
-			map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanAdminRelocateRange: "true"}))
+	if srv.TenantController().StartedDefaultTestTenant() {
+		systemSqlDB := srv.SystemLayer().SQLConn(t, serverutils.DBName("system"))
+		_, err := systemSqlDB.Exec(`ALTER TENANT [$1] GRANT CAPABILITY can_admin_relocate_range=true`, serverutils.TestTenantID().ToUint64())
+		require.NoError(t, err)
+		serverutils.WaitForTenantCapabilities(t, srv, serverutils.TestTenantID(), map[tenantcapabilities.ID]string{
+			tenantcapabilities.CanAdminRelocateRange: "true",
+		}, "")
 	}
 	db := s.SQLConn(t)
 	sqlDB := sqlutils.MakeSQLRunner(db)
@@ -122,7 +125,7 @@ func TestTraceAnalyzer(t *testing.T) {
 		})
 		_, err := ie.ExecEx(
 			execCtx,
-			redact.RedactableString(t.Name()),
+			t.Name(),
 			nil, /* txn */
 			sessiondata.NodeUserSessionDataOverride,
 			testStmt,
@@ -131,7 +134,7 @@ func TestTraceAnalyzer(t *testing.T) {
 		trace := finishAndCollect()
 		analyzer := <-analyzerChan
 		require.NoError(t, analyzer.AddTrace(trace, true /* makeDeterministic */))
-		analyzer.ProcessStats()
+		require.NoError(t, analyzer.ProcessStats())
 		switch vectorizeMode {
 		case sessiondatapb.VectorizeOff:
 			rowexecTraceAnalyzer = analyzer
@@ -156,12 +159,23 @@ func TestTraceAnalyzer(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			nodeLevelStats := tc.analyzer.GetNodeLevelStats()
+			require.Equal(
+				t, numNodes-1, len(nodeLevelStats.NetworkBytesSentGroupedByNode), "expected all nodes minus the gateway node to have sent bytes",
+			)
+			require.Equal(
+				t, numNodes, len(nodeLevelStats.MaxMemoryUsageGroupedByNode), "expected all nodes to have specified maximum memory usage",
+			)
+			require.Equal(
+				t, numNodes, len(nodeLevelStats.MaxDiskUsageGroupedByNode), "expected all nodes to have specified maximum disk usage",
+			)
+
 			queryLevelStats := tc.analyzer.GetQueryLevelStats()
 
 			// The stats don't count the actual bytes, but they are a synthetic value
 			// based on the number of tuples. In this test 21 tuples flow over the
 			// network.
-			require.Equal(t, int64(21*8), queryLevelStats.DistSQLNetworkBytesSent)
+			require.Equal(t, int64(21*8), queryLevelStats.NetworkBytesSent)
 
 			// Soft check that MaxMemUsage is set to a non-zero value. The actual
 			// value differs between test runs due to metamorphic randomization.
@@ -176,7 +190,7 @@ func TestTraceAnalyzer(t *testing.T) {
 
 			// For tests, network messages is a synthetic value based on the number of
 			// network tuples. In this test 21 tuples flow over the network.
-			require.Equal(t, int64(21/2), queryLevelStats.DistSQLNetworkMessages)
+			require.Equal(t, int64(21/2), queryLevelStats.NetworkMessages)
 		})
 	}
 }
@@ -224,26 +238,28 @@ func TestTraceAnalyzerProcessStats(t *testing.T) {
 	expected := execstats.QueryLevelStats{
 		KVTime:         cumulativeKVTime,
 		ContentionTime: cumulativeContentionTime,
+		Regions:        []string{},
+		SqlInstanceIds: make(map[base.SQLInstanceID]struct{}),
 	}
 
-	a.ProcessStats()
+	assert.NoError(t, a.ProcessStats())
 	require.Equal(t, a.GetQueryLevelStats(), expected)
 }
 
 func TestQueryLevelStatsAccumulate(t *testing.T) {
 	aEvent := kvpb.ContentionEvent{Duration: 7 * time.Second}
+	aSQLInstanceIds := map[base.SQLInstanceID]struct{}{}
+	aSQLInstanceIds[1] = struct{}{}
 	a := execstats.QueryLevelStats{
-		DistSQLNetworkBytesSent:            1,
+		NetworkBytesSent:                   1,
 		MaxMemUsage:                        2,
 		KVBytesRead:                        3,
 		KVPairsRead:                        4,
 		KVRowsRead:                         4,
 		KVBatchRequestsIssued:              4,
 		KVTime:                             5 * time.Second,
-		DistSQLNetworkMessages:             6,
+		NetworkMessages:                    6,
 		ContentionTime:                     7 * time.Second,
-		LockWaitTime:                       4 * time.Second,
-		LatchWaitTime:                      3 * time.Second,
 		ContentionEvents:                   []kvpb.ContentionEvent{aEvent},
 		MaxDiskUsage:                       8,
 		RUEstimate:                         9,
@@ -261,25 +277,23 @@ func TestQueryLevelStatsAccumulate(t *testing.T) {
 		MvccRangeKeyCount:                  21,
 		MvccRangeKeyContainedPoints:        22,
 		MvccRangeKeySkippedPoints:          23,
-		SQLInstanceIDs:                     []int32{1},
-		KVNodeIDs:                          []int32{1, 2},
+		SqlInstanceIds:                     aSQLInstanceIds,
 		Regions:                            []string{"east-usA"},
-		UsedFollowerRead:                   false,
 		ClientTime:                         time.Second,
 	}
 	bEvent := kvpb.ContentionEvent{Duration: 14 * time.Second}
+	bSQLInstanceIds := map[base.SQLInstanceID]struct{}{}
+	bSQLInstanceIds[2] = struct{}{}
 	b := execstats.QueryLevelStats{
-		DistSQLNetworkBytesSent:            8,
+		NetworkBytesSent:                   8,
 		MaxMemUsage:                        9,
 		KVBytesRead:                        10,
 		KVPairsRead:                        11,
 		KVRowsRead:                         11,
 		KVBatchRequestsIssued:              11,
 		KVTime:                             12 * time.Second,
-		DistSQLNetworkMessages:             13,
+		NetworkMessages:                    13,
 		ContentionTime:                     14 * time.Second,
-		LockWaitTime:                       10 * time.Second,
-		LatchWaitTime:                      4 * time.Second,
 		ContentionEvents:                   []kvpb.ContentionEvent{bEvent},
 		MaxDiskUsage:                       15,
 		RUEstimate:                         16,
@@ -297,24 +311,23 @@ func TestQueryLevelStatsAccumulate(t *testing.T) {
 		MvccRangeKeyCount:                  28,
 		MvccRangeKeyContainedPoints:        29,
 		MvccRangeKeySkippedPoints:          30,
-		SQLInstanceIDs:                     []int32{2},
-		KVNodeIDs:                          []int32{1, 3},
+		SqlInstanceIds:                     bSQLInstanceIds,
 		Regions:                            []string{"east-usB"},
-		UsedFollowerRead:                   true,
 		ClientTime:                         2 * time.Second,
 	}
+	cSQLInstanceIds := map[base.SQLInstanceID]struct{}{}
+	cSQLInstanceIds[1] = struct{}{}
+	cSQLInstanceIds[2] = struct{}{}
 	expected := execstats.QueryLevelStats{
-		DistSQLNetworkBytesSent:            9,
+		NetworkBytesSent:                   9,
 		MaxMemUsage:                        9,
 		KVBytesRead:                        13,
 		KVPairsRead:                        15,
 		KVRowsRead:                         15,
 		KVBatchRequestsIssued:              15,
 		KVTime:                             17 * time.Second,
-		DistSQLNetworkMessages:             19,
+		NetworkMessages:                    19,
 		ContentionTime:                     21 * time.Second,
-		LockWaitTime:                       14 * time.Second,
-		LatchWaitTime:                      7 * time.Second,
 		ContentionEvents:                   []kvpb.ContentionEvent{aEvent, bEvent},
 		MaxDiskUsage:                       15,
 		RUEstimate:                         25,
@@ -332,17 +345,15 @@ func TestQueryLevelStatsAccumulate(t *testing.T) {
 		MvccRangeKeyCount:                  49,
 		MvccRangeKeyContainedPoints:        51,
 		MvccRangeKeySkippedPoints:          53,
-		SQLInstanceIDs:                     []int32{1, 2},
-		KVNodeIDs:                          []int32{1, 2, 3},
+		SqlInstanceIds:                     cSQLInstanceIds,
 		Regions:                            []string{"east-usA", "east-usB"},
-		UsedFollowerRead:                   true,
 		ClientTime:                         3 * time.Second,
 	}
 
 	aCopy := a
 	// Copy will point to the same array.
-	aCopy.SQLInstanceIDs = []int32{1}
-	aCopy.KVNodeIDs = []int32{1, 2}
+	aCopy.SqlInstanceIds = map[base.SQLInstanceID]struct{}{}
+	cSQLInstanceIds[1] = struct{}{}
 	a.Accumulate(b)
 	require.Equal(t, expected, a)
 

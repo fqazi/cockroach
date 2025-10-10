@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 )
 
 func init() {
@@ -28,22 +27,15 @@ func Delete(
 	h := cArgs.Header
 	reply := resp.(*kvpb.DeleteResponse)
 
-	if err := args.Validate(h); err != nil {
-		return result.Result{}, err
-	}
-
 	opts := storage.MVCCWriteOptions{
 		Txn:                            h.Txn,
 		LocalTimestamp:                 cArgs.Now,
 		Stats:                          cArgs.Stats,
 		ReplayWriteTimestampProtection: h.AmbiguousReplayProtection,
-		ExclusionTimestamp:             args.ExpectExclusionSince,
 		OmitInRangefeeds:               cArgs.OmitInRangefeeds,
-		OriginID:                       h.WriteOptions.GetOriginID(),
-		OriginTimestamp:                h.WriteOptions.GetOriginTimestamp(),
 		MaxLockConflicts:               storage.MaxConflictsPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV),
 		TargetLockConflictBytes:        storage.TargetBytesPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV),
-		Category:                       fs.BatchEvalReadCategory,
+		Category:                       storage.BatchEvalReadCategory,
 	}
 
 	var err error
