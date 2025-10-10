@@ -8,6 +8,7 @@ package backup
 import (
 	"context"
 	"fmt"
+	"io"
 	"math/rand"
 	"testing"
 
@@ -28,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,22 +59,24 @@ func BenchmarkIteratorMemory(b *testing.B) {
 	makeWriter := func(
 		store cloud.ExternalStorage,
 		filename string,
-		enc *jobspb.BackupEncryptionOptions) (objstorage.Writable, error) {
-		w, err := cloud.OpenAbortableWriter(ctx, store, filename)
+		enc *jobspb.BackupEncryptionOptions) (io.WriteCloser, error) {
+		w, err := store.Writer(ctx, filename)
 		if err != nil {
 			return nil, err
 		}
 
-		if enc == nil {
-			return w, nil
+		if enc != nil {
+			key, err := backupencryption.GetEncryptionKey(ctx, enc, nil)
+			if err != nil {
+				return nil, err
+			}
+			encW, err := storageccl.EncryptingWriter(w, key)
+			if err != nil {
+				return nil, err
+			}
+			w = encW
 		}
-
-		key, err := backupencryption.GetEncryptionKey(ctx, enc, nil)
-		if err != nil {
-			return nil, err
-		}
-
-		return storageccl.EncryptingWriter(w, key)
+		return w, nil
 	}
 
 	getRandomPayload := func(buf []byte) {
@@ -85,7 +87,7 @@ func BenchmarkIteratorMemory(b *testing.B) {
 		}
 	}
 
-	writeSST := func(w objstorage.Writable, store cloud.ExternalStorage, payloadSize int, numKeys int) {
+	writeSST := func(w io.WriteCloser, store cloud.ExternalStorage, payloadSize int, numKeys int) {
 		sst := storage.MakeTransportSSTWriter(ctx, store.Settings(), w)
 
 		buf := make([]byte, payloadSize)
@@ -154,12 +156,12 @@ func BenchmarkIteratorMemory(b *testing.B) {
 							require.NoError(b, err)
 
 							writeSST(w, store, 100, rows)
-							require.NoError(b, w.Finish())
+							require.NoError(b, w.Close())
 
 							sz, err := store.Size(ctx, filename)
 							require.NoError(b, err)
 
-							log.Dev.Infof(ctx, "Benchmarking using file of size %s", humanizeutil.IBytes(sz))
+							log.Infof(ctx, "Benchmarking using file of size %s", humanizeutil.IBytes(sz))
 							fileStores := make([]storageccl.StoreFile, fileCount)
 							for i := 0; i < fileCount; i++ {
 								fileStores[i].Store = store

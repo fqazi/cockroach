@@ -165,7 +165,7 @@ func updateSchedule(ctx context.Context, db isql.DB, st *cluster.Settings, clust
 			sj.SetScheduleStatus(string(jobs.StatePending))
 			return jobs.ScheduledJobTxn(txn).Update(ctx, sj)
 		}); err != nil && ctx.Err() == nil {
-			log.Dev.Warningf(ctx, "failed to update SQL schema telemetry schedule: %s", err)
+			log.Warningf(ctx, "failed to update SQL schema telemetry schedule: %s", err)
 		} else {
 			return
 		}
@@ -270,9 +270,9 @@ func GetSchemaTelemetryScheduleID(
 		return 0, errors.AssertionFailedf("unexpectedly received %d columns", len(row))
 	}
 	// Defensively check the type.
-	v, ok := row[0].(*tree.DInt)
+	v, ok := tree.AsDInt(row[0])
 	if !ok {
 		return 0, errors.AssertionFailedf("unexpectedly received non-integer value %v", row[0])
 	}
-	return jobspb.ScheduleID(*v), nil
+	return jobspb.ScheduleID(v), nil
 }

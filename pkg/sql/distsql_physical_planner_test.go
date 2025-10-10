@@ -25,11 +25,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangecache"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
@@ -1442,7 +1441,7 @@ func TestPartitionSpans(t *testing.T) {
 				gossip:               gw,
 				nodeHealth: distSQLNodeHealth{
 					gossip: gw,
-					connHealthSystem: func(node roachpb.NodeID, _ rpcbase.ConnectionClass) error {
+					connHealthSystem: func(node roachpb.NodeID, _ rpc.ConnectionClass) error {
 						return connHealth(node)
 					},
 					connHealthInstance: func(sqlInstance base.SQLInstanceID, _ string) error {
@@ -1807,7 +1806,7 @@ func TestPartitionSpansSkipsNodesNotInGossip(t *testing.T) {
 		gossip:               gw,
 		nodeHealth: distSQLNodeHealth{
 			gossip: gw,
-			connHealthSystem: func(node roachpb.NodeID, _ rpcbase.ConnectionClass) error {
+			connHealthSystem: func(node roachpb.NodeID, _ rpc.ConnectionClass) error {
 				_, _, err := mockGossip.GetNodeIDAddress(node)
 				return err
 			},
@@ -1884,10 +1883,10 @@ func TestCheckNodeHealth(t *testing.T) {
 		return true
 	}
 
-	connHealthy := func(roachpb.NodeID, rpcbase.ConnectionClass) error {
+	connHealthy := func(roachpb.NodeID, rpc.ConnectionClass) error {
 		return nil
 	}
-	connUnhealthy := func(roachpb.NodeID, rpcbase.ConnectionClass) error {
+	connUnhealthy := func(roachpb.NodeID, rpc.ConnectionClass) error {
 		return errors.New("injected conn health error")
 	}
 	_ = connUnhealthy
@@ -1915,7 +1914,7 @@ func TestCheckNodeHealth(t *testing.T) {
 	}
 
 	connHealthTests := []struct {
-		connHealth func(roachpb.NodeID, rpcbase.ConnectionClass) error
+		connHealth func(roachpb.NodeID, rpc.ConnectionClass) error
 		exp        string
 	}{
 		{connHealthy, ""},
@@ -1948,10 +1947,6 @@ func TestCheckScanParallelizationIfLocal(t *testing.T) {
 		require.NoError(t, b.RunPostDeserializationChanges())
 		return b.BuildImmutableTable()
 	}
-	mvccTimestampSysCol, err := catalog.MustFindColumnByID(makeTableDesc(), colinfo.MVCCTimestampColumnID)
-	require.NoError(t, err)
-	tableOidSysCol, err := catalog.MustFindColumnByID(makeTableDesc(), colinfo.TableOIDColumnID)
-	require.NoError(t, err)
 
 	scanToParallelize := &scanNode{parallelize: true}
 	for _, tc := range []struct {
@@ -2073,34 +2068,6 @@ func TestCheckScanParallelizationIfLocal(t *testing.T) {
 		{
 			plan: planComponents{main: planMaybePhysical{planNode: &windowNode{singleInputPlanNode: singleInputPlanNode{scanToParallelize}}}},
 			// windowNode is not fully supported by the vectorized.
-			prohibitParallelization: true,
-		},
-		{
-			plan: planComponents{main: planMaybePhysical{planNode: &scanNode{
-				fetchPlanningInfo: fetchPlanningInfo{catalogCols: []catalog.Column{mvccTimestampSysCol}},
-			}}},
-			// Usage of crdb_internal_mvcc_timestamp prohibits parallelization
-			// since it forces usage of the LeafTxn, yet for buffered writes we
-			// might need to force usage of the RootTxn.
-			// TODO(#144166): relax this.
-			prohibitParallelization: true,
-		},
-		{
-			plan: planComponents{main: planMaybePhysical{planNode: &scanNode{
-				fetchPlanningInfo: fetchPlanningInfo{catalogCols: []catalog.Column{tableOidSysCol}},
-			}}},
-			// Usage of tableoid system column doesn't force usage of the
-			// LeafTxn, so parallelization is ok.
-			prohibitParallelization: false,
-		},
-		{
-			plan: planComponents{main: planMaybePhysical{planNode: &indexJoinNode{indexJoinPlanningInfo: indexJoinPlanningInfo{
-				fetch: fetchPlanningInfo{catalogCols: []catalog.Column{mvccTimestampSysCol}}},
-			}}},
-			// Usage of crdb_internal_mvcc_timestamp prohibits parallelization
-			// since it forces usage of the LeafTxn, yet for buffered writes we
-			// might need to force usage of the RootTxn.
-			// TODO(#144166): relax this.
 			prohibitParallelization: true,
 		},
 

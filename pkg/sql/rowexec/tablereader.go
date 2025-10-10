@@ -34,8 +34,9 @@ type tableReader struct {
 	execinfra.ProcessorBase
 	execinfra.SpansWithCopy
 
-	limitHint   rowinfra.RowLimit
-	parallelize bool
+	limitHint       rowinfra.RowLimit
+	parallelize     bool
+	batchBytesLimit rowinfra.BytesLimit
 
 	scanStarted bool
 
@@ -54,8 +55,6 @@ type tableReader struct {
 	contentionEventsListener  execstats.ContentionEventsListener
 	scanStatsListener         execstats.ScanStatsListener
 	tenantConsumptionListener execstats.TenantConsumptionListener
-
-	stageID int32
 }
 
 var _ execinfra.Processor = &tableReader{}
@@ -76,7 +75,6 @@ func newTableReader(
 	ctx context.Context,
 	flowCtx *execinfra.FlowCtx,
 	processorID int32,
-	stageID int32,
 	spec *execinfrapb.TableReaderSpec,
 	post *execinfrapb.PostProcessSpec,
 ) (*tableReader, error) {
@@ -85,18 +83,25 @@ func newTableReader(
 		return nil, errors.AssertionFailedf("attempting to create a tableReader with uninitialized NodeID")
 	}
 
-	if spec.LimitHint > 0 {
+	if spec.LimitHint > 0 || spec.BatchBytesLimit > 0 {
 		// Parallelize shouldn't be set when there's a limit hint, but double-check
 		// just in case.
 		spec.Parallelize = false
+	}
+	var batchBytesLimit rowinfra.BytesLimit
+	if !spec.Parallelize {
+		batchBytesLimit = rowinfra.BytesLimit(spec.BatchBytesLimit)
+		if batchBytesLimit == 0 {
+			batchBytesLimit = rowinfra.GetDefaultBatchBytesLimit(flowCtx.EvalCtx.TestingKnobs.ForceProductionValues)
+		}
 	}
 
 	tr := trPool.Get().(*tableReader)
 
 	tr.limitHint = rowinfra.RowLimit(execinfra.LimitHint(spec.LimitHint, post))
 	tr.parallelize = spec.Parallelize
+	tr.batchBytesLimit = batchBytesLimit
 	tr.maxTimestampAge = time.Duration(spec.MaxTimestampAgeNanos)
-	tr.stageID = stageID
 
 	// Make sure the key column types are hydrated. The fetched column types
 	// will be hydrated in ProcessorBase.Init below.
@@ -187,7 +192,7 @@ func (tr *tableReader) generateTrailingMeta() []execinfrapb.ProducerMetadata {
 // Start is part of the RowSource interface.
 func (tr *tableReader) Start(ctx context.Context) {
 	if tr.FlowCtx.Txn == nil {
-		log.Dev.Fatalf(ctx, "tableReader outside of txn")
+		log.Fatalf(ctx, "tableReader outside of txn")
 	}
 
 	// Keep ctx assignment so we remember StartInternal can make a new one.
@@ -203,14 +208,14 @@ func (tr *tableReader) startScan(ctx context.Context) error {
 	if cb := tr.FlowCtx.Cfg.TestingKnobs.TableReaderStartScanCb; cb != nil {
 		cb()
 	}
-	bytesLimit := rowinfra.NoBytesLimit
-	if !tr.parallelize {
-		bytesLimit = rowinfra.BytesLimit(tr.FlowCtx.Cfg.TestingKnobs.TableReaderBatchBytesLimit)
-		if bytesLimit == 0 {
-			bytesLimit = rowinfra.GetDefaultBatchBytesLimit(tr.FlowCtx.EvalCtx.TestingKnobs.ForceProductionValues)
-		}
+	limitBatches := !tr.parallelize
+	var bytesLimit rowinfra.BytesLimit
+	if !limitBatches {
+		bytesLimit = rowinfra.NoBytesLimit
+	} else {
+		bytesLimit = tr.batchBytesLimit
 	}
-	log.VEventf(ctx, 1, "starting scan with parallelize=%t", tr.parallelize)
+	log.VEventf(ctx, 1, "starting scan with limitBatches %t", limitBatches)
 	var err error
 	if tr.maxTimestampAge == 0 {
 		err = tr.fetcher.StartScan(
@@ -267,7 +272,6 @@ func (tr *tableReader) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerMetadata
 			meta := execinfrapb.GetProducerMeta()
 			meta.Metrics = execinfrapb.GetMetricsMeta()
 			meta.Metrics.RowsRead = tr.rowsRead
-			meta.Metrics.StageID = tr.stageID
 			tr.rowsRead = 0
 			return nil, meta
 		}
@@ -348,7 +352,6 @@ func (tr *tableReader) generateMeta() []execinfrapb.ProducerMetadata {
 	meta.Metrics = execinfrapb.GetMetricsMeta()
 	meta.Metrics.BytesRead = tr.fetcher.GetBytesRead()
 	meta.Metrics.RowsRead = tr.rowsRead
-	meta.Metrics.StageID = tr.stageID
 	return append(trailingMeta, *meta)
 }
 

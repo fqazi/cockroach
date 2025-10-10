@@ -1029,6 +1029,7 @@ func (t *testingProbeToCloseTimerScheduler) ScheduleSendStreamCloseRaftMuLocked(
 			return
 		case <-timer.Ch():
 		}
+		timer.MarkRead()
 		func() {
 			r := t.state.ranges[rangeID]
 			event := r.makeRaftEventWithReplicasState()
@@ -1605,7 +1606,7 @@ func TestRangeController(t *testing.T) {
 				}
 				stats := RangeSendStreamStats{}
 				r.rc.SendStreamStats(&stats)
-				log.KvDistribution.Infof(ctx, "stats: %v", stats)
+				log.Infof(ctx, "stats: %v", stats)
 				var buf strings.Builder
 				for _, repl := range sortReplicas(r) {
 					replStats, ok := stats.ReplicaSendStreamStats(repl.ReplicaID)

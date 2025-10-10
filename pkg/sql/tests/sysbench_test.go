@@ -27,9 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
-	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -166,27 +164,25 @@ func newTestCluster(
 	// also moderately less realistic.
 	disableBackgroundWork(st)
 	const cacheSize = 2 * 1024 * 1024 * 1024 // 2GB
-	knobs := base.TestingKnobs{
-		DialerKnobs: nodedialer.DialerTestingKnobs{
-			TestingNoLocalClientOptimization: !localRPCFastPath,
-		},
-		Server: &server.TestingKnobs{
-			ContextTestingKnobs: rpc.ContextTestingKnobs{
-				NoLoopbackDialer: !localRPCFastPath,
-			},
-		},
-	}
 	return serverutils.StartCluster(b, nodes, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			Settings:  st,
 			CacheSize: cacheSize,
-			Knobs:     knobs,
+			Knobs: base.TestingKnobs{
+				DialerKnobs: nodedialer.DialerTestingKnobs{
+					TestingNoLocalClientOptimization: !localRPCFastPath,
+				},
+			},
 		}},
 	)
 }
 
 // sysbenchSQL is SQL-based implementation of sysbenchDriver. It runs SQL
 // statements against a single node cluster.
+//
+// TODO(nvanbenschoten): add a 3-node cluster variant of this driver.
+// TODO(nvanbenschoten): add a variant of this driver which bypasses the gRPC
+// local fast-path optimization.
 type sysbenchSQL struct {
 	ctx     context.Context
 	stopper *stop.Stopper
@@ -380,6 +376,10 @@ func (s *sysbenchSQLClient) prepConn() {
 // sysbenchKV is KV-based implementation of sysbenchDriver. It bypasses the SQL
 // layer and runs the workload directly against the KV layer, on a single node
 // cluster.
+//
+// TODO(nvanbenschoten): add a 3-node cluster variant of this driver.
+// TODO(nvanbenschoten): add a variant of this driver which bypasses the gRPC
+// local fast-path optimization.
 type sysbenchKV struct {
 	ctx         context.Context
 	db          *kv.DB
@@ -863,8 +863,6 @@ func benchmarkSysbenchImpl(b *testing.B, parallel bool) {
 	for _, driver := range drivers {
 		b.Run(driver.name, func(b *testing.B) {
 			for _, workload := range workloads {
-				var sys sysbenchDriver
-				var cleanup func()
 				b.Run(workload.name, func(b *testing.B) {
 					defer func() {
 						if r := recover(); r != nil {
@@ -872,41 +870,34 @@ func benchmarkSysbenchImpl(b *testing.B, parallel bool) {
 						}
 					}()
 
-					// NB: this can be removed once this test is refactored to
-					// use `b.Loop` available starting in go1.24[1]
+					// NB: this can be removed once this test is refactored to use `b.Loop`
+					// available starting in go1.24[1]
 					//
 					// [1]: https://tip.golang.org/doc/go1.24#new-benchmark-function
-					if b.N == 1 && sys != nil {
-						// The Go benchmark harness will run a benchmark with
-						// b.N=1 first, and ramp up b.N until the benchmark hits
-						// a time threshold. This means that the setup code will
-						// run multiple times for a single benchmark result. To
-						// avoid repeatedly incurring the overhead of
-						// re-prepping the test cluster, we only run the setup
-						// code when on the first execution of each iteration of
-						// the benchmark, when b.N=1. If the benchmark is run
-						// with --count greater than 1, then b.N will be reset
-						// to 1 for each iteration, and a new cluster will be
-						// created, ensuring benchmark results across
-						// interations remain independent.
-						cleanup()
-						sys = nil
+					var benchtime string
+					require.NoError(b, sniffarg.DoEnv("test.benchtime", &benchtime))
+					if strings.HasSuffix(benchtime, "x") && b.N == 1 && benchtime != "1x" {
+						// The Go benchmark harness invokes tests first with b.N == 1 which
+						// helps it adjust the number of iterations to run to the benchtime.
+						// But if we specify the number of iterations, there's no point in
+						// it doing that, so we no-op on the first run.
+						// This speeds up benchmarking (by several seconds per subtest!)
+						// since it avoids setting up an extra test cluster.
+						b.Log("skipping benchmark on initial run; benchtime specifies an iteration count")
+						return
 					}
-					if sys == nil {
-						sys, cleanup = driver.constructorFn(context.Background(), b)
-						sys.prep(rand.New(rand.NewSource(0)))
-					}
+					sys, cleanup := driver.constructorFn(context.Background(), b)
+					defer cleanup()
 					runSysbenchOuter(b, sys, workload.opFn, parallel)
 				})
-				if cleanup != nil {
-					cleanup()
-				}
 			}
 		})
 	}
 }
 
 func runSysbenchOuter(b *testing.B, sys sysbenchDriver, opFn sysbenchWorkload, parallel bool) {
+	sys.prep(rand.New(rand.NewSource(0)))
+
 	defer startAllocsProfile(b).Stop(b)
 	defer b.StopTimer()
 

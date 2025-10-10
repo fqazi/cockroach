@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 // ComparisonOperator represents a binary operator which returns a bool.
@@ -30,10 +29,6 @@ func (o ComparisonOperator) String() string {
 	}
 	return o.Symbol.String()
 }
-
-// SafeValue implements redact.SafeValue.
-// Comparison operators are SQL language constructs and safe to log.
-func (ComparisonOperator) SafeValue() {}
 
 // Operator implements tree.Operator.
 func (ComparisonOperator) Operator() {}
@@ -134,10 +129,6 @@ func (i ComparisonOperatorSymbol) String() string {
 	return comparisonOpName[i]
 }
 
-// SafeValue implements redact.SafeValue.
-// Comparison operator symbols are SQL language constructs and safe to log.
-func (ComparisonOperatorSymbol) SafeValue() {}
-
 // HasSubOperator returns if the ComparisonOperator is used with a sub-operator.
 func (i ComparisonOperatorSymbol) HasSubOperator() bool {
 	switch i {
@@ -157,7 +148,3 @@ func ComparisonOpName(op ComparisonOperatorSymbol) string {
 	}
 	return comparisonOpName[op]
 }
-
-// Verify that ComparisonOperator and ComparisonOperatorSymbol implement redact.SafeValue.
-var _ redact.SafeValue = ComparisonOperator{}
-var _ redact.SafeValue = ComparisonOperatorSymbol(0)

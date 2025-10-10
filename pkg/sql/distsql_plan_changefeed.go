@@ -82,7 +82,7 @@ func PlanCDCExpression(
 		AST: cdcExpr,
 		SQL: tree.AsString(cdcExpr),
 	}, clusterunique.ID{}, /* queryID */
-		tree.FmtFlags(tree.QueryFormattingForFingerprintsMask.Get(&p.execCfg.Settings.SV)),
+		tree.FmtFlags(queryFormattingForFingerprintsMask.Get(&p.execCfg.Settings.SV)),
 	)
 
 	p.curPlan.init(&p.stmt, &p.instrumentation)
@@ -113,7 +113,7 @@ func PlanCDCExpression(
 		return CDCExpressionPlan{}, err
 	}
 	if log.V(2) {
-		log.Dev.Infof(ctx, "Optimized CDC expression: %s", memo)
+		log.Infof(ctx, "Optimized CDC expression: %s", memo)
 	}
 
 	const allowAutoCommit = false

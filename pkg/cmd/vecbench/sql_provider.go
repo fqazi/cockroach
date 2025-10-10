@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/cspann"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecpb"
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
 	"github.com/cockroachdb/cockroach/pkg/util/vector"
 	"github.com/cockroachdb/errors"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -44,22 +44,16 @@ func (s *SQLSearchState) Close() {
 type SQLProvider struct {
 	datasetName string
 	dims        int
-	distMetric  vecpb.DistanceMetric
 	options     cspann.IndexOptions
 	pool        *pgxpool.Pool
 	tableName   string
-	indexName   string
 	retryCount  atomic.Uint64
 }
 
 // NewSQLProvider creates a new SQLProvider that connects to a CockroachDB
 // instance.
 func NewSQLProvider(
-	ctx context.Context,
-	datasetName string,
-	dims int,
-	distMetric vecpb.DistanceMetric,
-	options cspann.IndexOptions,
+	ctx context.Context, datasetName string, dims int, options cspann.IndexOptions,
 ) (*SQLProvider, error) {
 	// Create connection pool.
 	config, err := pgxpool.ParseConfig(*flagDBConnStr)
@@ -86,16 +80,13 @@ func NewSQLProvider(
 
 	// Create sanitized table and index names.
 	tableName := fmt.Sprintf("vecbench_%s", sanitizeIdentifier(datasetName))
-	indexName := fmt.Sprintf("vecbench_%s_embedding_idx", sanitizeIdentifier(datasetName))
 
 	return &SQLProvider{
 		datasetName: datasetName,
-		distMetric:  distMetric,
 		dims:        dims,
 		options:     options,
 		pool:        pool,
 		tableName:   tableName,
-		indexName:   indexName,
 	}, nil
 }
 
@@ -139,101 +130,41 @@ func (s *SQLProvider) New(ctx context.Context) error {
 		return errors.Wrap(err, "dropping table")
 	}
 
-	// Enable vector indexes if not already enabled.
-	_, err = s.pool.Exec(ctx, "SET CLUSTER SETTING feature.vector_index.enabled = true")
-	if err != nil {
-		return errors.Wrap(err, "enabling vector indexes")
-	}
-
-	// Create table without vector index. Index creation is handled separately.
-	_, err = s.pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (
-		id BYTES PRIMARY KEY,
-		embedding VECTOR(%d))`, s.tableName, s.dims))
+	_, err = s.pool.Exec(ctx, fmt.Sprintf(`
+		CREATE TABLE %s (
+			id BYTES PRIMARY KEY,
+			embedding VECTOR(%d),
+			VECTOR INDEX (embedding)
+		)`, s.tableName, s.dims))
 	return errors.Wrap(err, "creating table")
-}
-
-func (s *SQLProvider) CreateIndex(ctx context.Context) error {
-	var opClass string
-	switch s.distMetric {
-	case vecpb.CosineDistance:
-		opClass = " vector_cosine_ops"
-	case vecpb.InnerProductDistance:
-		opClass = " vector_ip_ops"
-	}
-
-	_, err := s.pool.Exec(ctx, fmt.Sprintf(
-		"CREATE VECTOR INDEX %s ON %s (embedding%s)",
-		s.indexName,
-		s.tableName,
-		opClass,
-	))
-	return errors.Wrap(err, "creating index")
-}
-
-// CheckIndexCreationStatus implements the VectorProvider interface.
-func (s *SQLProvider) CheckIndexCreationStatus(ctx context.Context) (float64, error) {
-	var status string
-	var fractionCompleted float64
-
-	// Query for jobs related to our index creation.
-	rows, err := s.pool.Query(ctx, `
-		SELECT status, fraction_completed
-		FROM [SHOW JOBS]
-		WHERE description LIKE '%%vecbench%%'
-		AND job_type = 'NEW SCHEMA CHANGE'
-		ORDER BY created DESC
-		LIMIT 1`)
-	if err != nil {
-		return 0, errors.Wrap(err, "querying job progress")
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return 0, errors.Wrap(err, "querying job progress")
-		}
-		return 0.0, nil
-	}
-
-	if err := rows.Scan(&status, &fractionCompleted); err != nil {
-		return 0, errors.Wrap(err, "scanning job progress")
-	}
-
-	if status == "succeeded" {
-		return 1.0, nil
-	} else if status == "failed" || status == "canceled" {
-		return fractionCompleted, errors.Newf("index creation job failed with status: %s", status)
-	}
-
-	// Job is still running.
-	return fractionCompleted, nil
 }
 
 // InsertVectors implements the VectorProvider interface.
 func (s *SQLProvider) InsertVectors(
 	ctx context.Context, keys []cspann.KeyBytes, vectors vector.Set,
 ) error {
-	// Build insert query.
-	args := make([]any, vectors.Count*2)
-	var queryBuilder strings.Builder
-	queryBuilder.Grow(100 + vectors.Count*12)
-	queryBuilder.WriteString("INSERT INTO ")
-	queryBuilder.WriteString(s.tableName)
-	queryBuilder.WriteString(" (id, embedding) VALUES")
-	for i := range vectors.Count {
-		if i > 0 {
-			queryBuilder.WriteString(", ")
-		}
-		j := i * 2
-		fmt.Fprintf(&queryBuilder, " ($%d, $%d)", j+1, j+2)
-		args[j] = keys[i]
-		args[j+1] = vectors.At(i)
-	}
-	query := queryBuilder.String()
-
 	// Retry loop.
 	for {
-		_, err := s.pool.Exec(ctx, query, args...)
+		err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+			// Prepare batch insert.
+			batch := &pgx.Batch{}
+
+			// Insert vectors in batches.
+			for i := range vectors.Count {
+				batch.Queue(fmt.Sprintf(
+					"INSERT INTO %s (id, embedding) VALUES ($1, $2)",
+					s.tableName),
+					keys[i],
+					vectors.At(i),
+				)
+			}
+
+			br := tx.SendBatch(ctx, batch)
+			if err := br.Close(); err != nil {
+				return errors.Wrap(err, "closing batch")
+			}
+			return nil
+		})
 
 		var pgErr *pgconn.PgError
 		if err != nil && errors.As(err, &pgErr) {
@@ -270,23 +201,13 @@ func (s *SQLProvider) SetupSearch(
 		return nil, errors.Wrap(err, "setting vector_search_beam_size")
 	}
 
-	var op string
-	switch s.distMetric {
-	case vecpb.L2SquaredDistance:
-		op = "<->"
-	case vecpb.CosineDistance:
-		op = "<=>"
-	case vecpb.InnerProductDistance:
-		op = "<#>"
-	}
-
 	// Construct the query for vector search.
 	query := fmt.Sprintf(`
 		SELECT id
 		FROM %s
-		ORDER BY embedding %s $1
+		ORDER BY embedding <-> $1
 		LIMIT %d
-	`, s.tableName, op, maxResults)
+	`, s.tableName, maxResults)
 
 	state := &SQLSearchState{
 		conn:  conn,
@@ -352,7 +273,7 @@ func (s *SQLProvider) FormatStats() string {
 	return ""
 }
 
-// sanitizeIdentifier makes a string safe to use as a SQL identifier.
+// sanitizeIdentifier makes a string safe to use as a SQL identifier
 func sanitizeIdentifier(s string) string {
 	// Replace non-alphanumeric characters with underscores.
 	return strings.Map(func(r rune) rune {

@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -176,13 +175,12 @@ func TestStreamManagerErrorHandling(t *testing.T) {
 	testutils.RunValues(t, "feed type", testTypes, func(t *testing.T, rt rangefeedTestType) {
 		testServerStream := newTestServerStream()
 		smMetrics := NewStreamManagerMetrics()
-		st := cluster.MakeTestingClusterSettings()
 		var s sender
 		switch rt {
 		case scheduledProcessorWithUnbufferedSender:
 			s = NewUnbufferedSender(testServerStream)
 		case scheduledProcessorWithBufferedSender:
-			s = NewBufferedSender(testServerStream, st, NewBufferedSenderMetrics())
+			s = NewBufferedSender(testServerStream, NewBufferedSenderMetrics())
 		default:
 			t.Fatalf("unknown rangefeed test type %v", rt)
 		}
@@ -211,11 +209,10 @@ func TestStreamManagerErrorHandling(t *testing.T) {
 		t.Run("Fail to register rangefeed with the processor", func(t *testing.T) {
 			p, _, stopper := newTestProcessor(t, withRangefeedTestType(rt))
 			defer stopper.Stop(ctx)
-			streamSink := sm.NewStream(sID, rID)
-			// We mock failed registration by not calling p.Register and calling
-			// SendError just as (*Node).muxRangeFeed does.
-			sm.RegisteringStream(sID)
-			streamSink.SendError(disconnectErr)
+			sm.NewStream(sID, rID)
+			// We mock failed registration by not calling p.Register.
+			// node.MuxRangefeed would call sendBuffered with error event.
+			require.NoError(t, sm.sender.sendBuffered(makeMuxRangefeedErrorEvent(sID, rID, disconnectErr), nil))
 			expectErrorHandlingInvariance(p)
 			testServerStream.reset()
 		})
@@ -224,9 +221,8 @@ func TestStreamManagerErrorHandling(t *testing.T) {
 				p, h, stopper := newTestProcessor(t, withRangefeedTestType(rt))
 				defer stopper.Stop(ctx)
 				stream := sm.NewStream(sID, rID)
-				sm.RegisteringStream(sID)
 				registered, d, _ := p.Register(ctx, h.span, hlc.Timestamp{}, nil, /* catchUpIter */
-					false /* withDiff */, false /* withFiltering */, false /* withOmitRemote */, noBulkDelivery,
+					false /* withDiff */, false /* withFiltering */, false, /* withOmitRemote */
 					stream)
 				require.True(t, registered)
 				go p.StopWithErr(disconnectErr)
@@ -239,9 +235,8 @@ func TestStreamManagerErrorHandling(t *testing.T) {
 			stream := sm.NewStream(sID, rID)
 			p, h, stopper := newTestProcessor(t, withRangefeedTestType(rt))
 			defer stopper.Stop(ctx)
-			sm.RegisteringStream(sID)
 			registered, d, _ := p.Register(ctx, h.span, hlc.Timestamp{}, nil, /* catchUpIter */
-				false /* withDiff */, false /* withFiltering */, false /* withOmitRemote */, noBulkDelivery,
+				false /* withDiff */, false /* withFiltering */, false, /* withOmitRemote */
 				stream)
 			require.True(t, registered)
 			sm.AddStream(sID, d)
@@ -255,9 +250,8 @@ func TestStreamManagerErrorHandling(t *testing.T) {
 			stream := sm.NewStream(sID, rID)
 			p, h, stopper := newTestProcessor(t, withRangefeedTestType(rt))
 			defer stopper.Stop(ctx)
-			sm.RegisteringStream(sID)
 			registered, d, _ := p.Register(ctx, h.span, hlc.Timestamp{}, nil, /* catchUpIter */
-				false /* withDiff */, false /* withFiltering */, false /* withOmitRemote */, noBulkDelivery,
+				false /* withDiff */, false /* withFiltering */, false, /* withOmitRemote */
 				stream)
 			require.True(t, registered)
 			sm.AddStream(sID, d)

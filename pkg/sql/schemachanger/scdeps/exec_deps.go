@@ -27,11 +27,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec/scmutationexec"
-	"github.com/cockroachdb/cockroach/pkg/sql/schemaobjectlimit"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
-	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/errors"
 )
 
@@ -66,7 +64,6 @@ func NewExecutorDependencies(
 	metadataUpdater scexec.DescriptorMetadataUpdater,
 	temporarySchemaCreator scexec.TemporarySchemaCreator,
 	statsRefresher scexec.StatsRefresher,
-	tableStatsCache *stats.TableStatisticsCache,
 	testingKnobs *scexec.TestingKnobs,
 	kvTrace bool,
 	schemaChangerJobID jobspb.JobID,
@@ -80,7 +77,6 @@ func NewExecutorDependencies(
 			jobRegistry:        jobRegistry,
 			validator:          validator,
 			statsRefresher:     statsRefresher,
-			tableStatsCache:    tableStatsCache,
 			schemaChangerJobID: schemaChangerJobID,
 			schemaChangerJob:   nil,
 			kvTrace:            kvTrace,
@@ -109,7 +105,6 @@ type txnDeps struct {
 	createdJobs         []jobspb.JobID
 	validator           scexec.Validator
 	statsRefresher      scexec.StatsRefresher
-	tableStatsCache     *stats.TableStatisticsCache
 	tableStatsToRefresh []descpb.ID
 	schemaChangerJobID  jobspb.JobID
 	schemaChangerJob    *jobs.Job
@@ -373,18 +368,6 @@ func (d *txnDeps) InitializeSequence(id descpb.ID, startVal int64) {
 	batch := d.getOrCreateBatch()
 	sequenceKey := d.codec.SequenceKey(uint32(id))
 	batch.Inc(sequenceKey, startVal)
-}
-
-// CheckMaxSchemaObjects implements the scexec.Catalog interface.
-func (d *txnDeps) CheckMaxSchemaObjects(ctx context.Context, numNewObjects int) error {
-	return schemaobjectlimit.CheckMaxSchemaObjects(
-		ctx,
-		d.txn,
-		d.descsCollection,
-		d.tableStatsCache,
-		d.settings,
-		numNewObjects,
-	)
 }
 
 // Reset implements the scexec.Catalog interface.

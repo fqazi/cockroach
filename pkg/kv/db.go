@@ -218,7 +218,7 @@ func (s *CrossRangeTxnWrapperSender) Send(
 	ctx context.Context, ba *kvpb.BatchRequest,
 ) (*kvpb.BatchResponse, *kvpb.Error) {
 	if ba.Txn != nil {
-		log.Dev.Fatalf(ctx, "CrossRangeTxnWrapperSender can't handle transactional requests")
+		log.Fatalf(ctx, "CrossRangeTxnWrapperSender can't handle transactional requests")
 	}
 
 	br, pErr := s.wrapped.Send(ctx, ba)
@@ -900,23 +900,6 @@ func (db *DB) Barrier(ctx context.Context, begin, end interface{}) (hlc.Timestam
 	return resp.Timestamp, nil
 }
 
-func (db *DB) FlushLockTable(ctx context.Context, begin, end interface{}) error {
-	b := &Batch{}
-	b.flushLockTable(begin, end)
-	if err := getOneErr(db.Run(ctx, b), b); err != nil {
-		return err
-	}
-	if l := len(b.response.Responses); l != 1 {
-		return errors.Errorf("got %d responses for FlushLockTable", l)
-	}
-	resp := b.response.Responses[0].GetFlushLockTable()
-	if resp == nil {
-		return errors.Errorf("unexpected response %T for FlushLockTable",
-			b.response.Responses[0].GetInner())
-	}
-	return nil
-}
-
 // BarrierWithLAI is like Barrier, but also returns the lease applied index and
 // range descriptor at which the barrier was applied. In this case, the barrier
 // can't span multiple ranges, otherwise a RangeKeyMismatchError is returned.
@@ -1167,7 +1150,7 @@ func (db *DB) sendUsingSender(
 	br, pErr := sender.Send(ctx, ba)
 	if pErr != nil {
 		if log.V(1) {
-			log.Dev.Infof(ctx, "failed batch: %s", pErr)
+			log.Infof(ctx, "failed batch: %s", pErr)
 		}
 		return nil, pErr
 	}

@@ -167,9 +167,6 @@ func getResultColumns(
 		return tableColumns(a.Table, a.OutCols), nil
 
 	case vectorMutationSearchOp:
-		if len(inputs) == 0 {
-			return nil, nil
-		}
 		a := args.(*vectorMutationSearchArgs)
 		cols := appendColumns(inputs[0], colinfo.ResultColumn{Name: "partition-key", Typ: types.Int})
 		if a.IsIndexPut {
@@ -192,26 +189,12 @@ func getResultColumns(
 			a.Passthrough...,
 		), nil
 
-	case updateSwapOp:
-		a := args.(*updateSwapArgs)
-		return appendColumns(
-			tableColumns(a.Table, a.ReturnCols),
-			a.Passthrough...,
-		), nil
-
 	case upsertOp:
 		a := args.(*upsertArgs)
 		return tableColumns(a.Table, a.ReturnCols), nil
 
 	case deleteOp:
 		a := args.(*deleteArgs)
-		return appendColumns(
-			tableColumns(a.Table, a.ReturnCols),
-			a.Passthrough...,
-		), nil
-
-	case deleteSwapOp:
-		a := args.(*deleteSwapArgs)
 		return appendColumns(
 			tableColumns(a.Table, a.ReturnCols),
 			a.Passthrough...,

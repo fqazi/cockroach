@@ -76,6 +76,7 @@ var buildTargetMapping = map[string]string{
 	"bazel-remote":         bazelRemoteTarget,
 	"buildifier":           "@com_github_bazelbuild_buildtools//buildifier:buildifier",
 	"buildozer":            "@com_github_bazelbuild_buildtools//buildozer:buildozer",
+	"cloudupload":          "//pkg/cmd/cloudupload:cloudupload",
 	"cockroach":            cockroachTarget,
 	"cockroach-sql":        "//pkg/cmd/cockroach-sql:cockroach-sql",
 	"cockroach-short":      "//pkg/cmd/cockroach-short:cockroach-short",
@@ -87,6 +88,7 @@ var buildTargetMapping = map[string]string{
 	"execgen":              "//pkg/sql/colexec/execgen/cmd/execgen:execgen",
 	"gofmt":                "@com_github_cockroachdb_gostdlib//cmd/gofmt:gofmt",
 	"goimports":            "@com_github_cockroachdb_gostdlib//x/tools/cmd/goimports:goimports",
+	"label-merged-pr":      "//pkg/cmd/label-merged-pr:label-merged-pr",
 	"geos":                 geosTarget,
 	"langgen":              "//pkg/sql/opt/optgen/cmd/langgen:langgen",
 	"libgeos":              geosTarget,
@@ -106,7 +108,6 @@ var buildTargetMapping = map[string]string{
 	"sql-bootstrap-data":   "//pkg/cmd/sql-bootstrap-data:sql-bootstrap-data",
 	"staticcheck":          "@co_honnef_go_tools//cmd/staticcheck:staticcheck",
 	"tests":                "//pkg:all_tests",
-	"vecbench":             "//pkg/cmd/vecbench:vecbench",
 	"whoownsit":            "//pkg/cmd/whoownsit:whoownsit",
 	"workload":             "//pkg/cmd/workload:workload",
 }

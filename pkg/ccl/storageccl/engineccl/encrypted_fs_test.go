@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -24,7 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
+	"github.com/cockroachdb/cockroach/pkg/storage/storagepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/storageutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -237,35 +236,32 @@ func TestPebbleEncryption(t *testing.T) {
 	keyFile128 := "111111111111111111111111111111111234567890123456"
 	writeToFile(t, stickyRegistry.Get(stickyVFSID), "16.key", []byte(keyFile128))
 
-	encOptions := &storageconfig.EncryptionOptions{
-		KeySource: storageconfig.EncryptionKeyFromFiles,
-		KeyFiles: &storageconfig.EncryptionKeyFiles{
+	encOptions := &storagepb.EncryptionOptions{
+		KeySource: storagepb.EncryptionKeySource_KeyFiles,
+		KeyFiles: &storagepb.EncryptionKeyFiles{
 			CurrentKey: "16.key",
 			OldKey:     "plain",
 		},
-		RotationPeriod: time.Hour,
+		DataKeyRotationPeriod: 1000, // arbitrary seconds
 	}
 
 	func() {
 		// Initialize the filesystem env.
-		settings := cluster.MakeTestingClusterSettings()
 		env, err := fs.InitEnvFromStoreSpec(
 			ctx,
 			base.StoreSpec{
 				InMemory:          true,
-				Size:              storageconfig.BytesSize(512 << 20),
+				Attributes:        roachpb.Attributes{},
+				Size:              storagepb.SizeSpec{Capacity: 512 << 20},
 				EncryptionOptions: encOptions,
 				StickyVFSID:       stickyVFSID,
 			},
-			fs.EnvConfig{
-				RW:      fs.ReadWrite,
-				Version: settings.Version,
-			},
+			fs.ReadWrite,
 			stickyRegistry, /* sticky registry */
 			nil,            /* statsCollector */
 		)
 		require.NoError(t, err)
-		db, err := storage.Open(ctx, env, settings)
+		db, err := storage.Open(ctx, env, cluster.MakeTestingClusterSettings())
 		require.NoError(t, err)
 		defer db.Close()
 
@@ -300,24 +296,21 @@ func TestPebbleEncryption(t *testing.T) {
 
 	func() {
 		// Initialize the filesystem env again, replaying the file registries.
-		settings := cluster.MakeTestingClusterSettings()
 		env, err := fs.InitEnvFromStoreSpec(
 			ctx,
 			base.StoreSpec{
 				InMemory:          true,
-				Size:              storageconfig.BytesSize(512 << 20),
+				Attributes:        roachpb.Attributes{},
+				Size:              storagepb.SizeSpec{Capacity: 512 << 20},
 				EncryptionOptions: encOptions,
 				StickyVFSID:       stickyVFSID,
 			},
-			fs.EnvConfig{
-				RW:      fs.ReadWrite,
-				Version: settings.Version,
-			},
+			fs.ReadWrite,
 			stickyRegistry, /* sticky registry */
 			nil,            /* statsCollector */
 		)
 		require.NoError(t, err)
-		db, err := storage.Open(ctx, env, settings)
+		db, err := storage.Open(ctx, env, cluster.MakeTestingClusterSettings())
 		require.NoError(t, err)
 		defer db.Close()
 		require.Equal(t, []byte("a"), storageutils.MVCCGetRaw(t, db, storageutils.PointKey("a", 0)))
@@ -380,35 +373,32 @@ func TestPebbleEncryption2(t *testing.T) {
 	addKeyAndValidate := func(
 		key string, val string, encKeyFile string, oldEncFileKey string,
 	) {
-		encOptions := &storageconfig.EncryptionOptions{
-			KeySource: storageconfig.EncryptionKeyFromFiles,
-			KeyFiles: &storageconfig.EncryptionKeyFiles{
+		encOptions := &storagepb.EncryptionOptions{
+			KeySource: storagepb.EncryptionKeySource_KeyFiles,
+			KeyFiles: &storagepb.EncryptionKeyFiles{
 				CurrentKey: encKeyFile,
 				OldKey:     oldEncFileKey,
 			},
-			RotationPeriod: time.Hour,
+			DataKeyRotationPeriod: 1000,
 		}
 
 		// Initialize the filesystem env.
 		ctx := context.Background()
-		settings := cluster.MakeTestingClusterSettings()
 		env, err := fs.InitEnvFromStoreSpec(
 			ctx,
 			base.StoreSpec{
 				InMemory:          true,
-				Size:              storageconfig.BytesSize(512 << 20),
+				Attributes:        roachpb.Attributes{},
+				Size:              storagepb.SizeSpec{Capacity: 512 << 20},
 				EncryptionOptions: encOptions,
 				StickyVFSID:       stickyVFSID,
 			},
-			fs.EnvConfig{
-				RW:      fs.ReadWrite,
-				Version: settings.Version,
-			},
+			fs.ReadWrite,
 			stickyRegistry, /* sticky registry */
 			nil,            /* statsCollector */
 		)
 		require.NoError(t, err)
-		db, err := storage.Open(ctx, env, settings)
+		db, err := storage.Open(ctx, env, cluster.MakeTestingClusterSettings())
 		require.NoError(t, err)
 		defer db.Close()
 
@@ -425,7 +415,7 @@ func TestPebbleEncryption2(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.NoError(t, db.Flush())
-		require.NoError(t, db.Compact(context.Background()))
+		require.NoError(t, db.Compact())
 		require.True(t, validateKeys(db))
 		db.Close()
 	}
@@ -516,7 +506,7 @@ func (ptfs *plainTestFS) syncDir(t *testing.T) {}
 type encryptedTestFS struct {
 	// The base strict FS which is wrapped for error injection and encryption.
 	mem        *vfs.MemFS
-	encOptions *storageconfig.EncryptionOptions
+	encOptions *storagepb.EncryptionOptions
 	errorProb  float64
 	errorRand  *rand.Rand
 
@@ -571,9 +561,9 @@ func makeEncryptedTestFS(t *testing.T, errorProb float64, errorRand *rand.Rand) 
 	require.NoError(t, dir.Sync())
 	require.NoError(t, dir.Close())
 
-	var encOptions storageconfig.EncryptionOptions
-	encOptions.KeySource = storageconfig.EncryptionKeyFromFiles
-	encOptions.KeyFiles = &storageconfig.EncryptionKeyFiles{
+	var encOptions storagepb.EncryptionOptions
+	encOptions.KeySource = storagepb.EncryptionKeySource_KeyFiles
+	encOptions.KeyFiles = &storagepb.EncryptionKeyFiles{
 		CurrentKey: "16.key",
 		OldKey:     "plain",
 	}
@@ -581,7 +571,7 @@ func makeEncryptedTestFS(t *testing.T, errorProb float64, errorRand *rand.Rand) 
 	//
 	// TODO(sumeer): Do deterministic data key rotation. Inject kmTimeNow and
 	// operations that advance time.
-	encOptions.RotationPeriod = 100000 * time.Second
+	encOptions.DataKeyRotationPeriod = 100000
 	etfs := &encryptedTestFS{
 		mem:        mem,
 		encOptions: &encOptions,

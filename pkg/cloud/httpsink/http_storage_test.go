@@ -453,6 +453,7 @@ func newTestingRangeHandler(
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 	}
+
 }
 
 // TestReadFileAtReturnsSize tests that ReadFileAt returns

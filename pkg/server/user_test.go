@@ -46,10 +46,10 @@ func TestValidRoles(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, false, hasRole)
 
-		// Skip PASSWORD and SUBJECT/PROVISIONSRC options. Since PASSWORD
-		// still resides in system.users and SUBJECT, PROVISIONSRC are an
-		// enterprise features that is tested separately.
-		if name == "PASSWORD" || name == "SUBJECT" || name == "PROVISIONSRC" {
+		// Skip PASSWORD and SUBJECT options. Since PASSWORD still resides in
+		// system.users and SUBJECT is an enterprise feature that is tested
+		// separately.
+		if name == "PASSWORD" || name == "SUBJECT" {
 			continue
 		}
 		// Add the role and check if the role was added (or in the cases of roles starting
@@ -83,9 +83,7 @@ func TestSQLRolesAPI(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
-		DefaultDRPCOption: base.TestDRPCDisabled,
-	})
+	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
 	defer s.Stopper().Stop(context.Background())
 	db := sqlutils.MakeSQLRunner(sqlDB)
 	var res serverpb.UserSQLRolesResponse

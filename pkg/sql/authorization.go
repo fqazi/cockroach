@@ -32,7 +32,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
-	"github.com/cockroachdb/cockroach/pkg/sql/unsafesql"
 	"github.com/cockroachdb/errors"
 )
 
@@ -120,14 +119,6 @@ func (p *planner) HasPrivilege(
 	// with an invalid API usage.
 	if p.txn == nil {
 		return false, errors.AssertionFailedf("cannot use CheckPrivilege without a txn")
-	}
-
-	// Do a safety check on the object, if it is considered unsafe
-	// does the caller have the appropriate session data to access it?
-	if p.objectIsUnsafe(ctx, privilegeObject) {
-		if err := unsafesql.CheckInternalsAccess(ctx, p.SessionData(), p.stmt.AST, p.extendedEvalCtx.Annotations, &p.ExecCfg().Settings.SV); err != nil {
-			return false, err
-		}
 	}
 
 	// root, admin and node user should always have privileges, except NOSQLLOGIN.
@@ -656,20 +647,17 @@ func (p *planner) UserHasRoleOption(
 		return false, errors.AssertionFailedf("cannot use HasRoleOption without a txn")
 	}
 
-	// Skip non-admin inherited role options for validation.
-	if !slices.Contains(roleoption.NonAdminInheritedOptions, roleOption) {
-		if user.IsRootUser() || user.IsNodeUser() {
-			return true, nil
-		}
+	if user.IsRootUser() || user.IsNodeUser() {
+		return true, nil
+	}
 
-		hasAdmin, err := p.UserHasAdminRole(ctx, user)
-		if err != nil {
-			return false, err
-		}
-		if hasAdmin {
-			// Superusers have all role privileges.
-			return true, nil
-		}
+	hasAdmin, err := p.UserHasAdminRole(ctx, user)
+	if err != nil {
+		return false, err
+	}
+	if hasAdmin {
+		// Superusers have all role privileges.
+		return true, nil
 	}
 
 	hasRolePrivilege, err := p.InternalSQLTxn().QueryRowEx(
@@ -947,33 +935,6 @@ func (p *planner) HasViewActivityOrViewActivityRedactedRole(
 	}
 
 	return false, false, nil
-}
-
-// objectIsUnsafe checks if the privilege object is considered unsafe for external usage.
-// Unsafe objects are any system tables, and crdb_internal tables which are not listed as externally supported.
-func (p *planner) objectIsUnsafe(ctx context.Context, privilegeObject privilege.Object) bool {
-	if p.skipUnsafeInternalsCheck {
-		return false
-	}
-
-	d, ok := privilegeObject.(catalog.TableDescriptor)
-	if !ok {
-		return false
-	}
-
-	// All system descriptors are considered unsafe.
-	if catalog.IsSystemDescriptor(d) {
-		return true
-	}
-
-	// Unsupported crdb_internal tables are considered unsafe.
-	if d.GetParentSchemaID() == catconstants.CrdbInternalID {
-		if _, ok := SupportedCRDBInternalTables[d.GetName()]; !ok {
-			return true
-		}
-	}
-
-	return false
 }
 
 func insufficientPrivilegeError(

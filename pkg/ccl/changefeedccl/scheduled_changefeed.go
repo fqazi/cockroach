@@ -97,7 +97,7 @@ func (s *scheduledChangefeedExecutor) NotifyJobTermination(
 ) error {
 	if jobState == jobs.StateSucceeded {
 		s.metrics.NumSucceeded.Inc(1)
-		log.Changefeed.Infof(ctx, "changefeed job %d scheduled by %d succeeded", jobID, schedule.ScheduleID())
+		log.Infof(ctx, "changefeed job %d scheduled by %d succeeded", jobID, schedule.ScheduleID())
 		return nil
 	}
 
@@ -105,7 +105,7 @@ func (s *scheduledChangefeedExecutor) NotifyJobTermination(
 	err := errors.Errorf(
 		"changefeed job %d scheduled by %d failed with status %s",
 		jobID, schedule.ScheduleID(), jobState)
-	log.Changefeed.Errorf(ctx, "changefeed error: %v	", err)
+	log.Errorf(ctx, "changefeed error: %v	", err)
 	jobs.DefaultHandleFailedRun(schedule, "changefeed job %d failed with err=%v", jobID, err)
 	return nil
 }
@@ -195,7 +195,7 @@ func (s *scheduledChangefeedExecutor) executeChangefeed(
 	// pause the schedule. To maintain backward compatability with schedules
 	// without a clusterID, don't pause schedules without a clusterID.
 	if !currentDetails.ClusterID.Equal(uuid.Nil) && currentClusterID != currentDetails.ClusterID {
-		log.Changefeed.Infof(ctx, "scheduled changedfeed %d last run by different cluster %s, pausing until manually resumed",
+		log.Infof(ctx, "scheduled changedfeed %d last run by different cluster %s, pausing until manually resumed",
 			sj.ScheduleID(),
 			currentDetails.ClusterID)
 		currentDetails.ClusterID = currentClusterID
@@ -204,7 +204,7 @@ func (s *scheduledChangefeedExecutor) executeChangefeed(
 		return nil
 	}
 
-	log.Changefeed.Infof(ctx, "Starting scheduled changefeed %d: %s",
+	log.Infof(ctx, "Starting scheduled changefeed %d: %s",
 		sj.ScheduleID(), tree.AsString(changefeedStmt))
 	changefeedFn, err := planCreateChangefeed(ctx, planner, changefeedStmt)
 	if err != nil {
@@ -275,7 +275,7 @@ func makeScheduledChangefeedSpec(
 	var err error
 
 	tablePatterns := make([]tree.TablePattern, 0)
-	for _, target := range schedule.TableTargets {
+	for _, target := range schedule.Targets {
 		tablePatterns = append(tablePatterns, target.TableName)
 	}
 
@@ -284,13 +284,12 @@ func makeScheduledChangefeedSpec(
 		return nil, errors.Wrap(err, "qualifying target tables")
 	}
 
-	newTargets := make([]tree.ChangefeedTableTarget, 0)
+	newTargets := make([]tree.ChangefeedTarget, 0)
 	for i, table := range qualifiedTablePatterns {
-		target := schedule.TableTargets[i]
-		newTargets = append(newTargets, tree.ChangefeedTableTarget{TableName: table, FamilyName: target.FamilyName})
+		newTargets = append(newTargets, tree.ChangefeedTarget{TableName: table, FamilyName: schedule.Targets[i].FamilyName})
 	}
 
-	schedule.TableTargets = newTargets
+	schedule.Targets = newTargets
 
 	// We need to change the TableExpr inside the Select clause to be fully
 	// qualified. Otherwise, when we execute the schedule, we will parse the
@@ -596,7 +595,7 @@ func doCreateChangefeedSchedule(
 	createChangefeedopts := changefeedbase.MakeStatementOptions(spec.createChangefeedOptions)
 	initialScanSpecifiedByUser := createChangefeedopts.IsInitialScanSpecified()
 	if !initialScanSpecifiedByUser {
-		log.Changefeed.Infof(ctx, "Initial scan type not specified, forcing %s option", changefeedbase.OptInitialScanOnly)
+		log.Infof(ctx, "Initial scan type not specified, forcing %s option", changefeedbase.OptInitialScanOnly)
 		spec.Options = append(spec.Options, tree.KVOption{
 			Key:   changefeedbase.OptInitialScan,
 			Value: tree.NewStrVal("only"),
@@ -627,10 +626,10 @@ func doCreateChangefeedSchedule(
 	}
 
 	createChangefeedNode := &tree.CreateChangefeed{
-		TableTargets: spec.TableTargets,
-		SinkURI:      tree.NewStrVal(*spec.evaluatedSinkURI),
-		Options:      spec.Options,
-		Select:       spec.Select,
+		Targets: spec.Targets,
+		SinkURI: tree.NewStrVal(*spec.evaluatedSinkURI),
+		Options: spec.Options,
+		Select:  spec.Select,
 	}
 
 	es, err := makeChangefeedSchedule(env, p.User(), scheduleLabel, recurrence, details, createChangefeedNode)

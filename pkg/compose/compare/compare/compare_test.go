@@ -80,7 +80,7 @@ func TestCompare(t *testing.T) {
 	configs := map[string]testConfig{
 		"mutators": {
 			setup:           sqlsmith.Setups[sqlsmith.RandTableSetupName],
-			opts:            []sqlsmith.SmitherOption{sqlsmith.CompareMode(), sqlsmith.DisableDoBlocks()},
+			opts:            []sqlsmith.SmitherOption{sqlsmith.CompareMode()},
 			ignoreSQLErrors: true,
 			conns: []testConn{
 				{
@@ -93,7 +93,7 @@ func TestCompare(t *testing.T) {
 						randgen.ForeignKeyMutator,
 						randgen.ColumnFamilyMutator,
 						randgen.IndexStoringMutator,
-						randgen.DupPartialIndexMutator,
+						randgen.PartialIndexMutator,
 					},
 				},
 			},

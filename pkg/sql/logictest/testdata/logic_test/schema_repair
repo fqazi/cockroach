@@ -1,5 +1,3 @@
-# LogicTest: !local-prepared
-
 subtest lost_table_data
 
 # This test will intentionally corrupt descriptors, so the initial version
@@ -341,7 +339,7 @@ FROM
 WHERE
 	name = 'kv'
 
-statement error pgcode XX000 internal error:.* relation "kv" \(\d+\): column "k" invalid ID \(1\) >= next column ID \(1\)
+statement error pgcode XX000 internal error: relation "kv" \(\d+\): column "k" invalid ID \(1\) >= next column ID \(1\)
 ALTER TABLE kv RENAME TO kv
 
 statement ok

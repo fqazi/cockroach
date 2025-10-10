@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/fetchpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execopnode"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execstats"
@@ -81,7 +80,7 @@ type invertedJoiner struct {
 	// fetched columns (same length with prefixEqualityCols).
 	prefixFetchedColOrdinals []int
 
-	onExprHelper execexpr.Helper
+	onExprHelper execinfrapb.ExprHelper
 	combinedRow  rowenc.EncDatumRow
 
 	joinType descpb.JoinType
@@ -272,7 +271,7 @@ func newInvertedJoiner(
 	ij.combinedRow = make(rowenc.EncDatumRow, 0, combinedRowLen)
 
 	if ij.datumsToInvertedExpr == nil {
-		var invertedExprHelper execexpr.Helper
+		var invertedExprHelper execinfrapb.ExprHelper
 		if err := invertedExprHelper.Init(ctx, spec.InvertedExpr, onExprColTypes, semaCtx, evalCtx); err != nil {
 			return nil, err
 		}
@@ -395,7 +394,7 @@ func (ij *invertedJoiner) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerMetad
 		case ijEmittingRows:
 			ij.runningState, row, meta = ij.emitRow()
 		default:
-			log.Dev.Fatalf(ij.Ctx(), "unsupported state: %d", ij.runningState)
+			log.Fatalf(ij.Ctx(), "unsupported state: %d", ij.runningState)
 		}
 		if row == nil && meta == nil {
 			continue
@@ -586,8 +585,8 @@ func (ij *invertedJoiner) performScan() (invertedJoinerState, *execinfrapb.Produ
 	return ijEmittingRows, nil
 }
 
-var trueEncDatum = rowenc.DatumToEncDatumUnsafe(types.Bool, tree.DBoolTrue)
-var falseEncDatum = rowenc.DatumToEncDatumUnsafe(types.Bool, tree.DBoolFalse)
+var trueEncDatum = rowenc.DatumToEncDatum(types.Bool, tree.DBoolTrue)
+var falseEncDatum = rowenc.DatumToEncDatum(types.Bool, tree.DBoolFalse)
 
 // emitRow returns the next row from ij.emitCursor, if present. Otherwise it
 // prepares for another input batch.

@@ -92,7 +92,7 @@ func (p *compactBackupsProcessor) Start(ctx context.Context) {
 		for range p.progCh {
 		}
 	}
-	log.Dev.Infof(ctx, "starting backup compaction")
+	log.Infof(ctx, "starting backup compaction")
 	if err := p.FlowCtx.Stopper().RunAsyncTaskEx(ctx, stop.TaskOpts{
 		TaskName: compactBackupsProcessorName + ".runCompactBackups",
 		SpanOpt:  stop.ChildSpan,
@@ -130,7 +130,7 @@ func (p *compactBackupsProcessor) constructProgressProducerMeta(
 
 	progDetails := backuppb.BackupManifest_Progress{}
 	if err := gogotypes.UnmarshalAny(&prog.ProgressDetails, &progDetails); err != nil {
-		log.Dev.Warningf(p.Ctx(), "failed to unmarshal progress details: %v", err)
+		log.Warningf(p.Ctx(), "failed to unmarshal progress details: %v", err)
 	} else {
 		p.completedSpans += progDetails.CompletedSpans
 	}
@@ -347,7 +347,7 @@ func openSSTs(
 	cleanupDirs := func() {
 		for _, dir := range dirs {
 			if err := dir.Close(); err != nil {
-				log.Dev.Warningf(ctx, "close export storage failed: %v", err)
+				log.Warningf(ctx, "close export storage failed: %v", err)
 			}
 		}
 	}
@@ -391,7 +391,7 @@ func openSSTs(
 		entry: entry,
 		iter:  compactionIter,
 		cleanup: func() {
-			log.Dev.VInfof(ctx, 1, "finished with and closing %d files in span %d %v", len(entry.Files), entry.ProgressIdx, entry.Span.String())
+			log.VInfof(ctx, 1, "finished with and closing %d files in span %d %v", len(entry.Files), entry.ProgressIdx, entry.Span.String())
 			compactionIter.Close()
 			cleanupDirs()
 		},

@@ -177,13 +177,6 @@ const (
 
 	testTenantModeEnabledShared   = "shared"
 	testTenantModeEnabledExternal = "external"
-
-	// COCKROACH_TEST_DRPC controls the DRPC enablement mode for test servers.
-	//
-	// - disabled: disables DRPC; all inter-node connectivity will use gRPC only
-	//
-	// - enabled: enables DRPC for inter-node connectivity
-	testDRPCEnabledEnvVar = "COCKROACH_TEST_DRPC"
 )
 
 func testTenantDecisionFromEnvironment(
@@ -208,23 +201,6 @@ func testTenantDecisionFromEnvironment(
 		}
 	}
 	return baseArg, false
-}
-
-var globalDefaultDRPCOptionOverride struct {
-	isSet bool
-	value base.DefaultTestDRPCOption
-}
-
-// TestingGlobalDRPCOption sets the package-level DefaultTestDRPCOption.
-//
-// Note: This override will be superseded by any more specific options provided
-// when starting the server or cluster.
-func TestingGlobalDRPCOption(v base.DefaultTestDRPCOption) func() {
-	globalDefaultDRPCOptionOverride.isSet = true
-	globalDefaultDRPCOptionOverride.value = v
-	return func() {
-		globalDefaultDRPCOptionOverride.isSet = false
-	}
 }
 
 // globalDefaultSelectionOverride is used when an entire package needs
@@ -276,12 +252,10 @@ type TestFataler interface {
 // The first argument is optional. If non-nil; it is used for logging
 // server configuration messages.
 func StartServerOnlyE(t TestLogger, params base.TestServerArgs) (TestServerInterface, error) {
-	ctx := context.Background()
 	allowAdditionalTenants := params.DefaultTestTenant.AllowAdditionalTenants()
-
-	// Update the flags with the actual decisions for test configuration.
+	// Update the flags with the actual decision as to whether we should
+	// start the service for a default test tenant.
 	params.DefaultTestTenant = ShouldStartDefaultTestTenant(t, params.DefaultTestTenant)
-	params.DefaultDRPCOption = ShouldEnableDRPC(ctx, t, params.DefaultDRPCOption)
 
 	s, err := NewServer(params)
 	if err != nil {
@@ -294,6 +268,8 @@ func StartServerOnlyE(t TestLogger, params base.TestServerArgs) (TestServerInter
 			w.loggerFn = t.Logf
 		}
 	}
+
+	ctx := context.Background()
 
 	if err := s.Start(ctx); err != nil {
 		return nil, err
@@ -482,7 +458,7 @@ func GetJSONProtoWithAdminOption(
 	}
 	u := ts.AdminURL()
 	fullURL := u.WithPath(path).String()
-	log.Dev.Infof(context.Background(), "test retrieving protobuf over HTTP: %s", fullURL)
+	log.Infof(context.Background(), "test retrieving protobuf over HTTP: %s", fullURL)
 	return httputil.GetJSON(httpClient, fullURL, response)
 }
 
@@ -502,8 +478,8 @@ func GetJSONProtoWithAdminAndTimeoutOption(
 	httpClient.Timeout += additionalTimeout
 	u := ts.AdminURL()
 	fullURL := u.WithPath(path).String()
-	log.Dev.Infof(context.Background(), "test retrieving protobuf over HTTP: %s", fullURL)
-	log.Dev.Infof(context.Background(), "set HTTP client timeout to: %s", httpClient.Timeout)
+	log.Infof(context.Background(), "test retrieving protobuf over HTTP: %s", fullURL)
+	log.Infof(context.Background(), "set HTTP client timeout to: %s", httpClient.Timeout)
 	return httputil.GetJSON(httpClient, fullURL, response)
 }
 
@@ -526,7 +502,7 @@ func PostJSONProtoWithAdminOption(
 		return err
 	}
 	fullURL := ts.AdminURL().WithPath(path).String()
-	log.Dev.Infof(context.Background(), "test retrieving protobuf over HTTP: %s", fullURL)
+	log.Infof(context.Background(), "test retrieving protobuf over HTTP: %s", fullURL)
 	return httputil.PostJSON(httpClient, fullURL, request, response)
 }
 
@@ -542,58 +518,4 @@ func WaitForTenantCapabilities(
 	if err != nil {
 		t.Fatal(err)
 	}
-}
-
-// parseDefaultTestDRPCOptionFromEnv parses the COCKROACH_TEST_DRPC environment
-// variable and returns the corresponding DefaultTestDRPCOption. If the
-// environment variable is not set it returns TestDRPCUnset. For invalid value,
-// it panic.
-func parseDefaultTestDRPCOptionFromEnv() base.DefaultTestDRPCOption {
-	if str, present := envutil.EnvString(testDRPCEnabledEnvVar, 0); present {
-		switch str {
-		case "disabled", "false":
-			return base.TestDRPCDisabled
-		case "enabled", "true":
-			return base.TestDRPCEnabled
-		default:
-			panic(fmt.Sprintf("invalid value for %s: %s", testDRPCEnabledEnvVar, str))
-		}
-	}
-	return base.TestDRPCUnset
-}
-
-// ShouldEnableDRPC determines the final DRPC option based on the input
-// option and any global overrides, resolving random choices to a concrete
-// enabled/disabled state.
-func ShouldEnableDRPC(
-	ctx context.Context, t TestLogger, option base.DefaultTestDRPCOption,
-) base.DefaultTestDRPCOption {
-	var logSuffix string
-
-	// Check environment variable first
-	if envOption := parseDefaultTestDRPCOptionFromEnv(); envOption != base.TestDRPCUnset {
-		option = envOption
-		logSuffix = " (override by COCKROACH_TEST_DRPC environment variable)"
-	} else if option == base.TestDRPCUnset && globalDefaultDRPCOptionOverride.isSet {
-		option = globalDefaultDRPCOptionOverride.value
-		logSuffix = " (override by TestingGlobalDRPCOption)"
-	}
-
-	enableDRPC := false
-	switch option {
-	case base.TestDRPCEnabled:
-		enableDRPC = true
-	case base.TestDRPCEnabledRandomly:
-		rng, _ := randutil.NewTestRand()
-		enableDRPC = rng.Intn(2) == 0
-	case base.TestDRPCUnset:
-		return base.TestDRPCUnset
-	}
-
-	if enableDRPC {
-		t.Log("DRPC is enabled" + logSuffix)
-		return base.TestDRPCEnabled
-	}
-
-	return base.TestDRPCDisabled
 }

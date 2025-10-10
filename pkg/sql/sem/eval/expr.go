@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree/treecmp"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/errors"
 )
 
@@ -60,7 +59,7 @@ func (e *evaluator) EvalAndExpr(ctx context.Context, expr *tree.AndExpr) (tree.D
 }
 
 func (e *evaluator) EvalArray(ctx context.Context, t *tree.Array) (tree.Datum, error) {
-	array, err := arrayOfType(t.ResolvedType(), nil /* elements */)
+	array, err := arrayOfType(t.ResolvedType())
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +79,11 @@ func (e *evaluator) EvalArray(ctx context.Context, t *tree.Array) (tree.Datum, e
 func (e *evaluator) EvalArrayFlatten(
 	ctx context.Context, t *tree.ArrayFlatten,
 ) (tree.Datum, error) {
+	array, err := arrayOfType(t.ResolvedType())
+	if err != nil {
+		return nil, err
+	}
+
 	d, err := t.Subquery.(tree.TypedExpr).Eval(ctx, e)
 	if err != nil {
 		return nil, err
@@ -89,10 +93,7 @@ func (e *evaluator) EvalArrayFlatten(
 	if !ok {
 		return nil, errors.AssertionFailedf("array subquery result (%v) is not DTuple", d)
 	}
-	array, err := arrayOfType(t.ResolvedType(), tuple.D)
-	if err != nil {
-		return nil, err
-	}
+	array.Array = tuple.D
 	return array, nil
 }
 
@@ -491,7 +492,7 @@ func (e *evaluator) EvalFuncExpr(ctx context.Context, expr *tree.FuncExpr) (tree
 
 	if fn.Body != "" {
 		// This expression evaluator cannot run functions defined with a SQL body.
-		return nil, unimplemented.NewWithIssuef(147472, "cannot evaluate function in this context")
+		return nil, pgerror.Newf(pgcode.FeatureNotSupported, "cannot evaluate function in this context")
 	}
 	if fn.Fn == nil {
 		// This expression evaluator cannot run functions that are not "normal"
@@ -501,7 +502,7 @@ func (e *evaluator) EvalFuncExpr(ctx context.Context, expr *tree.FuncExpr) (tree
 
 	res, err := fn.Fn.(FnOverload)(ctx, e.ctx(), args)
 	if err != nil {
-		return nil, err
+		return nil, expr.MaybeWrapError(err)
 	}
 	if e.TestingKnobs.AssertFuncExprReturnTypes {
 		if err := ensureExpectedType(fn.FixedReturnType(), res); err != nil {

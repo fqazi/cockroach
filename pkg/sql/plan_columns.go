@@ -71,11 +71,7 @@ func getPlanColumns(plan planNode, mut bool) colinfo.ResultColumns {
 		return n.columns
 	case *deleteNode:
 		return n.columns
-	case *deleteSwapNode:
-		return n.columns
 	case *updateNode:
-		return n.columns
-	case *updateSwapNode:
 		return n.columns
 	case *insertNode:
 		return n.columns
@@ -157,6 +153,10 @@ func getPlanColumns(plan planNode, mut bool) colinfo.ResultColumns {
 		return getPlanColumns(n.input, mut)
 	case *limitNode:
 		return getPlanColumns(n.input, mut)
+	case *spoolNode:
+		return getPlanColumns(n.input, mut)
+	case *serializeNode:
+		return getPlanColumns(n.source, mut)
 	case *saveTableNode:
 		return getPlanColumns(n.input, mut)
 	case *scanBufferNode:
@@ -213,19 +213,4 @@ func (c *optColumnsSlot) getColumns(mut bool, cols colinfo.ResultColumns) colinf
 	c.columns = make(colinfo.ResultColumns, len(cols))
 	copy(c.columns, cols)
 	return c.columns
-}
-
-// resultIsRowsAffected returns true if the given plan node returns a single
-// integer value indicating the number of rows affected.
-func resultIsRowsAffected(plan planNode) bool {
-	switch n := plan.(type) {
-	case mutationPlanNode:
-		return n.returnsRowsAffected()
-	case *moveNode, *controlJobsNode, *controlSchedulesNode,
-		*cancelQueriesNode, *cancelSessionsNode, *setZoneConfigNode:
-		// These nodes always return the row count.
-		return true
-	default:
-		return false
-	}
 }

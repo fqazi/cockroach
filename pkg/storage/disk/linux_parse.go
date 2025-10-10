@@ -149,11 +149,7 @@ func parseDiskStats(
 		} else if ok {
 			stats.FlushesDuration = time.Duration(millis) * time.Millisecond
 		}
-		disks[diskIdx].tracer.RecordEvent(traceEvent{
-			time:  measuredAt,
-			stats: stats,
-			err:   nil,
-		})
+		disks[diskIdx].recordStats(measuredAt, stats)
 		countCollected++
 	}
 	return countCollected, nil

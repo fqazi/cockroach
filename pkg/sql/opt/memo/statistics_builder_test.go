@@ -110,7 +110,7 @@ func TestGetStatsFromConstraint(t *testing.T) {
 		sel := mem.MemoizeSelect(scan, TrueFilter)
 
 		relProps := &props.Relational{Cardinality: props.AnyCardinality}
-		cs.ExtractNotNullCols(ctx, &evalCtx, &relProps.NotNullCols)
+		relProps.NotNullCols = cs.ExtractNotNullCols(ctx, &evalCtx)
 		s := relProps.Statistics()
 		const minRowCount = 0
 		s.Init(relProps, minRowCount)

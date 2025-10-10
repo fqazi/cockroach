@@ -13,7 +13,6 @@ import (
 	"context"
 	"math"
 	"sync"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
@@ -272,8 +271,6 @@ type ProcessorCorePlacement struct {
 	// EstimatedRowCount, if set to non-zero, is the optimizer's guess of how
 	// many rows will be emitted from this processor.
 	EstimatedRowCount uint64
-	// StatsCreatedAt is the time when the latest table statistics were collected.
-	StatsCreatedAt time.Time
 }
 
 // AddNoInputStage creates a stage of processors that don't have any input from
@@ -311,7 +308,6 @@ func (p *PhysicalPlan) AddNoInputStage(
 				StageID:           stageID,
 				ResultTypes:       outputTypes,
 				EstimatedRowCount: corePlacements[i].EstimatedRowCount,
-				StatsCreatedAt:    corePlacements[i].StatsCreatedAt,
 			},
 		}
 

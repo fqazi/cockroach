@@ -98,13 +98,14 @@ func (j *tableMetadataUpdateJobResumer) Resume(ctx context.Context, execCtxI int
 		}
 		select {
 		case <-scheduleSettingsCh:
-			log.Dev.Info(ctx, "table metadata job settings updated, stopping timer.")
+			log.Info(ctx, "table metadata job settings updated, stopping timer.")
 			timer.Stop()
 			continue
 		case <-timer.C:
-			log.Dev.Info(ctx, "running table metadata update job after data cache expiration")
+			timer.Read = true
+			log.Info(ctx, "running table metadata update job after data cache expiration")
 		case <-signalCh:
-			log.Dev.Info(ctx, "running table metadata update job via grpc signal")
+			log.Info(ctx, "running table metadata update job via grpc signal")
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -116,7 +117,7 @@ func (j *tableMetadataUpdateJobResumer) Resume(ctx context.Context, execCtxI int
 		j.markAsRunning(ctx)
 		err := updater.RunUpdater(ctx)
 		if err != nil {
-			log.Dev.Errorf(ctx, "error running table metadata update job: %s", err)
+			log.Errorf(ctx, "error running table metadata update job: %s", err)
 			j.metrics.Errors.Inc(1)
 		}
 		j.markAsCompleted(ctx)
@@ -128,7 +129,7 @@ func (j *tableMetadataUpdateJobResumer) Resume(ctx context.Context, execCtxI int
 
 func (j *tableMetadataUpdateJobResumer) updateProgress(ctx context.Context, progress float32) {
 	if err := j.job.NoTxn().FractionProgressed(ctx, jobs.FractionUpdater(progress)); err != nil {
-		log.Dev.Errorf(ctx, "Error updating table metadata log progress. error: %s", err.Error())
+		log.Errorf(ctx, "Error updating table metadata log progress. error: %s", err.Error())
 	}
 }
 
@@ -148,7 +149,7 @@ func (j *tableMetadataUpdateJobResumer) markAsRunning(ctx context.Context) {
 		ju.UpdateProgress(progress)
 		return nil
 	}); err != nil {
-		log.Dev.Errorf(ctx, "%s", err.Error())
+		log.Errorf(ctx, "%s", err.Error())
 	}
 }
 
@@ -168,7 +169,7 @@ func (j *tableMetadataUpdateJobResumer) markAsCompleted(ctx context.Context) {
 		ju.UpdateProgress(progress)
 		return nil
 	}); err != nil {
-		log.Dev.Errorf(ctx, "%s", err.Error())
+		log.Errorf(ctx, "%s", err.Error())
 	}
 }
 
@@ -180,7 +181,7 @@ func (j *tableMetadataUpdateJobResumer) OnFailOrCancel(
 		err := errors.NewAssertionErrorWithWrappedErrf(
 			jobErr, "update table metadata cache job is not cancelable",
 		)
-		log.Dev.Errorf(ctx, "%v", err)
+		log.Errorf(ctx, "%v", err)
 	}
 	return nil
 }

@@ -6,9 +6,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,7 +34,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/apiconstants"
 	"github.com/cockroachdb/cockroach/pkg/server/authserver"
@@ -74,11 +76,11 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 	gwruntime "github.com/grpc-ecosystem/grpc-gateway/runtime"
+	gwutil "github.com/grpc-ecosystem/grpc-gateway/utilities"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	grpcstatus "google.golang.org/grpc/status"
-	"storj.io/drpc"
-	"storj.io/drpc/drpcerr"
 )
 
 // Number of empty ranges for table descriptors that aren't actually tables. These
@@ -111,12 +113,10 @@ type adminServer struct {
 	statsLimiter     *quotapool.IntPool
 	st               *cluster.Settings
 	serverIterator   ServerIterator
-	nd               *nodeDialer
 	distSender       *kvcoord.DistSender
 	rpcContext       *rpc.Context
 	clock            *hlc.Clock
 	grpc             *grpcServer
-	drpc             *drpcServer
 	db               *kv.DB
 	drainServer      *drainServer
 }
@@ -156,7 +156,6 @@ func newSystemAdminServer(
 	clock *hlc.Clock,
 	distSender *kvcoord.DistSender,
 	grpc *grpcServer,
-	drpc *drpcServer,
 	drainServer *drainServer,
 	s *topLevelServer,
 ) *systemAdminServer {
@@ -173,7 +172,6 @@ func newSystemAdminServer(
 		clock,
 		distSender,
 		grpc,
-		drpc,
 		drainServer,
 	)
 	return &systemAdminServer{
@@ -201,7 +199,6 @@ func newAdminServer(
 	clock *hlc.Clock,
 	distSender *kvcoord.DistSender,
 	grpc *grpcServer,
-	drpc *drpcServer,
 	drainServer *drainServer,
 ) *adminServer {
 	server := &adminServer{
@@ -216,12 +213,10 @@ func newAdminServer(
 		),
 		st:             cs,
 		serverIterator: serverIterator,
-		nd:             &nodeDialer{cs: cs, si: serverIterator},
 		distSender:     distSender,
 		rpcContext:     rpcCtx,
 		clock:          clock,
 		grpc:           grpc,
-		drpc:           drpc,
 		db:             db,
 		drainServer:    drainServer,
 	}
@@ -250,31 +245,49 @@ func (s *adminServer) RegisterService(g *grpc.Server) {
 	serverpb.RegisterAdminServer(g, s)
 }
 
-type drpcSystemAdminServer struct {
-	*systemAdminServer
-}
-
-// RegisterDRPCService registers the Admin service with the DRPC server running
-// in the system tenant.
-func (s *systemAdminServer) RegisterDRPCService(d drpc.Mux) error {
-	return serverpb.DRPCRegisterAdmin(d, &drpcSystemAdminServer{systemAdminServer: s})
-}
-
-type drpcAdminServer struct {
-	*adminServer
-}
-
-// RegisterDRPCService registers the Admin service with the DRPC server running
-// in a secondary tenant.
-func (s *adminServer) RegisterDRPCService(d drpc.Mux) error {
-	return serverpb.DRPCRegisterAdmin(d, &drpcAdminServer{adminServer: s})
-}
-
 // RegisterGateway starts the gateway (i.e. reverse proxy) that proxies HTTP requests
 // to the appropriate gRPC endpoints.
 func (s *adminServer) RegisterGateway(
 	ctx context.Context, mux *gwruntime.ServeMux, conn *grpc.ClientConn,
 ) error {
+	// Register the /_admin/v1/stmtbundle endpoint, which serves statement support
+	// bundles as files.
+	stmtBundlePattern := gwruntime.MustPattern(gwruntime.NewPattern(
+		1, /* version */
+		[]int{
+			int(gwutil.OpLitPush), 0, int(gwutil.OpLitPush), 1, int(gwutil.OpLitPush), 2,
+			int(gwutil.OpPush), 0, int(gwutil.OpConcatN), 1, int(gwutil.OpCapture), 3},
+		[]string{"_admin", "v1", "stmtbundle", "id"},
+		"", /* verb */
+	))
+
+	mux.Handle("GET", stmtBundlePattern, func(
+		w http.ResponseWriter, req *http.Request, pathParams map[string]string,
+	) {
+		idStr, ok := pathParams["id"]
+		if !ok {
+			http.Error(w, "missing id", http.StatusBadRequest)
+			return
+		}
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+
+		// The privilege checks in the privilege checker below checks the user in the incoming
+		// gRPC metadata.
+		md := authserver.TranslateHTTPAuthInfoToGRPCMetadata(req.Context(), req)
+		authCtx := metadata.NewIncomingContext(req.Context(), md)
+		authCtx = s.AnnotateCtx(authCtx)
+		if err := s.privilegeChecker.RequireViewActivityAndNoViewActivityRedactedPermission(authCtx); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		s.getStatementBundle(req.Context(), id, w)
+	})
+
+	// Register the endpoints defined in the proto.
 	return serverpb.RegisterAdminHandler(ctx, mux, conn)
 }
 
@@ -1314,8 +1327,9 @@ func (s *adminServer) statsForSpan(
 				var spanResponse *roachpb.SpanStatsResponse
 				err := timeutil.RunWithTimeout(ctx, "request remote stats", 20*time.Second,
 					func(ctx context.Context) error {
-						client, err := serverpb.DialStatusClient(s.nd, ctx, nodeID, s.nd.cs)
+						conn, err := s.serverIterator.dialNode(ctx, serverID(nodeID))
 						if err == nil {
+							client := serverpb.NewStatusClient(conn)
 							req := roachpb.SpanStatsRequest{
 								Spans:  []roachpb.Span{span},
 								NodeID: nodeID.String(),
@@ -1940,7 +1954,7 @@ func (s *adminServer) Settings(
 		sessiondata.NodeUserSessionDataOverride,
 		`SELECT name, "lastUpdated" FROM system.settings`,
 	); err != nil {
-		log.Dev.Warningf(ctx, "failed to read settings: %s", err)
+		log.Warningf(ctx, "failed to read settings: %s", err)
 	} else {
 		var ok bool
 		for ok, err = it.Next(ctx); ok; ok, err = it.Next(ctx) {
@@ -1952,7 +1966,7 @@ func (s *adminServer) Settings(
 		if err != nil {
 			// No need to clear AlteredSettings map since we only make best
 			// effort to populate it.
-			log.Dev.Warningf(ctx, "failed to read settings: %s", err)
+			log.Warningf(ctx, "failed to read settings: %s", err)
 		}
 	}
 
@@ -2086,16 +2100,8 @@ func (s *adminServer) Health(
 
 // checkReadinessForHealthCheck returns a gRPC error.
 func (s *adminServer) checkReadinessForHealthCheck(ctx context.Context) error {
-	// A gRPC server will always be running, so ensure that we check its health
-	// until it is completely removed after the DRPC to gRPC migration.
 	if err := s.grpc.health(ctx); err != nil {
 		return err
-	}
-
-	if rpcbase.DRPCEnabled(ctx, s.st) {
-		if err := s.drpc.health(ctx); err != nil {
-			return err
-		}
 	}
 
 	if !s.sqlServer.isReady.Load() {
@@ -2132,16 +2138,8 @@ func (s *systemAdminServer) Health(
 
 // checkReadinessForHealthCheck returns a gRPC error.
 func (s *systemAdminServer) checkReadinessForHealthCheck(ctx context.Context) error {
-	// A gRPC server will always be running, so ensure that we check its health
-	// until it is completely removed after the DRPC to gRPC migration.
 	if err := s.grpc.health(ctx); err != nil {
 		return err
-	}
-
-	if rpcbase.DRPCEnabled(ctx, s.st) {
-		if err := s.drpc.health(ctx); err != nil {
-			return err
-		}
 	}
 
 	status := s.nodeLiveness.GetNodeVitalityFromCache(roachpb.NodeID(s.serverIterator.getID()))
@@ -2250,6 +2248,7 @@ SELECT
   fraction_completed,
   high_water_timestamp,
   error,
+  execution_events::string,
   coordinator_id
 FROM crdb_internal.jobs
 WHERE true`) // Simplifies filter construction below.
@@ -2346,6 +2345,7 @@ func scanRowIntoJob(scanner resultScanner, row tree.Datums, job *serverpb.JobRes
 	var fractionCompletedOrNil *float32
 	var highwaterOrNil *apd.Decimal
 	var runningStatusOrNil *string
+	var executionFailuresOrNil *string
 	var coordinatorOrNil *int64
 	if err := scanner.ScanAll(
 		row,
@@ -2362,6 +2362,7 @@ func scanRowIntoJob(scanner resultScanner, row tree.Datums, job *serverpb.JobRes
 		&fractionCompletedOrNil,
 		&highwaterOrNil,
 		&job.Error,
+		&executionFailuresOrNil,
 		&coordinatorOrNil,
 	); err != nil {
 		return errors.Wrap(err, "scan")
@@ -2414,7 +2415,7 @@ func jobHelper(
 	const query = `
 	        SELECT job_id, job_type, description, statement, user_name, status,
 	  						 running_status, created, finished, modified,
-	  						 fraction_completed, high_water_timestamp, error, coordinator_id
+	  						 fraction_completed, high_water_timestamp, error, execution_events::string, coordinator_id
 	          FROM crdb_internal.jobs
 	         WHERE job_id = $1`
 	row, cols, err := sqlServer.internalExecutor.QueryRowExWithCols(
@@ -2601,6 +2602,55 @@ func (s *adminServer) QueryPlan(
 	return &serverpb.QueryPlanResponse{
 		DistSQLPhysicalQueryPlan: string(dbDatum),
 	}, nil
+}
+
+// getStatementBundle retrieves the statement bundle with the given id and
+// writes it out as an attachment. Note this function assumes the user has
+// permission to access the statement bundle.
+func (s *adminServer) getStatementBundle(ctx context.Context, id int64, w http.ResponseWriter) {
+	row, err := s.internalExecutor.QueryRowEx(
+		ctx, "admin-stmt-bundle", nil, /* txn */
+		sessiondata.NodeUserSessionDataOverride,
+		"SELECT bundle_chunks FROM system.statement_diagnostics WHERE id=$1 AND bundle_chunks IS NOT NULL",
+		id,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if row == nil {
+		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		return
+	}
+	// Put together the entire bundle. Ideally we would stream it in chunks,
+	// but it's hard to return errors once we start.
+	var bundle bytes.Buffer
+	chunkIDs := row[0].(*tree.DArray).Array
+	for _, chunkID := range chunkIDs {
+		chunkRow, err := s.internalExecutor.QueryRowEx(
+			ctx, "admin-stmt-bundle", nil, /* txn */
+			sessiondata.NodeUserSessionDataOverride,
+			"SELECT data FROM system.statement_bundle_chunks WHERE id=$1",
+			chunkID,
+		)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if chunkRow == nil {
+			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		}
+		data := chunkRow[0].(*tree.DBytes)
+		bundle.WriteString(string(*data))
+	}
+
+	w.Header().Set(
+		"Content-Disposition",
+		fmt.Sprintf("attachment; filename=stmt-bundle-%d.zip", id),
+	)
+
+	_, _ = io.Copy(w, &bundle)
 }
 
 // DecommissionPreCheck runs checks and returns the DecommissionPreCheckResponse
@@ -3071,7 +3121,7 @@ func (s *systemAdminServer) EnqueueRange(
 		return client, err
 	}
 	nodeFn := func(ctx context.Context, client interface{}, nodeID roachpb.NodeID) (interface{}, error) {
-		admin := client.(serverpb.RPCAdminClient)
+		admin := client.(serverpb.AdminClient)
 		req := *req
 		req.NodeID = nodeID
 		return admin.EnqueueRange(ctx, &req)
@@ -3242,23 +3292,9 @@ func (s *systemAdminServer) SendKVBatch(
 	return br, nil
 }
 
-func (s *drpcSystemAdminServer) RecoveryCollectReplicaInfo(
-	request *serverpb.RecoveryCollectReplicaInfoRequest,
-	stream serverpb.DRPCAdmin_RecoveryCollectReplicaInfoStream,
-) error {
-	return s.recoveryCollectReplicaInfo(request, stream)
-}
-
 func (s *systemAdminServer) RecoveryCollectReplicaInfo(
 	request *serverpb.RecoveryCollectReplicaInfoRequest,
 	stream serverpb.Admin_RecoveryCollectReplicaInfoServer,
-) error {
-	return s.recoveryCollectReplicaInfo(request, stream)
-}
-
-func (s *systemAdminServer) recoveryCollectReplicaInfo(
-	request *serverpb.RecoveryCollectReplicaInfoRequest,
-	stream serverpb.RPCAdmin_RecoveryCollectReplicaInfoStream,
 ) error {
 	ctx := stream.Context()
 	ctx = s.server.AnnotateCtx(ctx)
@@ -3271,23 +3307,9 @@ func (s *systemAdminServer) recoveryCollectReplicaInfo(
 	return s.server.recoveryServer.ServeClusterReplicas(ctx, request, stream, s.server.db)
 }
 
-func (s *drpcSystemAdminServer) RecoveryCollectLocalReplicaInfo(
-	request *serverpb.RecoveryCollectLocalReplicaInfoRequest,
-	stream serverpb.DRPCAdmin_RecoveryCollectLocalReplicaInfoStream,
-) error {
-	return s.recoveryCollectLocalReplicaInfo(request, stream)
-}
-
 func (s *systemAdminServer) RecoveryCollectLocalReplicaInfo(
 	request *serverpb.RecoveryCollectLocalReplicaInfoRequest,
 	stream serverpb.Admin_RecoveryCollectLocalReplicaInfoServer,
-) error {
-	return s.recoveryCollectLocalReplicaInfo(request, stream)
-}
-
-func (s *systemAdminServer) recoveryCollectLocalReplicaInfo(
-	request *serverpb.RecoveryCollectLocalReplicaInfoRequest,
-	stream serverpb.RPCAdmin_RecoveryCollectLocalReplicaInfoStream,
 ) error {
 	ctx := stream.Context()
 	ctx = s.server.AnnotateCtx(ctx)
@@ -3418,11 +3440,11 @@ func (rs resultScanner) ScanIndex(row tree.Datums, index int, dst interface{}) e
 		*d = &val
 
 	case *int64:
-		s, ok := src.(*tree.DInt)
+		s, ok := tree.AsDInt(src)
 		if !ok {
 			return errors.Errorf("source type assertion failed")
 		}
-		*d = int64(*s)
+		*d = int64(s)
 
 	case **int64:
 		s, ok := src.(*tree.DInt)
@@ -3437,29 +3459,29 @@ func (rs resultScanner) ScanIndex(row tree.Datums, index int, dst interface{}) e
 		*d = &val
 
 	case *[]int64:
-		s, ok := src.(*tree.DArray)
+		s, ok := tree.AsDArray(src)
 		if !ok {
 			return errors.Errorf("source type assertion failed")
 		}
 		for i := 0; i < s.Len(); i++ {
-			id, ok := s.Array[i].(*tree.DInt)
+			id, ok := tree.AsDInt(s.Array[i])
 			if !ok {
 				return errors.Errorf("source type assertion failed on index %d", i)
 			}
-			*d = append(*d, int64(*id))
+			*d = append(*d, int64(id))
 		}
 
 	case *[]descpb.ID:
-		s, ok := src.(*tree.DArray)
+		s, ok := tree.AsDArray(src)
 		if !ok {
 			return errors.Errorf("source type assertion failed")
 		}
 		for i := 0; i < s.Len(); i++ {
-			id, ok := s.Array[i].(*tree.DInt)
+			id, ok := tree.AsDInt(s.Array[i])
 			if !ok {
 				return errors.Errorf("source type assertion failed on index %d", i)
 			}
-			*d = append(*d, descpb.ID(*id))
+			*d = append(*d, descpb.ID(id))
 		}
 
 	case *time.Time:
@@ -3677,8 +3699,12 @@ func (s *adminServer) queryTableID(
 // responsibility to convert them to srverrors.ServerErrors.
 func (s *adminServer) dialNode(
 	ctx context.Context, nodeID roachpb.NodeID,
-) (serverpb.RPCAdminClient, error) {
-	return serverpb.DialAdminClient(s.nd, ctx, nodeID, s.nd.cs)
+) (serverpb.AdminClient, error) {
+	conn, err := s.serverIterator.dialNode(ctx, serverID(nodeID))
+	if err != nil {
+		return nil, err
+	}
+	return serverpb.NewAdminClient(conn), nil
 }
 
 func (s *adminServer) ListTracingSnapshots(
@@ -4000,22 +4026,4 @@ func (s *systemAdminServer) ReadFromTenantInfo(
 	}
 
 	return &serverpb.ReadFromTenantInfoResponse{ReadFrom: dstID, ReadAt: progress.GetStreamIngest().ReplicatedTime}, nil
-}
-
-// RecoveryCollectReplicaInfo is unimplemented here because adminServer also
-// have it delegated from embedded serverpb.UnimplementedAdminServer.
-func (s *drpcAdminServer) RecoveryCollectReplicaInfo(
-	request *serverpb.RecoveryCollectReplicaInfoRequest,
-	stream serverpb.DRPCAdmin_RecoveryCollectReplicaInfoStream,
-) error {
-	return drpcerr.WithCode(errors.New("Unimplemented"), drpcerr.Unimplemented)
-}
-
-// RecoveryCollectLocalReplicaInfo is unimplemented here because adminServer
-// also have it delegated from embedded serverpb.UnimplementedAdminServer.
-func (s *drpcAdminServer) RecoveryCollectLocalReplicaInfo(
-	request *serverpb.RecoveryCollectLocalReplicaInfoRequest,
-	stream serverpb.DRPCAdmin_RecoveryCollectLocalReplicaInfoStream,
-) error {
-	return drpcerr.WithCode(errors.New("Unimplemented"), drpcerr.Unimplemented)
 }

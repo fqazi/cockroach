@@ -75,7 +75,7 @@ func distRestore(
 		defer func() {
 			err := kms.Close()
 			if err != nil {
-				log.Dev.Infof(ctx, "failed to close KMS: %+v", err)
+				log.Infof(ctx, "failed to close KMS: %+v", err)
 			}
 		}()
 

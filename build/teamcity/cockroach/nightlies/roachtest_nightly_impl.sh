@@ -20,15 +20,11 @@ if [[ ! -f ~/.ssh/id_rsa.pub ]]; then
 fi
 
 arch=amd64
-if [[ ${CLOUD} == "ibm" ]]; then
-  arch=s390x
+if [[ ${FIPS_ENABLED:-0} == 1 ]]; then
+  arch=amd64-fips
 fi
 $root/build/teamcity/cockroach/nightlies/roachtest_compile_bits.sh $arch
-if [[ $arch != "s390x" ]]; then
-  $root/build/teamcity/cockroach/nightlies/roachtest_compile_bits.sh arm64
-  # N.B. FIPS is metamoprhically always on as of PR#139510
-  $root/build/teamcity/cockroach/nightlies/roachtest_compile_bits.sh amd64-fips
-fi
+$root/build/teamcity/cockroach/nightlies/roachtest_compile_bits.sh arm64
 
 artifacts=/artifacts
 source $root/build/teamcity/util/roachtest_util.sh
@@ -83,17 +79,12 @@ if [[ "${selective_tests}" == "true" && "${select_probability:-}" != "" ]]; then
   echo "SELECTIVE_TESTS=true and SELECT_PROBABILITY are incompatible. Disable one of them."
   exit 1
 fi
-#
-# N.B. Recall, the conditional probability of FIPS is P(fips) * (1 - P(arm64)).
-# Hence, with the given defaults, FIPS is effectively enabled with probability 0.01 (= 0.02 * 0.5)
-#
+
 build/teamcity-roachtest-invoke.sh \
   --metamorphic-encryption-probability=0.5 \
   --metamorphic-arm64-probability="${ARM_PROBABILITY:-0.5}" \
-  --metamorphic-fips-probability="${FIPS_PROBABILITY:-0.02}" \
   --metamorphic-cockroach-ea-probability="${COCKROACH_EA_PROBABILITY:-0.2}" \
   ${select_probability:-} \
-  --always-collect-artifacts="${ALWAYS_COLLECT_ARTIFACTS:-false}" \
   --use-spot="${USE_SPOT:-auto}" \
   --cloud="${CLOUD}" \
   --count="${COUNT-1}" \

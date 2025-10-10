@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/funcdesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/props/physical"
@@ -99,8 +98,8 @@ func (b *Builder) buildUDF(
 		}
 	}
 
-	if b.trackSchemaDeps && o.Type != tree.BuiltinRoutine {
-		b.schemaFunctionDeps.Add(int(funcdesc.UserDefinedFunctionOIDToID(o.Oid)))
+	if b.trackSchemaDeps {
+		b.schemaFunctionDeps.Add(int(o.Oid))
 	}
 
 	return b.finishBuildScalar(f, routine, outScope, outCol)
@@ -339,8 +338,8 @@ func (b *Builder) buildRoutine(
 		}
 	}
 
-	if b.trackSchemaDeps && o.Type != tree.BuiltinRoutine {
-		b.schemaFunctionDeps.Add(int(funcdesc.UserDefinedFunctionOIDToID(o.Oid)))
+	if b.trackSchemaDeps {
+		b.schemaFunctionDeps.Add(int(o.Oid))
 	}
 	// Do not track any other routine invocations inside this routine, since
 	// for the schema changer we only need depth 1. Also keep track of when
@@ -414,7 +413,6 @@ func (b *Builder) buildRoutine(
 	var body []memo.RelExpr
 	var bodyProps []*physical.Required
 	var bodyStmts []string
-	var bodyTags []string
 	switch o.Language {
 	case tree.RoutineLangSQL:
 		// Parse the function body.
@@ -422,8 +420,6 @@ func (b *Builder) buildRoutine(
 		if err != nil {
 			panic(err)
 		}
-
-		var appendedNullForVoidReturn bool
 		// Add a VALUES (NULL) statement if the return type of the function is
 		// VOID. We cannot simply project NULL from the last statement because
 		// all columns would be pruned and the contents of last statement would
@@ -438,11 +434,9 @@ func (b *Builder) buildRoutine(
 					},
 				},
 			})
-			appendedNullForVoidReturn = true
 		}
 		body = make([]memo.RelExpr, len(stmts))
 		bodyProps = make([]*physical.Required, len(stmts))
-		bodyTags = make([]string, len(stmts))
 
 		for i := range stmts {
 			stmtScope := b.buildStmtAtRootWithScope(stmts[i].AST, nil /* desiredTypes */, bodyScope)
@@ -454,14 +448,6 @@ func (b *Builder) buildRoutine(
 			}
 			body[i] = stmtScope.expr
 			bodyProps[i] = stmtScope.makePhysicalProps()
-			// We don't need a statement tag for the artificial appended `SELECT NULL`
-			// statement.
-			if appendedNullForVoidReturn && i == len(stmts)-1 {
-				bodyTags[i] = ""
-			} else {
-				bodyTags[i] = stmts[i].AST.StatementTag()
-			}
-
 		}
 
 		if b.verboseTracing {
@@ -507,7 +493,6 @@ func (b *Builder) buildRoutine(
 		}
 		body = []memo.RelExpr{stmtScope.expr}
 		bodyProps = []*physical.Required{stmtScope.makePhysicalProps()}
-		bodyTags = []string{stmt.AST.Label}
 		if b.verboseTracing {
 			bodyStmts = []string{stmt.String()}
 		}
@@ -531,7 +516,6 @@ func (b *Builder) buildRoutine(
 				Body:               body,
 				BodyProps:          bodyProps,
 				BodyStmts:          bodyStmts,
-				BodyTags:           bodyTags,
 				Params:             params,
 				ResultBufferID:     resultBufferID,
 			},
@@ -855,19 +839,8 @@ func (b *Builder) buildDo(do *tree.DoBlock, inScope *scope) *scope {
 	// TODO(drewk): Enable memo reuse with DO statements.
 	b.DisableMemoReuse = true
 
-	doBlockImpl, ok := do.Code.(*plpgsqltree.DoBlock)
-	if !ok {
-		panic(errors.AssertionFailedf("expected a plpgsql block"))
-	}
-
-	defer func(oldInsideFuncDep bool, oldAnn tree.Annotations) {
-		b.insideFuncDef = oldInsideFuncDep
-		b.semaCtx.Annotations = oldAnn
-		b.evalCtx.Annotations = &b.semaCtx.Annotations
-	}(b.insideFuncDef, b.semaCtx.Annotations)
+	defer func(oldInsideFuncDep bool) { b.insideFuncDef = oldInsideFuncDep }(b.insideFuncDef)
 	b.insideFuncDef = true
-	b.semaCtx.Annotations = doBlockImpl.Annotations
-	b.evalCtx.Annotations = &b.semaCtx.Annotations
 
 	// Build the routine body.
 	var bodyStmts []string
@@ -875,6 +848,10 @@ func (b *Builder) buildDo(do *tree.DoBlock, inScope *scope) *scope {
 		fmtCtx := tree.NewFmtCtx(tree.FmtSimple)
 		fmtCtx.FormatNode(do.Code)
 		bodyStmts = []string{fmtCtx.CloseAndGetString()}
+	}
+	doBlockImpl, ok := do.Code.(*plpgsqltree.DoBlock)
+	if !ok {
+		panic(errors.AssertionFailedf("expected a plpgsql block"))
 	}
 	bodyScope := b.buildPLpgSQLDoBody(doBlockImpl)
 

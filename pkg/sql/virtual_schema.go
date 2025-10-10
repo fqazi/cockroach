@@ -129,9 +129,7 @@ type virtualSchemaTable struct {
 	// generator, if non-nil, is a function that is used when creating a
 	// virtualTableNode. This function returns a virtualTableGenerator function
 	// which generates the next row of the virtual table when called.
-	//
-	// Limit is the hard limit of the scan, a limit of 0 means no limit.
-	generator func(ctx context.Context, p *planner, db catalog.DatabaseDescriptor, limit int64, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error)
+	generator func(ctx context.Context, p *planner, db catalog.DatabaseDescriptor, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error)
 
 	// unimplemented indicates that we do not yet implement the contents of this
 	// table. If the stub_catalog_tables session variable is enabled, the table
@@ -636,11 +634,10 @@ func (e *virtualDefEntry) validateRow(datums tree.Datums, columns colinfo.Result
 func (e *virtualDefEntry) getPlanInfo(
 	table catalog.TableDescriptor,
 	index catalog.Index,
-	scanParams exec.ScanParams,
+	idxConstraint *constraint.Constraint,
 	stopper *stop.Stopper,
 ) (colinfo.ResultColumns, virtualTableConstructor) {
 	var columns colinfo.ResultColumns
-	idxConstraint := scanParams.IndexConstraint
 	for _, col := range e.desc.PublicColumns() {
 		columns = append(columns, colinfo.ResultColumn{
 			Name:           col.GetName(),
@@ -671,7 +668,7 @@ func (e *virtualDefEntry) getPlanInfo(
 			}
 
 			if def.generator != nil && !def.preferIndexOverGenerator(ctx, p, index, idxConstraint) {
-				next, cleanup, err := def.generator(ctx, p, dbDesc, scanParams.HardLimit, stopper)
+				next, cleanup, err := def.generator(ctx, p, dbDesc, stopper)
 				if err != nil {
 					return nil, err
 				}
@@ -1085,7 +1082,9 @@ func (vs *VirtualSchemaHolder) getVirtualSchemaEntry(name string) (*virtualSchem
 // a specific table. It will return an error if the name references a virtual database
 // but the table is non-existent.
 // getVirtualTableEntry is part of the VirtualTabler interface.
-func (vs *VirtualSchemaHolder) getVirtualTableEntry(tn *tree.TableName) (*virtualDefEntry, error) {
+func (vs *VirtualSchemaHolder) getVirtualTableEntry(
+	tn *tree.TableName, ns eval.ClientNoticeSender,
+) (*virtualDefEntry, error) {
 	if db, ok := vs.getVirtualSchemaEntry(tn.Schema()); ok {
 		tableName := tn.Table()
 		if t, ok := db.defs[tableName]; ok {
@@ -1108,8 +1107,8 @@ func (vs *VirtualSchemaHolder) getVirtualTableEntry(tn *tree.TableName) (*virtua
 
 // VirtualTabler is used to fetch descriptors for virtual tables and databases.
 type VirtualTabler interface {
-	getVirtualTableDesc(tn *tree.TableName) (catalog.TableDescriptor, error)
-	getVirtualTableEntry(tn *tree.TableName) (*virtualDefEntry, error)
+	getVirtualTableDesc(tn *tree.TableName, ns eval.ClientNoticeSender) (catalog.TableDescriptor, error)
+	getVirtualTableEntry(tn *tree.TableName, ns eval.ClientNoticeSender) (*virtualDefEntry, error)
 	getSchemas() map[string]*virtualSchemaEntry
 	getSchemaNames() []string
 }
@@ -1118,9 +1117,9 @@ type VirtualTabler interface {
 // pair, and returns its descriptor if it does.
 // getVirtualTableDesc is part of the VirtualTabler interface.
 func (vs *VirtualSchemaHolder) getVirtualTableDesc(
-	tn *tree.TableName,
+	tn *tree.TableName, ns eval.ClientNoticeSender,
 ) (catalog.TableDescriptor, error) {
-	t, err := vs.getVirtualTableEntry(tn)
+	t, err := vs.getVirtualTableEntry(tn, ns)
 	if err != nil || t == nil {
 		return nil, err
 	}

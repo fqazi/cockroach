@@ -25,12 +25,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/authserver"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/status/statuspb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
-	"github.com/cockroachdb/cockroach/pkg/sql/contention"
-	"github.com/cockroachdb/cockroach/pkg/sql/contentionpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/insights"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/insightspb"
 	tablemetadatacacheutil "github.com/cockroachdb/cockroach/pkg/sql/tablemetadatacache/util"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -38,59 +34,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// TestDetailsRemoteNode verifies that requesting details for a remote node
-// returns the correct node information.
-func TestDetailsRemoteNode(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-
-	// Start a 3 node cluster
-	tc := serverutils.StartCluster(t, 3, base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
-			// Use in-memory stores
-			StoreSpecs: []base.StoreSpec{{InMemory: true}},
-		},
-	})
-	defer tc.Stopper().Stop(ctx)
-
-	// Create a map of nodeID to status server for each node.
-	statusServers := make(map[roachpb.NodeID]*systemStatusServer)
-	for i := 0; i < 3; i++ {
-		nodeID := tc.Server(i).NodeID()
-		statusServers[nodeID] = tc.Server(i).StatusServer().(*systemStatusServer)
-	}
-
-	// For each status server, request details about every node and verify the response.
-	for serverNodeID, statusServer := range statusServers {
-		// Verify local returns the same node id.
-		res, err := statusServer.Details(ctx, &serverpb.DetailsRequest{
-			NodeId: "local",
-		})
-		require.NoError(t, err)
-		require.Equal(t, serverNodeID, res.NodeID,
-			"status server on node %d returned wrong nodeID for node %d",
-			serverNodeID, serverNodeID)
-
-		// Verify specifying a node id returns the same id in the response.
-		for expectedNodeID := range statusServers {
-			res, err := statusServer.Details(ctx, &serverpb.DetailsRequest{
-				NodeId: expectedNodeID.String(),
-			})
-			require.NoError(t, err)
-			require.Equal(t, expectedNodeID, res.NodeID,
-				"status server on node %d returned wrong nodeID for node %d",
-				serverNodeID, expectedNodeID)
-		}
-	}
-}
 
 // TestDetailsRedacted checks if the `DetailsResponse` contains redacted fields
 // when the `Redact` flag is set in the `DetailsRequest`
@@ -526,49 +473,6 @@ func TestListExecutionInsightsWhileEvictingInsights(t *testing.T) {
 	wg.Wait()
 }
 
-// TestLocalExecutionInsights tests the helper functions used by localExecutionInsights
-func TestLocalExecutionInsights(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	t.Run("validContentionInsights", func(t *testing.T) {
-		id1 := uuid.MakeV4()
-		id2 := uuid.MakeV4()
-		id3 := uuid.MakeV4()
-		insights := map[uuid.UUID]insightspb.Insight{
-			id1: {},
-			id2: {},
-			id3: {},
-		}
-		// id1 insight has no contention events.
-		// id2 insight has a contention event that is not resolved.
-		// id3 insight has multiple contention events, one of them is resolved.
-		events := []contentionpb.ExtendedContentionEvent{
-			{
-				WaitingTxnID: id2,
-			},
-			{
-				WaitingTxnID: id3,
-			},
-			{
-				WaitingTxnID:             id3,
-				BlockingTxnFingerprintID: 1234,
-			},
-		}
-
-		st := cluster.MakeTestingClusterSettings()
-		m := contention.NewMetrics()
-		registry := contention.NewRegistry(st, nil, &m)
-		registry.AddEventsForTest(events)
-		valid, err := validContentionInsights(registry, insights)
-		require.NoError(t, err)
-		// Only id3 should be returned.
-		require.Equal(t, 1, len(valid))
-		_, exists := valid[id3]
-		require.True(t, exists)
-	})
-}
-
 // TestStatusUpdateTableMetadataCache tests that signalling the update
 // table metadata cache job via the status server triggers the update
 // table metadata job to run.
@@ -581,7 +485,6 @@ func TestStatusUpdateTableMetadataCache(t *testing.T) {
 	ctx := context.Background()
 	tc := serverutils.StartCluster(t, 3, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
-			DefaultDRPCOption: base.TestDRPCDisabled,
 			Knobs: base.TestingKnobs{
 				JobsTestingKnobs: &jobs.TestingKnobs{
 					IntervalOverrides: jobs.TestingIntervalOverrides{

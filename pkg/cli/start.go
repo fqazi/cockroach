@@ -179,7 +179,7 @@ func initTraceDir(ctx context.Context, dir string) {
 		// from a directory which is not writable, we won't
 		// be able to create a sub-directory here.
 		err = errors.WithHint(err, "Try changing the CWD of the cockroach process to a writable directory.")
-		log.Dev.Warningf(ctx, "cannot create trace dir; traces will not be dumped: %v", err)
+		log.Warningf(ctx, "cannot create trace dir; traces will not be dumped: %v", err)
 		return
 	}
 }
@@ -229,6 +229,11 @@ func initTempStorageConfig(
 	}
 	useStore := stores.Specs[specIdx]
 
+	var recordPath string
+	if !useStore.InMemory {
+		recordPath = filepath.Join(useStore.Path, server.TempDirsRecordFilename)
+	}
+
 	// The temp store size can depend on the location of the first regular store
 	// (if it's expressed as a percentage), so we resolve that flag here.
 	var tempStorePercentageResolver percentResolverFunc
@@ -264,70 +269,43 @@ func initTempStorageConfig(
 		}
 	}
 
-	// If all stores are in-memory and no temp dir was specified, the temp
-	// store will also be in memory. This is a testing scenario.
-	if startCtx.tempDir == "" && useStore.InMemory {
-		return base.NewTempStorageConfig(
-			ctx,
-			st,
-			true, // inMem
-			"",   // path
-			useStore.EncryptionOptions,
-			tempStorageMaxSizeBytes,
-			"", // tempDirsRecordPath
-		), nil
-	}
+	// Initialize a base.TempStorageConfig based on first store's spec and
+	// cli flags.
+	tempStorageConfig := base.TempStorageConfigFromEnv(
+		ctx,
+		st,
+		useStore,
+		startCtx.tempDir,
+		tempStorageMaxSizeBytes,
+	)
 
 	// Set temp directory to first store's path if the temp storage is not
 	// in memory.
-	parentDir := startCtx.tempDir
-	if parentDir == "" {
-		parentDir = useStore.Path
+	tempDir := startCtx.tempDir
+	if tempDir == "" && !tempStorageConfig.InMemory {
+		tempDir = useStore.Path
+	}
+	// Create the temporary subdirectory for the temp engine.
+	{
+		var err error
+		if tempStorageConfig.Path, err = fs.CreateTempDir(tempDir, server.TempDirPrefix, stopper); err != nil {
+			return base.TempStorageConfig{}, errors.Wrap(err, "could not create temporary directory for temp storage")
+		}
 	}
 
-	tmpPath, unlockDirFn, err := fs.CreateTempDir(parentDir, server.TempDirPrefix)
-	if err != nil {
-		return base.TempStorageConfig{}, errors.Wrap(err, "could not create temporary directory for temp storage")
-	}
-
-	recordPath := ""
-	if useStore.InMemory {
-		stopper.AddCloser(stop.CloserFn(func() {
-			unlockDirFn()
-			// Remove the temp directory directly since there is no record file.
-			if err := os.RemoveAll(tmpPath); err != nil {
-				log.Dev.Errorf(ctx, "could not remove temporary store directory: %v", err.Error())
-			}
-		}))
-	} else {
-		recordPath = filepath.Join(useStore.Path, server.TempDirsRecordFilename)
-		if err := fs.RecordTempDir(recordPath, tmpPath); err != nil {
+	// We record the new temporary directory in the record file (if it
+	// exists) for cleanup in case the node crashes.
+	if recordPath != "" {
+		if err := fs.RecordTempDir(recordPath, tempStorageConfig.Path); err != nil {
 			return base.TempStorageConfig{}, errors.Wrapf(
 				err,
 				"could not record temporary directory path to record file: %s",
 				recordPath,
 			)
 		}
-		// Remove temporary directory on shutdown.
-		stopper.AddCloser(stop.CloserFn(func() {
-			unlockDirFn()
-			if err := fs.CleanupTempDirs(recordPath); err != nil {
-				log.Dev.Errorf(ctx, "could not remove temporary store directory: %v", err.Error())
-			}
-		}))
 	}
 
-	// Initialize a base.TempStorageConfig based on first store's spec and
-	// cli flags.
-	return base.NewTempStorageConfig(
-		ctx,
-		st,
-		false, // inMem
-		tmpPath,
-		useStore.EncryptionOptions,
-		tempStorageMaxSizeBytes,
-		recordPath,
-	), nil
+	return tempStorageConfig, nil
 }
 
 type newServerFn func(ctx context.Context, serverCfg server.Config, stopper *stop.Stopper) (serverctl.ServerStartupInterface, error)
@@ -895,7 +873,7 @@ func createAndStartServerAsync(
 				select {
 				case req := <-s.ShutdownRequested():
 					shutdownCtx := s.AnnotateCtx(context.Background())
-					log.Dev.Infof(shutdownCtx, "server requesting spontaneous shutdown: %v", req.ShutdownCause())
+					log.Infof(shutdownCtx, "server requesting spontaneous shutdown: %v", req.ShutdownCause())
 					shutdownReqC <- req
 				case <-stopper.ShouldQuiesce():
 				}
@@ -1256,7 +1234,7 @@ func reportServerInfo(
 		buf.Printf("external I/O path: \t<disabled>\n")
 	}
 	for i, spec := range serverCfg.Stores.Specs {
-		buf.Printf("store[%d]:\t%s\n", i, log.SafeManaged(base.StoreSpecCmdLineString(spec)))
+		buf.Printf("store[%d]:\t%s\n", i, log.SafeManaged(spec))
 	}
 
 	// Print the commong server identifiers.
@@ -1487,7 +1465,7 @@ func setupAndInitializeLoggingAndProfiling(
 				"to databases, the --locality flag must contain a \"region\" tier.\n" +
 				"For more information, see:\n\n" +
 				"- %s"
-			log.Dev.Shoutf(ctx, severity.WARNING, warningString,
+			log.Shoutf(ctx, severity.WARNING, warningString,
 				redact.Safe(docs.URL("cockroach-start.html#locality")))
 		}
 	}
@@ -1566,7 +1544,7 @@ func reportReadinessExternally(ctx context.Context, cmd *cobra.Command, waitForI
 		clientConnOptions, serverParams := server.MakeServerOptionsForURL(serverCfg.Config)
 		pgURL, err := clientsecopts.MakeURLForServer(clientConnOptions, serverParams, url.User(username.RootUser))
 		if err != nil {
-			log.Dev.Errorf(ctx, "failed computing the URL: %v", err)
+			log.Errorf(ctx, "failed computing the URL: %v", err)
 			return
 		}
 

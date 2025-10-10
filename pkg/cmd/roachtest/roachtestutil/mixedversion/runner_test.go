@@ -119,6 +119,10 @@ func Test_run(t *testing.T) {
 				startSystemID: 9999,
 			}
 
+			runnerCh := make(chan error)
+			defer close(runnerCh)
+			runner.monitor = &crdbMonitor{errCh: runnerCh}
+
 			runErr := runner.run()
 			require.Error(t, runErr)
 
@@ -168,14 +172,11 @@ type testSingleStep struct {
 	runFunc func() error
 }
 
-func (s *testSingleStep) Description(debug bool) string { return "testSingleStep" }
-func (*testSingleStep) Background() shouldStop          { return nil }
+func (s *testSingleStep) Description() string  { return "testSingleStep" }
+func (*testSingleStep) Background() shouldStop { return nil }
 
 func (tss *testSingleStep) Run(_ context.Context, _ *logger.Logger, _ *rand.Rand, _ *Helper) error {
 	return tss.runFunc()
-}
-func (s testSingleStep) ConcurrencyDisabled() bool {
-	return false
 }
 
 func newTestStep(f func() error) *singleStep {

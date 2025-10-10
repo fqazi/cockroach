@@ -72,9 +72,7 @@ func (sp *bulkRowWriter) Start(ctx context.Context) {
 	ctx = sp.StartInternal(ctx, "bulkRowWriter")
 	sp.input.Start(ctx)
 	err := sp.work(ctx)
-	if err != nil {
-		sp.MoveToDraining(err)
-	}
+	sp.MoveToDraining(err)
 }
 
 // Next is part of the RowSource interface.
@@ -86,7 +84,7 @@ func (sp *bulkRowWriter) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerMetada
 		if marshalErr == nil {
 			// Output the summary.
 			return rowenc.EncDatumRow{
-				rowenc.DatumToEncDatumUnsafe(types.Bytes, tree.NewDBytes(tree.DBytes(countsBytes))),
+				rowenc.DatumToEncDatum(types.Bytes, tree.NewDBytes(tree.DBytes(countsBytes))),
 			}, nil
 		}
 	}

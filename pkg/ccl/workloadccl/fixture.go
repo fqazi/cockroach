@@ -15,7 +15,6 @@ import (
 	"math"
 	"net/url"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -168,7 +167,7 @@ func csvServerPaths(
 	// so our "integer multiple" is picked to be 1 to minimize this effect. Too
 	// bad about the progress tracking granularity.
 	numFiles := numNodes
-	rowStep := table.InitialRows.NumBatches / max(numFiles, 1)
+	rowStep := table.InitialRows.NumBatches / numFiles
 	if rowStep == 0 {
 		rowStep = 1
 	}
@@ -265,7 +264,7 @@ func MakeFixture(
 		for _, t := range gen.Tables() {
 			t := t
 			g.Go(func() error {
-				log.Dev.Infof(ctx, "Creating table stats for %s", t.Name)
+				log.Infof(ctx, "Creating table stats for %s", t.Name)
 				_, err := sqlDB.Exec(fmt.Sprintf(
 					`CREATE STATISTICS pre_backup FROM "%s"."%s"`, dbName, t.Name,
 				))
@@ -283,7 +282,7 @@ func MakeFixture(
 		g.Go(func() error {
 			q := fmt.Sprintf(`BACKUP "%s"."%s" INTO $1`, dbName, t.Name)
 			output := config.ObjectPathToURI(filepath.Join(fixtureFolder, t.Name))
-			log.Dev.Infof(ctx, "Backing %s up to %q...", t.Name, output)
+			log.Infof(ctx, "Backing %s up to %q...", t.Name, output)
 			_, err := sqlDB.Exec(q, output)
 			return err
 		})
@@ -311,14 +310,8 @@ func (l ImportDataLoader) InitialDataLoad(
 	if l.FilesPerNode == 0 {
 		l.FilesPerNode = 1
 	}
-	mayContainDuplicates := slices.ContainsFunc(gen.Tables(), func(tbl workload.Table) bool {
-		return tbl.InitialRows.MayContainDuplicates
-	})
-	if mayContainDuplicates {
-		log.Dev.Warningf(ctx, "importing fixture using a key generator that may contain duplicates; IMPORT may abort with a key uniqueness violation at higher row counts")
-	}
 
-	log.Dev.Infof(ctx, "starting import of %d tables", len(gen.Tables()))
+	log.Infof(ctx, "starting import of %d tables", len(gen.Tables()))
 	start := timeutil.Now()
 	bytes, err := ImportFixture(
 		ctx, db, gen, l.dbName, l.FilesPerNode, l.InjectStats, l.CSVServer)
@@ -326,7 +319,7 @@ func (l ImportDataLoader) InitialDataLoad(
 		return 0, errors.Wrap(err, `importing fixture`)
 	}
 	elapsed := timeutil.Since(start)
-	log.Dev.Infof(ctx, "imported %s bytes in %d tables (took %s, %s)",
+	log.Infof(ctx, "imported %s bytes in %d tables (took %s, %s)",
 		humanizeutil.IBytes(bytes), len(gen.Tables()), elapsed, humanizeutil.DataRate(bytes, elapsed))
 
 	return bytes, nil
@@ -336,15 +329,10 @@ func (l ImportDataLoader) InitialDataLoad(
 // the database we're connected to does not exist.
 const numNodesQuery = `SELECT count(1) FROM system.sql_instances WHERE addr IS NOT NULL`
 
-// getNodeCount returns the number of nodes in the cluster by querying a system table.
-// Ensures err != nil => res > 0.
 func getNodeCount(ctx context.Context, sqlDB *gosql.DB) (int, error) {
 	var numNodes int
-	if err := sqlDB.QueryRowContext(ctx, numNodesQuery).Scan(&numNodes); err != nil {
+	if err := sqlDB.QueryRow(numNodesQuery).Scan(&numNodes); err != nil {
 		return 0, err
-	}
-	if numNodes == 0 {
-		return 0, errors.New("no SQL nodes available")
 	}
 	return numNodes, nil
 }
@@ -386,7 +374,17 @@ func ImportFixture(
 		defer enableFn()
 	}
 
-	// Prepare the tables for ingestion via IMPORT INTO.
+	pathPrefix := csvServer
+	if pathPrefix == `` {
+		pathPrefix = `workload://`
+	}
+
+	// Pre-create tables. It's required that we pre-create the tables before we
+	// parallelize the IMPORT because for multi-region setups, the create table
+	// will end up modifying the crdb_internal_region type (to install back
+	// references). If create table is done in parallel with IMPORT, some IMPORT
+	// jobs may fail because the type is being modified concurrently with the
+	// IMPORT. Removing the need to pre-create is being tracked with #70987.
 	const maxTableBatchSize = 5000
 	currentTable := 0
 	for currentTable < len(tables) {
@@ -404,11 +402,6 @@ func ImportFixture(
 			return 0, err
 		}
 		currentTable += maxTableBatchSize
-	}
-
-	pathPrefix := csvServer
-	if pathPrefix == `` {
-		pathPrefix = `workload://`
 	}
 
 	// Default to unbounded unless a flag exists for it.
@@ -518,7 +511,7 @@ func importFixtureTable(
 		}
 	}
 	elapsed := timeutil.Since(start)
-	log.Dev.Infof(ctx, `imported %s in %s table (%d rows, %d index entries, took %s, %s)`,
+	log.Infof(ctx, `imported %s in %s table (%d rows, %d index entries, took %s, %s)`,
 		humanizeutil.IBytes(tableBytes), table.Name, rows, index, elapsed,
 		humanizeutil.DataRate(tableBytes, elapsed))
 
@@ -552,7 +545,7 @@ func disableAutoStats(ctx context.Context, sqlDB *gosql.DB) func() {
 		`SHOW CLUSTER SETTING sql.stats.automatic_collection.enabled`,
 	).Scan(&autoStatsEnabled)
 	if err != nil {
-		log.Dev.Warningf(ctx, "error retrieving automatic stats cluster setting: %v", err)
+		log.Warningf(ctx, "error retrieving automatic stats cluster setting: %v", err)
 		return func() {}
 	}
 
@@ -561,7 +554,7 @@ func disableAutoStats(ctx context.Context, sqlDB *gosql.DB) func() {
 			`SET CLUSTER SETTING sql.stats.automatic_collection.enabled=false`,
 		)
 		if err != nil {
-			log.Dev.Warningf(ctx, "error disabling automatic stats: %v", err)
+			log.Warningf(ctx, "error disabling automatic stats: %v", err)
 			return func() {}
 		}
 		return func() {
@@ -569,7 +562,7 @@ func disableAutoStats(ctx context.Context, sqlDB *gosql.DB) func() {
 				`SET CLUSTER SETTING sql.stats.automatic_collection.enabled=true`,
 			)
 			if err != nil {
-				log.Dev.Warningf(ctx, "error enabling automatic stats: %v", err)
+				log.Warningf(ctx, "error enabling automatic stats: %v", err)
 			}
 		}
 	}
@@ -633,7 +626,7 @@ func RestoreFixture(
 		g.GoCtx(func(ctx context.Context) error {
 			start := timeutil.Now()
 			restoreStmt := fmt.Sprintf(`RESTORE %s.%s FROM LATEST IN $1 WITH into_db=$2, unsafe_restore_incompatible_version`, genName, table.TableName)
-			log.Dev.Infof(ctx, "Restoring from %s", table.BackupURI)
+			log.Infof(ctx, "Restoring from %s", table.BackupURI)
 			var rows int64
 			var discard interface{}
 			res, err := sqlDB.Query(restoreStmt, table.BackupURI, database)
@@ -654,7 +647,7 @@ func RestoreFixture(
 			}
 
 			elapsed := timeutil.Since(start)
-			log.Dev.Infof(ctx, `loaded table %s in %s (%d rows)`,
+			log.Infof(ctx, `loaded table %s in %s (%d rows)`,
 				table.TableName, elapsed, rows)
 			return nil
 		})
@@ -686,7 +679,7 @@ func listDir(
 		dir = dir + "/"
 	}
 	if log.V(1) {
-		log.Dev.Infof(ctx, "Listing %s", dir)
+		log.Infof(ctx, "Listing %s", dir)
 	}
 	return es.List(ctx, dir, "/", lsFn)
 }

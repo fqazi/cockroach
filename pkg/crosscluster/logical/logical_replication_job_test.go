@@ -797,16 +797,15 @@ func TestLogicalReplicationWithPhantomDelete(t *testing.T) {
 	skip.UnderDeadlock(t)
 	defer log.Scope(t).Close(t)
 
+	ctx := context.Background()
+
+	tc, s, serverASQL, serverBSQL := setupLogicalTestServer(t, ctx, testClusterBaseClusterArgs, 1)
+	defer tc.Stopper().Stop(ctx)
+
+	serverAURL := replicationtestutils.GetExternalConnectionURI(t, s, s, serverutils.DBName("a"))
+
 	for _, mode := range []string{"validated", "immediate"} {
 		t.Run(mode, func(t *testing.T) {
-			ctx := context.Background()
-			tc, s, serverASQL, serverBSQL := setupLogicalTestServer(t, ctx, testClusterBaseClusterArgs, 1)
-			defer tc.Stopper().Stop(ctx)
-
-			serverAURL := replicationtestutils.GetExternalConnectionURI(t, s, s, serverutils.DBName("a"))
-			serverASQL.Exec(t, "ALTER TABLE tab SET (schema_locked = false)")
-			serverBSQL.Exec(t, "ALTER TABLE tab SET (schema_locked = false)")
-
 			serverASQL.Exec(t, "TRUNCATE tab")
 			serverBSQL.Exec(t, "TRUNCATE tab")
 			var jobBID jobspb.JobID
@@ -914,7 +913,7 @@ func TestRandomTables(t *testing.T) {
 			rng,
 			tableName,
 			1,
-			[]randgen.TableOption{randgen.WithSkipColumnFamilyMutations()})
+			randgen.TableOptSkipColumnFamilyMutations)
 		stmt := tree.SerializeForDisplay(createStmt)
 		t.Log(stmt)
 		runnerA.Exec(t, stmt)
@@ -2300,7 +2299,6 @@ func TestLogicalReplicationSchemaChanges(t *testing.T) {
 		{"drop table", "DROP TABLE tab", false},
 
 		// Dissalow storage param updates if is not the only change.
-		{"disable schema locked", "ALTER TABLE tab SET (schema_locked = false)", true},
 		{"storage param update", "ALTER TABLE tab ADD COLUMN C INT, SET (fillfactor = 70)", false},
 		{"storage param update", "ALTER TABLE tab SET (fillfactor = 70)", true},
 
@@ -2308,7 +2306,7 @@ func TestLogicalReplicationSchemaChanges(t *testing.T) {
 		{"reset ttl", "ALTER TABLE tab RESET (ttl)", false},
 		{"ttl expression", "ALTER TABLE tab SET (ttl_expiration_expression = $$ '2024-01-01 12:00:00'::TIMESTAMPTZ $$)", true},
 		{"ttl on", "ALTER TABLE tab SET (ttl = 'on', ttl_expire_after = '5m')", false},
-		{"enable schema locked", "ALTER TABLE tab SET (schema_locked = true)", true},
+
 		{"trigger", "CREATE TRIGGER my_trigger BEFORE INSERT ON tab FOR EACH ROW EXECUTE FUNCTION my_trigger()", false},
 	}
 
@@ -2442,102 +2440,6 @@ func TestLogicalReplicationGatewayRoute(t *testing.T) {
 
 	progress := jobutils.GetJobProgress(t, runners[0], jobID)
 	require.Empty(t, progress.Details.(*jobspb.Progress_LogicalReplication).LogicalReplication.PartitionConnUris)
-}
-
-// TestAlterExternalConnection tests that logical replication streams can
-// dynamically switch between different source nodes when the external
-// connection URI is updated. It verifies that data continues to replicate
-// correctly after the connection change.
-func TestAlterExternalConnection(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	skip.UnderDeadlock(t)
-	skip.UnderRace(t)
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	pollingInterval := 100 * time.Millisecond
-
-	clusterArgs := base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
-			DefaultTestTenant: base.TestControlsTenantsExplicitly,
-			Knobs: base.TestingKnobs{
-				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
-				Streaming: &sql.StreamingTestingKnobs{
-					ExternalConnectionPollingInterval: &pollingInterval,
-				},
-			},
-		},
-	}
-
-	activeLogicalSessionSQL := "SELECT count(*) > 0 FROM crdb_internal.node_sessions WHERE application_name like '$ internal repstream job id=%' AND status='ACTIVE'"
-	countLogicalSessionSQL := "SELECT count(*) FROM crdb_internal.node_sessions WHERE application_name like '$ internal repstream job id=%' AND status='ACTIVE'"
-	server, node0, runners, dbNames := setupServerWithNumDBs(t, ctx, clusterArgs, 3, 2)
-	defer server.Stopper().Stop(ctx)
-
-	dbA := runners[0]
-	dbB := runners[1]
-
-	dbANode0URL, cleanup := node0.PGUrl(t, serverutils.DBName(dbNames[0]))
-	defer cleanup()
-	dbANode0 := sqlutils.MakeSQLRunner(node0.SQLConn(t, serverutils.DBName(dbNames[0])))
-	node1 := server.Server(1).ApplicationLayer()
-	dbANode1URL, cleanup := node1.PGUrl(t, serverutils.DBName(dbNames[0]))
-	defer cleanup()
-	dbANode1 := sqlutils.MakeSQLRunner(node1.SQLConn(t, serverutils.DBName(dbNames[0])))
-
-	q0 := dbANode0URL.Query()
-	q0.Set(streamclient.RoutingModeKey, string(streamclient.RoutingModeGateway))
-	dbANode0URL.RawQuery = q0.Encode()
-
-	q1 := dbANode1URL.Query()
-	q1.Set(streamclient.RoutingModeKey, string(streamclient.RoutingModeGateway))
-	dbANode1URL.RawQuery = q1.Encode()
-
-	// We want to make sure operations for cluster B is on seperate node from cluster A.
-	node2 := server.Server(2).ApplicationLayer()
-	dbBNode2 := sqlutils.MakeSQLRunner(node2.SQLConn(t, serverutils.DBName(dbNames[1])))
-
-	require.NotEqual(t, dbANode0URL.String(), dbANode1URL.String())
-
-	externalConnName := "test_conn"
-	dbBNode2.Exec(t, fmt.Sprintf("CREATE EXTERNAL CONNECTION '%s' AS '%s'", externalConnName, dbANode0URL.String()))
-
-	var jobID jobspb.JobID
-	dbBNode2.QueryRow(t, fmt.Sprintf(
-		"CREATE LOGICAL REPLICATION STREAM FROM TABLE tab ON 'external://%s' INTO TABLE tab",
-		externalConnName)).Scan(&jobID)
-
-	dbANode0.Exec(t, "INSERT INTO tab VALUES (1, 'via_node_0')")
-
-	now := node0.Clock().Now()
-	WaitUntilReplicatedTime(t, now, dbB, jobID)
-
-	dbANode0.CheckQueryResults(t,
-		activeLogicalSessionSQL,
-		[][]string{{"true"}})
-	dbANode1.CheckQueryResults(t,
-		countLogicalSessionSQL,
-		[][]string{{"0"}})
-
-	dbBNode2.CheckQueryResults(t, "SELECT * FROM tab WHERE pk = 1", [][]string{
-		{"1", "via_node_0"},
-	})
-
-	dbBNode2.Exec(t, fmt.Sprintf("ALTER EXTERNAL CONNECTION '%s' AS '%s'", externalConnName, dbANode1URL.String()))
-	dbANode1.CheckQueryResultsRetry(t,
-		activeLogicalSessionSQL,
-		[][]string{{"true"}})
-	dbANode0.CheckQueryResultsRetry(t,
-		countLogicalSessionSQL,
-		[][]string{{"0"}})
-
-	dbA.Exec(t, "INSERT INTO tab VALUES (2, 'via_node_1')")
-	now = node0.Clock().Now()
-	WaitUntilReplicatedTime(t, now, dbB, jobID)
-
-	dbBNode2.CheckQueryResults(t, "SELECT * FROM tab WHERE pk = 2", [][]string{
-		{"2", "via_node_1"},
-	})
 }
 
 func TestMismatchColIDs(t *testing.T) {
@@ -2888,9 +2790,20 @@ func TestGetWriterType(t *testing.T) {
 		require.Equal(t, sqlclustersettings.LDRWriterTypeSQL, wt)
 	})
 
-	t.Run("immediate-mode", func(t *testing.T) {
+	t.Run("immediate-mode-pre-25.2", func(t *testing.T) {
 		st := cluster.MakeTestingClusterSettingsWithVersions(
-			clusterversion.V25_3.Version(),
+			clusterversion.V25_1.Version(),
+			clusterversion.V25_1.Version(),
+			true, /* initializeVersion */
+		)
+		wt, err := getWriterType(ctx, jobspb.LogicalReplicationDetails_Immediate, st)
+		require.NoError(t, err)
+		require.Equal(t, sqlclustersettings.LDRWriterTypeLegacyKV, wt)
+	})
+
+	t.Run("immediate-mode-post-25.2", func(t *testing.T) {
+		st := cluster.MakeTestingClusterSettingsWithVersions(
+			clusterversion.V25_2.Version(),
 			clusterversion.PreviousRelease.Version(),
 			true, /* initializeVersion */
 		)

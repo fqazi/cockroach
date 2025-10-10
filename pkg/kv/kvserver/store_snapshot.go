@@ -34,6 +34,7 @@ import (
 	"github.com/cockroachdb/pebble/objstorage"
 	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/time/rate"
+	"google.golang.org/grpc"
 )
 
 const (
@@ -296,7 +297,7 @@ func (s *Store) throttleSnapshot(
 	// NB: this log message is skipped in test builds as many tests do not mock
 	// all of the objects being logged.
 	if elapsed > snapshotReservationWaitWarnThreshold && !buildutil.CrdbTestBuild {
-		log.KvDistribution.Infof(
+		log.Infof(
 			ctx,
 			"waited for %.1fs to acquire snapshot reservation to r%d",
 			elapsed.Seconds(),
@@ -349,7 +350,7 @@ func (s *Store) canAcceptSnapshotLocked(
 	existingRepl.mu.RLock()
 	existingDesc := existingRepl.shMu.state.Desc
 	existingIsInitialized := existingDesc.IsInitialized()
-	existingDestroyStatus := existingRepl.shMu.destroyStatus
+	existingDestroyStatus := existingRepl.mu.destroyStatus
 	existingRepl.mu.RUnlock()
 
 	if existingIsInitialized {
@@ -403,14 +404,14 @@ func (s *Store) checkSnapshotOverlapLocked(
 
 	// TODO(benesch): consider discovering and GC'ing *all* overlapping ranges,
 	// not just the first one that getOverlappingKeyRangeLocked happens to return.
-	if it := s.getOverlappingKeyRangeLocked(&desc); !it.isEmpty() {
+	if it := s.getOverlappingKeyRangeLocked(&desc); it.item != nil {
 		// We have a conflicting range, so we must block the snapshot.
 		// When such a conflict exists, it will be resolved by one range
 		// either being split or garbage collected.
 		exReplica, err := s.GetReplica(it.Desc().RangeID)
 		msg := IntersectingSnapshotMsg
 		if err != nil {
-			log.KvDistribution.Warningf(ctx, "unable to look up overlapping replica on %s: %v", exReplica, err)
+			log.Warningf(ctx, "unable to look up overlapping replica on %s: %v", exReplica, err)
 		} else {
 			inactive := func(r *Replica) bool {
 				if r.RaftStatus() == nil {
@@ -531,7 +532,7 @@ func (s *Store) receiveSnapshot(
 			}
 			return nil
 		}); pErr != nil {
-		log.KvDistribution.Infof(ctx, "cannot accept snapshot: %s", pErr)
+		log.Infof(ctx, "cannot accept snapshot: %s", pErr)
 		return sendSnapshotError(ctx, s, stream, pErr.GoError())
 	}
 
@@ -540,7 +541,7 @@ func (s *Store) receiveSnapshot(
 			// Remove the placeholder, if it's still there. Most of the time it will
 			// have been filled and this is a no-op.
 			if _, err := s.removePlaceholder(ctx, placeholder, removePlaceholderFailed); err != nil {
-				log.KvDistribution.Fatalf(ctx, "unable to remove placeholder: %s", err)
+				log.Fatalf(ctx, "unable to remove placeholder: %s", err)
 			}
 		}
 	}()
@@ -552,7 +553,7 @@ func (s *Store) receiveSnapshot(
 	}
 
 	ss := &kvBatchSnapshotStrategy{
-		scratch:      s.sstSnapshotStorage.NewScratchSpace(header.State.Desc.RangeID, snapUUID, s.ClusterSettings()),
+		scratch:      s.sstSnapshotStorage.NewScratchSpace(header.State.Desc.RangeID, snapUUID),
 		sstChunkSize: snapshotSSTWriteSyncRate.Get(&s.cfg.Settings.SV),
 		st:           s.ClusterSettings(),
 		clusterID:    s.ClusterID(),
@@ -563,7 +564,7 @@ func (s *Store) receiveSnapshot(
 		return err
 	}
 	if log.V(2) {
-		log.KvDistribution.Infof(ctx, "accepted snapshot reservation for r%d", header.State.Desc.RangeID)
+		log.Infof(ctx, "accepted snapshot reservation for r%d", header.State.Desc.RangeID)
 	}
 
 	comparisonResult := s.getLocalityComparison(header.RaftMessageRequest.FromReplica.NodeID,
@@ -668,7 +669,7 @@ func SendEmptySnapshot(
 	clusterID uuid.UUID,
 	st *cluster.Settings,
 	tracer *tracing.Tracer,
-	mrc RPCMultiRaftClient,
+	cc *grpc.ClientConn,
 	now hlc.Timestamp,
 	desc roachpb.RangeDescriptor,
 	to roachpb.ReplicaDescriptor,
@@ -768,14 +769,14 @@ func SendEmptySnapshot(
 		RangeKeysInOrder:   true,
 	}
 
-	stream, err := mrc.RaftSnapshot(ctx)
+	stream, err := NewMultiRaftClient(cc).RaftSnapshot(ctx)
 	if err != nil {
 		return err
 	}
 
 	defer func() {
 		if err := stream.CloseSend(); err != nil {
-			log.KvDistribution.Warningf(ctx, "failed to close snapshot stream: %+v", err)
+			log.Warningf(ctx, "failed to close snapshot stream: %+v", err)
 		}
 	}()
 

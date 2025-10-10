@@ -188,8 +188,6 @@ func TestDropFailOnDependentFunction(t *testing.T) {
 	defer s.Stopper().Stop(ctx)
 	tDB := sqlutils.MakeSQLRunner(sqlDB)
 
-	// This test also validates the legacy schema changer so disable schema locked.
-	tDB.Exec(t, "SET create_table_with_schema_locked=false")
 	tDB.Exec(t, `
 CREATE TABLE t(
   a INT PRIMARY KEY,
@@ -244,9 +242,8 @@ USE defaultdb;
 			dscExpectedErr: `pq: cannot drop view v because other objects depend on it`,
 		},
 		{
-			stmt:           "ALTER TABLE t RENAME TO t_new",
-			expectedErr:    `pq: cannot rename relation "t" because function "f" depends on it`,
-			dscExpectedErr: `pq: cannot rename relation "defaultdb.public.t" because function "f" depends on it`,
+			stmt:        "ALTER TABLE t RENAME TO t_new",
+			expectedErr: `pq: cannot rename relation "t" because function "f" depends on it`,
 		},
 		{
 			stmt:        "ALTER TABLE t SET SCHEMA test_sc",
@@ -314,7 +311,6 @@ func TestDropCascadeRemoveFunction(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	setupQuery := `
-SET create_table_with_schema_locked=false;
 CREATE DATABASE test_db;
 USE test_db;
 CREATE TABLE t(

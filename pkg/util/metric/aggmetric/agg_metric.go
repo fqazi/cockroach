@@ -9,18 +9,13 @@
 package aggmetric
 
 import (
-	"context"
 	"hash/fnv"
 	"strings"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/util/cache"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"github.com/google/btree"
 	io_prometheus_client "github.com/prometheus/client_model/go"
 )
@@ -28,14 +23,9 @@ import (
 var delimiter = []byte{'_'}
 
 const (
-	dbLabel                   = "database"
-	appLabel                  = "application_name"
-	cacheSize                 = 5000
-	retentionTimeTillEviction = 20 * time.Second
+	dbLabel  = "database"
+	appLabel = "application_name"
 )
-
-// This is a no-op context used during logging.
-var noOpCtx = context.TODO()
 
 // Builder is used to ease constructing metrics with the same labels.
 type Builder struct {
@@ -88,60 +78,13 @@ type childSet struct {
 
 func (cs *childSet) initWithBTreeStorageType(labels []string) {
 	cs.labels = labels
-
-	lessFn := func(a, b MetricItem) bool {
-		av, bv := a.labelValues(), b.labelValues()
-		if len(av) != len(bv) {
-			panic(errors.AssertionFailedf("mismatch in label values lengths %v vs %v", av, bv))
-		}
-		for i := range av {
-			if cmp := strings.Compare(av[i], bv[i]); cmp != 0 {
-				return cmp < 0
-			}
-		}
-		return false
-	}
 	cs.mu.children = &BtreeWrapper{
-		tree: btree.NewG[MetricItem](8, lessFn),
-	}
-}
-
-func (cs *childSet) initWithCacheStorageType(labels []string, metricName string) {
-	cs.labels = labels
-
-	cs.mu.children = &UnorderedCacheWrapper{
-		cache: cache.NewUnorderedCache(cache.Config{
-			Policy: cache.CacheLRU,
-			ShouldEvict: func(size int, key, value any) bool {
-				if childMetric, ok := value.(ChildMetric); ok {
-					// Check if the child metric has exceeded 20 seconds and cache size is greater than 5000
-					if labelSliceCachedChildMetric, ok := childMetric.(LabelSliceCachedChildMetric); ok {
-						currentTime := timeutil.Now()
-						age := currentTime.Sub(labelSliceCachedChildMetric.CreatedAt())
-						return size > cacheSize && age > retentionTimeTillEviction
-					}
-				}
-				return size > cacheSize
-			},
-			OnEvictedEntry: func(entry *cache.Entry) {
-				if childMetric, ok := entry.Value.(ChildMetric); ok {
-					labelValues := childMetric.labelValues()
-
-					// log metric name and label values of evicted entry
-					log.Dev.Infof(noOpCtx, "evicted child of metric %s with label values: %s\n",
-						redact.SafeString(metricName), redact.SafeString(strings.Join(labelValues, ",")))
-
-					// Invoke DecrementAndDeleteIfZero from ChildMetric which relies on LabelSliceCache
-					if boundedChild, ok := childMetric.(LabelSliceCachedChildMetric); ok {
-						boundedChild.DecrementLabelSliceCacheReference()
-					}
-				}
-			},
-		}),
+		tree: btree.New(8),
 	}
 }
 
 func getCacheStorage() *cache.UnorderedCache {
+	const cacheSize = 5000
 	cacheStorage := cache.NewUnorderedCache(cache.Config{
 		Policy: cache.CacheLRU,
 		//TODO (aa-joshi) : make cacheSize configurable in the future
@@ -157,7 +100,8 @@ func (cs *childSet) Each(
 ) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	cs.mu.children.ForEach(func(cm ChildMetric) {
+	cs.mu.children.Do(func(e interface{}) {
+		cm := cs.mu.children.GetChildMetric(e)
 		pm := cm.ToPrometheusMetric()
 
 		childLabels := make([]*io_prometheus_client.LabelPair, 0, len(labels)+len(cs.labels))
@@ -178,8 +122,8 @@ func (cs *childSet) Each(
 func (cs *childSet) apply(applyFn func(item MetricItem)) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	cs.mu.children.ForEach(func(cm ChildMetric) {
-		applyFn(cm)
+	cs.mu.children.Do(func(e interface{}) {
+		applyFn(cs.mu.children.GetChildMetric(e).(MetricItem))
 	})
 }
 
@@ -205,75 +149,6 @@ func (cs *childSet) get(labelVals ...string) (ChildMetric, bool) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	return cs.mu.children.Get(labelVals...)
-}
-
-func (cs *childSet) getOrAddWithLabelSliceCache(
-	metricName string,
-	createFn func(key uint64, cache *metric.LabelSliceCache) LabelSliceCachedChildMetric,
-	labelSliceCache *metric.LabelSliceCache,
-	labelVals ...string,
-) ChildMetric {
-	// Validate label values count
-	if len(labelVals) != len(cs.labels) {
-		if log.V(2) {
-			log.Dev.Errorf(noOpCtx,
-				"cannot add child with %d label values %v to  metric %s with %d labels %s",
-				len(labelVals), redact.SafeString(metricName), redact.SafeString(strings.Join(labelVals, ",")),
-				len(cs.labels), redact.SafeString(strings.Join(cs.labels, ",")))
-		}
-		return nil
-	}
-
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-
-	// Create a LabelSliceCacheKey from the label.
-	key := metricKey(labelVals...)
-
-	// Check if the child already exists
-	if child, ok := cs.mu.children.GetValue(key); ok {
-		return child
-	}
-
-	// Create and add the new child
-	child := createFn(key, labelSliceCache)
-	err := cs.mu.children.AddKey(key, child)
-	if err != nil {
-		if log.V(2) {
-			log.Dev.Errorf(context.TODO(), "child metric creation failed for metric %s with error %v", redact.SafeString(metricName), err)
-		}
-		return nil
-	}
-	return child
-}
-
-// EachWithLabels is a generic implementation for iterating over child metrics and building prometheus metrics.
-// This can be used by any aggregate metric type that embeds childSet.
-func (cs *childSet) EachWithLabels(
-	labels []*io_prometheus_client.LabelPair,
-	f func(metric *io_prometheus_client.Metric),
-	labelCache *metric.LabelSliceCache,
-) {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-
-	cs.mu.children.ForEach(func(cm ChildMetric) {
-		m := cm.ToPrometheusMetric()
-		childLabels := make([]*io_prometheus_client.LabelPair, 0, len(labels)+len(cs.labels))
-		childLabels = append(childLabels, labels...)
-		lvs := cm.labelValues()
-		key := metricKey(lvs...)
-		labelValueCacheValues, _ := labelCache.Get(metric.LabelSliceCacheKey(key))
-		for i := range cs.labels {
-			childLabels = append(childLabels, &io_prometheus_client.LabelPair{
-				Name:  &cs.labels[i],
-				Value: &labelValueCacheValues.LabelValues[i],
-			})
-		}
-
-		m.Label = childLabels
-		f(m)
-	})
 }
 
 // clear method removes all children from the childSet. It does not reset parent metric values.
@@ -309,7 +184,8 @@ func (sm *SQLMetric) Each(
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	sm.mu.children.ForEach(func(cm ChildMetric) {
+	sm.mu.children.Do(func(e interface{}) {
+		cm := sm.mu.children.GetChildMetric(e)
 		pm := cm.ToPrometheusMetric()
 
 		childLabels := make([]*io_prometheus_client.LabelPair, 0, len(labels)+2)
@@ -415,6 +291,11 @@ type MetricItem interface {
 	labelValuer
 }
 
+type BtreeMetricItem interface {
+	btree.Item
+	MetricItem
+}
+
 type CacheMetricItem interface {
 	MetricItem
 }
@@ -422,17 +303,6 @@ type CacheMetricItem interface {
 type ChildMetric interface {
 	MetricItem
 	ToPrometheusMetric() *io_prometheus_client.Metric
-}
-
-// LabelSliceCachedChildMetric extends ChildMetric with label slice caching capabilities.
-// This interface is designed for child metrics that relies on label slice reference
-// counting system. Metrics implementing this interface can have their label values
-// cached and shared among multiple metrics with identical label combinations,
-// reducing memory usage and improving performance in scenarios with many similar metrics.
-type LabelSliceCachedChildMetric interface {
-	ChildMetric
-	CreatedAt() time.Time
-	DecrementLabelSliceCacheReference()
 }
 
 type labelValuer interface {
@@ -454,12 +324,10 @@ func metricKey(labels ...string) uint64 {
 
 type ChildrenStorage interface {
 	Get(labelVals ...string) (ChildMetric, bool)
-	GetValue(key uint64) (ChildMetric, bool)
 	Add(metric ChildMetric)
-	AddKey(key uint64, metric ChildMetric) error
 	Del(key ChildMetric)
-	// ForEach calls f for each child metric, in arbitrary order.
-	ForEach(f func(metric ChildMetric))
+	Do(f func(e interface{}))
+	GetChildMetric(e interface{}) ChildMetric
 	Clear()
 }
 
@@ -470,20 +338,8 @@ type UnorderedCacheWrapper struct {
 	cache *cache.UnorderedCache
 }
 
-func (ucw *UnorderedCacheWrapper) GetValue(key uint64) (ChildMetric, bool) {
-	value, ok := ucw.cache.Get(key)
-	if !ok {
-		return nil, false
-	}
-	return value.(ChildMetric), ok
-}
-
-func (ucw *UnorderedCacheWrapper) AddKey(key uint64, metric ChildMetric) error {
-	if _, ok := ucw.cache.Get(key); ok {
-		return errors.Newf("child %s already exists\n", redact.SafeString(strings.Join(metric.labelValues(), ",")))
-	}
-	ucw.cache.Add(key, metric)
-	return nil
+func (ucw *UnorderedCacheWrapper) GetChildMetric(e interface{}) ChildMetric {
+	return e.(*cache.Entry).Value.(ChildMetric)
 }
 
 func (ucw *UnorderedCacheWrapper) Get(labelVals ...string) (ChildMetric, bool) {
@@ -511,9 +367,9 @@ func (ucw *UnorderedCacheWrapper) Del(metric ChildMetric) {
 	}
 }
 
-func (ucw *UnorderedCacheWrapper) ForEach(f func(metric ChildMetric)) {
+func (ucw *UnorderedCacheWrapper) Do(f func(e interface{})) {
 	ucw.cache.Do(func(e *cache.Entry) {
-		f(e.Value.(ChildMetric))
+		f(e)
 	})
 }
 
@@ -522,50 +378,57 @@ func (ucw *UnorderedCacheWrapper) Clear() {
 }
 
 type BtreeWrapper struct {
-	tree *btree.BTreeG[MetricItem]
-}
-
-func (b BtreeWrapper) GetValue(key uint64) (ChildMetric, bool) {
-	// GetValue method is not relevant for BtreeWrapper as it uses ChildMetric
-	// as an item in Btree. We are going to remove BtreeWrapper as ChildrenStorage.
-	panic("unimplemented")
-}
-
-func (b BtreeWrapper) AddKey(_ uint64, _ ChildMetric) error {
-	// AddKey method is not relevant for BtreeWrapper as it uses ChildMetric
-	// as an item in Btree. We are going to remove BtreeWrapper as ChildrenStorage.
-	panic("unimplemented")
+	tree *btree.BTree
 }
 
 func (b BtreeWrapper) Get(labelVals ...string) (ChildMetric, bool) {
 	key := labelValuesSlice(labelVals)
-	cm, ok := b.tree.Get(&key)
-	if !ok {
+	cm := b.tree.Get(&key)
+	if cm == nil {
 		return nil, false
 	}
 	return cm.(ChildMetric), true
 }
 
 func (b BtreeWrapper) Add(metric ChildMetric) {
-	if b.tree.Has(metric) {
+	if b.tree.Has(metric.(BtreeMetricItem)) {
 		panic(errors.AssertionFailedf("child %v already exists", metric.labelValues()))
 	}
-	b.tree.ReplaceOrInsert(metric)
+	b.tree.ReplaceOrInsert(metric.(BtreeMetricItem))
 }
 
 func (b BtreeWrapper) Del(metric ChildMetric) {
-	if _, ok := b.tree.Delete(metric); !ok {
-		panic(errors.AssertionFailedf("child %v does not exist", metric.labelValues()))
+	if existing := b.tree.Delete(metric.(btree.Item)); existing == nil {
+		panic(errors.AssertionFailedf(
+			"child %v does not exists", metric.labelValues()))
 	}
 }
 
-func (b BtreeWrapper) ForEach(f func(metric ChildMetric)) {
-	b.tree.Ascend(func(i MetricItem) bool {
-		f(i.(ChildMetric))
+func (b BtreeWrapper) Do(f func(e interface{})) {
+	b.tree.Ascend(func(i btree.Item) bool {
+		f(i)
 		return true
 	})
 }
 
+func (b BtreeWrapper) GetChildMetric(e interface{}) ChildMetric {
+	return e.(ChildMetric)
+}
+
 func (b BtreeWrapper) Clear() {
 	b.tree.Clear(false)
+}
+
+func (lv *labelValuesSlice) Less(o btree.Item) bool {
+	ov := o.(labelValuer).labelValues()
+	if len(ov) != len(*lv) {
+		panic(errors.AssertionFailedf("mismatch in label values lengths %v vs %v",
+			ov, *lv))
+	}
+	for i := range ov {
+		if cmp := strings.Compare((*lv)[i], ov[i]); cmp != 0 {
+			return cmp < 0
+		}
+	}
+	return false // eq
 }

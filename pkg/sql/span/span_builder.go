@@ -86,21 +86,6 @@ func (s *Builder) InitWithFetchSpec(
 	}
 }
 
-// IsPreEncoded tests that the encoded values for the provided row can be used
-// to build a span without decoding and re-encoding.
-func (s *Builder) IsPreEncoded(values rowenc.EncDatumRow) bool {
-	for i, col := range s.keyAndPrefixCols {
-		encoding := catenumpb.DatumEncoding_ASCENDING_KEY
-		if col.Direction == catenumpb.IndexColumn_DESC {
-			encoding = catenumpb.DatumEncoding_DESCENDING_KEY
-		}
-		if !values[i].IsEncodedAs(encoding) {
-			return false
-		}
-	}
-	return true
-}
-
 // SpanFromEncDatums encodes a span with len(values) constraint columns from the
 // index prefixed with the index key prefix that includes the table and index
 // ID. SpanFromEncDatums assumes that the EncDatums in values are in the order
@@ -456,11 +441,7 @@ func (s *Builder) SpansFromInvertedSpans(
 			scratchRows[i] = make(rowenc.EncDatumRow, keyLength+1)
 			for j := 0; j < keyLength; j++ {
 				val := span.StartKey().Value(j)
-				var err error
-				scratchRows[i][j], err = rowenc.DatumToEncDatum(val.ResolvedType(), val)
-				if err != nil {
-					return nil, err
-				}
+				scratchRows[i][j] = rowenc.DatumToEncDatum(val.ResolvedType(), val)
 			}
 		}
 	} else {

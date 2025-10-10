@@ -17,8 +17,7 @@ import (
 
 // TestWriteStartupScriptTemplate mainly tests the startup script tpl compiles.
 func TestWriteStartupScriptTemplate(t *testing.T) {
-	file, err := writeStartupScript("vm_name", "", vm.Zfs, false,
-		false, "ubuntu", false)
+	file, err := writeStartupScript("vm_name", "", vm.Zfs, false, false, "ubuntu")
 	require.NoError(t, err)
 
 	f, err := os.ReadFile(file)

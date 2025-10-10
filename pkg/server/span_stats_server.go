@@ -35,6 +35,7 @@ var SpanStatsNodeTimeout = settings.RegisterDurationSetting(
 	"the duration allowed for a single node to return span stats data before"+
 		" the request is cancelled; if set to 0, there is no timeout",
 	time.Minute,
+	settings.NonNegativeDuration,
 )
 
 const defaultRangeStatsBatchLimit = 100
@@ -116,7 +117,7 @@ func (s *systemStatusServer) spanStatsFanOut(
 			return nil, nil
 		}
 
-		resp, err := client.(serverpb.RPCStatusClient).SpanStats(ctx,
+		resp, err := client.(serverpb.StatusClient).SpanStats(ctx,
 			&roachpb.SpanStatsRequest{
 				NodeID: nodeID.String(),
 				Spans:  spansPerNode[nodeID],
@@ -125,7 +126,7 @@ func (s *systemStatusServer) spanStatsFanOut(
 	}
 
 	errorFn := func(nodeID roachpb.NodeID, err error) {
-		log.Dev.Errorf(ctx, nodeErrorMsgPlaceholder, nodeID, err)
+		log.Errorf(ctx, nodeErrorMsgPlaceholder, nodeID, err)
 		errorMessage := fmt.Sprintf("%v", err)
 		res.Errors = append(res.Errors, errorMessage)
 	}
@@ -171,13 +172,13 @@ func collectSpanStatsResponses(
 		// See #108779.
 		for spanStr, spanStats := range nodeResponse.SpanToStats {
 			if spanStats == nil {
-				log.Dev.Errorf(ctx, "Span stats for %s from node response is nil", spanStr)
+				log.Errorf(ctx, "Span stats for %s from node response is nil", spanStr)
 				continue
 			}
 
 			_, ok := res.SpanToStats[spanStr]
 			if !ok {
-				log.Dev.Warningf(ctx, "Received Span not in original request: %s", spanStr)
+				log.Warningf(ctx, "Received Span not in original request: %s", spanStr)
 				res.SpanToStats[spanStr] = &roachpb.SpanStats{}
 			}
 

@@ -148,7 +148,7 @@ func (b *replicaAppBatch) Stage(
 	if err := b.ab.runPostAddTriggers(ctx, &cmd.ReplicatedCmd, postAddEnv{
 		st:          b.r.store.cfg.Settings,
 		eng:         b.r.store.TODOEngine(),
-		sideloaded:  b.r.logStorage.ls.Sideload,
+		sideloaded:  b.r.raftMu.sideloaded,
 		bulkLimiter: b.r.store.limiters.BulkIOWriteRate,
 	}); err != nil {
 		return nil, err
@@ -253,20 +253,16 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 	// We don't track these stats in standalone log application since they depend
 	// on whether the proposer is still waiting locally, and this concept does not
 	// apply in a standalone context.
-	if !cmd.IsLocal() {
+	//
+	// TODO(irfansharif): This code block can be removed once below-raft
+	// admission control is the only form of IO admission control. It pre-dates
+	// it -- these stats were previously used to deduct IO tokens for follower
+	// writes/ingests without waiting.
+	if !cmd.IsLocal() && !cmd.ApplyAdmissionControl() {
 		writeBytes, ingestedBytes := cmd.getStoreWriteByteSizes()
-		if writeBytes > 0 || ingestedBytes > 0 {
-			b.ab.numWriteAndIngestedBytes += writeBytes + ingestedBytes
-		}
-		// TODO(irfansharif): This code block can be removed once below-raft
-		// admission control is the only form of IO admission control. It pre-dates
-		// it -- these stats were previously used to deduct IO tokens for follower
-		// writes/ingests without waiting.
-		if !cmd.ApplyAdmissionControl() {
-			b.followerStoreWriteBytes.NumEntries++
-			b.followerStoreWriteBytes.WriteBytes += writeBytes
-			b.followerStoreWriteBytes.IngestedBytes += ingestedBytes
-		}
+		b.followerStoreWriteBytes.NumEntries++
+		b.followerStoreWriteBytes.WriteBytes += writeBytes
+		b.followerStoreWriteBytes.IngestedBytes += ingestedBytes
 	}
 
 	// MVCC history mutations violate the closed timestamp, modifying data that
@@ -353,7 +349,7 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 		// commits by handleMergeResult() to finish the removal.
 		rhsRepl.readOnlyCmdMu.Lock()
 		rhsRepl.mu.Lock()
-		rhsRepl.shMu.destroyStatus.Set(
+		rhsRepl.mu.destroyStatus.Set(
 			kvpb.NewRangeNotFoundError(rhsRepl.RangeID, rhsRepl.store.StoreID()),
 			destroyReasonRemoved)
 		rhsRepl.mu.Unlock()
@@ -364,7 +360,7 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 		// required for correctness, since the merge protocol should guarantee that
 		// no new replicas of the RHS can ever be created, but it doesn't hurt to
 		// be careful.
-		if err := kvstorage.DestroyReplica(ctx, rhsRepl.ID(), b.batch, b.batch, mergedTombstoneReplicaID, kvstorage.ClearRangeDataOptions{
+		if err := kvstorage.DestroyReplica(ctx, rhsRepl.RangeID, b.batch, b.batch, mergedTombstoneReplicaID, kvstorage.ClearRangeDataOptions{
 			ClearReplicatedByRangeID:   true,
 			ClearUnreplicatedByRangeID: true,
 		}); err != nil {
@@ -443,7 +439,7 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 		// application.
 		b.r.readOnlyCmdMu.Lock()
 		b.r.mu.Lock()
-		b.r.shMu.destroyStatus.Set(
+		b.r.mu.destroyStatus.Set(
 			kvpb.NewRangeNotFoundError(b.r.RangeID, b.r.store.StoreID()),
 			destroyReasonRemoved)
 		span := b.r.descRLocked().RSpan()
@@ -453,9 +449,9 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 
 		// Delete all of the Replica's data. We're going to delete the hard state too.
 		// We've set the replica's in-mem status to reflect the pending destruction
-		// above, and DestroyReplica will also add a range tombstone to the
+		// above, and preDestroyRaftMuLocked will also add a range tombstone to the
 		// batch, so that when we commit it, the removal is finalized.
-		if err := kvstorage.DestroyReplica(ctx, b.r.ID(), b.batch, b.batch, change.NextReplicaID(), kvstorage.ClearRangeDataOptions{
+		if err := kvstorage.DestroyReplica(ctx, b.r.RangeID, b.batch, b.batch, change.NextReplicaID(), kvstorage.ClearRangeDataOptions{
 			ClearReplicatedBySpan:      span,
 			ClearReplicatedByRangeID:   true,
 			ClearUnreplicatedByRangeID: true,
@@ -474,7 +470,7 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 	if ops := cmd.Cmd.LogicalOpLog; cmd.Cmd.WriteBatch != nil {
 		b.r.handleLogicalOpLogRaftMuLocked(ctx, ops, b.batch)
 	} else if ops != nil {
-		log.KvExec.Fatalf(ctx, "non-nil logical op log with nil write batch: %v", cmd.Cmd)
+		log.Fatalf(ctx, "non-nil logical op log with nil write batch: %v", cmd.Cmd)
 	}
 
 	return nil
@@ -533,7 +529,7 @@ func (b *replicaAppBatch) stageTruncation(
 	// usage of changeTruncatesSideloadedFiles flag at the other end.
 	//
 	// The size computation feeds into maintaining the log size in memory.
-	if entries, size, err := b.r.logStorage.ls.Sideload.Stats(ctx, kvpb.RaftSpan{
+	if entries, size, err := b.r.raftMu.sideloaded.Stats(ctx, kvpb.RaftSpan{
 		After: b.truncState.Index, Last: truncatedState.Index,
 	}); err != nil {
 		return errors.Wrap(err, "failed searching for sideloaded entries")
@@ -598,7 +594,7 @@ func (b *replicaAppBatch) stageTrivialReplicatedEvalResult(
 // application.
 func (b *replicaAppBatch) ApplyToStateMachine(ctx context.Context) error {
 	if log.V(4) {
-		log.KvExec.Infof(ctx, "flushing batch %v of %d entries", b.state, b.ab.numEntriesProcessed)
+		log.Infof(ctx, "flushing batch %v of %d entries", b.state, b.ab.numEntriesProcessed)
 	}
 
 	// Add the replica applied state key to the write batch if this change
@@ -725,7 +721,6 @@ func (b *replicaAppBatch) recordStatsOnCommit() {
 	b.applyStats.appBatchStats.merge(b.ab.appBatchStats)
 	b.applyStats.numBatchesProcessed++
 	b.applyStats.followerStoreWriteBytes.Merge(b.followerStoreWriteBytes)
-	b.r.recordRequestWriteBytes(b.ab.numWriteAndIngestedBytes)
 
 	if n := b.ab.numAddSST; n > 0 {
 		b.r.store.metrics.AddSSTableApplications.Inc(int64(n))

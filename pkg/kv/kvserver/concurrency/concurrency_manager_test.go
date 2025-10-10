@@ -641,7 +641,7 @@ func TestConcurrencyManagerBasic(t *testing.T) {
 			case "debug-set-max-locks":
 				var n int
 				d.ScanArgs(t, "n", &n)
-				m.SetMaxLockTableSize(int64(n))
+				m.TestingSetMaxLocks(int64(n))
 				return ""
 
 			case "reset":
@@ -755,16 +755,13 @@ func newClusterWithSettings(st *clustersettings.Settings) *cluster {
 }
 
 func (c *cluster) makeConfig() concurrency.Config {
-	m := concurrency.TestingMakeLockTableMetricsCfg()
 	return concurrency.Config{
-		NodeDesc:                          c.nodeDesc,
-		RangeDesc:                         c.rangeDesc,
-		Settings:                          c.st,
-		Clock:                             c.clock,
-		IntentResolver:                    c,
-		TxnWaitMetrics:                    txnwait.NewMetrics(time.Minute),
-		LocksShedDueToMemoryLimit:         m.LocksShedDueToMemoryLimit,
-		NumLockShedDueToMemoryLimitEvents: m.NumLockShedDueToMemoryLimitEvents,
+		NodeDesc:       c.nodeDesc,
+		RangeDesc:      c.rangeDesc,
+		Settings:       c.st,
+		Clock:          c.clock,
+		IntentResolver: c,
+		TxnWaitMetrics: txnwait.NewMetrics(time.Minute),
 	}
 }
 

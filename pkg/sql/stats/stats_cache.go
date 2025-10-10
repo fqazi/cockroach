@@ -162,7 +162,7 @@ func (sc *TableStatisticsCache) Start(
 	handleEvent := func(ctx context.Context, kv *kvpb.RangeFeedValue) {
 		tableID, err := decodeTableStatisticsKV(codec, kv, &sc.datumAlloc)
 		if err != nil {
-			log.Dev.Warningf(ctx, "failed to decode table statistics row %v: %v", kv.Key, err)
+			log.Warningf(ctx, "failed to decode table statistics row %v: %v", kv.Key, err)
 			return
 		}
 		ts := kv.Value.Timestamp
@@ -424,7 +424,7 @@ func (sc *TableStatisticsCache) lookupStatsLocked(
 	} else {
 		// This is the expected "fast" path; don't emit an event.
 		if log.V(2) {
-			log.Dev.Infof(ctx, "statistics for table %d found in cache", tableID)
+			log.Infof(ctx, "statistics for table %d found in cache", tableID)
 		}
 	}
 	return true, e
@@ -804,8 +804,7 @@ func (tabStat *TableStatistic) String() string {
 	)
 }
 
-// IsPartial returns true if this statistic was collected with USING EXTREMES
-// or with a WHERE clause.
+// IsPartial returns true if this statistic was collected with a where clause.
 func (tsp *TableStatisticProto) IsPartial() bool {
 	return tsp.PartialPredicate != ""
 }
@@ -823,7 +822,7 @@ func (tsp *TableStatisticProto) IsForecast() bool {
 
 // IsAuto returns true if this statistic was collected automatically.
 func (tsp *TableStatisticProto) IsAuto() bool {
-	return tsp.Name == jobspb.AutoStatsName || tsp.Name == jobspb.AutoPartialStatsName
+	return tsp.Name == jobspb.AutoStatsName
 }
 
 // TODO(michae2): Add an index on system.table_statistics (tableID, createdAt,
@@ -889,7 +888,7 @@ func (sc *TableStatisticsCache) getTableStatsFromDB(
 	for ok, err = it.Next(ctx); ok; ok, err = it.Next(ctx) {
 		stats, udt, err := sc.parseStats(ctx, it.Cur(), typeResolver)
 		if err != nil {
-			log.Dev.Warningf(ctx, "could not decode statistic for table %d: %v", tableID, err)
+			log.Warningf(ctx, "could not decode statistic for table %d: %v", tableID, err)
 			continue
 		}
 		statsList = append(statsList, stats)
@@ -966,7 +965,7 @@ func getTableStatsProtosFromDB(
 		var tsp *TableStatisticProto
 		tsp, err = NewTableStatisticProto(it.Cur())
 		if err != nil {
-			log.Dev.Warningf(ctx, "could not decode statistic for table %d: %v", tableID, err)
+			log.Warningf(ctx, "could not decode statistic for table %d: %v", tableID, err)
 			continue
 		}
 		statsProtos = append(statsProtos, tsp)

@@ -30,7 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 func alterTableAlterColumnType(
@@ -42,7 +41,7 @@ func alterTableAlterColumnType(
 ) {
 	colID := getColumnIDFromColumnName(b, tbl.TableID, t.Column, true /* required */)
 	col := mustRetrieveColumnElem(b, tbl.TableID, colID)
-	panicIfSystemColumn(col, t.Column)
+	panicIfSystemColumn(col, t.Column.String())
 
 	// Setup for the new type ahead of any checking. As we need its resolved type
 	// for the checks.
@@ -70,17 +69,6 @@ func alterTableAlterColumnType(
 		case *scpb.FunctionBody:
 			fnName := b.QueryByID(e.FunctionID).FilterFunctionName().MustGetOneElement()
 			panic(sqlerrors.NewDependentBlocksOpError(op, objType, t.Column.String(), "function", fnName.Name))
-		case *scpb.TriggerDeps:
-			tableElts := b.QueryByID(e.TableID)
-			tableName := tableElts.FilterNamespace().MustGetOneElement()
-			triggerName := tableElts.FilterTriggerName().Filter(
-				func(_ scpb.Status, _ scpb.TargetStatus, tn *scpb.TriggerName) bool {
-					return tn.TriggerID == e.TriggerID
-				}).MustGetOneElement()
-			panic(sqlerrors.NewDependentObjectErrorf(
-				"cannot %s %s %q because trigger %q on table %q depends on it",
-				redact.SafeString(op), redact.SafeString(objType), t.Column.String(), triggerName.Name, tableName.Name,
-			))
 		case *scpb.RowLevelTTL:
 			// If a duration expression is set, the column level dependency is on the
 			// internal ttl column, which we are attempting to alter.
@@ -93,7 +81,7 @@ func alterTableAlterColumnType(
 		case *scpb.PolicyUsingExpr, *scpb.PolicyWithCheckExpr:
 			panic(sqlerrors.NewAlterDependsOnPolicyExprError(op, objType, t.Column.String()))
 		}
-	}, false /* allowPartialIdxPredicateRef */)
+	})
 
 	var err error
 	newColType.Type, err = schemachange.ValidateAlterColumnTypeChecks(
@@ -309,7 +297,7 @@ func handleGeneralColumnConversion(
 		case *scpb.SecondaryIndex:
 			panic(sqlerrors.NewAlterColumnTypeColInIndexNotSupportedErr())
 		}
-	}, false /* allowPartialIdxPredicateRef */)
+	})
 
 	// This code path should never be reached for virtual columns, as their values
 	// are always computed dynamically on access and are never stored on disk.
@@ -505,7 +493,7 @@ func maybeWriteNoticeForFKColTypeMismatch(b BuildCtx, col *scpb.Column, colType 
 		case *scpb.ForeignKeyConstraintUnvalidated:
 			writeNoticeHelper(e.ColumnIDs, e.ReferencedColumnIDs, e.ReferencedTableID)
 		}
-	}, false /* allowPartialIdxPredicateRef */)
+	})
 }
 
 func getComputeExpressionForBackfill(

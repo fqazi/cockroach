@@ -20,8 +20,8 @@ import (
 
 type controlJobsNode struct {
 	singleInputPlanNode
-	rowsAffectedOutputHelper
 	desiredStatus jobs.State
+	numRows       int
 	reason        string
 }
 
@@ -31,7 +31,11 @@ var jobCommandToDesiredStatus = map[tree.JobCommand]jobs.State{
 	tree.PauseJob:  jobs.StatePaused,
 }
 
-// startExec implements the planNode interface.
+// FastPathResults implements the planNodeFastPath interface.
+func (n *controlJobsNode) FastPathResults() (int, bool) {
+	return n.numRows, true
+}
+
 func (n *controlJobsNode) startExec(params runParams) error {
 	if n.desiredStatus != jobs.StatePaused && len(n.reason) > 0 {
 		return errors.AssertionFailedf("status %v is not %v and thus does not support a reason %v",
@@ -57,15 +61,18 @@ func (n *controlJobsNode) startExec(params runParams) error {
 			continue
 		}
 
-		jobID, ok := jobIDDatum.(*tree.DInt)
+		jobID, ok := tree.AsDInt(jobIDDatum)
 		if !ok {
 			return errors.AssertionFailedf("%q: expected *DInt, found %T", jobIDDatum, jobIDDatum)
 		}
 
-		if err := reg.UpdateJobWithTxn(params.ctx, jobspb.JobID(*jobID), params.p.InternalSQLTxn(),
+		if err := reg.UpdateJobWithTxn(params.ctx, jobspb.JobID(jobID), params.p.InternalSQLTxn(),
 			func(txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
-				if err := jobsauth.Authorize(params.ctx, params.p,
-					md.ID, md.Payload.UsernameProto.Decode(), jobsauth.ControlAccess, globalPrivileges); err != nil {
+				getLegacyPayload := func(ctx context.Context) (*jobspb.Payload, error) {
+					return md.Payload, nil
+				}
+				if err := jobsauth.AuthorizeAllowLegacyAuth(params.ctx, params.p,
+					md.ID, getLegacyPayload, md.Payload.UsernameProto.Decode(), md.Payload.Type(), jobsauth.ControlAccess, globalPrivileges); err != nil {
 					return err
 				}
 				switch n.desiredStatus {
@@ -82,7 +89,7 @@ func (n *controlJobsNode) startExec(params runParams) error {
 			return err
 		}
 
-		n.incAffectedRows()
+		n.numRows++
 	}
 	switch n.desiredStatus {
 	case jobs.StatePaused:
@@ -95,15 +102,9 @@ func (n *controlJobsNode) startExec(params runParams) error {
 	return nil
 }
 
-// Next implements the planNode interface.
-func (n *controlJobsNode) Next(_ runParams) (bool, error) {
-	return n.next(), nil
-}
+func (*controlJobsNode) Next(runParams) (bool, error) { return false, nil }
 
-// Values implements the planNode interface.
-func (n *controlJobsNode) Values() tree.Datums {
-	return n.values()
-}
+func (*controlJobsNode) Values() tree.Datums { return nil }
 
 func (n *controlJobsNode) Close(ctx context.Context) {
 	n.input.Close(ctx)

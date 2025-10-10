@@ -66,7 +66,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
@@ -358,24 +357,10 @@ func NewTestWithLocality(
 	return gossip
 }
 
-type drpcGossip Gossip
-
-// AsDRPCServer returns the DRPC server implementation for the Gossip service.
-func (n *Gossip) AsDRPCServer() DRPCGossipServer {
-	return (*drpcGossip)(n)
-}
-
-// Gossip implements the DRPC service. It receives gossiped information from a
-// peer node. The received delta is combined with the infostore, and this node's
-// own gossip is returned to requesting client.
-func (g *drpcGossip) Gossip(stream DRPCGossip_GossipStream) error {
-	return (*Gossip)(g).gossip(stream)
-}
-
 // AssertNotStarted fatals if the Gossip instance was already started.
 func (g *Gossip) AssertNotStarted(ctx context.Context) {
 	if g.started {
-		log.Dev.Fatalf(ctx, "gossip instance was already started")
+		log.Fatalf(ctx, "gossip instance was already started")
 	}
 }
 
@@ -392,9 +377,9 @@ func (g *Gossip) GetNodeMetrics() *Metrics {
 // SetNodeDescriptor adds the node descriptor to the gossip network.
 func (g *Gossip) SetNodeDescriptor(desc *roachpb.NodeDescriptor) error {
 	ctx := g.AnnotateCtx(context.TODO())
-	log.Dev.VInfof(ctx, 1, "NodeDescriptor set to %+v", desc)
+	log.VInfof(ctx, 1, "NodeDescriptor set to %+v", desc)
 	if desc.Address.IsEmpty() {
-		log.Dev.Fatalf(ctx, "n%d address is empty", desc.NodeID)
+		log.Fatalf(ctx, "n%d address is empty", desc.NodeID)
 	}
 	if err := g.AddInfoProto(MakeNodeIDKey(desc.NodeID), desc, NodeDescriptorTTL); err != nil {
 		return errors.Wrapf(err, "n%d: couldn't gossip descriptor", desc.NodeID)
@@ -462,7 +447,7 @@ func (g *Gossip) SetStorage(storage Storage) error {
 	// Persist merged addresses.
 	if numAddrs := len(g.bootstrapInfo.Addresses); numAddrs > len(storedBI.Addresses) {
 		if err := g.storage.WriteBootstrapInfo(&g.bootstrapInfo); err != nil {
-			log.Dev.Errorf(ctx, "%v", err)
+			log.Errorf(ctx, "%v", err)
 		}
 	}
 
@@ -713,12 +698,12 @@ func (g *Gossip) maybeCleanupBootstrapAddressesLocked() {
 		}
 		return nil
 	}, true /* deleteExpired */); err != nil {
-		log.Dev.Errorf(ctx, "%v", err)
+		log.Errorf(ctx, "%v", err)
 		return
 	}
 
 	if err := g.storage.WriteBootstrapInfo(&g.bootstrapInfo); err != nil {
-		log.Dev.Errorf(ctx, "%v", err)
+		log.Errorf(ctx, "%v", err)
 	}
 }
 
@@ -757,15 +742,15 @@ func maxPeers(nodeCount int) int {
 // new addresses for each encountered host and to write the
 // set of gossip node addresses to persistent storage when it
 // changes.
-func (g *Gossip) updateNodeAddress(key string, content roachpb.Value, _ int64) {
+func (g *Gossip) updateNodeAddress(key string, content roachpb.Value) {
 	ctx := g.AnnotateCtx(context.TODO())
 	var desc roachpb.NodeDescriptor
 	if err := content.GetProto(&desc); err != nil {
-		log.Dev.Errorf(ctx, "%v", err)
+		log.Errorf(ctx, "%v", err)
 		return
 	}
 
-	log.Dev.VInfof(ctx, 1, "updateNodeAddress called on %q with desc %+v", key, desc)
+	log.VInfof(ctx, 1, "updateNodeAddress called on %q with desc %+v", key, desc)
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -815,7 +800,7 @@ func (g *Gossip) updateNodeAddress(key string, content roachpb.Value, _ int64) {
 	added := g.maybeAddBootstrapAddressLocked(desc.Address, desc.NodeID)
 	if added && g.storage != nil {
 		if err := g.storage.WriteBootstrapInfo(&g.bootstrapInfo); err != nil {
-			log.Dev.Errorf(ctx, "%v", err)
+			log.Errorf(ctx, "%v", err)
 		}
 	}
 }
@@ -826,15 +811,15 @@ func (g *Gossip) removeNodeDescriptorLocked(nodeID roachpb.NodeID) {
 }
 
 // updateStoreMap is a gossip callback which is used to update storeMap.
-func (g *Gossip) updateStoreMap(key string, content roachpb.Value, _ int64) {
+func (g *Gossip) updateStoreMap(key string, content roachpb.Value) {
 	ctx := g.AnnotateCtx(context.TODO())
 	var desc roachpb.StoreDescriptor
 	if err := content.GetProto(&desc); err != nil {
-		log.Dev.Errorf(ctx, "%v", err)
+		log.Errorf(ctx, "%v", err)
 		return
 	}
 
-	log.Dev.VInfof(ctx, 1, "updateStoreMap called on %q with desc %+v", key, desc)
+	log.VInfof(ctx, 1, "updateStoreMap called on %q with desc %+v", key, desc)
 
 	g.storeDescs.Store(desc.StoreID, &desc)
 }
@@ -868,7 +853,7 @@ func (g *Gossip) getNodeDescriptor(
 ) (*roachpb.NodeDescriptor, error) {
 	if desc, ok := g.nodeDescs.Load(nodeID); ok {
 		if desc.Address.IsEmpty() {
-			log.Dev.Fatalf(g.AnnotateCtx(context.Background()), "n%d has an empty address", nodeID)
+			log.Fatalf(g.AnnotateCtx(context.Background()), "n%d has an empty address", nodeID)
 		}
 		return desc, nil
 	}
@@ -1134,10 +1119,9 @@ func (g *Gossip) IterateInfos(prefix string, visit func(k string, info Info) err
 	return nil
 }
 
-// Callback is a callback method to be invoked on gossip update of info denoted
-// by key. origTimestamp is the info wall time when generated by the originating
-// node.
-type Callback func(key string, value roachpb.Value, origTimestamp int64)
+// Callback is a callback method to be invoked on gossip update
+// of info denoted by key.
+type Callback func(string, roachpb.Value)
 
 // CallbackOption is a marker interface that callback options must implement.
 type CallbackOption interface {
@@ -1246,7 +1230,7 @@ func (g *Gossip) hasOutgoingLocked(nodeID roachpb.NodeID) bool {
 		// If we don't have the address, fall back to using the outgoing nodeSet
 		// since at least it's better than nothing.
 		ctx := g.AnnotateCtx(context.TODO())
-		log.Dev.Errorf(ctx, "unable to get address for n%d: %s", nodeID, err)
+		log.Errorf(ctx, "unable to get address for n%d: %s", nodeID, err)
 		return g.outgoing.hasNode(nodeID)
 	}
 	c := g.findClient(func(c *client) bool {
@@ -1327,6 +1311,7 @@ func (g *Gossip) bootstrap(rpcContext *rpc.Context) {
 			log.Eventf(ctx, "sleeping %s until bootstrap", g.bootstrapInterval)
 			select {
 			case <-bootstrapTimer.C:
+				bootstrapTimer.Read = true
 				// continue
 			case <-g.server.stopper.ShouldQuiesce():
 				return
@@ -1372,6 +1357,7 @@ func (g *Gossip) manage(rpcContext *rpc.Context) {
 			case <-g.tighten:
 				g.tightenNetwork(ctx, rpcContext)
 			case <-cullTimer.C:
+				cullTimer.Read = true
 				cullTimer.Reset(jitteredInterval(g.cullInterval))
 				func() {
 					g.mu.Lock()
@@ -1402,6 +1388,7 @@ func (g *Gossip) manage(rpcContext *rpc.Context) {
 					g.mu.Unlock()
 				}()
 			case <-stallTimer.C:
+				stallTimer.Read = true
 				stallTimer.Reset(jitteredInterval(g.stallInterval))
 				func() {
 					g.mu.Lock()
@@ -1618,10 +1605,10 @@ func (g *Gossip) TestingAddInfoProtoAndWaitForAllCallbacks(
 		if cb.matcher.MatchString(key) {
 			cb.cw.mu.Lock()
 			cb.cw.mu.workQueue = append(cb.cw.mu.workQueue, callbackWorkItem{
-				method: func(_ string, _ roachpb.Value, _ int64) {
+				method: func(_ string, _ roachpb.Value) {
 					wg.Done()
 				},
-				schedulingTime: crtime.NowMono(),
+				schedulingTime: timeutil.Now(),
 			})
 			cb.cw.mu.Unlock()
 		}
@@ -1659,11 +1646,11 @@ func (g *Gossip) GetFirstRangeDescriptor() (*roachpb.RangeDescriptor, error) {
 
 // OnFirstRangeChanged implements kvcoord.FirstRangeProvider.
 func (g *Gossip) OnFirstRangeChanged(cb func(*roachpb.RangeDescriptor)) {
-	g.RegisterCallback(KeyFirstRangeDescriptor, func(_ string, value roachpb.Value, _ int64) {
+	g.RegisterCallback(KeyFirstRangeDescriptor, func(_ string, value roachpb.Value) {
 		ctx := context.Background()
 		desc := &roachpb.RangeDescriptor{}
 		if err := value.GetProto(desc); err != nil {
-			log.Dev.Errorf(ctx, "unable to parse gossiped first range descriptor: %s", err)
+			log.Errorf(ctx, "unable to parse gossiped first range descriptor: %s", err)
 		} else {
 			cb(desc)
 		}

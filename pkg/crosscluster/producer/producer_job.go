@@ -140,6 +140,7 @@ func (p *producerJobResumer) Resume(ctx context.Context, execCtx interface{}) er
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-p.timer.Ch():
+			p.timer.MarkRead()
 			p.timer.Reset(crosscluster.StreamReplicationStreamLivenessTrackFrequency.Get(execCfg.SV()))
 			progress, err := replicationutils.LoadReplicationProgress(ctx, execCfg.InternalDB, p.job.ID())
 			if knobs := execCfg.StreamingTestingKnobs; knobs != nil && knobs.AfterResumerJobLoad != nil {
@@ -149,12 +150,12 @@ func (p *producerJobResumer) Resume(ctx context.Context, execCtx interface{}) er
 				if jobs.HasJobNotFoundError(err) {
 					return errors.Wrapf(err, "replication stream %d failed loading producer job progress", p.job.ID())
 				}
-				log.Dev.Errorf(ctx,
+				log.Errorf(ctx,
 					"replication stream %d failed loading producer job progress (retrying): %v", p.job.ID(), err)
 				continue
 			}
 			if progress == nil {
-				log.Dev.Errorf(ctx, "replication stream %d cannot find producer job progress (retrying)", p.job.ID())
+				log.Errorf(ctx, "replication stream %d cannot find producer job progress (retrying)", p.job.ID())
 				continue
 			}
 

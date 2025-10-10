@@ -7,7 +7,6 @@ package spanconfigreconciler
 
 import (
 	"context"
-	"runtime/trace"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -140,7 +139,6 @@ func (r *Reconciler) Reconcile(
 	session sqlliveness.Session,
 	onCheckpoint func() error,
 ) error {
-	defer trace.StartRegion(ctx, "spanconfig.Reconciler.Reconcile").End()
 	// TODO(irfansharif): Avoid the full reconciliation pass if the startTS
 	// provided is visible to the rangefeed. Right now we're doing a full
 	// reconciliation pass every time the reconciliation job kicks us off.
@@ -187,9 +185,6 @@ func (r *Reconciler) Reconcile(
 		r.mu.lastCheckpoint = reconciledUpUntil
 		r.mu.Unlock()
 
-		if log.V(3) {
-			log.Dev.Infof(ctx, "reconciled up until %s", reconciledUpUntil)
-		}
 		return onCheckpoint()
 	})
 }
@@ -465,14 +460,14 @@ func updateSpanConfigRecords(
 				// We expect the underlying sqlliveness session's expiration to be
 				// extended automatically, which makes this retry loop effective in the
 				// face of these retryable lease expired errors from the RPC.
-				log.Dev.Infof(ctx, "lease expired while updating span config records, retrying..")
+				log.Infof(ctx, "lease expired while updating span config records, retrying..")
 				continue
 			}
 			return err // not a retryable error, bubble up
 		}
 
 		if log.V(3) {
-			log.Dev.Infof(ctx, "successfully updated span config records: deleted = %+#v; upserted = %+#v", toDelete, toUpsert)
+			log.Infof(ctx, "successfully updated span config records: deleted = %+#v; upserted = %+#v", toDelete, toUpsert)
 		}
 		return nil // we performed the update; we're done here
 	}
@@ -506,9 +501,6 @@ func (r *incrementalReconciler) reconcile(
 		func(ctx context.Context, sqlUpdates []spanconfig.SQLUpdate, checkpoint hlc.Timestamp) error {
 			if len(sqlUpdates) == 0 {
 				return callback(checkpoint) // nothing to do; propagate the checkpoint
-			}
-			if log.V(3) {
-				log.Dev.Infof(ctx, "processing %d SQL updates", len(sqlUpdates))
 			}
 
 			// Process the SQLUpdates and identify all descriptor IDs that require

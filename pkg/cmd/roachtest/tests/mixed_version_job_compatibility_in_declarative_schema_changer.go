@@ -10,7 +10,6 @@ import (
 	gosql "database/sql"
 	"math/rand"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
@@ -28,15 +27,11 @@ func registerDeclarativeSchemaChangerJobCompatibilityInMixedVersion(r registry.R
 	// This test requires us to come back and change the stmts in executeSupportedDDLs to be those
 	// supported in the "previous" major release.
 	r.Add(registry.TestSpec{
-		Name:    "declarative_schema_changer/job-compatibility-mixed-version-V253-V254",
-		Owner:   registry.OwnerSQLFoundations,
-		Cluster: r.MakeClusterSpec(4),
-		// Disabled on IBM because s390x is only built on master and mixed-version
-		// is impossible to test as of 05/2025.
-		CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
+		Name:             "declarative_schema_changer/job-compatibility-mixed-version-V242-V243",
+		Owner:            registry.OwnerSQLFoundations,
+		Cluster:          r.MakeClusterSpec(4),
+		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
-		Monitor:          true,
-		Randomized:       true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runDeclarativeSchemaChangerJobCompatibilityInMixedVersion(ctx, t, c)
 		},
@@ -108,19 +103,13 @@ func executeSupportedDDLs(
 		return err
 	}
 
-	// DDLs supported in V25_3.
-	v253DDLs := []string{
-		`ALTER TABLE testdb.testsc.t2 ALTER COLUMN i DROP NOT NULL`,
-	}
-
-	// DDLs supported in V25_4.
-	v254DDLs := []string{
-		`TRUNCATE testdb.testsc.t3`,
-		`ALTER TABLE testdb.testsc.t2 RENAME TO t2_renamed`,
-		`ALTER TABLE testdb.testsc.t2_renamed RENAME TO t2`,
-		`ALTER TABLE testdb.testsc.t2 ALTER COLUMN j SET ON UPDATE 1`,
-		`ALTER TABLE testdb.testsc.t2 RENAME COLUMN k TO k_renamed`,
-		`ALTER TABLE testdb.testsc.t2 RENAME COLUMN k_renamed TO k`,
+	// DDLs supported in V24_2.
+	// TODO(sql-foundations): uncomment these when the final 24.2 cluster version
+	// is created.
+	v242DDLs := []string{
+		// `ALTER DATABASE testdb CONFIGURE ZONE USING gc.ttlseconds=1000`,
+		// `ALTER TABLE testdb.testsc.t CONFIGURE ZONE USING gc.ttlseconds=2000`,
+		// `COMMENT ON TYPE testdb.testsc.typ IS 'comment'`,
 	}
 
 	// Used to clean up our CREATE-d elements after we are done with them.
@@ -137,26 +126,9 @@ func executeSupportedDDLs(
 		`DROP OWNED BY foo`,
 	}
 
-	clusterVersion, err := helper.ClusterVersion(r)
-	if err != nil {
-		return err
-	}
-	if clusterVersion.AtLeast(clusterversion.V25_3.Version()) {
-		for _, ddl := range v253DDLs {
-			if err := helper.ExecWithGateway(r, nodes, ddl); err != nil {
-				return err
-			}
-		}
-	}
-	if clusterVersion.AtLeast(clusterversion.V25_4.Version()) {
-		for _, ddl := range v254DDLs {
-			if err := helper.ExecWithGateway(r, nodes, ddl); err != nil {
-				return err
-			}
-		}
-	}
+	ddls := append(v242DDLs, cleanup...)
 
-	for _, ddl := range cleanup {
+	for _, ddl := range ddls {
 		if err := helper.ExecWithGateway(r, nodes, ddl); err != nil {
 			return err
 		}

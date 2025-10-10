@@ -44,9 +44,15 @@ import (
 
 // CreateIndex implements CREATE INDEX.
 func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
-	// Ensure that the cluster is fully upgraded to 25.2 before creating a vector index.
-	if n.Type == idxtype.VECTOR && !b.EvalCtx().Settings.Version.ActiveVersion(b).AtLeast(clusterversion.V25_2.Version()) {
-		panic(pgerror.Newf(pgcode.FeatureNotSupported, "cannot create a vector index until finalizing on 25.2"))
+	// Check if sql_safe_updates is enabled and this is a vector index
+	if n.Type == idxtype.VECTOR {
+		if !b.EvalCtx().Settings.Version.ActiveVersion(b).AtLeast(clusterversion.V25_2.Version()) {
+			panic(pgerror.Newf(pgcode.FeatureNotSupported, "cannot create a vector index until finalizing on 25.2"))
+		} else if b.EvalCtx().SessionData().SafeUpdates {
+			panic(pgerror.DangerousStatementf("CREATE VECTOR INDEX will disable writes to the table while the index is being built"))
+		} else {
+			b.EvalCtx().ClientNoticeSender.BufferClientNotice(b, pgnotice.Newf("CREATE VECTOR INDEX will disable writes to the table while the index is being built"))
+		}
 	}
 
 	b.IncrementSchemaChangeCreateCounter("index")
@@ -172,7 +178,7 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 			"cannot define PARTITION BY on an index if the table has a PARTITION ALL BY definition",
 		))
 	}
-	defer checkTableSchemaChangePrerequisites(b, relationElements, n)()
+	checkTableSchemaChangePrerequisites(b, relationElements, n)
 
 	if !n.Type.SupportsSharding() && n.Sharded != nil {
 		panic(pgerror.Newf(pgcode.InvalidSQLStatementName,
@@ -263,9 +269,8 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	})
 	// Construct the temporary objects from the index spec, since these will
 	// be transient.
-	tempIdxSpec := makeTempIndexSpec(b, idxSpec)
+	tempIdxSpec := makeTempIndexSpec(idxSpec)
 	tempIdxSpec.apply(b.AddTransient)
-
 	// If the concurrent option is added emit a warning.
 	if n.Concurrently {
 		b.EvalCtx().ClientNoticeSender.BufferClientNotice(b,
@@ -350,10 +355,6 @@ func processColNodeType(
 		panic(pgerror.New(pgcode.DatatypeMismatch,
 			"operator classes are only allowed for the last column of an inverted or vector index"))
 	}
-	if !n.Type.HasScannablePrefix() && columnNode.Direction != tree.DefaultDirection {
-		panic(pgerror.Newf(pgcode.FeatureNotSupported,
-			"%s does not support the %s option", idxtype.ErrorText(n.Type), columnNode.Direction))
-	}
 	// Disallow descending last column in inverted and vector indexes because they
 	// have no linear ordering.
 	if !n.Type.HasLinearOrdering() && columnNode.Direction == tree.Descending && lastColIdx {
@@ -410,13 +411,17 @@ func processColNodeType(
 			invertedKind = catpb.InvertedIndexColumnKind_TRIGRAM
 			b.IncrementSchemaChangeIndexCounter("trigram_inverted")
 		case types.PGVectorFamily:
-			// Create config for vector index, using the number of dimensions from
-			// the vector column.
-			cfg, err := vecindex.MakeVecConfig(b, b.EvalCtx(), columnType.Type, columnNode.OpClass)
-			if err != nil {
-				panic(err)
+			switch columnNode.OpClass {
+			case "vector_l2_ops", "":
+			// vector_l2_ops is the default operator class. This allows users to omit
+			// the operator class in index definitions.
+			case "vector_l1_ops", "vector_ip_ops", "vector_cosine_ops",
+				"bit_hamming_ops", "bit_jaccard_ops":
+				panic(unimplemented.NewWithIssuef(144016,
+					"operator class %v is not supported", columnNode.OpClass))
+			default:
+				panic(newUndefinedOpclassError(columnNode.OpClass))
 			}
-			indexSpec.secondary.VecConfig = &cfg
 		}
 		relationElts := b.QueryByID(indexSpec.secondary.TableID)
 		scpb.ForEachIndexColumn(relationElts, func(current scpb.Status, target scpb.TargetStatus, e *scpb.IndexColumn) {
@@ -650,27 +655,10 @@ func addColumnsForSecondaryIndex(
 	scpb.ForEachIndexColumn(relationElements, func(
 		current scpb.Status, target scpb.TargetStatus, e *scpb.IndexColumn,
 	) {
-		if e.IndexID != idxSpec.secondary.SourceIndexID {
-			return
-		}
-
-		// Vector index prefix columns that overlap with the primary key must match
-		// the primary key direction.
-		if n.Type == idxtype.VECTOR {
-			for i, keyCol := range idxSpec.columns {
-				if keyCol.ColumnID != e.ColumnID {
-					continue
-				}
-				idxSpec.columns[i].Direction = e.Direction
-				break
-			}
-		}
-
-		if keyColIDs.Contains(e.ColumnID) ||
+		if e.IndexID != idxSpec.secondary.SourceIndexID || keyColIDs.Contains(e.ColumnID) ||
 			e.Kind != scpb.IndexColumn_KEY {
 			return
 		}
-
 		// Check if the column name was duplicated from the STORING clause, in which
 		// case this isn't allowed.
 		// Note: The column IDs for the key suffix columns are derived by finding
@@ -745,60 +733,6 @@ func addColumnsForSecondaryIndex(
 			}
 		}
 		idxSpec.columns = append([]*scpb.IndexColumn{indexColumn}, idxSpec.columns...)
-	}
-}
-
-func fixupColumnsForTempVectorIndex(b BuildCtx, tempIdxSpec *indexSpec) {
-	// For vector indexes, the temporary index should only be keyed by the primary
-	// key columns. Get the actual primary key columns from the source index.
-
-	// Get the source index ID (which should be the primary index)
-	sourceIndexID := tempIdxSpec.temporary.SourceIndexID
-
-	// Query for the primary key columns from the source index
-	tableElts := b.QueryByID(tempIdxSpec.temporary.TableID)
-	primaryKeyColumns := getIndexColumns(tableElts, sourceIndexID, scpb.IndexColumn_KEY)
-
-	// Create new index columns for the temporary index based on primary key columns
-	var newTempColumns []*scpb.IndexColumn
-	for i, pkCol := range primaryKeyColumns {
-		newCol := &scpb.IndexColumn{
-			TableID:       tempIdxSpec.temporary.TableID,
-			IndexID:       tempIdxSpec.temporary.IndexID,
-			ColumnID:      pkCol.ColumnID,
-			OrdinalInKind: uint32(i),
-			Kind:          scpb.IndexColumn_KEY,
-			Direction:     pkCol.Direction,
-			Implicit:      pkCol.Implicit,
-		}
-		newTempColumns = append(newTempColumns, newCol)
-	}
-	// Replace the entire column set with just the primary key columns
-	tempIdxSpec.columns = newTempColumns
-}
-
-// fixupPartitioningForTempVectorIndex updates the partitioning for a temporary
-// vector index to inherit from the primary key instead of the vector index.
-func fixupPartitioningForTempVectorIndex(b BuildCtx, tempIdxSpec *indexSpec, tempID catid.IndexID) {
-	// Get the source index ID (which should be the primary index)
-	sourceIndexID := tempIdxSpec.temporary.SourceIndexID
-
-	// Query for the primary key's partitioning
-	tableElts := b.QueryByID(tempIdxSpec.temporary.TableID)
-	var primaryPartitioning *scpb.IndexPartitioning
-	scpb.ForEachIndexPartitioning(tableElts, func(_ scpb.Status, target scpb.TargetStatus, e *scpb.IndexPartitioning) {
-		if target == scpb.ToPublic && e.IndexID == sourceIndexID {
-			primaryPartitioning = e
-		}
-	})
-
-	if primaryPartitioning != nil {
-		// Clone the primary key's partitioning and update it for the temporary index
-		tempIdxSpec.partitioning = protoutil.Clone(primaryPartitioning).(*scpb.IndexPartitioning)
-		tempIdxSpec.partitioning.IndexID = tempID
-	} else {
-		// No partitioning on primary key, so temporary index shouldn't have partitioning either
-		tempIdxSpec.partitioning = nil
 	}
 }
 
@@ -1014,6 +948,22 @@ func maybeAddIndexPredicate(b BuildCtx, n *tree.CreateIndex, idxSpec *indexSpec)
 
 // maybeApplyStorageParameters apply any storage parameters into the index spec.
 func maybeApplyStorageParameters(b BuildCtx, storageParams tree.StorageParams, idxSpec *indexSpec) {
+	// Create config for vector index.
+	if idxSpec.secondary != nil && idxSpec.secondary.Type == idxtype.VECTOR {
+		// Get number of dimensions from the vector column in the index (always
+		// the last key column).
+		for i := len(idxSpec.columns) - 1; i >= 0; i-- {
+			if idxSpec.columns[i].Kind != scpb.IndexColumn_KEY {
+				continue
+			}
+			lastKeyCol := idxSpec.columns[i].ColumnID
+			typeElem := mustRetrieveColumnTypeElem(b, idxSpec.secondary.TableID, lastKeyCol)
+			cfg := vecindex.MakeVecConfig(b.EvalCtx(), typeElem.Type)
+			idxSpec.secondary.VecConfig = &cfg
+			break
+		}
+	}
+
 	if len(storageParams) == 0 {
 		return
 	}

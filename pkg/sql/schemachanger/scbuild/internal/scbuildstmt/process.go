@@ -71,8 +71,6 @@ var supportedStatements = map[reflect.Type]supportedStatement{
 	reflect.TypeOf((*tree.DropType)(nil)):            {fn: DropType, statementTags: []string{tree.DropTypeTag}, on: true, checks: nil},
 	reflect.TypeOf((*tree.DropView)(nil)):            {fn: DropView, statementTags: []string{tree.DropViewTag}, on: true, checks: nil},
 	reflect.TypeOf((*tree.SetZoneConfig)(nil)):       {fn: SetZoneConfig, statementTags: []string{tree.ConfigureZoneTag}, on: true, checks: isV251Active},
-	reflect.TypeOf((*tree.Truncate)(nil)):            {fn: Truncate, statementTags: []string{tree.TruncateTag}, on: true, checks: isV254Active},
-	reflect.TypeOf((*tree.RenameTable)(nil)):         {fn: RenameTable, statementTags: []string{tree.AlterTableTag}, on: true, checks: isV254Active},
 }
 
 // supportedStatementTags tracks statement tags which are implemented
@@ -218,12 +216,4 @@ var isV251Active = func(_ tree.NodeFormatter, _ sessiondatapb.NewSchemaChangerMo
 
 var isV252Active = func(_ tree.NodeFormatter, _ sessiondatapb.NewSchemaChangerMode, activeVersion clusterversion.ClusterVersion) bool {
 	return activeVersion.IsActive(clusterversion.V25_2)
-}
-
-var isV253Active = func(_ tree.NodeFormatter, _ sessiondatapb.NewSchemaChangerMode, activeVersion clusterversion.ClusterVersion) bool {
-	return activeVersion.IsActive(clusterversion.V25_3)
-}
-
-var isV254Active = func(_ tree.NodeFormatter, _ sessiondatapb.NewSchemaChangerMode, activeVersion clusterversion.ClusterVersion) bool {
-	return activeVersion.IsActive(clusterversion.V25_4)
 }

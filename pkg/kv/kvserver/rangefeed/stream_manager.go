@@ -75,16 +75,6 @@ type sender interface {
 	// background until a node level error is encountered which would shut down
 	// all streams in StreamManager.
 	run(ctx context.Context, stopper *stop.Stopper, onError func(int64)) error
-
-	// TODO(ssd): These two methods call into question whether StreamManager and
-	// sender can really be separate. We might consider combining the two for
-	// simplicity.
-	//
-	// addStream is called when an individual stream is being added.
-	addStream(streamID int64)
-	// removeStream is called when an individual stream is being removed.
-	removeStream(streamID int64)
-
 	// cleanup is called when the sender is stopped. It is expected to clean up
 	// any resources used by the sender.
 	cleanup(ctx context.Context)
@@ -108,7 +98,7 @@ func (sm *StreamManager) NewStream(streamID int64, rangeID roachpb.RangeID) (sin
 	case *UnbufferedSender:
 		return NewPerRangeEventSink(rangeID, streamID, sender)
 	default:
-		log.KvDistribution.Fatalf(context.Background(), "unexpected sender type %T", sm)
+		log.Fatalf(context.Background(), "unexpected sender type %T", sm)
 		return nil
 	}
 }
@@ -118,22 +108,18 @@ func (sm *StreamManager) NewStream(streamID int64, rangeID roachpb.RangeID) (sin
 // streamID to avoid metrics inaccuracy when the error is sent before the stream
 // is added to the StreamManager.
 func (sm *StreamManager) OnError(streamID int64) {
-	func() {
-		sm.streams.Lock()
-		defer sm.streams.Unlock()
-		if _, ok := sm.streams.m[streamID]; ok {
-			// TODO(ssd): We should be able to assert we are disconnected here.
-			delete(sm.streams.m, streamID)
-			sm.metrics.ActiveMuxRangeFeed.Dec(1)
-		}
-	}()
-	sm.sender.removeStream(streamID)
+	sm.streams.Lock()
+	defer sm.streams.Unlock()
+	if _, ok := sm.streams.m[streamID]; ok {
+		delete(sm.streams.m, streamID)
+		sm.metrics.ActiveMuxRangeFeed.Dec(1)
+	}
 }
 
 // DisconnectStream disconnects the stream with the given streamID.
 func (sm *StreamManager) DisconnectStream(streamID int64, err *kvpb.Error) {
 	if err == nil {
-		log.KvDistribution.Fatalf(context.Background(),
+		log.Fatalf(context.Background(),
 			"unexpected: DisconnectStream called with nil error")
 		return
 	}
@@ -143,12 +129,6 @@ func (sm *StreamManager) DisconnectStream(streamID int64, err *kvpb.Error) {
 		// Fine to skip nil checking here since that would be a programming error.
 		disconnector.Disconnect(err)
 	}
-}
-
-// RegisteringStream is called once a stream will be registered. After this
-// point, the stream may start to see event.
-func (sm *StreamManager) RegisteringStream(streamID int64) {
-	sm.sender.addStream(streamID)
 }
 
 // AddStream adds a streamID with its disconnector to the StreamManager.
@@ -166,7 +146,7 @@ func (sm *StreamManager) AddStream(streamID int64, d Disconnector) {
 		return
 	}
 	if _, ok := sm.streams.m[streamID]; ok {
-		log.KvDistribution.Fatalf(context.Background(), "stream %d already exists", streamID)
+		log.Fatalf(context.Background(), "stream %d already exists", streamID)
 	}
 	sm.streams.m[streamID] = d
 	sm.metrics.ActiveMuxRangeFeed.Inc(1)
@@ -209,7 +189,6 @@ func (sm *StreamManager) Stop(ctx context.Context) {
 	sm.sender.cleanup(ctx)
 	sm.streams.Lock()
 	defer sm.streams.Unlock()
-	log.KvDistribution.VInfof(ctx, 2, "stopping stream manager: disconnecting %d streams", len(sm.streams.m))
 	rangefeedClosedErr := kvpb.NewError(
 		kvpb.NewRangeFeedRetryError(kvpb.RangeFeedRetryError_REASON_RANGEFEED_CLOSED))
 	sm.metrics.ActiveMuxRangeFeed.Dec(int64(len(sm.streams.m)))
@@ -228,7 +207,7 @@ func (sm *StreamManager) Stop(ctx context.Context) {
 // sender.run may also finish without sending anything to the channel.
 func (sm *StreamManager) Error() <-chan error {
 	if sm.errCh == nil {
-		log.KvDistribution.Fatalf(context.Background(), "StreamManager.Error called before StreamManager.Start")
+		log.Fatalf(context.Background(), "StreamManager.Error called before StreamManager.Start")
 	}
 	return sm.errCh
 }

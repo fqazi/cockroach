@@ -11,28 +11,23 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"os/user"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/DataDog/datadog-api-client-go/v2/api/datadog"
 	"github.com/DataDog/datadog-api-client-go/v2/api/datadogV1"
-	"github.com/cockroachdb/cockroach/pkg/cmd/bazci/githubpost/issues"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestflags"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
-	"github.com/cockroachdb/cockroach/pkg/internal/team"
 	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/util/allstacks"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
@@ -53,31 +48,8 @@ const (
 // runTests is the main function for the run and bench commands.
 // Assumes initRunFlagsBinariesAndLibraries was called.
 func runTests(register func(registry.Registry), filter *registry.TestFilter) error {
-	// On Darwin, start caffeinate to prevent the system from sleeping.
-	if runtime.GOOS == "darwin" && roachtestflags.Caffeinate {
-		pid := os.Getpid()
-		cmd := exec.Command("caffeinate", "-i", "-w", strconv.Itoa(pid))
-		if err := cmd.Start(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to start caffeinate: %v\n", err)
-		} else {
-			defer func() {
-				if cmd.Process != nil {
-					_ = cmd.Process.Kill()
-				}
-			}()
-		}
-	}
-
-	globalSeed := randutil.NewPseudoSeed()
-	if globalSeedEnv := os.Getenv("ROACHTEST_GLOBAL_SEED"); globalSeedEnv != "" {
-		if parsed, err := strconv.ParseInt(globalSeedEnv, 0, 64); err == nil {
-			globalSeed = parsed
-		} else {
-			return errors.Wrapf(err, "could not parse ROACHTEST_GLOBAL_SEED=%q", globalSeedEnv)
-		}
-	}
 	//lint:ignore SA1019 deprecated
-	rand.Seed(globalSeed)
+	rand.Seed(roachtestflags.GlobalSeed)
 	r := makeTestRegistry()
 
 	// actual registering of tests
@@ -166,15 +138,7 @@ func runTests(register func(registry.Registry), filter *registry.TestFilter) err
 		literalArtifactsDir: literalArtifactsDir,
 		runnerLogPath:       runnerLogPath,
 	}
-
-	github := &githubIssues{
-		disable:     runner.config.disableIssue,
-		dryRun:      runner.config.dryRunIssuePosting,
-		issuePoster: issues.Post,
-		teamLoader:  team.DefaultLoadTeams,
-	}
-
-	l.Printf("global random seed: %d", globalSeed)
+	l.Printf("global random seed: %d", roachtestflags.GlobalSeed)
 	go func() {
 		if err := http.ListenAndServe(
 			fmt.Sprintf(":%d", roachtestflags.PromPort),
@@ -188,20 +152,12 @@ func runTests(register func(registry.Registry), filter *registry.TestFilter) err
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	CtrlC(ctx, l, cancel, cr)
-	if false {
-		// Install goroutine leak checker and run it at the end of the entire test
-		// run. If a test is leaking a goroutine, then it will likely be still around.
-		// We could diff goroutine snapshots before/after each executed test, but that
-		// could yield false positives; e.g., user-specified test teardown goroutines
-		// may still be running long after the test has completed.
-		//
-		// NB: we currently don't do this since it's been firing for a long time and
-		// nobody has cleaned up the leaks. While there are leaks, the leaktest
-		// output pollutes stdout and makes roachtest annoying to use.
-		//
-		// Tracking issue: https://github.com/cockroachdb/cockroach/issues/148196
-		defer leaktest.AfterTest(l)()
-	}
+	// Install goroutine leak checker and run it at the end of the entire test
+	// run. If a test is leaking a goroutine, then it will likely be still around.
+	// We could diff goroutine snapshots before/after each executed test, but that
+	// could yield false positives; e.g., user-specified test teardown goroutines
+	// may still be running long after the test has completed.
+	defer leaktest.AfterTest(l)()
 
 	// We allow roachprod users to set a default auth-mode through the
 	// ROACHPROD_DEFAULT_AUTH_MODE env var. However, roachtests shouldn't
@@ -219,8 +175,7 @@ func runTests(register func(registry.Registry), filter *registry.TestFilter) err
 			goCoverEnabled:         roachtestflags.GoCoverEnabled,
 			exportOpenMetrics:      roachtestflags.ExportOpenmetrics,
 		},
-		lopt,
-		github)
+		lopt)
 
 	// Make sure we attempt to clean up. We run with a non-canceled ctx; the
 	// ctx above might be canceled in case a signal was received. If that's
@@ -303,24 +258,17 @@ func initRunFlagsBinariesAndLibraries(cmd *cobra.Command) error {
 	// Find and validate all required binaries and libraries.
 	initBinariesAndLibraries()
 
-	if roachtestflags.Cloud == spec.IBM {
-		fmt.Printf("S390x clusters will be provisioned with probability 1\n")
-		if roachtestflags.ARM64Probability > 0 || roachtestflags.FIPSProbability > 0 {
-			fmt.Printf("Warning: despite --metamorphic-(arm64|fips)-probability argument, ARM64 and FIPS clusters will not be provisioned on IBM Cloud!\n")
-		}
-	} else {
-		if roachtestflags.ARM64Probability > 0 {
-			fmt.Printf("ARM64 clusters will be provisioned with probability %.2f\n", roachtestflags.ARM64Probability)
-		}
-		amd64Probability := 1 - roachtestflags.ARM64Probability
-		if amd64Probability > 0 {
-			fmt.Printf("AMD64 clusters will be provisioned with probability %.2f\n", amd64Probability)
-		}
-		if roachtestflags.FIPSProbability > 0 {
-			// N.B. roachtestflags.ARM64Probability < 1, otherwise roachtestflags.FIPSProbability == 0, as per above check.
-			// Hence, amd64Probability > 0 is implied.
-			fmt.Printf("FIPS clusters will be provisioned with probability %.2f\n", roachtestflags.FIPSProbability*amd64Probability)
-		}
+	if roachtestflags.ARM64Probability > 0 {
+		fmt.Printf("ARM64 clusters will be provisioned with probability %.2f\n", roachtestflags.ARM64Probability)
+	}
+	amd64Probability := 1 - roachtestflags.ARM64Probability
+	if amd64Probability > 0 {
+		fmt.Printf("AMD64 clusters will be provisioned with probability %.2f\n", amd64Probability)
+	}
+	if roachtestflags.FIPSProbability > 0 {
+		// N.B. roachtestflags.ARM64Probability < 1, otherwise roachtestflags.FIPSProbability == 0, as per above check.
+		// Hence, amd64Probability > 0 is implied.
+		fmt.Printf("FIPS clusters will be provisioned with probability %.2f\n", roachtestflags.FIPSProbability*amd64Probability)
 	}
 
 	if roachtestflags.SelectProbability > 0 && roachtestflags.SelectProbability < 1 {

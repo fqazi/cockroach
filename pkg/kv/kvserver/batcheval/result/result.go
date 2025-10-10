@@ -38,10 +38,6 @@ type LocalResult struct {
 	// UpdatedTxns stores transaction records that have been updated by
 	// calls to EndTxn, PushTxn, and RecoverTxn.
 	UpdatedTxns []*roachpb.Transaction
-	// ReportedMissingLocks stores lock acquisition structs that represent locks
-	// that have been reported as missing via QueryIntent. Such locks must be
-	// reported to the concurrency manager.
-	ReportedMissingLocks []roachpb.LockAcquisition
 	// EndTxns stores completed transactions. If the transaction
 	// contains unresolved intents, they should be handed off for
 	// asynchronous intent resolution. A bool in each EndTxnIntents
@@ -132,17 +128,6 @@ func (lResult *LocalResult) DetachEncounteredIntents() []roachpb.Intent {
 	}
 	r := lResult.EncounteredIntents
 	lResult.EncounteredIntents = nil
-	return r
-}
-
-// DetachMissingLocks returns (and removes) those locks that have been reported
-// missing during an QueryIntentRequest and must be handled.
-func (lResult *LocalResult) DetachMissingLocks() []roachpb.LockAcquisition {
-	if lResult == nil {
-		return nil
-	}
-	r := lResult.ReportedMissingLocks
-	lResult.ReportedMissingLocks = nil
 	return r
 }
 
@@ -304,7 +289,7 @@ func (p *Result) MergeAndDestroy(q Result) error {
 			return errors.AssertionFailedf("must not specify ForceFlushIndex")
 		}
 		if (*q.Replicated.State != kvserverpb.ReplicaState{}) {
-			log.KvExec.Fatalf(context.TODO(), "unhandled EvalResult: %s",
+			log.Fatalf(context.TODO(), "unhandled EvalResult: %s",
 				pretty.Diff(*q.Replicated.State, kvserverpb.ReplicaState{}))
 		}
 		q.Replicated.State = nil
@@ -433,13 +418,6 @@ func (p *Result) MergeAndDestroy(q Result) error {
 	}
 	q.Local.ResolvedLocks = nil
 
-	if p.Local.ReportedMissingLocks == nil {
-		p.Local.ReportedMissingLocks = q.Local.ReportedMissingLocks
-	} else {
-		p.Local.ReportedMissingLocks = append(p.Local.ReportedMissingLocks, q.Local.ReportedMissingLocks...)
-	}
-	q.Local.ReportedMissingLocks = nil
-
 	if p.Local.UpdatedTxns == nil {
 		p.Local.UpdatedTxns = q.Local.UpdatedTxns
 	} else {
@@ -499,7 +477,7 @@ func (p *Result) MergeAndDestroy(q Result) error {
 	q.LogicalOpLog = nil
 
 	if !q.IsZero() {
-		log.KvExec.Fatalf(context.TODO(), "unhandled EvalResult: %s", pretty.Diff(q, Result{}))
+		log.Fatalf(context.TODO(), "unhandled EvalResult: %s", pretty.Diff(q, Result{}))
 	}
 
 	return nil

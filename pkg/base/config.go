@@ -17,9 +17,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 )
@@ -98,21 +96,6 @@ const (
 	// DefaultLeaseRenewalCrossValidate is the default setting for if
 	// we should validate descriptors on lease renewals.
 	DefaultLeaseRenewalCrossValidate = false
-
-	// DefaultCPUUsageRefreshInterval controls how often cpu usage measurements
-	// are sampled by NodeCapacityProvider.
-	DefaultCPUUsageRefreshInterval = time.Second
-
-	// DefaultCPUCapacityRefreshInterval controls how often the total CPU capacity
-	// of the node is re-calculated by NodeCapacityProvider. This is less frequent
-	// than usage since capacity changes happen less often.
-	DefaultCPUCapacityRefreshInterval = 10 * time.Second
-
-	// DefaultCPUUsageMovingAverageAge defines the effective time window size for
-	// sampling cpu usage. With a value of 20, the 20th-to-last measurement
-	// contributes meaningfully to the average, while earlier measurements have
-	// diminishing impact.
-	DefaultCPUUsageMovingAverageAge = 20
 )
 
 // DefaultCertsDirectory is the default value for the cert directory flag.
@@ -251,11 +234,6 @@ var (
 	// StoreLivenessSupportDuration.
 	defaultStoreLivenessSupportDuration = envutil.EnvOrDefaultDuration(
 		"COCKROACH_STORE_LIVENESS_SUPPORT_DURATION", 3*time.Second)
-
-	// defaultFortificationGracePeriod is the default value for
-	// FortificationGracePeriod.
-	defaultFortificationGracePeriod = envutil.EnvOrDefaultDuration(
-		"COCKROACH_RAFT_FORTIFICATION_GRACE_PERIOD", 3*time.Second)
 
 	// defaultRaftTickInterval is the default resolution of the Raft timer.
 	defaultRaftTickInterval = envutil.EnvOrDefaultDuration(
@@ -612,10 +590,6 @@ type RaftConfig struct {
 	// stores request and extend.
 	StoreLivenessSupportDuration time.Duration
 
-	// FortificationGracePeriod is the minimum validity of a new leader lease to
-	// allow for the new leader to fortify.
-	FortificationGracePeriod time.Duration
-
 	// RangeLeaseRaftElectionTimeoutMultiplier specifies the range lease duration.
 	RangeLeaseDuration time.Duration
 	// RangeLeaseRenewalFraction specifies what fraction the range lease renewal
@@ -731,9 +705,6 @@ func (cfg *RaftConfig) SetDefaults() {
 	}
 	if cfg.StoreLivenessSupportDuration == 0 {
 		cfg.StoreLivenessSupportDuration = defaultStoreLivenessSupportDuration
-	}
-	if cfg.FortificationGracePeriod == 0 {
-		cfg.FortificationGracePeriod = defaultFortificationGracePeriod
 	}
 	if cfg.RangeLeaseDuration == 0 {
 		cfg.RangeLeaseDuration = defaultRangeLeaseDuration
@@ -906,25 +877,19 @@ type TempStorageConfig struct {
 	// InMemory specifies whether the temporary storage will remain
 	// in-memory or occupy a temporary subdirectory on-disk.
 	InMemory bool
-	// Path is the filepath of the temporary subdirectory created for the temp
-	// storage. Empty if InMemory is true.
+	// Path is the filepath of the temporary subdirectory created for
+	// the temp storage.
 	Path string
 	// Mon will be used by the temp storage to register all its capacity requests.
 	// It can be used to limit the disk or memory that temp storage is allowed to
 	// use. If InMemory is set, than this has to be a memory monitor; otherwise it
 	// has to be a disk monitor.
 	Mon *mon.BytesMonitor
-	// Encryption is set if encryption is enabled. We use the same encryption
-	// options as the store we chose for temp storage.
-	Encryption *storageconfig.EncryptionOptions
+	// Spec stores the StoreSpec this TempStorageConfig will use.
+	Spec StoreSpec
 	// Settings stores the cluster.Settings this TempStoreConfig will use. Must
 	// not be nil.
 	Settings *cluster.Settings
-	// If set, TempDirsRecordPath is the path to a temp-dirs-record.txt file in
-	// one of the stores (see server.TempDirsRecordFilename). Used when we create
-	// a new temporary storage directory for a new shared-process tenant. Empty if
-	// InMemory is false.
-	TempDirsRecordPath string
 }
 
 // ExternalIODirConfig describes various configuration options pertaining
@@ -956,29 +921,32 @@ type ExternalIODirConfig struct {
 	EnableNonAdminImplicitAndArbitraryOutbound bool
 }
 
+// TempStorageConfigFromEnv creates a TempStorageConfig.
+// If parentDir is not specified and the specified store is in-memory,
+// then the temp storage will also be in-memory.
+func TempStorageConfigFromEnv(
+	ctx context.Context,
+	st *cluster.Settings,
+	useStore StoreSpec,
+	parentDir string,
+	maxSizeBytes int64,
+) TempStorageConfig {
+	inMem := parentDir == "" && useStore.InMemory
+	return newTempStorageConfig(ctx, st, inMem, useStore, maxSizeBytes)
+}
+
 // InheritTempStorageConfig creates a new TempStorageConfig using the
 // configuration of the given TempStorageConfig. It assumes the given
 // TempStorageConfig has been fully initialized.
 func InheritTempStorageConfig(
 	ctx context.Context, st *cluster.Settings, parentConfig TempStorageConfig,
 ) TempStorageConfig {
-	return NewTempStorageConfig(ctx, st, parentConfig.InMemory, parentConfig.Path, parentConfig.Encryption, parentConfig.Mon.Limit(), parentConfig.TempDirsRecordPath)
+	return newTempStorageConfig(ctx, st, parentConfig.InMemory, parentConfig.Spec, parentConfig.Mon.Limit())
 }
 
-// NewTempStorageConfig creates a new TempStorageConfig.
-// The path should be empty iff inMemory is true.
-func NewTempStorageConfig(
-	ctx context.Context,
-	st *cluster.Settings,
-	inMemory bool,
-	path string,
-	encryption *storageconfig.EncryptionOptions,
-	maxSizeBytes int64,
-	tempDirsRecordPath string,
+func newTempStorageConfig(
+	ctx context.Context, st *cluster.Settings, inMemory bool, useStore StoreSpec, maxSizeBytes int64,
 ) TempStorageConfig {
-	if inMemory != (path == "") {
-		log.Dev.Fatalf(ctx, "inMemory (%t) must be true iff path is empty (%q)", inMemory, path)
-	}
 	var monitorName mon.Name
 	if inMemory {
 		monitorName = mon.MakeName("in-mem temp storage")
@@ -993,11 +961,9 @@ func NewTempStorageConfig(
 	})
 	monitor.Start(ctx, nil /* pool */, mon.NewStandaloneBudget(maxSizeBytes))
 	return TempStorageConfig{
-		InMemory:           inMemory,
-		Path:               path,
-		Mon:                monitor,
-		Encryption:         encryption,
-		Settings:           st,
-		TempDirsRecordPath: tempDirsRecordPath,
+		InMemory: inMemory,
+		Mon:      monitor,
+		Spec:     useStore,
+		Settings: st,
 	}
 }

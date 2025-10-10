@@ -279,9 +279,6 @@ type ProviderOpts struct {
 	// use spot vms, spot vms are significantly cheaper, but can be preempted AWS.
 	// see https://aws.amazon.com/ec2/spot/ for more details.
 	UseSpot bool
-	// BootDiskOnly ensures that no additional disks will be attached, other than
-	// the boot disk.
-	BootDiskOnly bool
 }
 
 // Provider implements the vm.Provider interface for AWS.
@@ -366,12 +363,6 @@ func (p *Provider) GetHostErrorVMs(
 	return nil, nil
 }
 
-func (p *Provider) GetLiveMigrationVMs(
-	l *logger.Logger, vms vm.List, since time.Time,
-) ([]string, error) {
-	return nil, nil
-}
-
 // GetVMSpecs returns a map from VM.Name to a map of VM attributes, provided by AWS
 func (p *Provider) GetVMSpecs(
 	l *logger.Logger, vms vm.List,
@@ -451,7 +442,7 @@ var DefaultConfig = func() (cfg *awsConfig) {
 // doesn't support multi-regional buckets, thus resulting in material
 // egress cost if the test loads from a different region. See
 // https://github.com/cockroachdb/cockroach/issues/105968.
-var defaultZones = []string{
+var DefaultZones = []string{
 	"us-east-2a",
 	"us-west-2b",
 	"eu-west-2b",
@@ -528,7 +519,7 @@ func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 		fmt.Sprintf("aws availability zones to use for cluster creation. If zones are formatted\n"+
 			"as AZ:N where N is an integer, the zone will be repeated N times. If > 1\n"+
 			"zone specified, the cluster will be spread out evenly by zone regardless\n"+
-			"of geo (default [%s])", strings.Join(defaultZones, ",")))
+			"of geo (default [%s])", strings.Join(DefaultZones, ",")))
 	flags.StringVar(&o.ImageAMI, ProviderName+"-image-ami",
 		o.ImageAMI, "Override image AMI to use.  See https://awscli.amazonaws.com/v2/documentation/api/latest/reference/ec2/describe-images.html")
 	flags.BoolVar(&o.UseMultipleDisks, ProviderName+"-enable-multiple-stores",
@@ -543,8 +534,6 @@ func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 		false, "use AWS Spot VMs, which are significantly cheaper, but can be preempted by AWS.")
 	flags.StringVar(&o.IAMProfile, ProviderName+"-iam-profile", o.IAMProfile,
 		"the IAM instance profile to associate with created VMs if non-empty")
-	flags.BoolVar(&o.BootDiskOnly, ProviderName+"-boot-disk-only", o.BootDiskOnly,
-		"Only attach the boot disk. No additional volumes will be provisioned even if specified.")
 }
 
 // ConfigureClusterCleanupFlags implements ProviderOpts.
@@ -703,7 +692,11 @@ func (p *Provider) Create(
 	}
 
 	if len(expandedZones) == 0 {
-		expandedZones = DefaultZones(opts.GeoDistributed)
+		if opts.GeoDistributed {
+			expandedZones = DefaultZones
+		} else {
+			expandedZones = DefaultZones[:1]
+		}
 	}
 
 	// We need to make sure that the SSH keys have been distributed to all regions.
@@ -756,13 +749,6 @@ func (p *Provider) Create(
 	}
 
 	return vmList, nil
-}
-
-func DefaultZones(geoDistributed bool) []string {
-	if geoDistributed {
-		return defaultZones
-	}
-	return []string{defaultZones[0]}
 }
 
 func (p *Provider) Grow(*logger.Logger, vm.List, string, []string) (vm.List, error) {
@@ -1353,7 +1339,6 @@ func (p *Provider) runInstance(
 			extraMountOpts = "nobarrier"
 		}
 	}
-
 	filename, err := writeStartupScript(
 		name,
 		extraMountOpts,
@@ -1361,7 +1346,6 @@ func (p *Provider) runInstance(
 		providerOpts.UseMultipleDisks,
 		opts.Arch == string(vm.ArchFIPS),
 		providerOpts.RemoteUserName,
-		providerOpts.BootDiskOnly,
 	)
 	if err != nil {
 		return nil, errors.Wrapf(err, "could not write AWS startup script to temp file")
@@ -1612,7 +1596,7 @@ func assignEBSVolumes(opts *vm.CreateOpts, providerOpts *ProviderOpts) ebsVolume
 	// Make a local copy of providerOpts.EBSVolumes to prevent data races
 	ebsVolumes := providerOpts.EBSVolumes
 	// The local NVMe devices are automatically mapped.  Otherwise, we need to map an EBS data volume.
-	if !opts.SSDOpts.UseLocalSSD && !providerOpts.BootDiskOnly {
+	if !opts.SSDOpts.UseLocalSSD {
 		if len(ebsVolumes) == 0 && providerOpts.DefaultEBSVolume.Disk.VolumeType == "" {
 			providerOpts.DefaultEBSVolume.Disk.VolumeType = defaultEBSVolumeType
 			providerOpts.DefaultEBSVolume.Disk.DeleteOnTermination = true

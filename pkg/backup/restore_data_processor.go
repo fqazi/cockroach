@@ -119,6 +119,8 @@ var defaultNumWorkers = metamorphic.ConstantWithTestRange(
 	1, /* metamorphic min */
 	8, /* metamorphic max */
 )
+var retryableRestoreProcError = errors.New("restore processor error after forward progress")
+var restoreProcError = errors.New("restore processor error without forward progress")
 
 // TODO(pbardea): It may be worthwhile to combine this setting with the one that
 // controls the number of concurrent AddSSTable requests if each restore worker
@@ -208,7 +210,7 @@ func (rd *restoreDataProcessor) Start(ctx context.Context) {
 	// setting to take effect.
 	numWorkers, err := reserveRestoreWorkerMemory(ctx, rd.FlowCtx.Cfg.Settings, rd.qp)
 	if err != nil {
-		log.Dev.Warningf(ctx, "cannot reserve restore worker memory: %v", err)
+		log.Warningf(ctx, "cannot reserve restore worker memory: %v", err)
 		rd.MoveToDraining(err)
 		return
 	}
@@ -216,7 +218,7 @@ func (rd *restoreDataProcessor) Start(ctx context.Context) {
 	rd.metaCh = make(chan *execinfrapb.ProducerMetadata, numWorkers)
 
 	rd.phaseGroup = ctxgroup.WithContext(ctx)
-	log.Dev.Infof(ctx, "starting restore data processor with %d workers", rd.numWorkers)
+	log.Infof(ctx, "starting restore data processor with %d workers", rd.numWorkers)
 
 	entries := make(chan execinfrapb.RestoreSpanEntry, rd.numWorkers)
 	rd.phaseGroup.GoCtx(func(ctx context.Context) error {
@@ -319,7 +321,7 @@ func (rd *restoreDataProcessor) openSSTs(
 	defer func() {
 		for _, dir := range dirs {
 			if err := dir.Close(); err != nil {
-				log.Dev.Warningf(ctx, "close export storage failed %v", err)
+				log.Warningf(ctx, "close export storage failed %v", err)
 			}
 		}
 	}()
@@ -330,12 +332,12 @@ func (rd *restoreDataProcessor) openSSTs(
 		readAsOfIter := storage.NewReadAsOfIterator(iter, rd.spec.RestoreTime)
 
 		cleanup := func() {
-			log.Dev.VInfof(ctx, 1, "finished with and closing %d files in span %d [%s-%s)", len(entry.Files), entry.ProgressIdx, entry.Span.Key, entry.Span.EndKey)
+			log.VInfof(ctx, 1, "finished with and closing %d files in span %d [%s-%s)", len(entry.Files), entry.ProgressIdx, entry.Span.Key, entry.Span.EndKey)
 			readAsOfIter.Close()
 
 			for _, dir := range dirsToSend {
 				if err := dir.Close(); err != nil {
-					log.Dev.Warningf(ctx, "close export storage failed %v", err)
+					log.Warningf(ctx, "close export storage failed %v", err)
 				}
 			}
 		}
@@ -454,8 +456,6 @@ func (rd *restoreDataProcessor) runRestoreWorkers(
 	})
 }
 
-var backupFileReadError = errors.New("error reading backup file")
-
 func (rd *restoreDataProcessor) processRestoreSpanEntry(
 	ctx context.Context, kr *KeyRewriter, sst mergedSST,
 ) (kvpb.BulkOpSummary, error) {
@@ -514,7 +514,6 @@ func (rd *restoreDataProcessor) processRestoreSpanEntry(
 			// tests to fail.
 			rd.FlowCtx.Cfg.BackupMonitor.MakeConcurrentBoundAccount(),
 			rd.FlowCtx.Cfg.BulkSenderLimiter,
-			nil,
 		)
 		if err != nil {
 			return summary, err
@@ -534,16 +533,17 @@ func (rd *restoreDataProcessor) processRestoreSpanEntry(
 		startKeyMVCC.Key = bytes.TrimPrefix(startKeyMVCC.Key, elidedPrefix)
 	}
 	if verbose {
-		log.Dev.Infof(ctx, "reading from %s to %s", startKeyMVCC, endKeyMVCC)
+		log.Infof(ctx, "reading from %s to %s", startKeyMVCC, endKeyMVCC)
 	}
 	for iter.SeekGE(startKeyMVCC); ; iter.NextKey() {
 		ok, err := iter.Valid()
 		if err != nil {
-			return summary, errors.Join(backupFileReadError, err)
+			return summary, err
 		}
+
 		if !ok {
 			if verbose {
-				log.Dev.Infof(ctx, "iterator exhausted")
+				log.Infof(ctx, "iterator exhausted")
 			}
 			break
 		}
@@ -554,19 +554,19 @@ func (rd *restoreDataProcessor) processRestoreSpanEntry(
 
 		if !key.Less(endKeyMVCC) {
 			if verbose {
-				log.Dev.Infof(ctx, "iterator key %s exceeded end %s", key, endKeyMVCC)
+				log.Infof(ctx, "iterator key %s exceeded end %s", key, endKeyMVCC)
 			}
 			break
 		}
 
 		v, err := iter.UnsafeValue()
 		if err != nil {
-			return summary, errors.Join(backupFileReadError, err)
+			return summary, err
 		}
 		valueScratch = append(valueScratch[:0], v...)
 		value, err := storage.DecodeValueFromMVCCValue(valueScratch)
 		if err != nil {
-			return summary, errors.Join(backupFileReadError, err)
+			return summary, err
 		}
 
 		key.Key, ok, err = kr.RewriteKey(key.Key, key.Timestamp.WallTime)
@@ -582,7 +582,7 @@ func (rd *restoreDataProcessor) processRestoreSpanEntry(
 			// since the key's table gets restored to its pre-import state. Therefore,
 			// we elide ingesting this key.
 			if verbose {
-				log.Dev.Infof(ctx, "skipping %s %s", key.Key, value.PrettyPrint())
+				log.Infof(ctx, "skipping %s %s", key.Key, value.PrettyPrint())
 			}
 			continue
 		}
@@ -592,7 +592,7 @@ func (rd *restoreDataProcessor) processRestoreSpanEntry(
 		value.InitChecksum(key.Key)
 
 		if verbose {
-			log.Dev.Infof(ctx, "Put %s -> %s", key.Key, value.PrettyPrint())
+			log.Infof(ctx, "Put %s -> %s", key.Key, value.PrettyPrint())
 		}
 
 		// Using valueScratch here assumes that
@@ -646,6 +646,11 @@ func (rd *restoreDataProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.Produce
 		if !ok {
 			// Done. Check if any phase exited early with an error.
 			err := rd.phaseGroup.Wait()
+			if rd.progressMade {
+				err = errors.Mark(err, retryableRestoreProcError)
+			} else {
+				err = errors.Mark(err, restoreProcError)
+			}
 			rd.MoveToDraining(err)
 			return nil, rd.DrainHelper()
 		}
@@ -659,6 +664,7 @@ func (rd *restoreDataProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.Produce
 		rd.progressMade = true
 		return nil, &execinfrapb.ProducerMetadata{BulkProcessorProgress: &prog}
 	case <-rd.aggTimer.C:
+		rd.aggTimer.Read = true
 		rd.aggTimer.Reset(15 * time.Second)
 		return nil, bulkutil.ConstructTracingAggregatorProducerMeta(rd.Ctx(),
 			rd.FlowCtx.NodeID.SQLInstanceID(), rd.FlowCtx.ID, rd.agg)
@@ -712,6 +718,7 @@ func reserveRestoreWorkerMemory(
 // implement a mock SSTBatcher used purely for job progress tracking.
 type SSTBatcherExecutor interface {
 	AddMVCCKey(ctx context.Context, key storage.MVCCKey, value []byte) error
+	Reset(ctx context.Context)
 	Flush(ctx context.Context) error
 	Close(ctx context.Context)
 	GetSummary() kvpb.BulkOpSummary
@@ -728,6 +735,9 @@ var _ SSTBatcherExecutor = &sstBatcherNoop{}
 func (b *sstBatcherNoop) AddMVCCKey(ctx context.Context, key storage.MVCCKey, value []byte) error {
 	return b.totalRows.Count(key.Key)
 }
+
+// Reset resets the counter
+func (b *sstBatcherNoop) Reset(ctx context.Context) {}
 
 // Flush noops.
 func (b *sstBatcherNoop) Flush(ctx context.Context) error {

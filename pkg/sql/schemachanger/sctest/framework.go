@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -653,7 +652,6 @@ func cumulativeTestForEachPostCommitStage(
 	t *testing.T,
 	relTestCaseDir string,
 	factory TestServerFactory,
-	prepFn func(t *testing.T, spec CumulativeTestSpec, dbName string),
 	tf func(t *testing.T, spec CumulativeTestCaseSpec),
 ) {
 	testFunc := func(t *testing.T, spec CumulativeTestSpec) {
@@ -717,9 +715,6 @@ func cumulativeTestForEachPostCommitStage(
 			})
 		}
 		var hasFailed bool
-		if prepFn != nil {
-			prepFn(t, spec, dbName)
-		}
 		for _, tc := range testCases {
 			fn := func(t *testing.T) {
 				tf(t, tc)
@@ -822,13 +817,8 @@ func withPostCommitPlanAfterSchemaChange(
 	ctx := context.Background()
 	var processOnce sync.Once
 	var postCommitPlan scplan.Plan
-	var knobEnabled atomic.Bool
 	factory.WithSchemaChangerKnobs(&scexec.TestingKnobs{
 		BeforeStage: func(p scplan.Plan, _ int) error {
-			// Only enabled after setup.
-			if !knobEnabled.Load() {
-				return nil
-			}
 			if p.Params.ExecutionPhase >= scop.PostCommitPhase {
 				processOnce.Do(func() { postCommitPlan = p })
 			}
@@ -836,7 +826,6 @@ func withPostCommitPlanAfterSchemaChange(
 		},
 	}).Run(context.Background(), t, func(_ serverutils.TestServerInterface, db *gosql.DB) {
 		require.NoError(t, setupSchemaChange(ctx, t, spec, db))
-		knobEnabled.Swap(true)
 		require.NoError(t, executeSchemaChangeTxn(ctx, t, spec, db))
 		waitForSchemaChangesToFinish(t, sqlutils.MakeSQLRunner(db))
 		fn(db, postCommitPlan)
@@ -851,8 +840,9 @@ func setupSchemaChange(
 
 	tdb := sqlutils.MakeSQLRunner(db)
 
-	// Execute the setup statements with the declarative schema changer, we will
-	// disable the knobs before this.
+	// Execute the setup statements with the legacy schema changer so that the
+	// declarative schema changer testing knobs don't get used.
+	tdb.Exec(t, "SET use_declarative_schema_changer = 'off'")
 	for i, stmt := range spec.Setup {
 		if _, err := tdb.DB.ExecContext(ctx, stmt.SQL); err != nil {
 			// nolint:errcmp
@@ -970,23 +960,12 @@ func waitForSchemaChangesToFinish(t *testing.T, tdb *sqlutils.SQLRunner) {
 	)
 }
 
-func hasLatestSchemaChangeSucceededWithTimestamp(
-	t *testing.T, tdb *sqlutils.SQLRunner, startTime time.Time,
-) (succeeded bool, jobExists bool) {
-	result := tdb.QueryStr(t, fmt.Sprintf(
-		`SELECT status FROM [SHOW JOBS] WHERE job_type IN ('%s') AND finished >= $1::timestamp ORDER BY finished DESC, job_id DESC LIMIT 1`,
-		jobspb.TypeNewSchemaChange,
-	),
-		startTime)
-	return len(result) == 0 || result[0][0] == "succeeded", len(result) > 0
-}
-
 func hasLatestSchemaChangeSucceeded(t *testing.T, tdb *sqlutils.SQLRunner) bool {
 	result := tdb.QueryStr(t, fmt.Sprintf(
 		`SELECT status FROM [SHOW JOBS] WHERE job_type IN ('%s') ORDER BY finished DESC, job_id DESC LIMIT 1`,
 		jobspb.TypeNewSchemaChange,
 	))
-	return len(result) == 0 || result[0][0] == "succeeded"
+	return result[0][0] == "succeeded"
 }
 
 func schemaChangeWaitQuery(statusInString string) string {

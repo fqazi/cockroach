@@ -62,7 +62,7 @@ func (d *callNode) startExec(params runParams) error {
 	if res == tree.DNull {
 		return pgerror.New(pgcode.Internal, "procedure returned null record")
 	}
-	tuple, ok := res.(*tree.DTuple)
+	tuple, ok := tree.AsDTuple(res)
 	if !ok {
 		return errors.AssertionFailedf("expected a tuple, got %T", res)
 	}

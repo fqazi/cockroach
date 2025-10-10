@@ -61,7 +61,6 @@ func registerMultiRegionMixedVersion(r registry.Registry) {
 		EncryptionSupport: registry.EncryptionMetamorphic,
 		CompatibleClouds:  registry.OnlyGCE,
 		Suites:            registry.Suites(registry.MixedVersion, registry.Weekly),
-		Monitor:           true,
 		Randomized:        true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			partitionConfig := fmt.Sprintf(
@@ -81,7 +80,6 @@ func registerMultiRegionMixedVersion(r registry.Registry) {
 				// in MR clusters (e.g., #113908), so use the latest patch
 				// releases to avoid flakes.
 				mixedversion.AlwaysUseLatestPredecessors,
-				mixedversion.WithWorkloadNodes(c.WorkloadNode()),
 			)
 
 			// Note that we don't specify a `Duration` for this workload,

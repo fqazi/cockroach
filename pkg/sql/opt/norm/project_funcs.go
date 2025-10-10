@@ -946,30 +946,6 @@ func (c *CustomFuncs) AllAreRemappingProjections(projections memo.ProjectionsExp
 	return true
 }
 
-// CanHoistNonRemappingProjections splits the projections into those that are
-// simple remappings from one column to another of an identical type, and those
-// that are not, and returns true if the non-remapping projections can be
-// hoisted.
-func (c *CustomFuncs) CanHoistNonRemappingProjections(
-	projections memo.ProjectionsExpr,
-) (remap, other memo.ProjectionsExpr, ok bool) {
-	md := c.mem.Metadata()
-	for i := range projections {
-		varExpr, ok := projections[i].Element.(*memo.VariableExpr)
-		if ok {
-			if md.ColumnMeta(varExpr.Col).Type.Identical(md.ColumnMeta(projections[i].Col).Type) {
-				remap = append(remap, projections[i])
-				continue
-			}
-		}
-		other = append(other, projections[i])
-	}
-	// Hoisting is allowed if there are no non-remapping projections (the previous
-	// behavior) or if optimizer_use_improved_hoist_join_project is enabled.
-	canHoist := len(other) == 0 || c.f.evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject
-	return remap, other, canHoist
-}
-
 // UnbindFiltersFromProjections remaps column references in the given filters
 // to refer to input columns instead of projected output columns, based on the
 // given projections. It assumes that AllAreRemappingProjections returns true
@@ -985,26 +961,4 @@ func (c *CustomFuncs) UnbindFiltersFromProjections(
 	}
 	newFilters := c.f.RemapCols(&filters, colMap).(*memo.FiltersExpr)
 	return *newFilters
-}
-
-// HasAllLeakProofProjections returns true if every projection given uses
-// leakproof expressions.
-func (c *CustomFuncs) HasAllLeakProofProjections(projections memo.ProjectionsExpr) bool {
-	for i := range projections {
-		if !projections[i].ScalarProps().VolatilitySet.IsLeakproof() {
-			return false
-		}
-	}
-	return true
-}
-
-// HasVolatileProjection returns true if any of the projection items of the
-// ProjectionsExpr contains a volatile expression.
-func (c *CustomFuncs) HasVolatileProjection(projections memo.ProjectionsExpr) bool {
-	for i := range projections {
-		if projections[i].ScalarProps().VolatilitySet.HasVolatile() {
-			return true
-		}
-	}
-	return false
 }

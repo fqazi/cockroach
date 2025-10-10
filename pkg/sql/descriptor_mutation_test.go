@@ -503,7 +503,7 @@ func TestOperationsWithIndexMutation(t *testing.T) {
 	defer lease.TestingDisableTableLeases()()
 
 	sqlRunner.Exec(t, `CREATE DATABASE t;`)
-	sqlRunner.Exec(t, `CREATE TABLE t.test (k CHAR PRIMARY KEY, v CHAR, INDEX foo (v)) WITH (schema_locked=false);`)
+	sqlRunner.Exec(t, `CREATE TABLE t.test (k CHAR PRIMARY KEY, v CHAR, INDEX foo (v));`)
 
 	// read table descriptor
 	tableDesc := desctestutils.TestingGetMutableExistingTableDescriptor(
@@ -525,7 +525,7 @@ func TestOperationsWithIndexMutation(t *testing.T) {
 				// Init table with some entries.
 				sqlRunner.Exec(t, `TRUNCATE TABLE t.test`)
 				sqlRunner.Exec(t, `DROP TABLE t.test;`)
-				sqlRunner.Exec(t, `CREATE TABLE t.test (k CHAR PRIMARY KEY, v CHAR, INDEX foo (v)) WITH (schema_locked=false);`)
+				sqlRunner.Exec(t, `CREATE TABLE t.test (k CHAR PRIMARY KEY, v CHAR, INDEX foo (v));`)
 				// read table descriptor
 				mTest.tableDesc = desctestutils.TestingGetMutableExistingTableDescriptor(
 					kvDB, server.Codec(), "t", "test")
@@ -705,7 +705,7 @@ func TestOperationsWithColumnAndIndexMutation(t *testing.T) {
 				}
 				// Init table to start state.
 				sqlRunner.Exec(t, `DROP TABLE t.test;`)
-				sqlRunner.Exec(t, `CREATE TABLE t.test (k CHAR PRIMARY KEY, v CHAR, i CHAR, INDEX foo (i, v), FAMILY (k),FAMILY (v), FAMILY (i)) WITH (schema_locked=false);`)
+				sqlRunner.Exec(t, `CREATE TABLE t.test (k CHAR PRIMARY KEY, v CHAR, i CHAR, INDEX foo (i, v), FAMILY (k),FAMILY (v), FAMILY (i));`)
 				sqlRunner.Exec(t, `CREATE INDEX allidx ON t.test (k, v);`)
 				if _, err := sqlDB.Exec(`TRUNCATE TABLE t.test`); err != nil {
 					t.Fatal(err)
@@ -898,7 +898,6 @@ SET CLUSTER SETTING sql.defaults.use_declarative_schema_changer = 'off';
 		t.Fatal(err)
 	}
 	if _, err := sqlDB.Exec(`
-SET create_table_with_schema_locked=false;
 SET use_declarative_schema_changer = 'off';
 CREATE DATABASE t;
 CREATE TABLE t.test (a STRING PRIMARY KEY, b STRING, c STRING, INDEX foo (c));
@@ -1114,7 +1113,6 @@ func TestTableMutationQueue(t *testing.T) {
 
 	// Create a table with column i and an index on v and i.
 	if _, err := sqlDB.Exec(`
-SET create_table_with_schema_locked=false;
 SET use_declarative_schema_changer = 'off';
 CREATE DATABASE t;
 CREATE TABLE t.test (k CHAR PRIMARY KEY, v CHAR UNIQUE);

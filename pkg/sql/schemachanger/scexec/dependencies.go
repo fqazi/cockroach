@@ -19,6 +19,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec/scmutationexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -119,11 +120,6 @@ type Catalog interface {
 
 	// InitializeSequence initializes the initial value for a sequence.
 	InitializeSequence(id descpb.ID, startVal int64)
-
-	// CheckMaxSchemaObjects checks if the number of schema objects in the
-	// cluster plus the new objects being created would exceed the configured
-	// limit. Returns an error if the limit would be exceeded.
-	CheckMaxSchemaObjects(ctx context.Context, numNewObjects int) error
 }
 
 // Telemetry encapsulates metrics gather for the declarative schema changer.
@@ -246,9 +242,8 @@ type Validator interface {
 type IndexSpanSplitter interface {
 
 	// MaybeSplitIndexSpans will attempt to split the backfilled index span, if
-	// the index is in the system tenant or is partitioned. copyIndexSource is an
-	// optional index that can be specified as a potential source for split points.
-	MaybeSplitIndexSpans(ctx context.Context, table catalog.TableDescriptor, indexToBackfill catalog.Index, copyIndexSource catalog.Index) error
+	// the index is in the system tenant or is partitioned.
+	MaybeSplitIndexSpans(ctx context.Context, table catalog.TableDescriptor, indexToBackfill catalog.Index) error
 
 	// MaybeSplitIndexSpansForPartitioning will split backfilled index spans
 	// across hash-sharded index boundaries if applicable.
@@ -375,7 +370,7 @@ type DescriptorMetadataUpdater interface {
 
 	// UpdateTTLScheduleLabel updates the schedule_name for the TTL Scheduled Job
 	// of the given table.
-	UpdateTTLScheduleLabel(ctx context.Context, tbl catalog.TableDescriptor) error
+	UpdateTTLScheduleLabel(ctx context.Context, tbl *tabledesc.Mutable) error
 }
 
 type TemporarySchemaCreator interface {

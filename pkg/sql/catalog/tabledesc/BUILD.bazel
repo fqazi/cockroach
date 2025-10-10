@@ -41,10 +41,11 @@ go_library(
         "//pkg/sql/catalog/seqexpr",
         "//pkg/sql/catalog/typedesc",
         "//pkg/sql/lexbase",
-        "//pkg/sql/parserutils",
+        "//pkg/sql/parser",
         "//pkg/sql/pgwire/pgcode",
         "//pkg/sql/pgwire/pgerror",
         "//pkg/sql/pgwire/pgnotice",
+        "//pkg/sql/plpgsql/parser:plpgparser",
         "//pkg/sql/privilege",
         "//pkg/sql/rowenc",
         "//pkg/sql/schemachanger/scpb",
@@ -144,7 +145,6 @@ go_test(
 disallowed_imports_test(
     "tabledesc",
     disallowed_list = [
-        "//pkg/sql/parser",
         "//pkg/sql/sem/builtins",
     ],
 )

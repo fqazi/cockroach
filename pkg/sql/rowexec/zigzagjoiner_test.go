@@ -49,7 +49,7 @@ func intCols(numCols int) []*types.T {
 }
 
 func encInt(i int) rowenc.EncDatum {
-	return rowenc.DatumToEncDatumUnsafe(types.Int, tree.NewDInt(tree.DInt(i)))
+	return rowenc.DatumToEncDatum(types.Int, tree.NewDInt(tree.DInt(i)))
 }
 
 func TestZigzagJoiner(t *testing.T) {
@@ -737,8 +737,8 @@ func TestZigzagJoinerDrain(t *testing.T) {
 	for i := range v {
 		v[i] = tree.NewDInt(tree.DInt(i))
 	}
-	encThree := rowenc.DatumToEncDatumUnsafe(types.Int, v[3])
-	encSeven := rowenc.DatumToEncDatumUnsafe(types.Int, v[7])
+	encThree := rowenc.DatumToEncDatum(types.Int, v[3])
+	encSeven := rowenc.DatumToEncDatum(types.Int, v[7])
 
 	sqlutils.CreateTable(
 		t,
@@ -758,7 +758,7 @@ func TestZigzagJoinerDrain(t *testing.T) {
 	defer evalCtx.Stop(ctx)
 
 	rootTxn := kv.NewTxn(ctx, s.DB(), s.NodeID())
-	leafInputState, err := rootTxn.GetLeafTxnInputState(ctx, nil /* readsTree */)
+	leafInputState, err := rootTxn.GetLeafTxnInputState(ctx)
 	require.NoError(t, err)
 	leafTxn := kv.NewLeafTxn(ctx, s.DB(), s.NodeID(), leafInputState, nil /* header */)
 	flowCtx := execinfra.FlowCtx{

@@ -92,22 +92,20 @@ type Container struct {
 func New(
 	st *cluster.Settings,
 	uniqueServerCount *SQLStatsAtomicCounters,
-	monitor *mon.BytesMonitor,
+	mon *mon.BytesMonitor,
 	appName string,
 	knobs *sqlstats.TestingKnobs,
 ) *Container {
 	s := &Container{
 		st:                st,
 		appName:           appName,
-		mon:               monitor,
+		mon:               mon,
 		knobs:             knobs,
 		uniqueServerCount: uniqueServerCount,
 	}
 
-	if monitor != nil {
-		s.acc = monitor.MakeConcurrentBoundAccount()
-	} else {
-		s.acc = mon.NewStandaloneUnlimitedConcurrentAccount()
+	if mon != nil {
+		s.acc = mon.MakeConcurrentBoundAccount()
 	}
 
 	s.mu.stmts = make(map[stmtKey]*stmtStats)
@@ -487,12 +485,12 @@ func (s *Container) SaveToLog(ctx context.Context, appName string) {
 			return json.Marshal(stats.mu.data)
 		}()
 		if err != nil {
-			log.Dev.Errorf(ctx, "error while marshaling stats for %q // %q: %v", appName, key.fingerprintID, err)
+			log.Errorf(ctx, "error while marshaling stats for %q // %q: %v", appName, key.fingerprintID, err)
 			continue
 		}
 		fmt.Fprintf(&buf, "%q: %s\n", key.fingerprintID, json)
 	}
-	log.Dev.Infof(ctx, "statistics for %q:\n%s", appName, buf.String())
+	log.Infof(ctx, "statistics for %q:\n%s", appName, buf.String())
 }
 
 // DrainStats returns all collected statement and transaction stats in memory to the caller and clears SQL stats

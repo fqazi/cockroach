@@ -8,11 +8,10 @@ package engineccl
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
+	"github.com/cockroachdb/cockroach/pkg/storage/storagepb"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/pebble/vfs"
@@ -296,9 +295,9 @@ func newEncryptedEnv(
 	fr *fs.FileRegistry,
 	dbDir string,
 	readOnly bool,
-	options *storageconfig.EncryptionOptions,
+	options *storagepb.EncryptionOptions,
 ) (*fs.EncryptionEnv, error) {
-	if options.KeySource != storageconfig.EncryptionKeyFromFiles {
+	if options.KeySource != storagepb.EncryptionKeySource_KeyFiles {
 		return nil, fmt.Errorf("unknown encryption key source: %d", options.KeySource)
 	}
 	storeKeyManager := &StoreKeyManager{
@@ -320,7 +319,7 @@ func newEncryptedEnv(
 	dataKeyManager := &DataKeyManager{
 		fs:             storeFS,
 		dbDir:          dbDir,
-		rotationPeriod: int64((options.RotationPeriod + time.Second - 1) / time.Second),
+		rotationPeriod: options.DataKeyRotationPeriod,
 		readOnly:       readOnly,
 	}
 	if err := dataKeyManager.Load(context.TODO()); err != nil {

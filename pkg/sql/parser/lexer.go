@@ -6,10 +6,10 @@
 package parser
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/parserutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -38,17 +38,13 @@ type lexer struct {
 	lastError error
 }
 
-// numAnnotations indicates the number of annotations that have already been
-// claimed.
-func (l *lexer) init(
-	sql string, tokens []sqlSymType, nakedIntType *types.T, numAnnotations tree.AnnotationIdx,
-) {
+func (l *lexer) init(sql string, tokens []sqlSymType, nakedIntType *types.T) {
 	l.in = sql
 	l.tokens = tokens
 	l.lastPos = -1
 	l.stmt = nil
 	l.numPlaceholders = 0
-	l.numAnnotations = numAnnotations
+	l.numAnnotations = 0
 	l.lastError = nil
 
 	l.nakedIntType = nakedIntType
@@ -211,7 +207,7 @@ func (l *lexer) Lex(lval *sqlSymType) int {
 			}
 		}
 
-	case NOT, WITH, AS, GENERATED, NULLS, RESET, ROLE, USER, ON, TENANT, CLUSTER, SET, CREATE, FOR:
+	case NOT, WITH, AS, GENERATED, NULLS, RESET, ROLE, USER, ON, TENANT, CLUSTER, SET:
 		nextToken := sqlSymType{}
 		if l.lastPos+1 < len(l.tokens) {
 			nextToken = l.tokens[l.lastPos+1]
@@ -225,7 +221,7 @@ func (l *lexer) Lex(lval *sqlSymType) int {
 			thirdToken = l.tokens[l.lastPos+3]
 		}
 
-		// If you update these cases, update lexbase.lookaheadKeywords.
+		// If you update these cases, update lex.lookaheadKeywords.
 		switch lval.id {
 		case AS:
 			switch nextToken.id {
@@ -293,17 +289,6 @@ func (l *lexer) Lex(lval *sqlSymType) int {
 			case ALL:
 				lval.id = CLUSTER_ALL
 			}
-		case CREATE:
-			switch nextToken.id {
-			case CHANGEFEED:
-				switch secondToken.id {
-				case FOR:
-					switch thirdToken.id {
-					case DATABASE:
-						lval.id = CREATE_CHANGEFEED_FOR_DATABASE
-					}
-				}
-			}
 		case SET:
 			switch nextToken.id {
 			case TRACING:
@@ -319,13 +304,6 @@ func (l *lexer) Lex(lval *sqlSymType) int {
 						lval.id = SET_TRACING
 					}
 				}
-			}
-		case FOR:
-			switch nextToken.id {
-			case TABLE:
-				lval.id = FOR_TABLE
-			case JOB:
-				lval.id = FOR_JOB
 			}
 		}
 	}
@@ -439,9 +417,49 @@ func (l *lexer) Error(e string) {
 	l.populateErrorDetails()
 }
 
+// PopulateErrorDetails properly wraps the "last error" field in the lexer.
+func PopulateErrorDetails(
+	tokID int32, lastTokStr string, lastTokPos int32, lastErr error, lIn string,
+) error {
+	var retErr error
+
+	if tokID == ERROR {
+		// This is a tokenizer (lexical) error: the scanner
+		// will have stored the error message in the string field.
+		err := pgerror.WithCandidateCode(errors.Newf("lexical error: %s", lastTokStr), pgcode.Syntax)
+		retErr = errors.WithSecondaryError(err, lastErr)
+	} else {
+		// This is a contextual error. Print the provided error message
+		// and the error context.
+		if !strings.Contains(lastErr.Error(), "syntax error") {
+			// "syntax error" is already prepended when the yacc-generated
+			// parser encounters a parsing error.
+			lastErr = errors.Wrap(lastErr, "syntax error")
+		}
+		retErr = errors.Wrapf(lastErr, "at or near \"%s\"", lastTokStr)
+	}
+
+	// Find the end of the line containing the last token.
+	i := strings.IndexByte(lIn[lastTokPos:], '\n')
+	if i == -1 {
+		i = len(lIn)
+	} else {
+		i += int(lastTokPos)
+	}
+	// Find the beginning of the line containing the last token. Note that
+	// LastIndexByte returns -1 if '\n' could not be found.
+	j := strings.LastIndexByte(lIn[:lastTokPos], '\n') + 1
+	// Output everything up to and including the line containing the last token.
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "source SQL:\n%s\n", lIn[:i])
+	// Output a caret indicating where the last token starts.
+	fmt.Fprintf(&buf, "%s^", strings.Repeat(" ", int(lastTokPos)-j))
+	return errors.WithDetail(retErr, buf.String())
+}
+
 func (l *lexer) populateErrorDetails() {
 	lastTok := l.lastToken()
-	l.lastError = parserutils.PopulateErrorDetails(lastTok.id, ERROR, lastTok.str, lastTok.pos, l.lastError, l.in)
+	l.lastError = PopulateErrorDetails(lastTok.id, lastTok.str, lastTok.pos, l.lastError, l.in)
 }
 
 // SetHelp marks the "last error" field in the lexer to become a

@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
-	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/errors"
 )
 
@@ -84,7 +83,7 @@ func checkRegionalByRowColumnConflict(b BuildCtx, tbl *scpb.Table, n *tree.Alter
 				"cannot drop column %s as it is used to store the region in a REGIONAL BY ROW table",
 				n.Column,
 			),
-			"You must change the table locality before dropping this column or alter the table to use a different column for the region.",
+			"You must change the table locality before dropping this table or alter the table to use a different column to use for the region.",
 		))
 	}
 }
@@ -109,7 +108,7 @@ func resolveColumnForDropColumn(
 		return nil, nil, true
 	}
 	// Block drops on system columns.
-	panicIfSystemColumn(col, n.Column)
+	panicIfSystemColumn(col, n.Column.String())
 	return col, elts, false
 }
 
@@ -161,14 +160,6 @@ func dropColumn(
 				_, _, computedColName := scpb.FindColumnName(elts.Filter(publicTargetFilter))
 				panic(sqlerrors.NewColumnReferencedByComputedColumnError(cn.Name, computedColName.Name))
 			}
-			// Generate CASCADE notice for computed column
-			_, _, computedColName := scpb.FindColumnName(elts.Filter(publicTargetFilter))
-			_, _, tableName := scpb.FindNamespace(b.QueryByID(e.TableID))
-			b.EvalCtx().ClientNoticeSender.BufferClientNotice(b, pgnotice.Newf(
-				"drop cascades to column %s of table %s",
-				computedColName.Name,
-				tableName.Name,
-			))
 			dropColumn(b, tn, tbl, stmt, n, e, elts, behavior)
 		case *scpb.PrimaryIndex:
 			// Nothing needs to be done. Primary index related drops (bc of column
@@ -231,19 +222,6 @@ func dropColumn(
 				)
 			}
 			dropCascadeDescriptor(b, e.FunctionID)
-		case *scpb.TriggerDeps:
-			if behavior == tree.DropCascade {
-				panic(unimplemented.NewWithIssuef(
-					146667, "ALTER TABLE DROP COLUMN cascade not supported with triggers"))
-			}
-			triggerName := b.QueryByID(e.TableID).FilterTriggerName().Filter(func(_ scpb.Status, _ scpb.TargetStatus, tn *scpb.TriggerName) bool {
-				return tn.TriggerID == e.TriggerID
-			}).MustGetOneElement()
-			tableName := b.QueryByID(e.TableID).FilterNamespace().MustGetOneElement()
-			panic(sqlerrors.NewDependentObjectErrorf(
-				"cannot drop column %q because trigger %q on table %q depends on it",
-				cn.Name, triggerName.Name, tableName.Name,
-			))
 		case *scpb.UniqueWithoutIndexConstraint:
 			constraintElems := b.QueryByID(e.TableID).Filter(hasConstraintIDAttrFilter(e.ConstraintID))
 			_, _, constraintName := scpb.FindConstraintWithoutIndexName(constraintElems.Filter(publicTargetFilter))
@@ -274,7 +252,7 @@ func dropColumn(
 		default:
 			b.Drop(e)
 		}
-	}, false /* allowPartialIdxPredicateRef */)
+	})
 	// TODO(ajwerner): Track the undropped backrefs to populate a detail
 	// message like postgres does. For example:
 	//  SET serial_normalization = sql_sequence;
@@ -298,12 +276,7 @@ func dropColumn(
 }
 
 func walkColumnDependencies(
-	b BuildCtx,
-	col *scpb.Column,
-	op string,
-	objType string,
-	fn func(e scpb.Element, op string, objType string),
-	allowPartialIdxPredicateRef bool,
+	b BuildCtx, col *scpb.Column, op, objType string, fn func(e scpb.Element, op, objType string),
 ) {
 	var sequenceDeps catalog.DescriptorIDSet
 	var indexDeps catid.IndexSet
@@ -313,9 +286,7 @@ func walkColumnDependencies(
 	// Panic if `col` is referenced in a predicate of an index or
 	// unique without index constraint.
 	// TODO (xiang): Remove this restriction when #97813 is fixed.
-	if !allowPartialIdxPredicateRef {
-		panicIfColReferencedInPredicate(b, col, tblElts, op, objType)
-	}
+	panicIfColReferencedInPredicate(b, col, tblElts, op, objType)
 
 	tblElts.
 		Filter(referencesColumnIDFilter(col.ColumnID)).
@@ -325,8 +296,7 @@ func walkColumnDependencies(
 				*scpb.ColumnDefaultExpression, *scpb.ColumnOnUpdateExpression,
 				*scpb.UniqueWithoutIndexConstraint, *scpb.CheckConstraint,
 				*scpb.UniqueWithoutIndexConstraintUnvalidated, *scpb.CheckConstraintUnvalidated,
-				*scpb.RowLevelTTL, *scpb.PolicyUsingExpr, *scpb.PolicyWithCheckExpr,
-				*scpb.TriggerDeps:
+				*scpb.RowLevelTTL, *scpb.PolicyUsingExpr, *scpb.PolicyWithCheckExpr:
 				fn(e, op, objType)
 			case *scpb.ColumnType:
 				if elt.ColumnID == col.ColumnID {
@@ -344,6 +314,8 @@ func walkColumnDependencies(
 				fn(e, op, objType)
 				sequenceDeps.Add(elt.SequenceID)
 			case *scpb.SecondaryIndex:
+				indexDeps.Add(elt.IndexID)
+			case *scpb.SecondaryIndexPartial:
 				indexDeps.Add(elt.IndexID)
 			case *scpb.IndexColumn:
 				indexDeps.Add(elt.IndexID)
@@ -411,12 +383,6 @@ func walkColumnDependencies(
 					fn(e, op, objType)
 				}
 			}
-		case *scpb.TriggerDeps:
-			for _, ref := range elt.UsesRelations {
-				if ref.ID == col.TableID && catalog.MakeTableColSet(ref.ColumnIDs...).Contains(col.ColumnID) {
-					fn(e, op, objType)
-				}
-			}
 		}
 	})
 }
@@ -445,6 +411,10 @@ func panicIfColReferencedInPredicate(
 		switch elt := e.(type) {
 		case *scpb.SecondaryIndex:
 			if elt.EmbeddedExpr != nil && contains(elt.EmbeddedExpr.ReferencedColumnIDs, col.ColumnID) {
+				violatingIndex = elt.IndexID
+			}
+		case *scpb.SecondaryIndexPartial:
+			if contains(elt.ReferencedColumnIDs, col.ColumnID) {
 				violatingIndex = elt.IndexID
 			}
 		case *scpb.UniqueWithoutIndexConstraint:

@@ -2315,7 +2315,6 @@ Session represents one SQL session.
 | trace_id | [uint64](#cockroach.server.serverpb.ListSessionsResponse-uint64) |  | The ID of the session's active trace. It will be 0 if tracing is off. | [reserved](#support-status) |
 | goroutine_id | [int64](#cockroach.server.serverpb.ListSessionsResponse-int64) |  | The ID of the session's goroutine. | [reserved](#support-status) |
 | authentication_method | [string](#cockroach.server.serverpb.ListSessionsResponse-string) |  |  | [reserved](#support-status) |
-| default_isolation_level | [string](#cockroach.server.serverpb.ListSessionsResponse-string) |  | The session's default transaction isolation level. | [reserved](#support-status) |
 
 
 
@@ -2342,7 +2341,6 @@ ActiveQuery represents a query in flight on some Session.
 | plan_gist | [string](#cockroach.server.serverpb.ListSessionsResponse-string) |  | The compressed plan that can be converted back into the statement's logical plan. Empty if the statement is in the PREPARING state. | [reserved](#support-status) |
 | placeholders | [string](#cockroach.server.serverpb.ListSessionsResponse-string) | repeated | The placeholders if any. | [reserved](#support-status) |
 | database | [string](#cockroach.server.serverpb.ListSessionsResponse-string) |  | The database the statement was executed on. | [reserved](#support-status) |
-| isolation_level | [string](#cockroach.server.serverpb.ListSessionsResponse-string) |  | The isolation level the query was run in. | [reserved](#support-status) |
 
 
 
@@ -2467,7 +2465,6 @@ Session represents one SQL session.
 | trace_id | [uint64](#cockroach.server.serverpb.ListSessionsResponse-uint64) |  | The ID of the session's active trace. It will be 0 if tracing is off. | [reserved](#support-status) |
 | goroutine_id | [int64](#cockroach.server.serverpb.ListSessionsResponse-int64) |  | The ID of the session's goroutine. | [reserved](#support-status) |
 | authentication_method | [string](#cockroach.server.serverpb.ListSessionsResponse-string) |  |  | [reserved](#support-status) |
-| default_isolation_level | [string](#cockroach.server.serverpb.ListSessionsResponse-string) |  | The session's default transaction isolation level. | [reserved](#support-status) |
 
 
 
@@ -2494,7 +2491,6 @@ ActiveQuery represents a query in flight on some Session.
 | plan_gist | [string](#cockroach.server.serverpb.ListSessionsResponse-string) |  | The compressed plan that can be converted back into the statement's logical plan. Empty if the statement is in the PREPARING state. | [reserved](#support-status) |
 | placeholders | [string](#cockroach.server.serverpb.ListSessionsResponse-string) | repeated | The placeholders if any. | [reserved](#support-status) |
 | database | [string](#cockroach.server.serverpb.ListSessionsResponse-string) |  | The database the statement was executed on. | [reserved](#support-status) |
-| isolation_level | [string](#cockroach.server.serverpb.ListSessionsResponse-string) |  | The isolation level the query was run in. | [reserved](#support-status) |
 
 
 
@@ -4713,191 +4709,6 @@ Support status: [reserved](#support-status)
 | id | [int64](#cockroach.server.serverpb.StatementDiagnosticsResponse-int64) |  |  | [reserved](#support-status) |
 | statement_fingerprint | [string](#cockroach.server.serverpb.StatementDiagnosticsResponse-string) |  |  | [reserved](#support-status) |
 | collected_at | [google.protobuf.Timestamp](#cockroach.server.serverpb.StatementDiagnosticsResponse-google.protobuf.Timestamp) |  |  | [reserved](#support-status) |
-
-
-
-
-
-
-## CreateTransactionDiagnosticsReport
-
-`POST /_status/txndiagreports`
-
-
-
-Support status: [reserved](#support-status)
-
-#### Request Parameters
-
-
-
-
-createTransactionDiagnosticsReportRequest is a message that captures a
-user's requst to capture a transaction diagnostic bundle.
-
-
-| Field | Type | Label | Description | Support status |
-| ----- | ---- | ----- | ----------- | -------------- |
-| transaction_fingerprint_id | [bytes](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportRequest-bytes) |  |  | [reserved](#support-status) |
-| statement_fingerprint_ids | [bytes](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportRequest-bytes) | repeated |  | [reserved](#support-status) |
-| min_execution_latency | [google.protobuf.Duration](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportRequest-google.protobuf.Duration) |  |  | [reserved](#support-status) |
-| expires_at | [google.protobuf.Duration](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportRequest-google.protobuf.Duration) |  |  | [reserved](#support-status) |
-| sampling_probability | [double](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportRequest-double) |  |  | [reserved](#support-status) |
-| redacted | [bool](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportRequest-bool) |  |  | [reserved](#support-status) |
-
-
-
-
-
-
-
-#### Response Parameters
-
-
-
-
-
-
-
-| Field | Type | Label | Description | Support status |
-| ----- | ---- | ----- | ----------- | -------------- |
-| report | [TransactionDiagnosticsReport](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-cockroach.server.serverpb.TransactionDiagnosticsReport) |  |  | [reserved](#support-status) |
-
-
-
-
-
-
-<a name="cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-cockroach.server.serverpb.TransactionDiagnosticsReport"></a>
-#### TransactionDiagnosticsReport
-
-TransactionDiagnosticsReport is a message that represents a
-diagnostics capture request for a given transaction.
-
-| Field | Type | Label | Description | Support status |
-| ----- | ---- | ----- | ----------- | -------------- |
-| id | [int64](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-int64) |  |  | [reserved](#support-status) |
-| completed | [bool](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-bool) |  |  | [reserved](#support-status) |
-| transaction_fingerprint_id | [bytes](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-bytes) |  | TODO(davidh): should these be strings or int64??? I think bytes is most correct. | [reserved](#support-status) |
-| statement_fingerprint_ids | [bytes](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-bytes) | repeated |  | [reserved](#support-status) |
-| transaction_fingerprint | [string](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-string) |  |  | [reserved](#support-status) |
-| transaction_diagnostics_id | [int64](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-int64) |  |  | [reserved](#support-status) |
-| requested_at | [google.protobuf.Timestamp](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-google.protobuf.Timestamp) |  |  | [reserved](#support-status) |
-| min_execution_latency | [google.protobuf.Duration](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-google.protobuf.Duration) |  |  | [reserved](#support-status) |
-| expires_at | [google.protobuf.Timestamp](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-google.protobuf.Timestamp) |  |  | [reserved](#support-status) |
-| sampling_probability | [double](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-double) |  |  | [reserved](#support-status) |
-| redacted | [bool](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-bool) |  |  | [reserved](#support-status) |
-| username | [string](#cockroach.server.serverpb.CreateTransactionDiagnosticsReportResponse-string) |  |  | [reserved](#support-status) |
-
-
-
-
-
-
-## CancelTransactionDiagnosticsReport
-
-`POST /_status/txndiagreports/cancel`
-
-
-
-Support status: [reserved](#support-status)
-
-#### Request Parameters
-
-
-
-
-
-
-
-| Field | Type | Label | Description | Support status |
-| ----- | ---- | ----- | ----------- | -------------- |
-| request_id | [int64](#cockroach.server.serverpb.CancelTransactionDiagnosticsReportRequest-int64) |  |  | [reserved](#support-status) |
-
-
-
-
-
-
-
-#### Response Parameters
-
-
-
-
-
-
-
-| Field | Type | Label | Description | Support status |
-| ----- | ---- | ----- | ----------- | -------------- |
-| canceled | [bool](#cockroach.server.serverpb.CancelTransactionDiagnosticsReportResponse-bool) |  | canceled indicates whether the request for the given fingerprint was actually canceled. | [reserved](#support-status) |
-| error | [string](#cockroach.server.serverpb.CancelTransactionDiagnosticsReportResponse-string) |  | error is set only if canceled is false. | [reserved](#support-status) |
-
-
-
-
-
-
-
-## TransactionDiagnosticsRequests
-
-`GET /_status/txndiagreports`
-
-
-
-Support status: [reserved](#support-status)
-
-#### Request Parameters
-
-
-
-
-
-
-
-
-
-
-
-
-
-#### Response Parameters
-
-
-
-
-
-
-
-| Field | Type | Label | Description | Support status |
-| ----- | ---- | ----- | ----------- | -------------- |
-| reports | [TransactionDiagnosticsReport](#cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-cockroach.server.serverpb.TransactionDiagnosticsReport) | repeated |  | [reserved](#support-status) |
-
-
-
-
-
-
-<a name="cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-cockroach.server.serverpb.TransactionDiagnosticsReport"></a>
-#### TransactionDiagnosticsReport
-
-TransactionDiagnosticsReport is a message that represents a
-diagnostics capture request for a given transaction.
-
-| Field | Type | Label | Description | Support status |
-| ----- | ---- | ----- | ----------- | -------------- |
-| id | [int64](#cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-int64) |  |  | [reserved](#support-status) |
-| completed | [bool](#cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-bool) |  |  | [reserved](#support-status) |
-| transaction_fingerprint_id | [bytes](#cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-bytes) |  | TODO(davidh): should these be strings or int64??? I think bytes is most correct. | [reserved](#support-status) |
-| statement_fingerprint_ids | [bytes](#cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-bytes) | repeated |  | [reserved](#support-status) |
-| transaction_fingerprint | [string](#cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-string) |  |  | [reserved](#support-status) |
-| transaction_diagnostics_id | [int64](#cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-int64) |  |  | [reserved](#support-status) |
-| requested_at | [google.protobuf.Timestamp](#cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-google.protobuf.Timestamp) |  |  | [reserved](#support-status) |
-| min_execution_latency | [google.protobuf.Duration](#cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-google.protobuf.Duration) |  |  | [reserved](#support-status) |
-| expires_at | [google.protobuf.Timestamp](#cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-google.protobuf.Timestamp) |  |  | [reserved](#support-status) |
-| sampling_probability | [double](#cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-double) |  |  | [reserved](#support-status) |
-| redacted | [bool](#cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-bool) |  |  | [reserved](#support-status) |
-| username | [string](#cockroach.server.serverpb.TransactionDiagnosticsReportsResponse-string) |  |  | [reserved](#support-status) |
 
 
 

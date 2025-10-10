@@ -72,8 +72,6 @@ type leasingMetrics struct {
 	longWaitForNoVersionsActive                *metric.Gauge
 	longTwoVersionInvariantViolationWaitActive *metric.Gauge
 	longWaitForInitialVersionActive            *metric.Gauge
-	leaseMaxBytesHist                          metric.IHistogram
-	leaseCurBytesCount                         *metric.Gauge
 }
 
 type leaseFields struct {
@@ -235,10 +233,10 @@ func (s storage) acquire(
 				s.livenessProvider.PauseLivenessHeartbeat(ctx)
 				extensionsBlocked = true
 			}
-			log.Dev.Infof(ctx, "retryable replica error occurred during lease acquisition for %v, retrying: %v", id, err)
+			log.Infof(ctx, "retryable replica error occurred during lease acquisition for %v, retrying: %v", id, err)
 			continue
 		case pgerror.GetPGCode(err) == pgcode.UniqueViolation:
-			log.Dev.Infof(ctx, "uniqueness violation occurred due to concurrent lease"+
+			log.Infof(ctx, "uniqueness violation occurred due to concurrent lease"+
 				" removal for %v, retrying: %v", id, err)
 			continue
 		case err != nil:
@@ -307,7 +305,7 @@ func (s storage) release(
 		}
 		err := s.writer.deleteLease(ctx, nil /* txn */, lf)
 		if err != nil {
-			log.Dev.Warningf(ctx, "error releasing lease %q: %s", lease, err)
+			log.Warningf(ctx, "error releasing lease %q: %s", lease, err)
 			if grpcutil.IsConnectionRejected(err) {
 				return
 			}
@@ -340,7 +338,7 @@ func (s storage) release(
 // a version of the descriptor. A descriptorVersionState with the
 // expiration time set to expiration is returned.
 //
-// This returns an error when Replica.checkTSAboveGCThreshold()
+// This returns an error when Replica.checkTSAboveGCThresholdRLocked()
 // returns an error when the expiration timestamp is less than the storage
 // layer GC threshold.
 func (s storage) getForExpiration(
