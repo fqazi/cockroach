@@ -9,14 +9,15 @@ import (
 	"context"
 	"sync"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/colexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execopnode"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execreleasable"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/optional"
 	"github.com/cockroachdb/errors"
 )
@@ -30,9 +31,7 @@ type planNodeToRowSource struct {
 
 	input execinfra.RowSource
 
-	// rowsAffected is true if the wrapped planNode will return a single row with
-	// a single integer column indicating the number of rows affected.
-	rowsAffected bool
+	fastPath bool
 
 	node        planNode
 	params      runParams
@@ -58,20 +57,21 @@ var planNodeToRowSourcePool = sync.Pool{
 }
 
 func newPlanNodeToRowSource(
-	source planNode, params runParams, firstNotWrapped planNode,
+	source planNode, params runParams, fastPath bool, firstNotWrapped planNode,
 ) *planNodeToRowSource {
 	p := planNodeToRowSourcePool.Get().(*planNodeToRowSource)
 	*p = planNodeToRowSource{
 		ProcessorBase:   p.ProcessorBase,
-		rowsAffected:    resultIsRowsAffected(source),
+		fastPath:        fastPath,
 		node:            source,
 		params:          params,
 		firstNotWrapped: firstNotWrapped,
 		row:             p.row,
 	}
-	if p.rowsAffected {
-		// The node returns a single integer value with the number of rows affected.
-		// TODO(drewk): consider using a global singleton to avoid allocating.
+	if fastPath {
+		// If our node is a "fast path node", it means that we're set up to
+		// just return a row count meaning we'll output a single row with a
+		// single INT column.
 		p.outputTypes = []*types.T{types.Int}
 	} else {
 		p.outputTypes = getTypesFromResultColumns(planColumns(source))
@@ -125,9 +125,6 @@ func (p *planNodeToRowSource) Init(
 		return err
 	}
 	if execstats.ShouldCollectStats(ctx, flowCtx.CollectStats) {
-		if txn := p.params.p.Txn(); txn != nil {
-			p.contentionEventsListener.Init(txn.ID())
-		}
 		p.ExecStatsForTrace = p.execStatsForTrace
 	}
 	return nil
@@ -152,25 +149,14 @@ func (p *planNodeToRowSource) SetInput(ctx context.Context, input execinfra.RowS
 	// Search the plan we're wrapping for firstNotWrapped, which is the planNode
 	// that DistSQL planning resumed in. Replace that planNode with input,
 	// wrapped as a planNode.
-	// NB: The root planNode is never replaced.
-	var replaceFirstNotWrapped func(parent planNode) error
-	replaceFirstNotWrapped = func(parent planNode) error {
-		for i, n := 0, parent.InputCount(); i < n; i++ {
-			child, err := parent.Input(i)
-			if err != nil {
-				return err
+	return walkPlan(ctx, p.node, planObserver{
+		replaceNode: func(ctx context.Context, nodeName string, plan planNode) (planNode, error) {
+			if plan == p.firstNotWrapped {
+				return newRowSourceToPlanNode(input, p, planColumns(p.firstNotWrapped), p.firstNotWrapped), nil
 			}
-			if child == p.firstNotWrapped {
-				newChild := newRowSourceToPlanNode(input, p, planColumns(p.firstNotWrapped), p.firstNotWrapped)
-				return parent.SetInput(i, newChild)
-			}
-			if err := replaceFirstNotWrapped(child); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	return replaceFirstNotWrapped(p.node)
+			return nil, nil
+		},
+	})
 }
 
 func (p *planNodeToRowSource) Start(ctx context.Context) {
@@ -182,14 +168,45 @@ func (p *planNodeToRowSource) Start(ctx context.Context) {
 	}
 }
 
-func init() {
-	colexec.IsRowsAffectedNode = func(rs execinfra.RowSource) bool {
-		p, ok := rs.(*planNodeToRowSource)
-		return ok && p.rowsAffected
-	}
-}
-
 func (p *planNodeToRowSource) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerMetadata) {
+	if p.State == execinfra.StateRunning && p.fastPath {
+		var count int
+		// If our node is a "fast path node", it means that we're set up to just
+		// return a row count. So trigger the fast path and return the row count as
+		// a row with a single column.
+		fastPath, ok := p.node.(planNodeFastPath)
+
+		if ok {
+			var res bool
+			if count, res = fastPath.FastPathResults(); res {
+				if p.params.extendedEvalCtx.Tracing.Enabled() {
+					log.VEvent(p.params.ctx, 2, "fast path completed")
+				}
+			} else {
+				// Fall back to counting the rows.
+				count = 0
+				ok = false
+			}
+		}
+
+		if !ok {
+			// If we have no fast path to trigger, fall back to counting the rows
+			// by Nexting our source until exhaustion.
+			next, err := p.node.Next(p.params)
+			for ; next; next, err = p.node.Next(p.params) {
+				count++
+			}
+			if err != nil {
+				p.MoveToDraining(err)
+				return nil, p.DrainHelper()
+			}
+		}
+		p.MoveToDraining(nil /* err */)
+		// Return the row count the only way we can: as a single-column row with
+		// the count inside.
+		return rowenc.EncDatumRow{rowenc.EncDatum{Datum: tree.NewDInt(tree.DInt(count))}}, nil
+	}
+
 	for p.State == execinfra.StateRunning {
 		valid, err := p.node.Next(p.params)
 		if err != nil || !valid {
@@ -199,11 +216,7 @@ func (p *planNodeToRowSource) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerM
 
 		for i, datum := range p.node.Values() {
 			if datum != nil {
-				p.row[i], err = rowenc.DatumToEncDatum(p.outputTypes[i], datum)
-				if err != nil {
-					p.MoveToDraining(err)
-					return nil, p.DrainHelper()
-				}
+				p.row[i] = rowenc.DatumToEncDatum(p.outputTypes[i], datum)
 			}
 		}
 		// ProcessRow here is required to deal with projections, which won't be
@@ -240,17 +253,12 @@ func (p *planNodeToRowSource) trailingMetaCallback() []execinfrapb.ProducerMetad
 // execStatsForTrace implements ProcessorBase.ExecStatsForTrace.
 func (p *planNodeToRowSource) execStatsForTrace() *execinfrapb.ComponentStats {
 	// Propagate contention time and RUs from IO requests.
-	if p.contentionEventsListener.GetContentionTime() == 0 &&
-		p.contentionEventsListener.GetLockWaitTime() == 0 &&
-		p.contentionEventsListener.GetLatchWaitTime() == 0 &&
-		p.tenantConsumptionListener.GetConsumedRU() == 0 {
+	if p.contentionEventsListener.GetContentionTime() == 0 && p.tenantConsumptionListener.GetConsumedRU() == 0 {
 		return nil
 	}
 	return &execinfrapb.ComponentStats{
 		KV: execinfrapb.KVStats{
 			ContentionTime: optional.MakeTimeValue(p.contentionEventsListener.GetContentionTime()),
-			LockWaitTime:   optional.MakeTimeValue(p.contentionEventsListener.GetLockWaitTime()),
-			LatchWaitTime:  optional.MakeTimeValue(p.contentionEventsListener.GetLatchWaitTime()),
 		},
 		Exec: execinfrapb.ExecStats{
 			ConsumedRU: optional.MakeUint(p.tenantConsumptionListener.GetConsumedRU()),

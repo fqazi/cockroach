@@ -211,20 +211,6 @@ func (c *Columnarizer) GetStats() *execinfrapb.ComponentStats {
 	return s
 }
 
-// IsRowsAffectedNode returns true if the provided RowSource is the
-// planNodeToRowSource wrapper returning the number of affected rows. The logic
-// is injected from the sql package to avoid an import cycle.
-var IsRowsAffectedNode func(source execinfra.RowSource) bool
-
-// IsColumnarizerAroundRowsAffectedNode returns true if the provided Operator is
-// a Columnarizer that has a planNodeToRowSource wrapper in "rows affected" mode
-// as the input.
-func IsColumnarizerAroundRowsAffectedNode(o colexecop.Operator) bool {
-	o = MaybeUnwrapInvariantsChecker(o)
-	c, ok := o.(*Columnarizer)
-	return ok && IsRowsAffectedNode(c.input)
-}
-
 // Next is part of the colexecop.Operator interface.
 func (c *Columnarizer) Next() coldata.Batch {
 	if c.removedFromFlow {

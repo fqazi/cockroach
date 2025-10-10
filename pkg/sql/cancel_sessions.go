@@ -18,33 +18,24 @@ import (
 )
 
 type cancelSessionsNode struct {
-	singleInputPlanNode
-	rowsAffectedOutputHelper
+	rows     planNode
 	ifExists bool
 }
 
-// startExec implements the planNode interface.
-func (n *cancelSessionsNode) startExec(params runParams) error {
-	// Execute the node to completion, keeping track of the affected row count.
-	for {
-		ok, err := n.cancelSession(params)
-		if !ok || err != nil {
-			return err
-		}
-		n.incAffectedRows()
-	}
+func (n *cancelSessionsNode) startExec(runParams) error {
+	return nil
 }
 
-func (n *cancelSessionsNode) cancelSession(params runParams) (bool, error) {
+func (n *cancelSessionsNode) Next(params runParams) (bool, error) {
 	// TODO(knz): instead of performing the cancels sequentially,
 	// accumulate all the query IDs and then send batches to each of the
 	// nodes.
 
-	if ok, err := n.input.Next(params); err != nil || !ok {
+	if ok, err := n.rows.Next(params); err != nil || !ok {
 		return ok, err
 	}
 
-	datum := n.input.Values()[0]
+	datum := n.rows.Values()[0]
 	if datum == tree.DNull {
 		return true, nil
 	}
@@ -80,16 +71,8 @@ func (n *cancelSessionsNode) cancelSession(params runParams) (bool, error) {
 	return true, nil
 }
 
-// Next implements the planNode interface.
-func (n *cancelSessionsNode) Next(_ runParams) (bool, error) {
-	return n.next(), nil
-}
-
-// Values implements the planNode interface.
-func (n *cancelSessionsNode) Values() tree.Datums {
-	return n.values()
-}
+func (*cancelSessionsNode) Values() tree.Datums { return nil }
 
 func (n *cancelSessionsNode) Close(ctx context.Context) {
-	n.input.Close(ctx)
+	n.rows.Close(ctx)
 }

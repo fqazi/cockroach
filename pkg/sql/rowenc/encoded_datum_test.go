@@ -42,14 +42,14 @@ func TestEncDatum(t *testing.T) {
 		t.Errorf("empty rowenc.EncDatum has an encoding")
 	}
 
-	x := rowenc.DatumToEncDatumUnsafe(types.Int, tree.NewDInt(5))
+	x := rowenc.DatumToEncDatum(types.Int, tree.NewDInt(5))
 
 	check := func(x rowenc.EncDatum) {
 		if x.IsUnset() {
-			t.Errorf("unset after DatumToEncDatumUnsafe()")
+			t.Errorf("unset after DatumToEncDatum()")
 		}
 		if x.IsNull() {
-			t.Errorf("null after DatumToEncDatumUnsafe()")
+			t.Errorf("null after DatumToEncDatum()")
 		}
 		if val, err := x.GetInt(); err != nil {
 			t.Fatal(err)
@@ -123,7 +123,7 @@ func TestEncDatumNull(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
 	// Verify DNull is null.
-	n := rowenc.DatumToEncDatumUnsafe(types.Int, tree.DNull)
+	n := rowenc.DatumToEncDatum(types.Int, tree.DNull)
 	if !n.IsNull() {
 		t.Error("DNull not null")
 	}
@@ -215,14 +215,8 @@ func TestEncDatumCompare(t *testing.T) {
 
 	for _, typ := range types.OidToType {
 		switch typ.Family() {
-		case types.AnyFamily, types.UnknownFamily, types.ArrayFamily,
-			types.TupleFamily, types.TSQueryFamily, types.TSVectorFamily,
-			types.PGVectorFamily, types.TriggerFamily, types.JsonpathFamily:
-			// These types don't have key-encoding.
-			continue
-		case types.VoidFamily:
-			// There is no point in testing VOID type as it only supports a
-			// single value.
+		case types.AnyFamily, types.UnknownFamily, types.ArrayFamily, types.JsonFamily, types.TupleFamily, types.VoidFamily,
+			types.TSQueryFamily, types.TSVectorFamily, types.PGVectorFamily, types.TriggerFamily:
 			continue
 		case types.CollatedStringFamily:
 			typ = types.MakeCollatedString(types.String, *randgen.RandCollationLocale(rng))
@@ -239,8 +233,8 @@ func TestEncDatumCompare(t *testing.T) {
 				break
 			}
 		}
-		v1 := rowenc.DatumToEncDatumUnsafe(typ, d1)
-		v2 := rowenc.DatumToEncDatumUnsafe(typ, d2)
+		v1 := rowenc.DatumToEncDatum(typ, d1)
+		v2 := rowenc.DatumToEncDatum(typ, d2)
 
 		if val, err := v1.Compare(context.Background(), typ, a, evalCtx, &v2); err != nil {
 			t.Fatal(err)
@@ -341,7 +335,7 @@ func TestEncDatumRowCompare(t *testing.T) {
 
 	v := [5]rowenc.EncDatum{}
 	for i := range v {
-		v[i] = rowenc.DatumToEncDatumUnsafe(types.Int, tree.NewDInt(tree.DInt(i)))
+		v[i] = rowenc.DatumToEncDatum(types.Int, tree.NewDInt(tree.DInt(i)))
 	}
 
 	asc := encoding.Ascending
@@ -495,7 +489,7 @@ func TestEncDatumRowAlloc(t *testing.T) {
 				in[i] = make(rowenc.EncDatumRow, cols)
 				for j := 0; j < cols; j++ {
 					datum := randgen.RandDatum(rng, colTypes[j], true /* nullOk */)
-					in[i][j] = rowenc.DatumToEncDatumUnsafe(colTypes[j], datum)
+					in[i][j] = rowenc.DatumToEncDatum(colTypes[j], datum)
 				}
 			}
 			var alloc rowenc.EncDatumRowAlloc
@@ -549,7 +543,7 @@ func TestValueEncodeDecodeTuple(t *testing.T) {
 		switch typedTest := test.(type) {
 		case *tree.DTuple:
 
-			buf, err := valueside.Encode(nil, valueside.NoColumnID, typedTest)
+			buf, err := valueside.Encode(nil, valueside.NoColumnID, typedTest, nil)
 			if err != nil {
 				t.Fatalf("seed %d: encoding tuple %v with types %v failed with error: %v",
 					seed, test, colTypes[i], err)
@@ -614,7 +608,7 @@ func TestEncDatumSize(t *testing.T) {
 			expectedSize: rowenc.EncDatumOverhead + 3, // 12345 is encoded with length 3 byte array
 		},
 		{
-			encDatum:     rowenc.DatumToEncDatumUnsafe(types.Int, tree.NewDInt(123)),
+			encDatum:     rowenc.DatumToEncDatum(types.Int, tree.NewDInt(123)),
 			expectedSize: rowenc.EncDatumOverhead + DIntSize,
 		},
 		{
@@ -634,7 +628,7 @@ func TestEncDatumSize(t *testing.T) {
 			expectedSize: rowenc.EncDatumOverhead + 9, // 123.0 is encoded with length 9 byte array
 		},
 		{
-			encDatum:     rowenc.DatumToEncDatumUnsafe(types.Float, tree.NewDFloat(123)),
+			encDatum:     rowenc.DatumToEncDatum(types.Float, tree.NewDFloat(123)),
 			expectedSize: rowenc.EncDatumOverhead + DFloatSize,
 		},
 		{
@@ -654,7 +648,7 @@ func TestEncDatumSize(t *testing.T) {
 			expectedSize: rowenc.EncDatumOverhead + 4, // 123.0 is encoded with length 4 byte array
 		},
 		{
-			encDatum:     rowenc.DatumToEncDatumUnsafe(types.Decimal, dec12300),
+			encDatum:     rowenc.DatumToEncDatum(types.Decimal, dec12300),
 			expectedSize: rowenc.EncDatumOverhead + decimalSize,
 		},
 		{
@@ -674,7 +668,7 @@ func TestEncDatumSize(t *testing.T) {
 			expectedSize: rowenc.EncDatumOverhead + 9, // "123⌘" is encoded with length 9 byte array
 		},
 		{
-			encDatum:     rowenc.DatumToEncDatumUnsafe(types.String, tree.NewDString("12")),
+			encDatum:     rowenc.DatumToEncDatum(types.String, tree.NewDString("12")),
 			expectedSize: rowenc.EncDatumOverhead + DStringSize + 2,
 		},
 		{

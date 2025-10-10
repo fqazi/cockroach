@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl"
 	"github.com/cockroachdb/cockroach/pkg/internal/rsg"
 	"github.com/cockroachdb/cockroach/pkg/internal/sqlsmith"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -60,17 +59,6 @@ func verifyFormat(sql string) error {
 	if err != nil {
 		// Cannot serialize a statement list without parsing it.
 		return nil //nolint:returnerrcheck
-	}
-	for _, stmt := range stmts {
-		if _, ok := stmt.AST.(*tree.DoBlock); ok {
-			// We currently don't handle well identifiers with double quotes in
-			// PLpgSQL blocks, so it's likely that this function will fail for
-			// this statement, thus, we skip the check if we see a DO block
-			// (which can only be a top-level AST node).
-			// TODO(#126727): remove this when double-quoted identifiers are
-			// fixed.
-			return nil
-		}
 	}
 	formattedSQL := stmts.StringWithFlags(tree.FmtShowPasswords)
 	formattedStmts, err := parser.Parse(formattedSQL)
@@ -213,10 +201,6 @@ func (db *verifyFormatDB) execWithResettableTimeout(
 
 	defer db.Incr(sql)()
 
-	var cancel context.CancelCauseFunc
-	ctx, cancel = context.WithCancelCause(ctx)
-	defer cancel(nil)
-
 	funcdone := make(chan error, 1)
 	go func() {
 		_, err := db.db.ExecContext(ctx, sql)
@@ -280,8 +264,7 @@ func (db *verifyFormatDB) execWithResettableTimeout(
 						// 2 minute wait and miss potential hangs (if the test times out first).
 						// Whereas this approach will wait 2 minutes after the completion of
 						// (1), only waiting an extra second more.
-						remainingDurationSinceLastStmt := db.mu.lastCompletedStmt.Add(duration).Sub(timeutil.Now())
-						targetDuration = duration - remainingDurationSinceLastStmt
+						targetDuration = duration - db.mu.lastCompletedStmt.Add(duration).Sub(timeutil.Now())
 						// Avoid having super tight spins, wait at least a second.
 						if targetDuration <= time.Second {
 							targetDuration = time.Second
@@ -290,13 +273,6 @@ func (db *verifyFormatDB) execWithResettableTimeout(
 						maxResets -= 1
 						return nil
 					}
-				}
-				cancel(errors.Newf("cancelling query after %v", duration))
-				select {
-				case <-funcdone:
-					return nil
-				case <-time.After(5 * time.Second):
-					t.Logf("didn't respect context cancellation within 5 seconds: %s", sql)
 				}
 				b := allstacks.GetWithBuf(make([]byte, 1024*1024))
 				t.Logf("%s\n", b)
@@ -432,10 +408,6 @@ func TestRandomSyntaxFunctions(t *testing.T) {
 				case "st_frechetdistance", "st_buffer":
 					// Some spatial function are slow and testing them here
 					// is not worth it.
-					continue
-				case "trigger_in", "trigger_out":
-					// Skip trigger I/O functions since we can't generate random trigger
-					// arguments.
 					continue
 				case "crdb_internal.reset_sql_stats",
 					"crdb_internal.check_consistency",
@@ -640,7 +612,6 @@ var ignoredErrorPatterns = []string{
 	"AS OF SYSTEM TIME: timestamp before 1970-01-01T00:00:00Z is invalid",
 	"BACKUP for requested time  needs option 'revision_history'",
 	"RESTORE timestamp: supplied backups do not cover requested time",
-	"a partial index that does not contain all the rows needed to execute this query",
 
 	// Numeric conditions
 	"exponent out of range",
@@ -910,17 +881,6 @@ func testRandomSyntax(
 	}
 	srv, rawDB, _ := serverutils.StartServer(t, params)
 	defer srv.Stopper().Stop(ctx)
-	if srv.StartedDefaultTestTenant() {
-		// If we started a test tenant, then disable rate limiting for it (we're
-		// going to be slamming the server with many queries, and we don't want
-		// for them to be artificially delayed).
-		tenID := serverutils.TestTenantID()
-		_, err := srv.SystemLayer().SQLConn(t).Exec(
-			"ALTER TENANT [$1] GRANT CAPABILITY exempt_from_rate_limiting", tenID.ToUint64())
-		require.NoError(t, err)
-		expCaps := map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.ExemptFromRateLimiting: "true"}
-		serverutils.WaitForTenantCapabilities(t, srv, tenID, expCaps, "exempt_from_rate_limiting")
-	}
 	db := &verifyFormatDB{db: rawDB}
 	// If the test fails we can log the previous set of statements.
 	defer func() {

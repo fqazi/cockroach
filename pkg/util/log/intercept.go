@@ -29,11 +29,11 @@ import (
 // When multiple interceptors are configured, each of them
 // are served each log entry.
 func InterceptWith(ctx context.Context, fn Interceptor) func() {
-	Dev.InfofDepth(ctx, 1, "starting log interception")
+	InfofDepth(ctx, 1, "starting log interception")
 	logging.interceptor.add(fn)
 	return func() {
 		logging.interceptor.del(fn)
-		Dev.InfofDepth(ctx, 1, "stopping log interception")
+		InfofDepth(ctx, 1, "stopping log interception")
 	}
 }
 
