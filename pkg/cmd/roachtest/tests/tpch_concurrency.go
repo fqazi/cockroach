@@ -208,7 +208,6 @@ func registerTPCHConcurrency(r registry.Registry) {
 		CompatibleClouds: registry.Clouds(spec.GCE, spec.Local),
 		Suites:           registry.Suites(registry.Nightly),
 		CockroachBinary:  cockroachBinary,
-		Skip:             "153489. uses ancient tpch fixture",
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runTPCHConcurrency(ctx, t, c, false /* disableStreamer */)
 		},
@@ -224,7 +223,6 @@ func registerTPCHConcurrency(r registry.Registry) {
 		CompatibleClouds: registry.Clouds(spec.GCE, spec.Local),
 		Suites:           registry.Suites(registry.Nightly),
 		CockroachBinary:  cockroachBinary,
-		Skip:             "153489. uses ancient tpch fixture",
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runTPCHConcurrency(ctx, t, c, true /* disableStreamer */)
 		},

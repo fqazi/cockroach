@@ -35,8 +35,5 @@ func (p *Provider) ObserveTransaction(
 	transactionStats *sqlstats.RecordedTxnStats,
 	statements []*sqlstats.RecordedStmtStats,
 ) {
-	if transactionStats == nil || transactionStats.InternalExecutor {
-		return
-	}
 	p.registry.observeTransaction(transactionStats, statements)
 }

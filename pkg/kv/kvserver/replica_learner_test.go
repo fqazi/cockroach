@@ -363,7 +363,7 @@ func weakEqualf(t *testing.T, successes int64, count int64, s string, id int) {
 		require.Equalf(t, successes, count, s, id)
 	} else {
 		if successes != count {
-			log.KvExec.Warningf(context.Background(), "Not equal, expected %d, got %d for %s %d", successes, count, s, id)
+			log.Warningf(context.Background(), "Not equal, expected %d, got %d for %s %d", successes, count, s, id)
 		}
 	}
 }
@@ -880,7 +880,7 @@ func TestLearnerSnapshotFailsRollback(t *testing.T) {
 		case roachpb.NON_VOTER:
 			_, err = tc.AddNonVoters(scratchStartKey, tc.Target(1))
 		default:
-			log.KvExec.Fatalf(ctx, "unexpected replicaType: %s", replicaType)
+			log.Fatalf(ctx, "unexpected replicaType: %s", replicaType)
 		}
 
 		if !testutils.IsError(err, `remote couldn't accept snapshot`) {
@@ -926,10 +926,7 @@ func testRaftSnapshotsToNonVoters(t *testing.T, drainReceivingNode bool) {
 
 	tc := testcluster.StartTestCluster(
 		t, 2, base.TestClusterArgs{
-			ServerArgs: base.TestServerArgs{
-				DefaultDRPCOption: base.TestDRPCDisabled,
-				Knobs:             knobs,
-			},
+			ServerArgs:      base.TestServerArgs{Knobs: knobs},
 			ReplicationMode: base.ReplicationManual,
 		},
 	)
@@ -1053,9 +1050,6 @@ func TestSnapshotsToDrainingNodes(t *testing.T) {
 		tc := testcluster.StartTestCluster(
 			t, 2, base.TestClusterArgs{
 				ReplicationMode: base.ReplicationManual,
-				ServerArgs: base.TestServerArgs{
-					DefaultDRPCOption: base.TestDRPCDisabled,
-				},
 			},
 		)
 		defer tc.Stopper().Stop(ctx)
@@ -1220,7 +1214,6 @@ func TestReplicateQueueSeesLearnerOrJointConfig(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	// NB also see TestAllocatorRemoveLearner for a lower-level test.
-	testutils.SetVModule(t, "queue=4,replicate_queue=4,replica_command=4,allocator=4,replicate=4")
 
 	ctx := context.Background()
 	_, ltk := makeReplicationTestKnobs()
@@ -1748,7 +1741,7 @@ func TestLearnerOrJointConfigAdminRelocateRange(t *testing.T) {
 		desc := tc.LookupRangeOrFatal(t, scratchStartKey)
 		repl, err := tc.GetFirstStoreFromServer(t, 0).GetReplica(desc.RangeID)
 		require.NoError(t, err)
-		if repl.TestingHasOutstandingLearnerSnapshotInFlight() {
+		if repl.HasOutstandingLearnerSnapshotInFlightForTesting() {
 			return errors.Errorf("outstanding learner snapshot in flight %s", desc)
 		}
 		return nil

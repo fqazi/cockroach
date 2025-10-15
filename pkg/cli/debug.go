@@ -163,7 +163,7 @@ func (f *keyFormat) Type() string {
 // engine, they should manually open it using storage.Open. The returned Env has
 // 1 reference and the caller must ensure it's closed.
 func OpenFilesystemEnv(dir string, rw fs.RWMode) (*fs.Env, error) {
-	envConfig := fs.EnvConfig{RW: rw, Version: serverCfg.Settings.Version}
+	envConfig := fs.EnvConfig{RW: rw}
 	if err := fillEncryptionOptionsForStore(dir, &envConfig); err != nil {
 		return nil, err
 	}
@@ -397,15 +397,13 @@ func runDebugBallast(cmd *cobra.Command, args []string) error {
 	usedBytes := du.TotalBytes - du.AvailBytes
 
 	var targetUsage uint64
-	var p float64
-	var b int64
-	if debugCtx.ballastSize.IsPercent() {
-		p = debugCtx.ballastSize.Percent()
-		if math.Abs(p) > 100 {
-			return errors.Errorf("absolute percentage value %f greater than 100", p)
-		}
-	} else if debugCtx.ballastSize.IsBytes() {
-		b = debugCtx.ballastSize.Bytes()
+	p := debugCtx.ballastSize.Percent
+	if math.Abs(p) > 100 {
+		return errors.Errorf("absolute percentage value %f greater than 100", p)
+	}
+	b := debugCtx.ballastSize.Bytes
+	if p != 0 && b != 0 {
+		return errors.New("expected exactly one of percentage or bytes non-zero, found both")
 	}
 	switch {
 	case p > 0:
@@ -568,14 +566,14 @@ func loadRangeDescriptor(
 		}
 		v, err := storage.DecodeMVCCValue(kv.Value)
 		if err != nil {
-			log.Dev.Warningf(context.Background(), "ignoring range descriptor due to error %s: %+v", err, kv)
+			log.Warningf(context.Background(), "ignoring range descriptor due to error %s: %+v", err, kv)
 		}
 		if v.IsTombstone() {
 			// RangeDescriptor was deleted (range merged away).
 			return nil
 		}
 		if err := v.Value.GetProto(&desc); err != nil {
-			log.Dev.Warningf(context.Background(), "ignoring range descriptor due to error %s: %+v", err, kv)
+			log.Warningf(context.Background(), "ignoring range descriptor due to error %s: %+v", err, kv)
 			return nil
 		}
 		if desc.RangeID == rangeID {
@@ -1619,11 +1617,6 @@ func init() {
 	f.StringVar(&debugTimeSeriesDumpOpts.userName, "user-name", "", "name of the user to perform datadog upload")
 	f.StringVar(&debugTimeSeriesDumpOpts.storeToNodeMapYAMLFile, "store-to-node-map-file", "", "yaml file path which contains the mapping of store ID to node ID for datadog upload.")
 	f.BoolVar(&debugTimeSeriesDumpOpts.dryRun, "dry-run", false, "run in dry-run mode without making any actual uploads")
-	f.IntVar(&debugTimeSeriesDumpOpts.noOfUploadWorkers, "upload-workers", 75, "number of workers to upload the time series data in parallel")
-	f.BoolVar(&debugTimeSeriesDumpOpts.retryFailedRequests, "retry-failed-requests", false, "retry previously failed requests from file")
-	f.BoolVar(&debugTimeSeriesDumpOpts.disableDeltaProcessing, "disable-delta-processing", false, "disable delta calculation for counter metrics (enabled by default)")
-	f.Int64Var(&debugTimeSeriesDumpOpts.ddMetricInterval, "dd-metric-interval", debugTimeSeriesDumpOpts.ddMetricInterval, "interval in seconds for datadoginit format only (default 10). Regular datadog format uses actual intervals from tsdump.")
-	f.Lookup("dd-metric-interval").Hidden = true // this is for internal use only
 
 	f = debugSendKVBatchCmd.Flags()
 	f.StringVar(&debugSendKVBatchContext.traceFormat, "trace", debugSendKVBatchContext.traceFormat,
@@ -1748,9 +1741,7 @@ func pebbleCryptoInitializer(ctx context.Context) {
 		encryptedPaths = append(encryptedPaths, spec.Path)
 	}
 	resolveFn := func(dir string) (*fs.Env, error) {
-		envConfig := fs.EnvConfig{
-			Version: serverCfg.Settings.Version,
-		}
+		var envConfig fs.EnvConfig
 		if err := fillEncryptionOptionsForStore(dir, &envConfig); err != nil {
 			return nil, err
 		}

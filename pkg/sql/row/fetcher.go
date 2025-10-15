@@ -687,7 +687,7 @@ func (rf *Fetcher) StartInconsistentScan(
 		}
 		advanceBy := txnStartTime.Sub(initialTimestamp.GoTime()).Nanoseconds() - targetTimestampAge
 		if log.V(1) {
-			log.Dev.Infof(ctx, "initial timestamp %v too far into the past, advancing it by %v", initialTimestamp, advanceBy)
+			log.Infof(ctx, "initial timestamp %v too far into the past, advancing it by %v", initialTimestamp, advanceBy)
 		}
 		initialTimestamp = initialTimestamp.Add(advanceBy, 0 /* logical */)
 	}
@@ -698,7 +698,7 @@ func (rf *Fetcher) StartInconsistentScan(
 		return err
 	}
 	if log.V(1) {
-		log.Dev.Infof(ctx, "starting inconsistent scan at timestamp %v", txnTimestamp)
+		log.Infof(ctx, "starting inconsistent scan at timestamp %v", txnTimestamp)
 	}
 
 	sendFn := func(ctx context.Context, ba *kvpb.BatchRequest) (*kvpb.BatchResponse, error) {
@@ -716,7 +716,7 @@ func (rf *Fetcher) StartInconsistentScan(
 			}
 
 			if log.V(1) {
-				log.Dev.Infof(ctx, "bumped inconsistent scan timestamp to %v", txnTimestamp)
+				log.Infof(ctx, "bumped inconsistent scan timestamp to %v", txnTimestamp)
 			}
 		}
 
@@ -1131,10 +1131,7 @@ func (rf *Fetcher) processValueSingle(
 	if rf.args.TraceKV {
 		prettyValue = value.String()
 	}
-	table.row[idx], err = rowenc.DatumToEncDatum(typ, value)
-	if err != nil {
-		return "", "", err
-	}
+	table.row[idx] = rowenc.DatumToEncDatum(typ, value)
 	return prettyKey, prettyValue, nil
 }
 

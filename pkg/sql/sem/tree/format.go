@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/lexbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
@@ -198,9 +197,6 @@ const (
 	// FmtSkipAsOfSystemTimeClauses prevents the formatter from printing AS OF
 	// SYSTEM TIME clauses.
 	FmtSkipAsOfSystemTimeClauses
-
-	// FmtHideHints skips over any hints.
-	FmtHideHints
 )
 
 const genericArityIndicator = "__more__"
@@ -291,23 +287,6 @@ const (
 )
 
 const flagsRequiringAnnotations = FmtAlwaysQualifyTableNames
-
-// Bitmask for enabling various query fingerprint formatting styles.
-// We don't publish this setting because most users should not need
-// to tweak the fingerprint generation.
-var QueryFormattingForFingerprintsMask = settings.RegisterIntSetting(
-	settings.ApplicationLevel,
-	"sql.stats.statement_fingerprint.format_mask",
-	"enables setting additional fmt flags for statement fingerprint formatting. "+
-		"Flags set here will be applied in addition to FmtHideConstants",
-	int64(FmtCollapseLists|FmtConstantsAsUnderscores),
-	settings.WithValidateInt(func(i int64) error {
-		if i == 0 || int64(FmtCollapseLists|FmtConstantsAsUnderscores)&i == i {
-			return nil
-		}
-		return errors.Newf("invalid value %d", i)
-	}),
-)
 
 // FmtCtx is suitable for passing to Format() methods.
 // It also exposes the underlying bytes.Buffer interface for
@@ -451,7 +430,7 @@ func (ctx *FmtCtx) SetLocation(loc *time.Location) *time.Location {
 	return old
 }
 
-// WithReformatTableNames modifies FmtCtx to substitute the printing of table
+// WithReformatTableNames modifies FmtCtx to to substitute the printing of table
 // names using the provided function, calls fn, then restores the original table
 // formatting.
 func (ctx *FmtCtx) WithReformatTableNames(tableNameFmt func(*FmtCtx, *TableName), fn func()) {

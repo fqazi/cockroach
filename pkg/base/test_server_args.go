@@ -235,12 +235,9 @@ type SlimTestServerConfig struct {
 type DefaultTestDRPCOption uint8
 
 const (
-	// TestDRPCUnset represents an uninitialized or invalid DRPC option.
-	TestDRPCUnset DefaultTestDRPCOption = iota
-
 	// TestDRPCDisabled disables DRPC; all inter-node connectivity will use gRPC
 	// only.
-	TestDRPCDisabled
+	TestDRPCDisabled DefaultTestDRPCOption = iota
 
 	// TestDRPCEnabled enables DRPC. Some services may still use gRPC if they
 	// have not yet migrated to DRPC.
@@ -250,21 +247,6 @@ const (
 	// TestDRPCDisabled or TestDRPCEnabled.
 	TestDRPCEnabledRandomly
 )
-
-func (d DefaultTestDRPCOption) String() string {
-	switch d {
-	case TestDRPCUnset:
-		return "unset"
-	case TestDRPCDisabled:
-		return "disabled"
-	case TestDRPCEnabled:
-		return "enabled"
-	case TestDRPCEnabledRandomly:
-		return "enabled-randomly"
-	default:
-		panic("unreachable")
-	}
-}
 
 // TestClusterArgs contains the parameters one can set when creating a test
 // cluster. It contains a TestServerArgs instance which will be copied over to
@@ -613,7 +595,9 @@ func InternalNonDefaultDecision(
 // with no special attributes.
 var DefaultTestStoreSpec = storageconfig.Store{
 	InMemory: true,
-	Size:     storageconfig.BytesSize(512 << 20),
+	Size: storageconfig.Size{
+		Bytes: 512 << 20,
+	},
 }
 
 // DefaultTestTempStorageConfig is the associated temp storage for
@@ -638,6 +622,7 @@ func DefaultTestTempStorageConfigWithSize(
 	return TempStorageConfig{
 		InMemory: true,
 		Mon:      monitor,
+		Spec:     DefaultTestStoreSpec,
 		Settings: st,
 	}
 }

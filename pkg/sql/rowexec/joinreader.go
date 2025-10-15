@@ -209,13 +209,6 @@ type joinReader struct {
 	// curBatchInputRowCount is the number of input rows in the current batch.
 	curBatchInputRowCount int64
 
-	// If set, the lookup columns form a key in the target table and thus each
-	// lookup has at most one result.
-	lookupColumnsAreKey bool
-
-	// lockingWaitPolicy is the wait policy for the underlying rowFetcher.
-	lockingWaitPolicy descpb.ScanLockingWaitPolicy
-
 	// State variables for each batch of input rows.
 	scratchInputRows rowenc.EncDatumRows
 	// resetScratchWhenReadingInput tracks whether scratchInputRows needs to be
@@ -258,6 +251,11 @@ type joinReader struct {
 	// only lookups to rows in remote regions and remote accesses are set to
 	// error out via a session setting.
 	errorOnLookup bool
+
+	// allowEnforceHomeRegionFollowerReads, if true, causes errors produced by the
+	// above `errorOnLookup` flag to be retryable, and use follower reads to find
+	// the query's home region during the retries.
+	allowEnforceHomeRegionFollowerReads bool
 }
 
 var _ execinfra.Processor = &joinReader{}
@@ -371,20 +369,19 @@ func newJoinReader(
 		flowCtx.EvalCtx.Planner != nil && flowCtx.EvalCtx.Planner.EnforceHomeRegion()
 
 	jr := &joinReader{
-		fetchSpec:                         spec.FetchSpec,
-		splitFamilyIDs:                    spec.SplitFamilyIDs,
-		maintainOrdering:                  spec.MaintainOrdering,
-		input:                             input,
-		lookupCols:                        lookupCols,
-		outputGroupContinuationForLeftRow: spec.OutputGroupContinuationForLeftRow,
-		parallelize:                       parallelize,
-		readerType:                        readerType,
-		lookupColumnsAreKey:               spec.LookupColumnsAreKey,
-		lockingWaitPolicy:                 spec.LockingWaitPolicy,
-		txn:                               txn,
-		usesStreamer:                      useStreamer,
-		limitHintHelper:                   execinfra.MakeLimitHintHelper(spec.LimitHint, post),
-		errorOnLookup:                     errorOnLookup,
+		fetchSpec:                           spec.FetchSpec,
+		splitFamilyIDs:                      spec.SplitFamilyIDs,
+		maintainOrdering:                    spec.MaintainOrdering,
+		input:                               input,
+		lookupCols:                          lookupCols,
+		outputGroupContinuationForLeftRow:   spec.OutputGroupContinuationForLeftRow,
+		parallelize:                         parallelize,
+		readerType:                          readerType,
+		txn:                                 txn,
+		usesStreamer:                        useStreamer,
+		limitHintHelper:                     execinfra.MakeLimitHintHelper(spec.LimitHint, post),
+		errorOnLookup:                       errorOnLookup,
+		allowEnforceHomeRegionFollowerReads: flowCtx.EvalCtx.SessionData().EnforceHomeRegionFollowerReadsEnabled,
 	}
 	if readerType != indexJoinReaderType {
 		jr.groupingState = &inputBatchGroupingState{doGrouping: spec.LeftJoinWithPairedJoiner}
@@ -818,7 +815,7 @@ func (jr *joinReader) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerMetadata)
 			meta = jr.DrainHelper()
 			jr.runningState = jrStateUnknown
 		default:
-			log.Dev.Fatalf(jr.Ctx(), "unsupported state: %d", jr.runningState)
+			log.Fatalf(jr.Ctx(), "unsupported state: %d", jr.runningState)
 		}
 		if row == nil && meta == nil {
 			continue
@@ -931,12 +928,6 @@ func (jr *joinReader) readInput() (
 		}
 		jr.scratchInputRows = jr.scratchInputRows[:0]
 		jr.resetScratchWhenReadingInput = false
-	}
-
-	// Assert that the correct number of rows were fetched in the last batch.
-	if err := jr.assertBatchRowCounts(); err != nil {
-		jr.MoveToDraining(err)
-		return jrStateUnknown, nil, jr.DrainHelper()
 	}
 
 	// Read the next batch of input rows.
@@ -1056,7 +1047,11 @@ func (jr *joinReader) readInput() (
 		// If spans has a non-zero length, the call to StartScan below will
 		// perform a batch lookup of kvs, so error out before that happens if
 		// we were instructed to do so via the errorOnLookup flag.
-		jr.MoveToDraining(noHomeRegionError)
+		err = noHomeRegionError
+		if jr.allowEnforceHomeRegionFollowerReads {
+			err = execinfra.NewDynamicQueryHasNoHomeRegionError(err)
+		}
+		jr.MoveToDraining(err)
 		return jrStateUnknown, nil, jr.DrainHelper()
 	}
 
@@ -1106,33 +1101,6 @@ func (jr *joinReader) readInput() (
 	}
 
 	return jrFetchingLookupRows, outRow, nil
-}
-
-// assertBatchRowCounts performs assertions to prevent silently returning
-// incorrect results, e.g., if the lookup index is corrupt.
-func (jr *joinReader) assertBatchRowCounts() error {
-	// An index join without SKIP LOCKED should fetch exactly one row for each
-	// input row.
-	nonSkippingIndexJoin := jr.readerType == indexJoinReaderType &&
-		jr.lockingWaitPolicy != descpb.ScanLockingWaitPolicy_SKIP_LOCKED
-	if nonSkippingIndexJoin && jr.curBatchRowsRead != jr.curBatchInputRowCount {
-		return errors.AssertionFailedf(
-			"expected to fetch %d rows, found %d",
-			jr.curBatchInputRowCount, jr.curBatchRowsRead,
-		)
-	}
-	// An index join with SKIP LOCKED or a lookup join where the lookup columns
-	// form a key should fetch at most one row for each input row.
-	skippingIndexJoin := jr.readerType == indexJoinReaderType &&
-		jr.lockingWaitPolicy == descpb.ScanLockingWaitPolicy_SKIP_LOCKED
-	if (skippingIndexJoin || jr.lookupColumnsAreKey) &&
-		jr.curBatchRowsRead > jr.curBatchInputRowCount {
-		return errors.AssertionFailedf(
-			"expected to fetch no more than %d rows, found %d",
-			jr.curBatchInputRowCount, jr.curBatchRowsRead,
-		)
-	}
-	return nil
 }
 
 var noHomeRegionError = pgerror.Newf(pgcode.QueryHasNoHomeRegion,

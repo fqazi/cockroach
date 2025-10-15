@@ -34,9 +34,9 @@ func TestingNewWrappedServerStream(
 // TestingAuthenticateTenant performs authentication of a tenant from a context
 // for testing.
 func TestingAuthenticateTenant(
-	ctx context.Context, serverTenantID roachpb.TenantID, sv *settings.Values, enableDRPC bool,
+	ctx context.Context, serverTenantID roachpb.TenantID, sv *settings.Values,
 ) (roachpb.TenantID, error) {
-	kvAuthObject := kvAuth{sv: sv, tenant: tenantAuthorizer{tenantID: serverTenantID}, isDRPC: enableDRPC}
+	kvAuthObject := kvAuth{sv: sv, tenant: tenantAuthorizer{tenantID: serverTenantID}}
 	_, authz, err := kvAuthObject.authenticateAndSelectAuthzRule(ctx)
 	if err != nil {
 		return roachpb.TenantID{}, err

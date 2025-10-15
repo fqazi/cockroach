@@ -38,7 +38,6 @@ type colBatchScanBase struct {
 
 	flowCtx                *execinfra.FlowCtx
 	processorID            int32
-	stageID                int32
 	limitHint              rowinfra.RowLimit
 	batchBytesLimit        rowinfra.BytesLimit
 	parallelize            bool
@@ -123,7 +122,6 @@ func newColBatchScanBase(
 	kvFetcherMemAcc *mon.BoundAccount,
 	flowCtx *execinfra.FlowCtx,
 	processorID int32,
-	stageID int32,
 	spec *execinfrapb.TableReaderSpec,
 	post *execinfrapb.PostProcessSpec,
 	typeResolver *descs.DistSQLTypeResolver,
@@ -188,7 +186,6 @@ func newColBatchScanBase(
 		SpansWithCopy:          s.SpansWithCopy,
 		flowCtx:                flowCtx,
 		processorID:            processorID,
-		stageID:                stageID,
 		limitHint:              limitHint,
 		batchBytesLimit:        batchBytesLimit,
 		parallelize:            spec.Parallelize,
@@ -257,7 +254,6 @@ func (s *ColBatchScan) DrainMeta() []execinfrapb.ProducerMetadata {
 	meta.Metrics = execinfrapb.GetMetricsMeta()
 	meta.Metrics.BytesRead = s.GetBytesRead()
 	meta.Metrics.RowsRead = s.GetRowsRead()
-	meta.Metrics.StageID = s.stageID
 	trailingMeta = append(trailingMeta, *meta)
 	return trailingMeta
 }
@@ -316,14 +312,13 @@ func NewColBatchScan(
 	kvFetcherMemAcc *mon.BoundAccount,
 	flowCtx *execinfra.FlowCtx,
 	processorID int32,
-	stageID int32,
 	spec *execinfrapb.TableReaderSpec,
 	post *execinfrapb.PostProcessSpec,
 	estimatedRowCount uint64,
 	typeResolver *descs.DistSQLTypeResolver,
 ) (*ColBatchScan, []*types.T, error) {
 	base, bsHeader, tableArgs, err := newColBatchScanBase(
-		ctx, kvFetcherMemAcc, flowCtx, processorID, stageID, spec, post, typeResolver,
+		ctx, kvFetcherMemAcc, flowCtx, processorID, spec, post, typeResolver,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -352,7 +347,6 @@ func NewColBatchScan(
 		shouldCollectStats,
 		false, /* alwaysReallocate */
 		flowCtx.Txn,
-		flowCtx.Codec().TenantID,
 	}
 	if err = fetcher.Init(fetcherAllocator, kvFetcher, tableArgs); err != nil {
 		fetcher.Release()

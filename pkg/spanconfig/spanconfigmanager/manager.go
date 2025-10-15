@@ -129,10 +129,10 @@ func (m *Manager) run(ctx context.Context) {
 
 		started, err := m.createAndStartJobIfNoneExists(ctx, m.settings)
 		if err != nil {
-			log.Dev.Errorf(ctx, "error starting auto span config reconciliation job: %v", err)
+			log.Errorf(ctx, "error starting auto span config reconciliation job: %v", err)
 		}
 		if started {
-			log.Dev.Infof(ctx, "started auto span config reconciliation job")
+			log.Infof(ctx, "started auto span config reconciliation job")
 		}
 	}
 

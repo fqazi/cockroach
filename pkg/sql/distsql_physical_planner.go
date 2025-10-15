@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
@@ -279,7 +278,7 @@ func (dsp *DistSQLPlanner) ConstructAndSetSpanResolver(
 	ctx context.Context, nodeID roachpb.NodeID, locality roachpb.Locality,
 ) {
 	if dsp.spanResolver != nil {
-		log.Dev.Fatal(ctx, "trying to construct and set span resolver when one already exists")
+		log.Fatal(ctx, "trying to construct and set span resolver when one already exists")
 	}
 	sr := physicalplan.NewSpanResolver(dsp.st, dsp.distSender, dsp.nodeDescs, nodeID, locality,
 		dsp.clock, dsp.rpcCtx, ReplicaOraclePolicy)
@@ -502,6 +501,19 @@ func (dsp *DistSQLPlanner) mustWrapNode(planCtx *PlanningCtx, node planNode) boo
 		return true
 	}
 	return false
+}
+
+func shouldWrapPlanNodeForExecStats(planCtx *PlanningCtx, node planNode) bool {
+	if !planCtx.collectExecStats {
+		// If execution stats aren't being collected, there is no point in
+		// having the overhead of wrappers.
+		return false
+	}
+	// Wrapping batchedPlanNodes breaks some assumptions (namely that Start is
+	// called on the processor-adapter) because it's executed in a special "fast
+	// path" way, so we exempt these from wrapping.
+	_, ok := node.(batchedPlanNode)
+	return !ok
 }
 
 // wrapValuesNode returns whether a valuesNode can and should be wrapped into
@@ -733,7 +745,7 @@ func checkSupportForPlanNode(
 			var suffix string
 			estimate := n.estimatedRowCount
 			if n.softLimit != 0 && sd.UseSoftLimitForDistributeScan {
-				estimate = n.softLimit
+				estimate = uint64(n.softLimit)
 				suffix = " (using soft limit)"
 			}
 			if estimate >= sd.DistributeScanRowCountThreshold {
@@ -1566,7 +1578,7 @@ func (dsp *DistSQLPlanner) partitionSpan(
 	// lastKey maintains the EndKey of the last piece of `span`.
 	lastKey := rSpan.Key
 	if log.V(1) {
-		log.Dev.Infof(ctx, "partitioning span %s", span)
+		log.Infof(ctx, "partitioning span %s", span)
 	}
 	// We break up rSpan into its individual ranges (which may or may not be on
 	// separate nodes). We then create "partitioned spans" using the end keys of
@@ -1583,12 +1595,12 @@ func (dsp *DistSQLPlanner) partitionSpan(
 		desc := it.Desc()
 		if log.V(1) {
 			descCpy := desc // don't let desc escape
-			log.Dev.Infof(ctx, "lastKey: %s desc: %s", lastKey, &descCpy)
+			log.Infof(ctx, "lastKey: %s desc: %s", lastKey, &descCpy)
 		}
 
 		if !desc.ContainsKey(lastKey) {
 			// This range must contain the last range's EndKey.
-			log.Dev.Fatalf(
+			log.Fatalf(
 				ctx, "next range %v doesn't cover last end key %v. Partitions: %#v",
 				desc.RSpan(), lastKey, partitions,
 			)
@@ -1704,7 +1716,7 @@ func (dsp *DistSQLPlanner) partitionSpans(
 			if safeKey, err := keys.EnsureSafeSplitKey(span.Key); err == nil && len(safeKey) > 0 {
 				if safeKey.Equal(lastKey) {
 					if log.V(1) {
-						log.Dev.Infof(ctx, "stitching span %s into the previous span partition", span)
+						log.Infof(ctx, "stitching span %s into the previous span partition", span)
 					}
 					// TODO(yuzefovich): we're not updating
 					// SpanPartition.numRanges as well as spanPartitionState
@@ -1797,7 +1809,7 @@ func (dsp *DistSQLPlanner) healthySQLInstanceIDForKVNodeHostedInstanceResolver(
 ) func(nodeID roachpb.NodeID) (base.SQLInstanceID, SpanPartitionReason) {
 	allInstances, err := dsp.sqlAddressResolver.GetAllInstances(ctx)
 	if err != nil {
-		log.Dev.Warningf(ctx, "could not get all instances: %v", err)
+		log.Warningf(ctx, "could not get all instances: %v", err)
 		return dsp.alwaysUseGatewayWithReason(SpanPartitionReason_GATEWAY_ON_ERROR)
 	}
 
@@ -1818,7 +1830,7 @@ func (dsp *DistSQLPlanner) healthySQLInstanceIDForKVNodeHostedInstanceResolver(
 				return sqlInstance, SpanPartitionReason_TARGET_HEALTHY
 			}
 		}
-		log.Dev.VWarningf(ctx, 1, "not planning on node %d", sqlInstance)
+		log.VWarningf(ctx, 1, "not planning on node %d", sqlInstance)
 		return dsp.gatewaySQLInstanceID, SpanPartitionReason_GATEWAY_TARGET_UNHEALTHY
 	}
 }
@@ -1922,7 +1934,7 @@ func (dsp *DistSQLPlanner) makeInstanceResolver(
 		if locFilter.NonEmpty() {
 			return nil, noInstancesMatchingLocalityFilterErr
 		}
-		log.Dev.Warningf(ctx, "no healthy sql instances available for planning, only using the gateway")
+		log.Warningf(ctx, "no healthy sql instances available for planning, only using the gateway")
 		return dsp.alwaysUseGatewayWithReason(SpanPartitionReason_GATEWAY_NO_HEALTHY_INSTANCES), nil
 	}
 
@@ -2217,8 +2229,8 @@ func initTableReaderSpecTemplate(
 	var post execinfrapb.PostProcessSpec
 	if n.hardLimit != 0 {
 		post.Limit = uint64(n.hardLimit)
-	} else if softLimit := int64(n.softLimit); softLimit > 0 {
-		s.LimitHint = softLimit
+	} else if n.softLimit != 0 {
+		s.LimitHint = n.softLimit
 	}
 	return s, post, nil
 }
@@ -2246,7 +2258,6 @@ func (dsp *DistSQLPlanner) createTableReaders(
 			reverse:             n.reverse,
 			parallelize:         n.parallelize,
 			estimatedRowCount:   n.estimatedRowCount,
-			statsCreatedAt:      n.statsCreatedAt,
 			reqOrdering:         n.reqOrdering,
 			finalizeLastStageCb: planCtx.associateWithPlanNode(n),
 		},
@@ -2265,7 +2276,6 @@ type tableReaderPlanningInfo struct {
 	reverse             bool
 	parallelize         bool
 	estimatedRowCount   uint64
-	statsCreatedAt      time.Time
 	reqOrdering         ReqOrdering
 	finalizeLastStageCb func(*physicalplan.PhysicalPlan) // will be nil in the spec factory
 }
@@ -2501,7 +2511,6 @@ func (dsp *DistSQLPlanner) planTableReaders(
 
 		corePlacement[i].SQLInstanceID = sp.SQLInstanceID
 		corePlacement[i].EstimatedRowCount = info.estimatedRowCount
-		corePlacement[i].StatsCreatedAt = info.statsCreatedAt
 		corePlacement[i].Core.TableReader = tr
 	}
 
@@ -4193,6 +4202,18 @@ func (dsp *DistSQLPlanner) createPhysPlanForPlanNode(
 			return nil, err
 		}
 
+	case *rowCountNode:
+		isVectorInsert := false
+		if in, ok := n.source.(*insertNode); ok {
+			isVectorInsert = in.vectorInsert
+		}
+
+		if isVectorInsert {
+			plan, err = dsp.createPlanForRowCount(ctx, planCtx, n)
+		} else {
+			plan, err = dsp.wrapPlan(ctx, planCtx, n, false /* allowPartialDistribution */)
+		}
+
 	case *scanNode:
 		plan, err = dsp.createTableReaders(ctx, planCtx, n)
 
@@ -4289,6 +4310,8 @@ func (dsp *DistSQLPlanner) createPhysPlanForPlanNode(
 func (dsp *DistSQLPlanner) wrapPlan(
 	ctx context.Context, planCtx *PlanningCtx, n planNode, allowPartialDistribution bool,
 ) (*PhysicalPlan, error) {
+	useFastPath := planCtx.planDepth == 1 && planCtx.stmtType == tree.RowsAffected
+
 	// First, we search the planNode tree we're trying to wrap for the first
 	// DistSQL-enabled planNode in the tree. If we find one, we ask the planner to
 	// continue the DistSQL planning recursion on that planNode.
@@ -4303,7 +4326,7 @@ func (dsp *DistSQLPlanner) wrapPlan(
 		}
 		if !seenTop {
 			seenTop = true
-		} else if !dsp.mustWrapNode(planCtx, plan) || planCtx.collectExecStats {
+		} else if !dsp.mustWrapNode(planCtx, plan) || shouldWrapPlanNodeForExecStats(planCtx, plan) {
 			p, err := dsp.createPhysPlanForPlanNode(ctx, planCtx, plan)
 			if err != nil {
 				return nil, nil, err
@@ -4343,19 +4366,20 @@ func (dsp *DistSQLPlanner) wrapPlan(
 
 	// Copy the evalCtx.
 	evalCtx := *planCtx.ExtendedEvalCtx
+	// We permit the planNodeToRowSource to trigger the wrapped planNode's fast
+	// path if its the very first node in the flow, and if the statement type we're
+	// expecting is in fact RowsAffected. RowsAffected statements return a single
+	// row with the number of rows affected by the statement, and are the only
+	// types of statement where it's valid to invoke a plan's fast path.
 	wrapper := newPlanNodeToRowSource(
 		n,
 		runParams{
 			extendedEvalCtx: &evalCtx,
 			p:               planCtx.planner,
 		},
+		useFastPath,
 		firstNotWrapped,
 	)
-	if !wrapper.rowsAffected && planCtx.planDepth == 1 && planCtx.stmtType == tree.RowsAffected {
-		// Return an error if the receiver expects to get the number of rows
-		// affected, but the planNode returns something else.
-		return nil, errors.AssertionFailedf("planNode %T should return rows affected", n)
-	}
 
 	localProcIdx := p.AddLocalProcessor(wrapper)
 	var input []execinfrapb.InputSyncSpec
@@ -4482,10 +4506,7 @@ func (dsp *DistSQLPlanner) createValuesSpecFromTuples(
 			if err != nil {
 				return nil, err
 			}
-			encDatum, err := rowenc.DatumToEncDatum(resultTypes[colIdx], datum)
-			if err != nil {
-				return nil, err
-			}
+			encDatum := rowenc.DatumToEncDatum(resultTypes[colIdx], datum)
 			buf, err = encDatum.Encode(resultTypes[colIdx], &a, catenumpb.DatumEncoding_VALUE, buf)
 			if err != nil {
 				return nil, err
@@ -5312,7 +5333,6 @@ func (dsp *DistSQLPlanner) planExport(
 		ChunkRows:   int64(planInfo.chunkRows),
 		ChunkSize:   planInfo.chunkSize,
 		ColNames:    planInfo.colNames,
-		HeaderRow:   planInfo.headerRow,
 		UserProto:   planCtx.planner.User().EncodeProto(),
 	}
 
@@ -5648,6 +5668,33 @@ func finalizePlanWithRowCount(
 	}
 }
 
+// TODO(cucaroach): this doesn't work, get it working as part of effort to make
+// distsql inserts handle general inserts.
+func (dsp *DistSQLPlanner) createPlanForRowCount(
+	ctx context.Context, planCtx *PlanningCtx, n *rowCountNode,
+) (*PhysicalPlan, error) {
+	plan, err := dsp.createPhysPlanForPlanNode(ctx, planCtx, n.source)
+	plan.PlanToStreamColMap = identityMap(nil, 1)
+	// fn := newAggregateFuncHolder(
+	// 	execinfrapb.AggregatorSpec_Func_name[int32(execinfrapb.AggregatorSpec_COUNT_ROWS)],
+	// 	[]int{0},
+	// 	nil,   /* arguments */
+	// 	false, /* isDistinct */
+	// )
+	// gn := groupNode{
+	// 	columns:   []colinfo.ResultColumn{{Name: "rowCount", Typ: types.Int}},
+	// 	plan:      n,
+	// 	groupCols: []int{0},
+	// 	isScalar:  true,
+	// 	funcs:     []*aggregateFuncHolder{fn},
+	// }
+	// // This errors:  no builtin aggregate for COUNT_ROWS on [int]
+	// if err := dsp.addAggregators(ctx, planCtx, plan, &gn); err != nil {
+	// 	return nil, err
+	// }
+	return plan, err
+}
+
 func (dsp *DistSQLPlanner) createPlanForInsert(
 	ctx context.Context, planCtx *PlanningCtx, n *insertNode,
 ) (*PhysicalPlan, error) {
@@ -5684,7 +5731,6 @@ func (dsp *DistSQLPlanner) createPlanForInsert(
 		execinfrapb.Ordering{},
 		planCtx.associateWithPlanNode(n),
 	)
-	plan.PlanToStreamColMap = []int{0}
 	return plan, nil
 }
 

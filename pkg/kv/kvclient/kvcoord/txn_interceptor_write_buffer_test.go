@@ -8,7 +8,6 @@ package kvcoord
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -28,19 +27,14 @@ import (
 )
 
 func makeMockTxnWriteBuffer(
-	ctx context.Context, optionalMetrics ...TxnMetrics,
+	ctx context.Context,
 ) (txnWriteBuffer, *mockLockedSender, *cluster.Settings) {
+	metrics := MakeTxnMetrics(time.Hour)
 	st := cluster.MakeClusterSettings()
-	bufferedWritesScanTransformEnabled.Override(ctx, &st.SV, true)
-	bufferedWritesGetTransformEnabled.Override(ctx, &st.SV, true)
+	BufferedWritesScanTransformEnabled.Override(ctx, &st.SV, true)
+	BufferedWritesGetTransformEnabled.Override(ctx, &st.SV, true)
 	BufferedWritesMaxBufferSize.Override(ctx, &st.SV, defaultBufferSize)
 
-	var metrics TxnMetrics
-	if len(optionalMetrics) > 0 {
-		metrics = optionalMetrics[0]
-	} else {
-		metrics = MakeTxnMetrics(time.Hour)
-	}
 	mockSender := &mockLockedSender{}
 	return txnWriteBuffer{
 		enabled:    true,
@@ -1739,7 +1733,7 @@ func TestTxnWriteBufferLimitsSizeOfScans(t *testing.T) {
 				txn := makeTxnProto()
 				txn.Sequence = 10
 
-				bufferedWritesScanTransformEnabled.Override(ctx, &st.SV, true)
+				BufferedWritesScanTransformEnabled.Override(ctx, &st.SV, true)
 				BufferedWritesMaxBufferSize.Override(ctx, &st.SV, tc.bufferSize)
 
 				ba := &kvpb.BatchRequest{Header: kvpb.Header{Txn: &txn}}
@@ -2108,104 +2102,6 @@ func TestTxnWriteBufferRollbackNeverHeldLock(t *testing.T) {
 	br, pErr = twb.SendLocked(ctx, ba)
 	require.Nil(t, pErr)
 	require.NotNil(t, br)
-}
-
-func TestTxnWriteBufferSplitsBatchesWhenNecessary(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	ctx := context.Background()
-
-	type testCase struct {
-		name        string
-		mutateBatch func(ba *kvpb.BatchRequest)
-	}
-
-	testCases := []testCase{
-		{
-			name: "WaitPolicy_SkipLocked",
-			mutateBatch: func(ba *kvpb.BatchRequest) {
-				ba.WaitPolicy = lock.WaitPolicy_SkipLocked
-			},
-		},
-		{
-			name: "WaitPolicy_Error",
-			mutateBatch: func(ba *kvpb.BatchRequest) {
-				ba.WaitPolicy = lock.WaitPolicy_Error
-			},
-		},
-		{
-			name: "ReadConsistency_INCONSISTENT",
-			mutateBatch: func(ba *kvpb.BatchRequest) {
-				ba.ReadConsistency = kvpb.INCONSISTENT
-			},
-		},
-		{
-			name: "TargetBytes",
-			mutateBatch: func(ba *kvpb.BatchRequest) {
-				ba.TargetBytes = 1
-			},
-		},
-		{
-			name: "MaxSpanRequestKeys",
-			mutateBatch: func(ba *kvpb.BatchRequest) {
-				ba.MaxSpanRequestKeys = 1
-			},
-		},
-		{
-			name: "ReturnElasticCPUResumeSpans",
-			mutateBatch: func(ba *kvpb.BatchRequest) {
-				ba.ReturnElasticCPUResumeSpans = true
-			},
-		},
-		{
-			name: "IsReverse",
-			mutateBatch: func(ba *kvpb.BatchRequest) {
-				ba.IsReverse = true
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		twb, mockSender, st := makeMockTxnWriteBuffer(ctx)
-
-		txn := makeTxnProto()
-		txn.Sequence = 10
-
-		ba := &kvpb.BatchRequest{Header: kvpb.Header{Txn: &txn}}
-		ba.Add(delArgs(roachpb.Key("a"), txn.Sequence))
-		br, pErr := twb.SendLocked(ctx, ba)
-		require.Nil(t, pErr)
-		require.NotNil(t, br)
-
-		// Arrange for the next scan to flush the buffer and assert that it is split
-		// across two batches.
-		requestCount := 0
-		mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
-			require.Len(t, ba.Requests, 1)
-			br = ba.CreateReply()
-			br.Txn = ba.Txn
-			if requestCount == 0 {
-				// The buffer flush should not have any problematic settings.
-				require.False(t, separateBatchIsNeeded(ba, nil))
-			}
-			requestCount++
-			return br, nil
-		})
-		BufferedWritesMaxBufferSize.Override(ctx, &st.SV, 1)
-		prevCalled := mockSender.NumCalled()
-		ba = &kvpb.BatchRequest{Header: kvpb.Header{Txn: &txn}}
-		ba.Add(&kvpb.ScanRequest{
-			RequestHeader: kvpb.RequestHeader{
-				Key:      roachpb.Key("a"),
-				EndKey:   roachpb.Key("c"),
-				Sequence: txn.Sequence,
-			}})
-		tc.mutateBatch(ba)
-		br, pErr = twb.SendLocked(ctx, ba)
-		require.Nil(t, pErr)
-		require.NotNil(t, br)
-		require.Equal(t, 2, mockSender.NumCalled()-prevCalled, "expected 2 batches to be sent")
-	}
 }
 
 // TestTxnWriteBufferFlushesAfterDisabling verifies that the txnWriteBuffer
@@ -2671,49 +2567,6 @@ func TestTxnWriteBufferHasBufferedAllPrecedingWrites(t *testing.T) {
 	}
 }
 
-func TestTxnWriteBufferHasBufferedAllPrecedingWritesSplitFlush(t *testing.T) {
-	ctx := context.Background()
-	twb, mockSender, _ := makeMockTxnWriteBuffer(ctx)
-	txn := makeTxnProto()
-	txn.Sequence = 1
-	keyA, keyB, keyC := roachpb.Key("a"), roachpb.Key("b"), roachpb.Key("c")
-
-	// This Put will be completely buffered.
-	ba := &kvpb.BatchRequest{Header: kvpb.Header{Txn: &txn}}
-	putA := putArgs(keyA, "valA", txn.Sequence)
-	ba.Add(putA)
-
-	br, pErr := twb.SendLocked(ctx, ba)
-	require.Nil(t, pErr)
-	require.NotNil(t, br)
-
-	// Send a DeleteRange with MaxSpanRequestKeys set which will force a flush
-	// using two batches. The first should have HasBufferedAllPrecedingWrites, the
-	// next should not.
-	reqCount := 0
-	mockSender.MockSend(func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
-		require.Equal(t, reqCount == 0, ba.HasBufferedAllPrecedingWrites,
-			"HasBufferedAllPrecedingWrites expected on the first request (and only the first request")
-		reqCount++
-		br = ba.CreateReply()
-		br.Txn = ba.Txn
-		return br, nil
-	})
-
-	txn.Sequence++
-	ba = &kvpb.BatchRequest{Header: kvpb.Header{Txn: &txn}}
-	ba.MaxSpanRequestKeys = 10
-	ba.Add(delRangeArgs(keyB, keyC, txn.Sequence))
-
-	beforeCallCount := mockSender.NumCalled()
-	br, pErr = twb.SendLocked(ctx, ba)
-	require.Nil(t, pErr)
-	require.NotNil(t, br)
-	require.Equal(t, 2, mockSender.NumCalled()-beforeCallCount)
-	require.Len(t, br.Responses, 1)
-	require.IsType(t, &kvpb.DeleteRangeResponse{}, br.Responses[0].GetInner())
-}
-
 // BenchmarkTxnWriteBuffer benchmarks the txnWriteBuffer. The test sets up a
 // transaction with an existing buffer and runs a single batch through
 // SendLocked and flushBufferAndSendBatch. The test varies the state of the
@@ -2725,46 +2578,20 @@ func TestTxnWriteBufferHasBufferedAllPrecedingWritesSplitFlush(t *testing.T) {
 func BenchmarkTxnWriteBuffer(b *testing.B) {
 	defer leaktest.AfterTest(b)()
 	ctx := context.Background()
-	metrics := MakeTxnMetrics(time.Hour)
 
-	// Map from kvSize to a slice of keys where the i-th element corresponds to
-	// the key for the 'i' parameter. The function assumes that for a given
-	// kvSize it'll be called with consecutive values of 'i' ("going back" is
-	// allowed but "jumping forward with gaps" is not).
-	cachedKeys := make(map[int][]roachpb.Key)
 	makeKey := func(i int, kvSize int) roachpb.Key {
-		if _, ok := cachedKeys[kvSize]; !ok {
-			cachedKeys[kvSize] = make([]roachpb.Key, 0, 8)
-		}
-		cached := cachedKeys[kvSize]
-		if len(cached) > i {
-			return cached[i]
-		}
-		if len(cached) < i {
-			b.Fatal("a gap in values of i")
-		}
 		// The keys are kvSize bytes.
 		keyPrefix := strings.Repeat("a", kvSize-1)
-		cached = append(cached, roachpb.Key(fmt.Sprintf("%s%d", keyPrefix, i)))
-		cachedKeys[kvSize] = cached
-		return cached[i]
+		return roachpb.Key(fmt.Sprintf("%s%d", keyPrefix, i))
 	}
-	cachedValues := make(map[int]roachpb.Value)
-	makeValue := func(kvSize int) roachpb.Value {
-		if _, ok := cachedValues[kvSize]; !ok {
-			// The values are kvSize KiB.
-			cachedValues[kvSize] = roachpb.MakeValueFromString(strings.Repeat("a", kvSize*1024))
-		}
-		return cachedValues[kvSize]
-	}
-	putArgs := func(key roachpb.Key, valueSize int, seq enginepb.TxnSeq) *kvpb.PutRequest {
-		return &kvpb.PutRequest{
-			RequestHeader: kvpb.RequestHeader{Key: key, Sequence: seq},
-			Value:         makeValue(valueSize),
-		}
+	makeValue := func(kvSize int) string {
+		// The values are kvSize KiB.
+		return strings.Repeat("a", kvSize*1024)
 	}
 	makeBuffer := func(kvSize int, txn *roachpb.Transaction, numWrites int) txnWriteBuffer {
-		twb, mockSender, _ := makeMockTxnWriteBuffer(ctx, metrics)
+		twb, mockSender, _ := makeMockTxnWriteBuffer(ctx)
+		twb.setEnabled(true)
+
 		sendFunc := func(ba *kvpb.BatchRequest) (*kvpb.BatchResponse, *kvpb.Error) {
 			br := ba.CreateReply()
 			br.Txn = ba.Txn
@@ -2774,10 +2601,9 @@ func BenchmarkTxnWriteBuffer(b *testing.B) {
 			for _, req := range ba.Requests {
 				switch req.GetInner().(type) {
 				case *kvpb.GetRequest:
-					v := makeValue(kvSize)
 					resp.Value = &kvpb.ResponseUnion_Get{
 						Get: &kvpb.GetResponse{
-							Value: &v,
+							Value: &roachpb.Value{RawBytes: []byte(makeValue(kvSize))},
 						},
 					}
 				}
@@ -2793,7 +2619,7 @@ func BenchmarkTxnWriteBuffer(b *testing.B) {
 		// Write to the keys that will later be served from the buffer but
 		// not from the benchmarked batch.
 		for i := 0; i < numWrites; i++ {
-			ba.Add(putArgs(makeKey(i, kvSize), kvSize, enginepb.TxnSeq(i)))
+			ba.Add(putArgs(makeKey(i, kvSize), makeValue(kvSize), enginepb.TxnSeq(i)))
 		}
 		_, pErr := twb.SendLocked(ctx, ba)
 		if pErr != nil {
@@ -2851,7 +2677,7 @@ func BenchmarkTxnWriteBuffer(b *testing.B) {
 							// and are in the benchmarked batch.
 							for i := readsFromPrevBatch; i < readsFromPrevBatch+readsFromBufferSameBatch; i++ {
 								// Half of these puts acquire exclusive locks.
-								args := putArgs(makeKey(i, kvSize), kvSize, enginepb.TxnSeq(i))
+								args := putArgs(makeKey(i, kvSize), makeValue(kvSize), enginepb.TxnSeq(i))
 								if i%2 == 0 {
 									args.MustAcquireExclusiveLock = true
 								}
@@ -2865,7 +2691,7 @@ func BenchmarkTxnWriteBuffer(b *testing.B) {
 							// Add any remaining writes, not observed by any reads.
 							for i := readsFromPrevBatch + readsFromBufferSameBatch; i < numWrites; i++ {
 								// Half of these puts acquire exclusive locks.
-								args := putArgs(makeKey(i, kvSize), kvSize, enginepb.TxnSeq(i))
+								args := putArgs(makeKey(i, kvSize), makeValue(kvSize), enginepb.TxnSeq(i))
 								if i%2 == 0 {
 									args.MustAcquireExclusiveLock = true
 								}
@@ -4011,135 +3837,5 @@ func TestTxnWriteBufferLockingGetFlushing(t *testing.T) {
 			require.NotNil(t, br)
 			require.Nil(t, pErr)
 		})
-	}
-}
-
-// TestBatchHeaderFieldsAreAccountedForInBufferedWrites checks that any new
-// fields added to the batch header are appropriately accounted for by the
-// needed functions.
-func TestBatchHeaderFieldsAreAccountedForInBufferedWrites(t *testing.T) {
-	type fieldStatus int
-	const (
-		iSwearFieldDoesNotNeedHandling fieldStatus = iota
-		// fieldIsHandledByBatchSplitting means that batches with this field are
-		// handled by batch splitting.
-		fieldIsHandledByBatchSplitting
-	)
-
-	fieldStatuses := map[string]fieldStatus{
-		// Managed by store_send
-		"Timestamp":                iSwearFieldDoesNotNeedHandling,
-		"TimestampFromServerClock": iSwearFieldDoesNotNeedHandling,
-		"Now":                      iSwearFieldDoesNotNeedHandling,
-		// Managed by dist_sender
-		"Replica": iSwearFieldDoesNotNeedHandling,
-		"RangeID": iSwearFieldDoesNotNeedHandling,
-		// It's rare for the user to change priorities mid-transaction, so we prefer
-		// keeping the user-provided priority.
-		"UserPriority": iSwearFieldDoesNotNeedHandling,
-		// We want this batch to be part of the same transaction.
-		"Txn": iSwearFieldDoesNotNeedHandling,
-		// If read consistency is set to anything but CONSISTENT, our flush will fail
-		// because we only allow inconsistent reads for read only requests.
-		"ReadConsistency": fieldIsHandledByBatchSplitting,
-		// The RoutingPolicy only impacts the ordering of the replicas considered.
-		// For our flush batch, we will need to go to the leaseholder regardless.
-		"RoutingPolicy": iSwearFieldDoesNotNeedHandling,
-		// If WaitPolicy is set to SkipLocked, our request may fail validation.
-		"WaitPolicy": fieldIsHandledByBatchSplitting,
-		// Using the configured lock timeout seems reasonable.
-		"LockTimeout": iSwearFieldDoesNotNeedHandling,
-		// Reset options that could result in an early batch return.
-		"MaxSpanRequestKeys": fieldIsHandledByBatchSplitting,
-		"TargetBytes":        fieldIsHandledByBatchSplitting,
-		// The following two fields are only meaningful if MaxSpanRequestKeys or
-		// TargetBytes is set and those keys are handled.
-		//
-		// TODO(ssd): Should we just clear these anyway?
-		"WholeRowsOfSize": iSwearFieldDoesNotNeedHandling,
-		"AllowEmpty":      iSwearFieldDoesNotNeedHandling,
-		// Controlled by interceptors below us.
-		"DistinctSpans":           iSwearFieldDoesNotNeedHandling,
-		"AsyncConsensus":          iSwearFieldDoesNotNeedHandling,
-		"CanForwardReadTimestamp": iSwearFieldDoesNotNeedHandling,
-		// This should be the same, no reason to change
-		"GatewayNodeID": iSwearFieldDoesNotNeedHandling,
-		// This can be set be the caller, but it seems fine to ask for range info on
-		// the flush.
-		"ClientRangeInfo": iSwearFieldDoesNotNeedHandling,
-		// We shouldn't see this because it is only allowed via NegotiateAndSend
-		// which is only allowed for non-transactional requests.
-		"BoundedStaleness": iSwearFieldDoesNotNeedHandling,
-		// No need to touch trace info.
-		"TraceInfo": iSwearFieldDoesNotNeedHandling,
-		// This is only used by Scan and ReverseScan requests using
-		// COL_BATCH_RESPONSE. We don't have those requests in a flush batch and we
-		// don't support that response type even if we did, so we can leave it.
-		"IndexFetchSpec": iSwearFieldDoesNotNeedHandling,
-		// Only set by ExportRequest which we don't support here. Handle it anyway.
-		"ReturnElasticCPUResumeSpans": fieldIsHandledByBatchSplitting,
-		// Seems good to keep the labels, we could add some.
-		"ProfileLabels": iSwearFieldDoesNotNeedHandling,
-		// Controlled by dist_sender
-		"AmbiguousReplayProtection": iSwearFieldDoesNotNeedHandling,
-		// Flushes should be on the same connection as the original request
-		"ConnectionClass": iSwearFieldDoesNotNeedHandling,
-		// Managed by dist_sender
-		"ProxyRangeInfo": iSwearFieldDoesNotNeedHandling,
-		// We check this in validateBatch so we shouldn't have a WriteOption by the
-		// time this is checked.
-		"WriteOptions": fieldIsHandledByBatchSplitting,
-		// Seems reasonable to use the same deadlock timeout as the inbound request
-		// for the flush.
-		"DeadlockTimeout": iSwearFieldDoesNotNeedHandling,
-		// Controlled by us.
-		"HasBufferedAllPrecedingWrites": iSwearFieldDoesNotNeedHandling,
-		// Our flush should never need isReverse.
-		"IsReverse": fieldIsHandledByBatchSplitting,
-	}
-
-	header := kvpb.Header{}
-	val := reflect.ValueOf(&header)
-	for i := 0; i < val.Elem().Type().NumField(); i++ {
-		fieldName := val.Elem().Type().Field(i).Name
-		s, ok := fieldStatuses[fieldName]
-		if !ok {
-			t.Fatalf(`kvpb.Header field %s has no entry in fieldStatus map.
-
-If this option may result in a batch being incompletely processed, the option
-needs to be accounted for in the following functions:
-
-    separateBatchIsNeeded
-    clearBatchRequestOptions
-`, fieldName)
-		}
-		if s == fieldIsHandledByBatchSplitting {
-			// Trust, but verify.
-			f := val.Elem().Field(i)
-			require.True(t, f.CanSet())
-			switch fieldName {
-			case "WriteOptions":
-				wo := &kvpb.WriteOptions{OriginID: 1}
-				f.Set(reflect.ValueOf(wo))
-			default:
-				switch f.Type().Kind() {
-				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-					f.SetInt(1)
-				case reflect.Bool:
-					f.SetBool(true)
-				default:
-					t.Fatalf("test does not support type %s (field: %s), please add a case above",
-						f.Type().Kind(), fieldName)
-				}
-			}
-			req := &kvpb.BatchRequest{Header: header}
-			require.True(t, separateBatchIsNeeded(req, nil),
-				"non-zero value for %s not handled in separateBatchIsNeeded", fieldName)
-
-			clearBatchRequestOptions(req)
-			require.Equal(t, kvpb.Header{}, req.Header,
-				"non-zero value for %s not cleared in clearBatchRequestOptions", fieldName)
-			f.SetZero()
-		}
 	}
 }

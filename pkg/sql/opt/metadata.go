@@ -132,7 +132,7 @@ type Metadata struct {
 	// objectRefsByName stores each unique name that the query uses to reference
 	// each object. It is needed because changes to the search path may change
 	// which object a given name refers to; for example, switching the database.
-	objectRefsByName map[cat.StableID]tree.UnresolvedObjectNameSet
+	objectRefsByName map[cat.StableID][]*tree.UnresolvedObjectName
 
 	// privileges stores the privileges needed to access each object that the
 	// query depends on.
@@ -204,7 +204,7 @@ func (md *Metadata) Init() {
 
 	objectRefsByName := md.objectRefsByName
 	if objectRefsByName == nil {
-		objectRefsByName = make(map[cat.StableID]tree.UnresolvedObjectNameSet)
+		objectRefsByName = make(map[cat.StableID][]*tree.UnresolvedObjectName)
 	}
 	for id := range md.objectRefsByName {
 		delete(md.objectRefsByName, id)
@@ -306,12 +306,10 @@ func (md *Metadata) CopyFrom(from *Metadata, copyScalarFn func(Expr) Expr) {
 
 	for id, names := range from.objectRefsByName {
 		if md.objectRefsByName == nil {
-			md.objectRefsByName = make(map[cat.StableID]tree.UnresolvedObjectNameSet)
+			md.objectRefsByName = make(map[cat.StableID][]*tree.UnresolvedObjectName)
 		}
-		newNames := tree.MakeUnresolvedObjectNameSet(names.Len())
-		for i, n := 0, names.Len(); i < n; i++ {
-			newNames.Add(names.Get(i))
-		}
+		newNames := make([]*tree.UnresolvedObjectName, len(names))
+		copy(newNames, names)
 		md.objectRefsByName[id] = newNames
 	}
 
@@ -373,9 +371,7 @@ func (md *Metadata) AddDependency(name MDDepName, ds cat.DataSource, priv privil
 	md.privileges[id] = md.privileges[id] | (1 << priv)
 	if name.byID == 0 {
 		// This data source was referenced by name.
-		names := md.objectRefsByName[id]
-		names.Add(name.byName.ToUnresolvedObjectName())
-		md.objectRefsByName[id] = names
+		md.objectRefsByName[id] = append(md.objectRefsByName[id], name.byName.ToUnresolvedObjectName())
 	}
 }
 
@@ -469,8 +465,8 @@ func (md *Metadata) CheckDependencies(
 		var toCheck cat.DataSource
 		if names, ok := md.objectRefsByName[id]; ok {
 			// The data source was referenced by name at least once.
-			for i, n := 0, names.Len(); i < n; i++ {
-				tableName := names.Get(i).ToTableName()
+			for _, name := range names {
+				tableName := name.ToTableName()
 				toCheck, _, err = optCatalog.ResolveDataSource(ctx, cat.Flags{}, &tableName)
 				if err != nil || !dataSource.Equals(toCheck) {
 					return false, maybeSwallowMetadataResolveErr(err)
@@ -489,8 +485,8 @@ func (md *Metadata) CheckDependencies(
 	for _, typ := range md.AllUserDefinedTypes() {
 		id := cat.StableID(catid.UserDefinedOIDToID(typ.Oid()))
 		if names, ok := md.objectRefsByName[id]; ok {
-			for i, n := 0, names.Len(); i < n; i++ {
-				toCheck, err := optCatalog.ResolveType(ctx, names.Get(i))
+			for _, name := range names {
+				toCheck, err := optCatalog.ResolveType(ctx, name)
 				if err != nil || typ.Oid() != toCheck.Oid() ||
 					typ.TypeMeta.Version != toCheck.TypeMeta.Version {
 					return false, maybeSwallowMetadataResolveErr(err)
@@ -509,8 +505,7 @@ func (md *Metadata) CheckDependencies(
 	for id, dep := range md.routineDeps {
 		overload := dep.overload
 		if names, ok := md.objectRefsByName[id]; ok {
-			for i, n := 0, names.Len(); i < n; i++ {
-				name := names.Get(i)
+			for _, name := range names {
 				definition, err := optCatalog.ResolveFunction(
 					ctx, tree.MakeUnresolvedFunctionName(name.ToUnresolvedName()),
 					&evalCtx.SessionData().SearchPath,
@@ -682,9 +677,7 @@ func (md *Metadata) AddUserDefinedType(typ *types.T, name *tree.UnresolvedObject
 	}
 	if name != nil {
 		id := cat.StableID(catid.UserDefinedOIDToID(typ.Oid()))
-		names := md.objectRefsByName[id]
-		names.Add(name)
-		md.objectRefsByName[id] = names
+		md.objectRefsByName[id] = append(md.objectRefsByName[id], name)
 	}
 }
 
@@ -714,9 +707,7 @@ func (md *Metadata) AddUserDefinedRoutine(
 		invocationTypes: invocationTypes,
 	}
 	if name != nil {
-		names := md.objectRefsByName[id]
-		names.Add(name)
-		md.objectRefsByName[id] = names
+		md.objectRefsByName[id] = append(md.objectRefsByName[id], name)
 	}
 }
 
@@ -1180,7 +1171,7 @@ func (md *Metadata) TestingRoutineDepsEqual(other *Metadata) bool {
 }
 
 // TestingObjectRefsByName exposes the objectRefsByName for testing.
-func (md *Metadata) TestingObjectRefsByName() map[cat.StableID]tree.UnresolvedObjectNameSet {
+func (md *Metadata) TestingObjectRefsByName() map[cat.StableID][]*tree.UnresolvedObjectName {
 	return md.objectRefsByName
 }
 

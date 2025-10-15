@@ -539,7 +539,7 @@ func (q *WorkQueue) tryCloseEpoch(timeNow time.Time) {
 			// tenant. However, currently we share metrics across WorkQueues --
 			// specifically all the store WorkQueues share the same metric. We
 			// should eliminate that sharing and make those per store metrics.
-			log.Dev.Infof(q.ambientCtx, "%s: FIFO threshold for tenant %d %s %d",
+			log.Infof(q.ambientCtx, "%s: FIFO threshold for tenant %d %s %d",
 				q.workKind, tenant.id, logVerb, tenant.fifoPriorityThreshold)
 		}
 		// Note that we are ignoring the new priority threshold and only
@@ -639,9 +639,7 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 		// We have unlocked q.mu, so another concurrent request can also do tryGet
 		// and get ahead of this request. We don't need to be fair for such
 		// concurrent requests.
-		//
-		// TODO(sumeer): set a proper burstQualification.
-		if q.granter.tryGet(canBurst /*arbitrary*/, info.RequestedCount) {
+		if q.granter.tryGet(info.RequestedCount) {
 			q.metrics.incAdmitted(info.Priority)
 			if info.ReplicatedWorkInfo.Enabled {
 				// TODO(irfansharif): There's a race here, and could lead to
@@ -654,7 +652,7 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 				// fast path, or swapping this entry from the top-most one in
 				// the waiting heap (and fixing the heap).
 				if log.V(1) {
-					log.Dev.Infof(ctx, "fast-path: admitting t%d pri=%s r%s log-position=%s ingested=%t",
+					log.Infof(ctx, "fast-path: admitting t%d pri=%s r%s log-position=%s ingested=%t",
 						tenantID, info.Priority,
 						info.ReplicatedWorkInfo.RangeID,
 						info.ReplicatedWorkInfo.LogPosition.String(),
@@ -753,7 +751,7 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 			queueLen := tenant.waitingWorkHeap.Len()
 			q.mu.Unlock()
 
-			log.Dev.Infof(ctx, "async-path: len(waiting-work)=%d: enqueued t%d pri=%s r%s log-position=%s ingested=%t",
+			log.Infof(ctx, "async-path: len(waiting-work)=%d: enqueued t%d pri=%s r%s log-position=%s ingested=%t",
 				queueLen, tenantID, info.Priority,
 				info.ReplicatedWorkInfo.RangeID,
 				info.ReplicatedWorkInfo.LogPosition,
@@ -873,11 +871,10 @@ func (q *WorkQueue) AdmittedWorkDone(tenantID roachpb.TenantID, cpuTime time.Dur
 	q.granter.returnGrant(1)
 }
 
-func (q *WorkQueue) hasWaitingRequests() (bool, burstQualification) {
+func (q *WorkQueue) hasWaitingRequests() bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	// TODO(sumeer): return a proper burstQualification.
-	return len(q.mu.tenantHeap) > 0, canBurst /*arbitrary*/
+	return len(q.mu.tenantHeap) > 0
 }
 
 func (q *WorkQueue) granted(grantChainID grantChainID) int64 {
@@ -927,7 +924,7 @@ func (q *WorkQueue) granted(grantChainID grantChainID) int64 {
 			queueLen := tenant.waitingWorkHeap.Len()
 			q.mu.Unlock()
 
-			log.Dev.Infof(q.ambientCtx, "async-path: len(waiting-work)=%d dequeued t%d pri=%s r%s log-position=%s ingested=%t",
+			log.Infof(q.ambientCtx, "async-path: len(waiting-work)=%d dequeued t%d pri=%s r%s log-position=%s ingested=%t",
 				queueLen, tenantID, item.priority,
 				item.replicated.RangeID,
 				item.replicated.LogPosition,

@@ -250,7 +250,7 @@ func (s *drainServer) maybeShutdownAfterDrain(
 		// The signal-based shutdown path uses a similar time-based escape hatch.
 		// Until we spend (potentially lots of time to) understand and fix this
 		// issue, this will serve us well.
-		log.Dev.Fatal(ctx, "timeout after drain")
+		log.Fatal(ctx, "timeout after drain")
 		return errors.New("unreachable")
 	}
 }
@@ -375,7 +375,7 @@ func (s *drainServer) drainInner(
 		if stillRunning > 0 {
 			return nil
 		}
-		log.Dev.Infof(ctx, "all tenant servers stopped")
+		log.Infof(ctx, "all tenant servers stopped")
 	}
 
 	// Drain the SQL layer.
@@ -383,40 +383,28 @@ func (s *drainServer) drainInner(
 	if err = s.drainClients(ctx, reporter); err != nil {
 		return err
 	}
-	log.Dev.Infof(ctx, "done draining clients")
+	log.Infof(ctx, "done draining clients")
 
 	// Mark the node as draining in liveness and drain all range leases.
 	return s.drainNode(ctx, reporter, verbose)
 }
 
-// isDraining returns true if the SQL client connections are being drained,
-// if one of the stores on the node is not accepting replicas, or if the
-// server controller is being drained.
+// isDraining returns true if either SQL client connections are being drained
+// or if one of the stores on the node is not accepting replicas.
 func (s *drainServer) isDraining() bool {
-	return s.sqlServer.pgServer.IsDraining() ||
-		(s.kvServer.node != nil && s.kvServer.node.IsDraining()) ||
-		(s.serverCtl != nil && s.serverCtl.IsDraining())
+	return s.sqlServer.pgServer.IsDraining() || (s.kvServer.node != nil && s.kvServer.node.IsDraining())
 }
 
 // drainClients starts draining the SQL layer.
 func (s *drainServer) drainClients(
 	ctx context.Context, reporter func(int, redact.SafeString),
 ) error {
-	return s.drainClientsInternal(ctx, reporter, true /* assertOnLeakedDescriptor */)
-}
-
-func (s *drainServer) drainClientsInternal(
-	ctx context.Context, reporter func(int, redact.SafeString), assertOnLeakedDescriptor bool,
-) error {
 	// Setup a cancelable context so that the logOpenConns goroutine exits when
 	// this function returns.
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithCancel(ctx)
 	defer cancel()
-
-	// If this is the first time we are draining the clients, we delay draining
-	// to allow health probes to notice that the node is not ready.
-	shouldDelayDraining := !s.sqlServer.pgServer.IsDraining()
+	shouldDelayDraining := !s.isDraining()
 
 	// Set the gRPC mode of the node to "draining" and mark the node as "not ready".
 	// Probes to /health?ready=1 will now notice the change in the node's readiness.
@@ -498,7 +486,7 @@ func (s *drainServer) drainClientsInternal(
 	// Drain all SQL table leases. This must be done after the pgServer has
 	// given sessions a chance to finish ongoing work and after the background
 	// tasks that may issue SQL statements have shut down.
-	s.sqlServer.leaseMgr.SetDraining(ctx, true, reporter)
+	s.sqlServer.leaseMgr.SetDraining(ctx, true /* drain */, reporter)
 
 	session, err := s.sqlServer.sqlLivenessProvider.Release(ctx)
 	if err != nil {
@@ -517,7 +505,7 @@ func (s *drainServer) drainClientsInternal(
 	s.sqlServer.gracefulDrainComplete.Store(true)
 	// Mark this phase in the logs to clarify the context of any subsequent
 	// errors/warnings, if any.
-	log.Dev.Infof(ctx, "SQL server drained successfully; SQL queries cannot execute any more")
+	log.Infof(ctx, "SQL server drained successfully; SQL queries cannot execute any more")
 	return nil
 }
 

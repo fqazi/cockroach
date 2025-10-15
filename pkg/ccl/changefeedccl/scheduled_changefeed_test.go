@@ -66,7 +66,7 @@ func newTestHelper(t *testing.T) (*testHelper, func()) {
 			jobstest.UseSystemTables, timeutil.Now(), tree.ScheduledChangefeedExecutor),
 	}
 
-	s, db, stopServer := startTestFullServer(t, makeOptions(t, withSchedulerHelper(sh)))
+	s, db, stopServer := startTestFullServer(t, makeOptions(withSchedulerHelper(sh)))
 	sh.db = db
 	sh.sqlDB = sqlutils.MakeSQLRunner(db)
 	sh.server = s
@@ -341,7 +341,7 @@ func TestCreateChangefeedScheduleChecksPermissionsDuringDryRun(t *testing.T) {
 	defer db2.Close()
 	userDB := sqlutils.MakeSQLRunner(db2)
 
-	userDB.ExpectErr(t, `Failed to dry run create changefeed: user "testuser" requires the CHANGEFEED privilege on all target tables to be able to run an enterprise changefeed`,
+	userDB.ExpectErr(t, "Failed to dry run create changefeed: user testuser requires the CHANGEFEED privilege on all target tables to be able to run an enterprise changefeed",
 		"CREATE SCHEDULE FOR CHANGEFEED TABLE table_a INTO 'somewhere' WITH initial_scan = 'only' RECURRING '@daily'")
 }
 
@@ -870,7 +870,7 @@ func TestFullyQualifyTables(t *testing.T) {
 	defer cleanupPlanHook()
 
 	tablePatterns := make([]tree.TablePattern, 0)
-	for _, target := range createChangeFeedStmt.TableTargets {
+	for _, target := range createChangeFeedStmt.Targets {
 		tablePatterns = append(tablePatterns, target.TableName)
 	}
 

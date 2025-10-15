@@ -23,12 +23,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"storj.io/drpc/drpcmetadata"
-	"storj.io/drpc/drpcmux"
 )
 
 // gwRequestKey is a field set on the context to indicate a request
-// is coming from RPC gateway.
+// is coming from gRPC gateway.
 const gwRequestKey = "gw-request"
 
 var (
@@ -130,10 +128,6 @@ Decommissioned peers are excluded.
 		Unit: metric.Unit_NANOSECONDS,
 		Help: `Sum of exponentially weighted moving average of round-trip latencies, as measured through a gRPC RPC.
 
-Since this metric is based on gRPC RPCs, it is affected by application-level
-processing delays and CPU overload effects. See rpc.connection.tcp_rtt for a
-metric that is obtained from the kernel's TCP stack.
-
 Dividing this Gauge by rpc.connection.healthy gives an approximation of average
 latency, but the top-level round-trip-latency histogram is more useful. Instead,
 users should consult the label families of this metric if they are available
@@ -147,40 +141,6 @@ is reset to zero.
 		Essential:   true,
 		Category:    metric.Metadata_NETWORKING,
 		HowToUse:    `This metric is helpful in understanding general network issues outside of CockroachDB that could be impacting the user’s workload.`,
-	}
-
-	metaConnectionTCPRTT = metric.Metadata{
-		Name: "rpc.connection.tcp_rtt",
-		Unit: metric.Unit_NANOSECONDS,
-		Help: `Kernel-level TCP round-trip time as measured by the Linux TCP stack.
-
-This metric reports the smoothed round-trip time (SRTT) as maintained by the
-kernel's TCP implementation. Unlike application-level RPC latency measurements,
-this reflects pure network latency and is less affected by CPU overload effects.
-
-This metric is only available on Linux.
-`,
-		Measurement: "Latency",
-		Essential:   true,
-		Category:    metric.Metadata_NETWORKING,
-		HowToUse:    `High TCP RTT values indicate network issues outside of CockroachDB that could be impacting the user's workload.`,
-	}
-
-	metaConnectionTCPRTTVar = metric.Metadata{
-		Name: "rpc.connection.tcp_rtt_var",
-		Unit: metric.Unit_NANOSECONDS,
-		Help: `Kernel-level TCP round-trip time variance as measured by the Linux TCP stack.
-
-This metric reports the smoothed round-trip time variance (RTTVAR) as maintained
-by the kernel's TCP implementation. This measures the stability of the
-connection latency.
-
-This metric is only available on Linux.
-`,
-		Measurement: "Latency Variance",
-		Essential:   true,
-		Category:    metric.Metadata_NETWORKING,
-		HowToUse:    `High TCP RTT variance values indicate network stability issues outside of CockroachDB that could be impacting the user's workload.`,
 	}
 	metaConnectionConnected = metric.Metadata{
 		Name: "rpc.connection.connected",
@@ -266,8 +226,6 @@ func newMetrics(locality roachpb.Locality) *Metrics {
 		ConnectionBytesSent:           aggmetric.NewCounter(metaNetworkBytesEgress, localityLabels...),
 		ConnectionBytesRecv:           aggmetric.NewCounter(metaNetworkBytesIngress, localityLabels...),
 		ConnectionAvgRoundTripLatency: aggmetric.NewGauge(metaConnectionAvgRoundTripLatency, childLabels...),
-		ConnectionTCPRTT:              aggmetric.NewGauge(metaConnectionTCPRTT, childLabels...),
-		ConnectionTCPRTTVar:           aggmetric.NewGauge(metaConnectionTCPRTTVar, childLabels...),
 	}
 	m.mu.peerMetrics = make(map[string]peerMetrics)
 	m.mu.localityMetrics = make(map[string]localityMetrics)
@@ -312,8 +270,6 @@ type Metrics struct {
 	ConnectionBytesSent           *aggmetric.AggCounter
 	ConnectionBytesRecv           *aggmetric.AggCounter
 	ConnectionAvgRoundTripLatency *aggmetric.AggGauge
-	ConnectionTCPRTT              *aggmetric.AggGauge
-	ConnectionTCPRTTVar           *aggmetric.AggGauge
 	mu                            struct {
 		syncutil.Mutex
 		// peerMetrics is a map of peerKey to peerMetrics.
@@ -362,12 +318,6 @@ type peerMetrics struct {
 	// Updated on each successful heartbeat, reset (along with roundTripLatency)
 	// after runHeartbeatUntilFailure returns.
 	AvgRoundTripLatency *aggmetric.Gauge
-	// TCP-level round trip time as measured by the kernel's TCP stack.
-	// This provides network-level latency without application overhead.
-	TCPRTT *aggmetric.Gauge
-	// TCP-level round trip time variance as measured by the kernel's TCP stack.
-	// This indicates connection stability and jitter.
-	TCPRTTVar *aggmetric.Gauge
 	// roundTripLatency is the source for the AvgRoundTripLatency gauge. We don't
 	// want to maintain a full histogram per peer, so instead on each heartbeat we
 	// update roundTripLatency and flush the result into AvgRoundTripLatency.
@@ -403,8 +353,6 @@ func (m *Metrics) acquire(k peerKey, l roachpb.Locality) (peerMetrics, localityM
 			ConnectionHeartbeats:   m.ConnectionHeartbeats.AddChild(labelVals...),
 			ConnectionFailures:     m.ConnectionFailures.AddChild(labelVals...),
 			AvgRoundTripLatency:    m.ConnectionAvgRoundTripLatency.AddChild(labelVals...),
-			TCPRTT:                 m.ConnectionTCPRTT.AddChild(labelVals...),
-			TCPRTTVar:              m.ConnectionTCPRTTVar.AddChild(labelVals...),
 			// We use a SimpleEWMA which uses the zero value to mean "uninitialized"
 			// and operates on a ~60s decay rate.
 			roundTripLatency: &ThreadSafeMovingAverage{ma: &ewma.SimpleEWMA{}},
@@ -510,30 +458,6 @@ func gatewayRequestRecoveryInterceptor(
 				}
 			}()
 		}
-	}
-	resp, err = handler(ctx, req)
-	return resp, err
-}
-
-// MarkDRPCGatewayRequest annotates ctx so that downstream DRPC calls can
-// be recognized as originating from the DB Console HTTP gateway.
-func MarkDRPCGatewayRequest(ctx context.Context) context.Context {
-	return drpcmetadata.Add(ctx, gwRequestKey, "true")
-}
-
-// DRPCGatewayRequestRecoveryInterceptor recovers from panics in DRPC handlers
-// that are invoked due to DB console requests. For these requests, we do not
-// want an uncaught panic to crash the node.
-func DRPCGatewayRequestRecoveryInterceptor(
-	ctx context.Context, req interface{}, rpc string, handler drpcmux.UnaryHandler,
-) (resp interface{}, err error) {
-	if val, ok := drpcmetadata.GetValue(ctx, gwRequestKey); ok && val != "" {
-		defer func() {
-			if p := recover(); p != nil {
-				logcrash.ReportPanic(ctx, nil, p, 1 /* depth */)
-				err = errors.New("an unexpected error occurred")
-			}
-		}()
 	}
 	resp, err = handler(ctx, req)
 	return resp, err

@@ -18,8 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -91,10 +89,7 @@ func (t *truncateNode) startExec(params runParams) error {
 			}
 
 			if n.DropBehavior != tree.DropCascade {
-				// The error code returned here matches PGSQL, even though the CASCADE
-				// operation is supported there with TRUNCATE as well.
-				return errors.WithHintf(pgerror.Newf(pgcode.FeatureNotSupported, "%q is %s table %q", tableDesc.Name, msg, other.Name),
-					"truncate dependent tables at the same time or specify the CASCADE option")
+				return errors.Errorf("%q is %s table %q", tableDesc.Name, msg, other.Name)
 			}
 			if err := p.CheckPrivilege(ctx, other, privilege.DROP); err != nil {
 				return err
@@ -427,7 +422,7 @@ func (p *planner) copySplitPointsToNewIndexes(
 	nNodes := execCfg.NodeDescs.GetNodeDescriptorCount()
 	nSplits := preservedSplitsMultiple * nNodes
 
-	log.Dev.Infof(ctx, "making %d new truncate split points (%d * %d)", nSplits, preservedSplitsMultiple, nNodes)
+	log.Infof(ctx, "making %d new truncate split points (%d * %d)", nSplits, preservedSplitsMultiple, nNodes)
 
 	// Re-split the new set of indexes along the same split points as the old
 	// indexes.
@@ -516,7 +511,7 @@ func (p *planner) copySplitPointsToNewIndexes(
 		jitter := rand.Int63n(maxJitter*2) - maxJitter
 		expirationTime += jitter
 
-		log.Dev.Infof(ctx, "truncate sending split request for key %s", sp)
+		log.Infof(ctx, "truncate sending split request for key %s", sp)
 		b.AddRawRequest(&kvpb.AdminSplitRequest{
 			RequestHeader: kvpb.RequestHeader{
 				Key: sp,

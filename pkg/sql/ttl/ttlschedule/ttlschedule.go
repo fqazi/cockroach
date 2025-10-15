@@ -10,14 +10,12 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/scheduledjobs"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
@@ -27,9 +25,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/spanutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/ttl/ttlbase"
+	"github.com/cockroachdb/cockroach/pkg/sql/ttl/ttljob"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
@@ -161,7 +159,6 @@ func (s rowLevelTTLExecutor) ExecuteJob(
 		execCfg.JobRegistry,
 		*args,
 		execCfg.SV(),
-		execCfg.Settings,
 	); err != nil {
 		s.metrics.NumFailed.Inc(1)
 		return err
@@ -236,7 +233,7 @@ func makeTTLJobDescription(
 		buf.Reset()
 	}
 	pkColDirs := pkIndex.KeyColumnDirections
-	pkColTypes, err := spanutils.GetPKColumnTypes(tableDesc, pkIndex)
+	pkColTypes, err := ttljob.GetPKColumnTypes(tableDesc, pkIndex)
 	if err != nil {
 		return "", err
 	}
@@ -244,7 +241,7 @@ func makeTTLJobDescription(
 	ttlExpirationExpr := rowLevelTTL.GetTTLExpr()
 	numPkCols := len(pkColNames)
 	selectBatchSize := ttlbase.GetSelectBatchSize(sv, rowLevelTTL)
-	selectQuery, err := ttlbase.BuildSelectQuery(
+	selectQuery := ttlbase.BuildSelectQuery(
 		relationName,
 		pkColNames,
 		pkColDirs,
@@ -256,9 +253,6 @@ func makeTTLJobDescription(
 		selectBatchSize,
 		true, /*startIncl*/
 	)
-	if err != nil {
-		return "", err
-	}
 	deleteQuery := ttlbase.BuildDeleteQuery(
 		relationName,
 		pkColNames,
@@ -279,7 +273,6 @@ func createRowLevelTTLJob(
 	jobRegistry *jobs.Registry,
 	ttlArgs catpb.ScheduledRowLevelTTLArgs,
 	sv *settings.Values,
-	st *cluster.Settings,
 ) (jobspb.JobID, error) {
 	descsCol := descs.FromTxn(txn)
 	tableID := ttlArgs.TableID
@@ -295,12 +288,6 @@ func createRowLevelTTLJob(
 	if err != nil {
 		return 0, err
 	}
-
-	// We can only use checkpointing starting in v25.4. Checkpointing depends on
-	// using the new dist SQL message flow, where the coordinator manages job
-	// progress updates. This flow is not available in older releases.
-	useCheckpointing := st.Version.IsActive(ctx, clusterversion.V25_4)
-
 	record := jobs.Record{
 		Description: description,
 		Username:    username.NodeUserName(),
@@ -309,7 +296,7 @@ func createRowLevelTTLJob(
 			Cutoff:       timeutil.Now(),
 			TableVersion: tableDesc.GetVersion(),
 		},
-		Progress:  jobspb.RowLevelTTLProgress{UseCheckpointing: useCheckpointing},
+		Progress:  jobspb.RowLevelTTLProgress{},
 		CreatedBy: createdByInfo,
 	}
 

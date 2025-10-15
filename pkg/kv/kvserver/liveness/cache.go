@@ -106,11 +106,11 @@ func (c *Cache) selfID() roachpb.NodeID {
 
 // livenessGossipUpdate is the gossip callback used to keep the
 // in-memory liveness info up to date.
-func (c *Cache) livenessGossipUpdate(_ string, content roachpb.Value, _ int64) {
+func (c *Cache) livenessGossipUpdate(_ string, content roachpb.Value) {
 	ctx := context.TODO()
 	var liveness livenesspb.Liveness
 	if err := content.GetProto(&liveness); err != nil {
-		log.KvExec.Errorf(ctx, "%v", err)
+		log.Errorf(ctx, "%v", err)
 		return
 	}
 
@@ -118,16 +118,16 @@ func (c *Cache) livenessGossipUpdate(_ string, content roachpb.Value, _ int64) {
 }
 
 // storeGossipUpdate is the Gossip callback used to keep the nodeDescMap up to date.
-func (c *Cache) storeGossipUpdate(_ string, content roachpb.Value, _ int64) {
+func (c *Cache) storeGossipUpdate(_ string, content roachpb.Value) {
 	ctx := context.TODO()
 	var storeDesc roachpb.StoreDescriptor
 	if err := content.GetProto(&storeDesc); err != nil {
-		log.KvExec.Errorf(ctx, "%v", err)
+		log.Errorf(ctx, "%v", err)
 		return
 	}
 	nodeID := storeDesc.Node.NodeID
 	if nodeID == 0 {
-		log.KvExec.Errorf(ctx, "unexpected update for node 0, %v", storeDesc)
+		log.Errorf(ctx, "unexpected update for node 0, %v", storeDesc)
 		return
 	}
 	c.mu.Lock()
@@ -144,11 +144,11 @@ func (c *Cache) storeGossipUpdate(_ string, content roachpb.Value, _ int64) {
 // registered callbacks if the node became live in the process.
 func (c *Cache) maybeUpdate(ctx context.Context, newLivenessRec Record) {
 	if newLivenessRec.Liveness == (livenesspb.Liveness{}) {
-		log.KvExec.Fatal(ctx, "invalid new liveness record; found to be empty")
+		log.Fatal(ctx, "invalid new liveness record; found to be empty")
 	}
 
 	if newLivenessRec.NodeID == 0 {
-		log.KvExec.Fatal(ctx, "attempt to cache liveness record with nid 0")
+		log.Fatal(ctx, "attempt to cache liveness record with nid 0")
 	}
 
 	shouldReplace := true

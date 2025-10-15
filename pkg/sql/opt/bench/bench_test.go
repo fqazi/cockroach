@@ -125,15 +125,6 @@ type benchQuery struct {
 var schemas = []string{
 	`CREATE TABLE kv (k BIGINT NOT NULL PRIMARY KEY, v BYTES NOT NULL)`,
 	`
-	CREATE TABLE sbtest (
-		id INT8 PRIMARY KEY,
-		k INT8 NOT NULL DEFAULT 0,
-		c CHAR(120) NOT NULL DEFAULT '',
-		pad CHAR(60) NOT NULL DEFAULT '',
-		INDEX (k)
-	)
-	`,
-	`
 	CREATE TABLE customer
 	(
 		c_id           integer        not null,
@@ -401,18 +392,6 @@ var queries = [...]benchQuery{
 		args:  []interface{}{},
 	},
 
-	{
-		name:  "sysbench-update-index",
-		query: `UPDATE sbtest SET k=k+1 WHERE id=$1`,
-		args:  []interface{}{10},
-	},
-
-	{
-		name:  "sysbench-update-non-index",
-		query: `UPDATE sbtest SET c=$2 WHERE id=$1`,
-		args:  []interface{}{10, "'foo'"},
-	},
-
 	// 1. Table with many columns.
 	// 2. Multi-column primary key.
 	// 3. Mutiple indexes to consider.
@@ -525,17 +504,6 @@ var queries = [...]benchQuery{
 		`,
 		args: []interface{}{1, 2},
 	},
-
-	// Similar to many-columns-and-indexes-a, but fetches all columns.
-	{
-		name: "many-columns-and-indexes-e",
-		query: `
-			SELECT * FROM k
-			WHERE x = $1
-		`,
-		args: []interface{}{1},
-	},
-
 	{
 		name:  "comp-pk",
 		query: "SELECT * FROM comp WHERE a = $1 AND b = $2 AND c = $3 AND d = $4 AND e = $5",
@@ -1045,7 +1013,6 @@ func newHarness(tb testing.TB, query benchQuery, schemas []string) *harness {
 		semaCtx: tree.MakeSemaContext(nil /* resolver */),
 		evalCtx: eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings()),
 	}
-	h.evalCtx.Annotations = &h.semaCtx.Annotations
 
 	// Set session settings to their global defaults.
 	if err := sql.TestingResetSessionVariables(h.ctx, h.evalCtx); err != nil {

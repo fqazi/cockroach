@@ -27,7 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 )
 
-const configIdx = 11
+const configIdx = 10
 
 var logicTestDir string
 var cclLogicTestDir string
@@ -1065,13 +1065,6 @@ func TestTenantLogic_insert(
 	runLogicTest(t, "insert")
 }
 
-func TestTenantLogic_inspect(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "inspect")
-}
-
 func TestTenantLogic_int_size(
 	t *testing.T,
 ) {
@@ -1191,13 +1184,6 @@ func TestTenantLogic_jsonb_path_exists(
 	runLogicTest(t, "jsonb_path_exists")
 }
 
-func TestTenantLogic_jsonb_path_exists_index_acceleration(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "jsonb_path_exists_index_acceleration")
-}
-
 func TestTenantLogic_jsonb_path_match(
 	t *testing.T,
 ) {
@@ -1266,13 +1252,6 @@ func TestTenantLogic_lookup_join_spans(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "lookup_join_spans")
-}
-
-func TestTenantLogic_ltree(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "ltree")
 }
 
 func TestTenantLogic_manual_retry(
@@ -2050,13 +2029,6 @@ func TestTenantLogic_show_indexes(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "show_indexes")
-}
-
-func TestTenantLogic_show_inspect_errors(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_inspect_errors")
 }
 
 func TestTenantLogic_show_var(

@@ -70,7 +70,7 @@ func emitHelper(
 		output.Push(nil /* row */, &execinfrapb.ProducerMetadata{
 			Err: errors.AssertionFailedf("not allowed to pause and switch to another portal"),
 		})
-		log.Dev.Fatalf(ctx, "not allowed to pause and switch to another portal")
+		log.Fatalf(ctx, "not allowed to pause and switch to another portal")
 		return false
 	case execinfra.DrainRequested:
 		log.VEventf(ctx, 1, "no more rows required. drain requested.")
@@ -82,7 +82,7 @@ func emitHelper(
 		output.ProducerDone()
 		return false
 	default:
-		log.Dev.Fatalf(ctx, "unexpected consumerStatus: %d", consumerStatus)
+		log.Fatalf(ctx, "unexpected consumerStatus: %d", consumerStatus)
 		return false
 	}
 }
@@ -100,7 +100,6 @@ func NewProcessor(
 	ctx context.Context,
 	flowCtx *execinfra.FlowCtx,
 	processorID int32,
-	stageID int32,
 	core *execinfrapb.ProcessorCoreUnion,
 	post *execinfrapb.PostProcessSpec,
 	inputs []execinfra.RowSource,
@@ -122,7 +121,7 @@ func NewProcessor(
 		if err := checkNumIn(inputs, 0); err != nil {
 			return nil, err
 		}
-		return newTableReader(ctx, flowCtx, processorID, stageID, core.TableReader, post)
+		return newTableReader(ctx, flowCtx, processorID, core.TableReader, post)
 	}
 	if core.Filterer != nil {
 		if err := checkNumIn(inputs, 1); err != nil {
@@ -380,12 +379,6 @@ func NewProcessor(
 		}
 		return NewTTLProcessor(ctx, flowCtx, processorID, *core.Ttl)
 	}
-	if core.Inspect != nil {
-		if err := checkNumIn(inputs, 0); err != nil {
-			return nil, err
-		}
-		return NewInspectProcessor(ctx, flowCtx, processorID, *core.Inspect)
-	}
 	if core.LogicalReplicationWriter != nil {
 		if err := checkNumIn(inputs, 0); err != nil {
 			return nil, err
@@ -454,8 +447,6 @@ var NewStreamIngestionFrontierProcessor func(context.Context, *execinfra.FlowCtx
 
 // NewTTLProcessor is implemented in the non-free (CCL) codebase and then injected here via runtime initialization.
 var NewTTLProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.TTLSpec) (execinfra.Processor, error)
-
-var NewInspectProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.InspectSpec) (execinfra.Processor, error)
 
 // NewGenerativeSplitAndScatterProcessor is implemented in the non-free (CCL) codebase and then injected here via runtime initialization.
 var NewGenerativeSplitAndScatterProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.GenerativeSplitAndScatterSpec, *execinfrapb.PostProcessSpec) (execinfra.Processor, error)

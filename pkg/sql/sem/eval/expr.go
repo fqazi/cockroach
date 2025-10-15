@@ -60,7 +60,7 @@ func (e *evaluator) EvalAndExpr(ctx context.Context, expr *tree.AndExpr) (tree.D
 }
 
 func (e *evaluator) EvalArray(ctx context.Context, t *tree.Array) (tree.Datum, error) {
-	array, err := arrayOfType(t.ResolvedType(), nil /* elements */)
+	array, err := arrayOfType(t.ResolvedType())
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +80,11 @@ func (e *evaluator) EvalArray(ctx context.Context, t *tree.Array) (tree.Datum, e
 func (e *evaluator) EvalArrayFlatten(
 	ctx context.Context, t *tree.ArrayFlatten,
 ) (tree.Datum, error) {
+	array, err := arrayOfType(t.ResolvedType())
+	if err != nil {
+		return nil, err
+	}
+
 	d, err := t.Subquery.(tree.TypedExpr).Eval(ctx, e)
 	if err != nil {
 		return nil, err
@@ -89,10 +94,7 @@ func (e *evaluator) EvalArrayFlatten(
 	if !ok {
 		return nil, errors.AssertionFailedf("array subquery result (%v) is not DTuple", d)
 	}
-	array, err := arrayOfType(t.ResolvedType(), tuple.D)
-	if err != nil {
-		return nil, err
-	}
+	array.Array = tuple.D
 	return array, nil
 }
 

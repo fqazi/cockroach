@@ -52,11 +52,11 @@ func getWindowSize(
 ) int32 {
 	s := envutil.EnvOrDefaultInt(name, defaultSize)
 	if s > maximumWindowSize {
-		log.Dev.Warningf(ctx, "%s value too large; trimmed to %d", name, maximumWindowSize)
+		log.Warningf(ctx, "%s value too large; trimmed to %d", name, maximumWindowSize)
 		s = maximumWindowSize
 	}
 	if s <= defaultWindowSize {
-		log.Dev.Warningf(ctx,
+		log.Warningf(ctx,
 			"%s RPC will use dynamic window sizes due to %s value lower than %d", c, name, defaultSize)
 	}
 	return int32(s)

@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/sslocal"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/diagutils"
@@ -140,9 +139,6 @@ func (tt *telemetryTest) Start(t *testing.T, serverArgs []base.TestServerArgs) {
 	diagSrvURL := tt.diagSrv.URL()
 	mapServerArgs := make(map[int]base.TestServerArgs, len(serverArgs))
 	for i, v := range serverArgs {
-		v.Knobs.SQLStatsKnobs = &sqlstats.TestingKnobs{
-			SynchronousSQLStats: true,
-		}
 		v.Knobs.Server = &server.TestingKnobs{
 			DiagnosticsTestingKnobs: diagnostics.TestingKnobs{
 				OverrideReportingURL: &diagSrvURL,

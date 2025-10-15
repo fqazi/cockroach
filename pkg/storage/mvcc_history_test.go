@@ -6,12 +6,11 @@
 package storage_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"maps"
 	"math"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,7 +43,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/cockroachdb/redact"
 	"github.com/stretchr/testify/require"
@@ -303,7 +301,12 @@ func TestMVCCHistories(t *testing.T) {
 
 			// Unreplicated locks.
 			if len(e.unreplLocks) > 0 {
-				for _, k := range slices.Sorted(maps.Keys(e.unreplLocks)) {
+				var ks []string
+				for k := range e.unreplLocks {
+					ks = append(ks, k)
+				}
+				sort.Strings(ks)
+				for _, k := range ks {
 					info := e.unreplLocks[k]
 					buf.Printf("lock (%s): %v/%s -> %+v\n",
 						lock.Unreplicated, k, info.str, info.txn)
@@ -491,7 +494,7 @@ func TestMVCCHistories(t *testing.T) {
 
 					// Trace the execution in testing.T, to clarify where we
 					// are in case an error occurs.
-					log.Dev.Infof(context.Background(), "TestMVCCHistories:\n\t%s: %s", d.Pos, line)
+					log.Infof(context.Background(), "TestMVCCHistories:\n\t%s: %s", d.Pos, line)
 
 					// Decompose the current script line.
 					var err error
@@ -1593,7 +1596,7 @@ func cmdExport(e *evalCtx) error {
 	r := e.newReader()
 	defer r.Close()
 
-	var sstFile objstorage.MemObj
+	var sstFile bytes.Buffer
 
 	var summary kvpb.BulkOpSummary
 	var resumeInfo storage.ExportRequestResumeInfo
@@ -1607,7 +1610,7 @@ func cmdExport(e *evalCtx) error {
 			return err
 		}
 		if !hasRangeKeys {
-			sstFile = objstorage.MemObj{}
+			sstFile.Reset()
 		}
 		e.results.buf.Printf("export: %s", &summary)
 		e.results.buf.Print(" fingerprint=true")
@@ -1626,8 +1629,8 @@ func cmdExport(e *evalCtx) error {
 
 	if shouldFingerprint {
 		var ssts [][]byte
-		if len(sstFile.Data()) != 0 {
-			ssts = append(ssts, sstFile.Data())
+		if sstFile.Len() != 0 {
+			ssts = append(ssts, sstFile.Bytes())
 		}
 		// Fingerprint the rangekeys returned as a pebble SST.
 		rangekeyFingerprint, err := storage.FingerprintRangekeys(e.ctx, e.st, opts.FingerprintOptions, ssts)
@@ -1642,7 +1645,7 @@ func cmdExport(e *evalCtx) error {
 		return nil
 	}
 
-	iter, err := storage.NewMemSSTIterator(sstFile.Data(), false /* verify */, storage.IterOptions{
+	iter, err := storage.NewMemSSTIterator(sstFile.Bytes(), false /* verify */, storage.IterOptions{
 		KeyTypes:   storage.IterKeyTypePointsAndRanges,
 		UpperBound: keys.MaxKey,
 	})

@@ -35,10 +35,7 @@ var (
 		Name:        "physical_replication.logical_bytes",
 		Help:        "Logical bytes (sum of keys + values) ingested by all replication jobs",
 		Measurement: "Bytes",
-		Essential:   true,
-		Category:    metric.Metadata_CROSS_CLUSTER_REPLICATION,
 		Unit:        metric.Unit_BYTES,
-		HowToUse:    "Track PCR throughput",
 	}
 	metaReplicationFlushes = metric.Metadata{
 		Name:        "physical_replication.flushes",
@@ -79,10 +76,7 @@ var (
 		Name:        "physical_replication.replicated_time_seconds",
 		Help:        "The replicated time of the physical replication stream in seconds since the unix epoch.",
 		Measurement: "Seconds",
-		Essential:   true,
-		Category:    metric.Metadata_CROSS_CLUSTER_REPLICATION,
 		Unit:        metric.Unit_SECONDS,
-		HowToUse:    "Track replication lag via current time - physical_replication.replicated_time_seconds",
 	}
 	// This metric would be 0 until cutover begins, and then it will be updated to
 	// the total number of ranges that need to be reverted, and then gradually go
@@ -101,19 +95,6 @@ var (
 		Measurement: "Events",
 		Unit:        metric.Unit_COUNT,
 	}
-
-	metaScanningRanges = metric.Metadata{
-		Name:        "physical_replication.scanning_ranges",
-		Help:        "Source side ranges undergoing an initial scan",
-		Measurement: "Ranges",
-		Unit:        metric.Unit_COUNT,
-	}
-	metaCatchupRanges = metric.Metadata{
-		Name:        "physical_replication.catchup_ranges",
-		Help:        "Source side ranges undergoing catch up scans",
-		Measurement: "Ranges",
-		Unit:        metric.Unit_COUNT,
-	}
 )
 
 // Metrics are for production monitoring of stream ingestion jobs.
@@ -129,8 +110,6 @@ type Metrics struct {
 	RunningCount               *metric.Gauge
 	ReplicatedTimeSeconds      *metric.Gauge
 	ReplicationCutoverProgress *metric.Gauge
-	ScanningRanges             *metric.Gauge
-	CatchupRanges              *metric.Gauge
 }
 
 // MetricStruct implements the metric.Struct interface.
@@ -168,8 +147,6 @@ func MakeMetrics(histogramWindow time.Duration) metric.Struct {
 		RunningCount:               metric.NewGauge(metaStreamsRunning),
 		ReplicatedTimeSeconds:      metric.NewGauge(metaReplicatedTimeSeconds),
 		ReplicationCutoverProgress: metric.NewGauge(metaReplicationCutoverProgress),
-		ScanningRanges:             metric.NewGauge(metaScanningRanges),
-		CatchupRanges:              metric.NewGauge(metaCatchupRanges),
 	}
 	return m
 }

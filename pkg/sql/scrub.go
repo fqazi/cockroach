@@ -149,10 +149,6 @@ func (n *scrubNode) Close(ctx context.Context) {
 // startScrubDatabase prepares a scrub check for each of the tables in
 // the database. Views are skipped without errors.
 func (n *scrubNode) startScrubDatabase(ctx context.Context, p *planner, name *tree.Name) error {
-	if p.extendedEvalCtx.SessionData().EnableScrubJob {
-		return errors.New("SCRUB DATABASE not supported with enable_scrub_job")
-	}
-
 	// Check that the database exists.
 	database := string(*name)
 	db, err := p.Descriptors().ByNameWithLeased(p.txn).Get().Database(ctx, database)
@@ -214,21 +210,6 @@ func (n *scrubNode) startScrubTable(
 	ts, hasTS, err := p.getTimestamp(ctx, n.n.AsOf)
 	if err != nil {
 		return err
-	}
-
-	if p.extendedEvalCtx.SessionData().EnableScrubJob {
-		if !p.extendedEvalCtx.TxnIsSingleStmt {
-			return pgerror.Newf(pgcode.InvalidTransactionState,
-				"cannot run within a multi-statement transaction")
-		}
-
-		// If AS OF SYSTEM TIME is not provided, we pass in an empty timestamp to
-		// force the job to use the current time.
-		var asOfForJob hlc.Timestamp
-		if hasTS {
-			asOfForJob = ts
-		}
-		return n.runScrubTableJob(ctx, p, tableDesc, asOfForJob)
 	}
 	// Process SCRUB options. These are only present during a SCRUB TABLE
 	// statement.
@@ -468,23 +449,4 @@ func createConstraintCheckOperations(
 		results = append(results, op)
 	}
 	return results, nil
-}
-
-// TODO(148365): Remove inspect logic from scrub.
-func (n *scrubNode) runScrubTableJob(
-	ctx context.Context, p *planner, tableDesc catalog.TableDescriptor, asOf hlc.Timestamp,
-) error {
-	// Consistency check is done async via a job.
-	checks, err := InspectChecksForTable(ctx, p, tableDesc)
-	if err != nil {
-		return err
-	}
-
-	job, err := TriggerInspectJob(ctx, tree.Serialize(n.n), p.ExecCfg(), nil /* txn */, checks, asOf)
-	if err != nil {
-		return err
-	}
-	// Let the eval context track this job ID for status and error reporting.
-	p.extendedEvalCtx.jobs.addCreatedJobID(job.ID())
-	return nil
 }

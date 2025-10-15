@@ -38,11 +38,9 @@ go_library(
         "//pkg/util/syncutil",
         "//pkg/util/timeutil",
         "//pkg/util/uuid",
-        "@com_github_cockroachdb_crlib//crtime",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_logtags//:logtags",
         "@com_github_cockroachdb_redact//:redact",
-        "@io_storj_drpc//:drpc",
         "@org_golang_google_grpc//:grpc",
     ],
 )

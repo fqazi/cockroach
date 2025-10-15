@@ -1050,7 +1050,7 @@ func TestJoinReader(t *testing.T) {
 		},
 	}
 	st := cluster.MakeTestingClusterSettings()
-	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), nil /* statsCollector */)
+	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec, nil /* statsCollector */)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1095,7 +1095,7 @@ func TestJoinReader(t *testing.T) {
 							for rowIdx, row := range c.input {
 								encRow := make(rowenc.EncDatumRow, len(row))
 								for i, d := range row {
-									encRow[i] = rowenc.DatumToEncDatumUnsafe(c.inputTypes[i], d)
+									encRow[i] = rowenc.DatumToEncDatum(c.inputTypes[i], d)
 								}
 								encRows[rowIdx] = encRow
 							}
@@ -1242,7 +1242,7 @@ CREATE TABLE test.t (a INT, s STRING, INDEX (a, s))`); err != nil {
 	td := desctestutils.TestingGetPublicTableDescriptor(kvDB, keys.SystemSQLCodec, "test", "t")
 
 	st := cluster.MakeTestingClusterSettings()
-	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), nil /* statsCollector */)
+	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec, nil /* statsCollector */)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1347,7 +1347,7 @@ func TestJoinReaderDrain(t *testing.T) {
 	td := desctestutils.TestingGetPublicTableDescriptor(kvDB, keys.SystemSQLCodec, "test", "t")
 
 	st := s.ClusterSettings()
-	tempEngine, _, err := storage.NewTempEngine(context.Background(), base.DefaultTestTempStorageConfig(st), nil /* statsCollector */)
+	tempEngine, _, err := storage.NewTempEngine(context.Background(), base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec, nil /* statsCollector */)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1381,7 +1381,7 @@ func TestJoinReaderDrain(t *testing.T) {
 	}
 
 	encRow := make(rowenc.EncDatumRow, 1)
-	encRow[0] = rowenc.DatumToEncDatumUnsafe(types.Int, tree.NewDInt(1))
+	encRow[0] = rowenc.DatumToEncDatum(types.Int, tree.NewDInt(1))
 
 	var fetchSpec fetchpb.IndexFetchSpec
 	if err := rowenc.InitIndexFetchSpec(
@@ -1676,11 +1676,13 @@ func benchmarkJoinReader(b *testing.B, bc JRBenchConfig) {
 
 	tempStoragePath, cleanupTempDir := testutils.TempDir(b)
 	defer cleanupTempDir()
+	tempStoreSpec, err := base.NewStoreSpec(fmt.Sprintf("path=%s", tempStoragePath))
+	require.NoError(b, err)
 	tempEngine, _, err := storage.NewTempEngine(ctx, base.TempStorageConfig{
 		Path:     tempStoragePath,
 		Mon:      diskMonitor,
 		Settings: st,
-	}, nil /* statsCollector */)
+	}, tempStoreSpec, nil /* statsCollector */)
 	require.NoError(b, err)
 	defer tempEngine.Close()
 	flowCtx.Cfg.TempStorage = tempEngine
@@ -1944,11 +1946,13 @@ func BenchmarkJoinReaderLookupStress(b *testing.B) {
 
 	tempStoragePath, cleanupTempDir := testutils.TempDir(b)
 	defer cleanupTempDir()
+	tempStoreSpec, err := base.NewStoreSpec(fmt.Sprintf("path=%s", tempStoragePath))
+	require.NoError(b, err)
 	tempEngine, _, err := storage.NewTempEngine(ctx, base.TempStorageConfig{
 		Path:     tempStoragePath,
 		Mon:      diskMonitor,
 		Settings: st,
-	}, nil /* statsCollector */)
+	}, tempStoreSpec, nil /* statsCollector */)
 	require.NoError(b, err)
 	defer tempEngine.Close()
 	flowCtx.Cfg.TempStorage = tempEngine

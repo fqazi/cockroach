@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -171,7 +172,7 @@ func (n *Dialer) DialInternalClient(
 
 	var client rpc.RestrictedInternalClient
 	useStreamPoolClient := shouldUseBatchStreamPoolClient(ctx, n.rpcContext.Settings)
-	if !rpcbase.DRPCEnabled(ctx, n.rpcContext.Settings) {
+	if !rpc.ExperimentalDRPCEnabled.Get(&n.rpcContext.Settings.SV) {
 		gc, conn, err := dial(ctx, n.resolver, n.rpcContext.GRPCDialNode, nodeID, class, true /* checkBreaker */)
 		if err != nil {
 			return nil, errors.Wrapf(err, "gRPC")
@@ -350,14 +351,14 @@ func (c *baseInternalClient) asConn() *grpc.ClientConn {
 func (c *baseInternalClient) Batch(
 	ctx context.Context, ba *kvpb.BatchRequest,
 ) (*kvpb.BatchResponse, error) {
-	return kvpb.NewGRPCInternalClientAdapter(c.asConn()).Batch(ctx, ba)
+	return kvpb.NewInternalClient(c.asConn()).Batch(ctx, ba)
 }
 
 // MuxRangeFeed implements the RestrictedInternalClient interface.
 func (c *baseInternalClient) MuxRangeFeed(
 	ctx context.Context,
 ) (kvpb.RPCInternal_MuxRangeFeedClient, error) {
-	return kvpb.NewGRPCInternalClientAdapter(c.asConn()).MuxRangeFeed(ctx)
+	return kvpb.NewInternalClient(c.asConn()).MuxRangeFeed(ctx)
 }
 
 var batchStreamPoolingEnabled = settings.RegisterBoolSetting(
@@ -368,7 +369,16 @@ var batchStreamPoolingEnabled = settings.RegisterBoolSetting(
 )
 
 func shouldUseBatchStreamPoolClient(ctx context.Context, st *cluster.Settings) bool {
-	return batchStreamPoolingEnabled.Get(&st.SV)
+	// NOTE: we use ActiveVersionOrEmpty(ctx).IsActive(...) instead of the more
+	// common IsActive(ctx, ...) to avoid a fatal error if an RPC is made before
+	// the cluster version is initialized.
+	if !st.Version.ActiveVersionOrEmpty(ctx).IsActive(clusterversion.TODO_Delete_V25_1_BatchStreamRPC) {
+		return false
+	}
+	if !batchStreamPoolingEnabled.Get(&st.SV) {
+		return false
+	}
+	return true
 }
 
 // batchStreamPoolClient is a client that sends Batch RPCs using a pooled
@@ -397,7 +407,7 @@ func (c *batchStreamPoolClient) Batch(
 func (c *batchStreamPoolClient) MuxRangeFeed(
 	ctx context.Context,
 ) (kvpb.RPCInternal_MuxRangeFeedClient, error) {
-	return kvpb.NewGRPCInternalClientAdapter(c.asPool().Conn()).MuxRangeFeed(ctx)
+	return kvpb.NewInternalClient(c.asPool().Conn()).MuxRangeFeed(ctx)
 }
 
 // tracingInternalClient wraps a RestrictedInternalClient and fills in trace
@@ -429,33 +439,4 @@ func (c *tracingInternalClient) Batch(
 		ba.TraceInfo = sp.Meta().ToProto()
 	}
 	return c.RestrictedInternalClient.Batch(ctx, ba)
-}
-
-// DialRPCClient establishes a connection to a node identified by its ID and
-// returns a client for the requested service type. When DRPC is enabled, it
-// creates a DRPC client; otherwise, it falls back to a gRPC client.
-func DialRPCClient[C any](
-	nd *Dialer,
-	ctx context.Context,
-	nodeID roachpb.NodeID,
-	class rpcbase.ConnectionClass,
-	grpcClientFn func(*grpc.ClientConn) C,
-	drpcClientFn func(drpc.Conn) C,
-) (C, error) {
-	return rpcbase.DialRPCClient(nd, ctx, nodeID, class, grpcClientFn,
-		drpcClientFn, nd.rpcContext.Settings)
-}
-
-// DialRPCClientNoBreaker is like DialRPCClient, but will not check the
-// circuit breaker before trying to connect.
-func DialRPCClientNoBreaker[C any](
-	nd *Dialer,
-	ctx context.Context,
-	nodeID roachpb.NodeID,
-	class rpcbase.ConnectionClass,
-	grpcClientFn func(*grpc.ClientConn) C,
-	drpcClientFn func(drpc.Conn) C,
-) (C, error) {
-	return rpcbase.DialRPCClientNoBreaker(nd, ctx, nodeID, class, grpcClientFn,
-		drpcClientFn, nd.rpcContext.Settings)
 }

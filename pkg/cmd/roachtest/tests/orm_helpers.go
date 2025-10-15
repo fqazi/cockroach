@@ -71,13 +71,14 @@ func alterZoneConfigAndClusterSettings(
 		`SET CLUSTER SETTING server.user_login.password_encryption = 'scram-sha-256';`,
 
 		// Enable experimental/preview/compatibility features.
+		`SET CLUSTER SETTING sql.defaults.create_table_with_schema_locked='false';`,
 		`SET CLUSTER SETTING sql.defaults.experimental_temporary_tables.enabled = 'true';`,
 		`ALTER ROLE ALL SET multiple_active_portals_enabled = 'true';`,
 		`ALTER ROLE ALL SET serial_normalization = 'sql_sequence_cached'`,
 		`ALTER ROLE ALL SET statement_timeout = '60s'`,
 		`ALTER ROLE ALL SET default_transaction_isolation = 'read committed'`,
 		`ALTER ROLE ALL SET autocommit_before_ddl = 'true'`,
-		`ALTER ROLE ALL SET create_table_with_schema_locked='true'`,
+		`ALTER ROLE ALL SET create_table_with_schema_locked = 'false'`,
 	} {
 		if _, err := db.ExecContext(ctx, cmd); err != nil {
 			return err

@@ -568,7 +568,6 @@ func (io *ioLoadListener) pebbleMetricsTick(ctx context.Context, metrics StoreMe
 				L0NumFilesThreshold:      math.MaxInt64,
 				L0Size:                   m.Levels[0].TablesSize,
 				L0MinimumSizePerSubLevel: 0,
-				DiskUnhealthy:            metrics.DiskUnhealthy,
 			},
 		}
 		io.diskBW.bytesRead = metrics.DiskStats.BytesRead
@@ -731,7 +730,6 @@ func (io *ioLoadListener) adjustTokens(ctx context.Context, metrics StoreMetrics
 		MinFlushUtilizationFraction.Get(&io.settings.SV),
 		metrics.MemTable.Size,
 		metrics.MemTableSizeForStopWrites,
-		metrics.DiskUnhealthy,
 	)
 	io.adjustTokensResult = res
 	cumIngestedBytes := cumLSMIngestedBytes(metrics.Metrics)
@@ -747,7 +745,7 @@ func (io *ioLoadListener) adjustTokens(ctx context.Context, metrics StoreMetrics
 		io.diskWriteTokens = tokens.writeByteTokens
 		io.diskWriteTokensAllocated = 0
 		io.diskReadTokens = tokens.readByteTokens
-		io.diskReadTokensAllocated = 0
+		io.diskWriteTokensAllocated = 0
 	}
 	io.diskBandwidthLimiter.unlimitedTokensOverride = false
 	if metrics.DiskStats.ProvisionedBandwidth == 0 ||
@@ -777,7 +775,7 @@ func (io *ioLoadListener) adjustTokens(ctx context.Context, metrics StoreMetrics
 	// want to know what happened in that interval.
 	if prevDoLogFlush || io.aux.doLogFlush || io.diskBandwidthLimiter.state.diskBWUtil > 0.8 ||
 		log.V(1) {
-		log.Dev.Infof(ctx, "IO overload: %s; %s", io.adjustTokensResult, io.diskBandwidthLimiter)
+		log.Infof(ctx, "IO overload: %s; %s", io.adjustTokensResult, io.diskBandwidthLimiter)
 	}
 }
 
@@ -841,7 +839,6 @@ func (io *ioLoadListener) adjustTokensInner(
 	minFlushUtilTargetFraction float64,
 	memTableSize uint64,
 	memTableSizeForStopWrites uint64,
-	diskUnhealthy bool,
 ) adjustTokensResult {
 	ioThreshold := &admissionpb.IOThreshold{
 		L0NumFiles:               l0Metrics.TablesCount,
@@ -850,7 +847,6 @@ func (io *ioLoadListener) adjustTokensInner(
 		L0NumSubLevelsThreshold:  threshNumSublevels,
 		L0Size:                   l0Metrics.TablesSize,
 		L0MinimumSizePerSubLevel: l0MinSizePerSubLevel,
-		DiskUnhealthy:            diskUnhealthy,
 	}
 	unflushedMemTableTooLarge := memTableSize > memTableSizeForStopWrites
 	// If it was too large in the last sample 15s ago, and is not large now, the
@@ -866,7 +862,7 @@ func (io *ioLoadListener) adjustTokensInner(
 	if intL0AddedBytes < 0 {
 		// intL0AddedBytes is a simple delta computation over individually cumulative
 		// stats, so should not be negative.
-		log.Dev.Warningf(ctx, "intL0AddedBytes %d is negative", intL0AddedBytes)
+		log.Warningf(ctx, "intL0AddedBytes %d is negative", intL0AddedBytes)
 		intL0AddedBytes = 0
 	}
 	// intL0CompactedBytes are due to finished compactions.
@@ -1392,7 +1388,7 @@ func (res adjustTokensResult) SafeFormat(p redact.SafePrinter, _ rune) {
 			if res.aux.usedCompactionTokensLowerBound {
 				lowerBoundBoolStr = "(used token lower bound)"
 			}
-			p.Printf(" due to L0 growth%s", redact.SafeString(lowerBoundBoolStr))
+			p.Printf(" due to L0 growth%s", lowerBoundBoolStr)
 		case flushTokenKind:
 			p.Printf(" due to memtable flush (multiplier %.3f)", res.flushUtilTargetFraction)
 		}

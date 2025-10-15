@@ -508,11 +508,7 @@ message IndexDescriptor {
   // this vector index.
   optional vecindex.vecpb.Config vec_config = 30 [(gogoproto.nullable) = false];
 
-  // HideForPrimaryKeyRecreate, if set this index is not usable for reads until the
-  // new primary index becomes public.
-  optional bool hide_for_primary_key_recreate = 31  [(gogoproto.nullable) = false];
-
-  // Next ID: 32
+  // Next ID: 31
 }
 
 // TriggerDescriptor describes a trigger on a table.
@@ -1936,15 +1932,4 @@ message Descriptor {
     SchemaDescriptor schema = 4;
     FunctionDescriptor function = 5;
   }
-}
-
-// DescriptorUpdates tracks updates to descriptors within a transaction, which
-// will be written to a special key.
-message DescriptorUpdates {
-  option (gogoproto.equal) = true;
-  // Needed for the descriptorProto interface.
-  option (gogoproto.goproto_getters) = true;
-
-  repeated uint32 descriptor_ids = 1 [(gogoproto.customname) = "DescriptorIDs", (gogoproto.casttype) = "ID"];
-  repeated uint32 descriptor_versions = 2  [(gogoproto.customname) = "DescriptorVersions", (gogoproto.casttype) = "DescriptorVersion"];
 }

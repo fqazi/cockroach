@@ -111,6 +111,7 @@ func (p *Provider) createInstance(
 		return nil, errors.Wrap(err, "failed to get VPC service for region")
 	}
 
+	// Create the startup script
 	startupScript, err := p.startupScript(startupArgs{
 		StartupArgs: vm.DefaultStartupArgs(
 			vm.WithVMName(opts.vmName),
@@ -119,7 +120,6 @@ func (p *Provider) createInstance(
 			vm.WithZfs(opts.vmOpts.SSDOpts.FileSystem == vm.Zfs),
 		),
 		UseMultipleDisks: opts.providerOpts.UseMultipleDisks,
-		BootDiskOnly:     opts.providerOpts.BootDiskOnly,
 	})
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to create startup script for instance %s", opts.vmName)
@@ -137,19 +137,16 @@ func (p *Provider) createInstance(
 
 	// Build the attached volumes information.
 	// Let's start with the default data disk.
-	attachedVolumes := volumeAttachments{}
-	if !opts.providerOpts.BootDiskOnly {
-		attachedVolumes = volumeAttachments{
-			&volumeAttachment{
-				Name:                   fmt.Sprintf("%s-data-%04d", opts.vmName, 0),
-				ResourceGroupID:        p.config.roachprodResourceGroupID,
-				Capacity:               opts.providerOpts.DefaultVolume.VolumeSize,
-				IOPS:                   opts.providerOpts.DefaultVolume.IOPS,
-				Profile:                opts.providerOpts.DefaultVolume.VolumeType,
-				UserTags:               opts.tags,
-				DeleteOnInstanceDelete: true,
-			},
-		}
+	attachedVolumes := volumeAttachments{
+		&volumeAttachment{
+			Name:                   fmt.Sprintf("%s-data-%04d", opts.vmName, 0),
+			ResourceGroupID:        p.config.roachprodResourceGroupID,
+			Capacity:               opts.providerOpts.DefaultVolume.VolumeSize,
+			IOPS:                   opts.providerOpts.DefaultVolume.IOPS,
+			Profile:                opts.providerOpts.DefaultVolume.VolumeType,
+			UserTags:               opts.tags,
+			DeleteOnInstanceDelete: true,
+		},
 	}
 	// Then we add any additional attached volumes.
 	for i, attachedVolume := range opts.providerOpts.AttachedVolumes {

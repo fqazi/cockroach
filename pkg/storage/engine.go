@@ -1134,17 +1134,6 @@ type Engine interface {
 	// GetPebbleOptions returns the options used when creating the engine. The
 	// caller must not modify these.
 	GetPebbleOptions() *pebble.Options
-
-	// GetDiskUnhealthy returns true if the engine has determined that the
-	// underlying disk is transiently unhealthy. This can change from false to
-	// true and back to false. The engine has mechanisms to mask disk unhealth
-	// (e.g. if WAL failover is configured), but in some cases the unhealth is
-	// longer than what the engine may be able to successfully mask, but not yet
-	// long enough to crash the node (see
-	// COCKROACH_ENGINE_MAX_SYNC_DURATION_DEFAULT). This method returns true in
-	// this intermediate case. Currently, this mainly feeds into allocation
-	// decisions by the caller (such as shedding leases).
-	GetDiskUnhealthy() bool
 }
 
 // Batch is the interface for batch specific operations.
@@ -1261,9 +1250,6 @@ type Metrics struct {
 	// distinguished in the pebble logs.
 	WriteStallCount    int64
 	WriteStallDuration time.Duration
-	// DiskUnhealthyDuration is the duration for which Engine.GetUnhealthyDisk
-	// has returned true.
-	DiskUnhealthyDuration time.Duration
 
 	// BlockLoadConcurrencyLimit is the current limit on the number of concurrent
 	// sstable block reads.
@@ -1317,9 +1303,6 @@ type AggregatedIteratorStats struct {
 	// ExternalSteps, it's a good indication that there's an accumulation of
 	// garbage within the LSM (NOT MVCC garbage).
 	InternalSteps int
-	// ValueRetrievalCount is the total count of value retrievals of values
-	// separated into blob files.
-	ValueRetrievalCount uint64
 }
 
 // AggregatedBatchCommitStats hold cumulative stats summed over all the
@@ -1365,7 +1348,7 @@ func (m *Metrics) IngestedBytes() uint64 {
 // compactions across all levels of the LSM.
 func (m *Metrics) CompactedBytes() (read, written uint64) {
 	for _, lm := range m.Metrics.Levels {
-		read += lm.TableBytesRead + lm.BlobBytesRead
+		read += lm.TableBytesRead + lm.BlobBytesReadEstimate
 		written += lm.TableBytesCompacted + lm.BlobBytesCompacted
 	}
 	return read, written
@@ -1377,6 +1360,8 @@ func (m *Metrics) AsStoreStatsEvent() eventpb.StoreStats {
 	e := eventpb.StoreStats{
 		CacheSize:                  m.BlockCache.Size,
 		CacheCount:                 m.BlockCache.Count,
+		CacheHits:                  m.BlockCache.Hits,
+		CacheMisses:                m.BlockCache.Misses,
 		CompactionCountDefault:     m.Compact.DefaultCount,
 		CompactionCountDeleteOnly:  m.Compact.DeleteOnlyCount,
 		CompactionCountElisionOnly: m.Compact.ElisionOnlyCount,
@@ -1407,7 +1392,6 @@ func (m *Metrics) AsStoreStatsEvent() eventpb.StoreStats {
 		TableZombieSize:            m.Table.ZombieSize,
 		RangeKeySetsCount:          m.Keys.RangeKeySetsCount,
 	}
-	e.CacheHits, e.CacheMisses = m.BlockCache.HitsAndMisses.Aggregate()
 	for i, l := range m.Levels {
 		if l.TablesCount == 0 {
 			continue
@@ -1420,7 +1404,7 @@ func (m *Metrics) AsStoreStatsEvent() eventpb.StoreStats {
 			BytesIn:         l.TableBytesIn,
 			BytesIngested:   l.TableBytesIngested,
 			BytesMoved:      l.TableBytesMoved,
-			BytesRead:       l.TableBytesRead + l.BlobBytesRead,
+			BytesRead:       l.TableBytesRead + l.BlobBytesReadEstimate,
 			BytesCompacted:  l.TableBytesCompacted + l.BlobBytesCompacted,
 			BytesFlushed:    l.TableBytesFlushed + l.BlobBytesFlushed,
 			TablesCompacted: l.TablesCompacted,
@@ -1443,10 +1427,6 @@ func GetIntent(ctx context.Context, reader Reader, key roachpb.Key) (*roachpb.In
 		Prefix: true,
 		// Ignore Exclusive and Shared locks. We only care about intents.
 		MatchMinStr: lock.Intent,
-		// This is eventually called from the QueryIntent request, so this isn't
-		// quite "intent resolution", but we don't want too many categories, and
-		// this does relate to intents, so we use this existing category.
-		ReadCategory: fs.IntentResolutionReadCategory,
 	}
 	iter, err := NewLockTableIterator(ctx, reader, opts)
 	if err != nil {

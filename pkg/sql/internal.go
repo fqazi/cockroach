@@ -81,7 +81,7 @@ func NewInternalSessionData(
 				hasDefault, defVal := getSessionVarDefaultString(varName, v, m.sessionDataMutatorBase)
 				if hasDefault {
 					if err := v.Set(ctx, m, defVal); err != nil {
-						log.Dev.Warningf(ctx, "error setting default for %s: %v", varName, err)
+						log.Warningf(ctx, "error setting default for %s: %v", varName, err)
 					}
 				}
 			}
@@ -965,9 +965,6 @@ func applyOverrides(o sessiondata.InternalExecutorOverride, sd *sessiondata.Sess
 	if o.BufferedWritesEnabled != nil {
 		sd.BufferedWritesEnabled = *o.BufferedWritesEnabled
 	}
-	if o.AlwaysDistributeFullScans {
-		sd.AlwaysDistributeFullScans = true
-	}
 	// For 25.2, we're being conservative and explicitly disabling buffered
 	// writes for the internal executor.
 	// TODO(yuzefovich): remove this for 25.3.
@@ -1173,7 +1170,7 @@ func (ie *InternalExecutor) execInternal(
 		// TODO(andrei): Properly clone (deep copy) ie.sessionData.
 		sd = ie.sessionDataStack.Top().Clone()
 	} else {
-		sd = NewInternalSessionData(ctx, ie.s.cfg.Settings, "" /* opName */)
+		sd = NewInternalSessionData(context.Background(), ie.s.cfg.Settings, "" /* opName */)
 	}
 	if globalOverride := ieMultiOverride.Get(&ie.s.cfg.Settings.SV); globalOverride != "" {
 		globalOverride = strings.TrimSpace(globalOverride)
@@ -1244,7 +1241,7 @@ func (ie *InternalExecutor) execInternal(
 	var wg sync.WaitGroup
 
 	defer func() {
-		// We wrap errors with the opName, but not if they're retryable - in that
+		// We wrap errors with the opName, but not if they're retriable - in that
 		// case we need to leave the error intact so that it can be retried at a
 		// higher level.
 		//
@@ -1252,14 +1249,14 @@ func (ie *InternalExecutor) execInternal(
 		// into a type safe for reporting.
 		if retErr != nil || r == nil {
 			// Both retErr and r can be nil in case of panic.
-			if retErr != nil && !ErrIsRetryable(retErr) {
+			if retErr != nil && !errIsRetriable(retErr) {
 				retErr = errors.Wrapf(retErr, "%s", opName)
 			}
 			stmtBuf.Close()
 			wg.Wait()
 		} else {
 			r.errCallback = func(err error) error {
-				if err != nil && !ErrIsRetryable(err) {
+				if err != nil && !errIsRetriable(err) {
 					err = errors.Wrapf(err, "%s", opName)
 				}
 				return err
@@ -1326,7 +1323,7 @@ func (ie *InternalExecutor) execInternal(
 				ParseStart:   parseStart,
 				ParseEnd:     parseEnd,
 				// This is the only and last statement in the batch, so that this
-				// transaction can be autocommitted as a single statement transaction.
+				// transaction can be autocommited as a single statement transaction.
 				LastInBatch: true,
 			}); err != nil {
 			return nil, err
@@ -1354,7 +1351,7 @@ func (ie *InternalExecutor) execInternal(
 			return nil, err
 		}
 
-		if err := stmtBuf.Push(ctx, BindStmt{InternalArgs: datums}); err != nil {
+		if err := stmtBuf.Push(ctx, BindStmt{internalArgs: datums}); err != nil {
 			return nil, err
 		}
 
@@ -1763,19 +1760,6 @@ type InternalDB struct {
 	monitor    *mon.BytesMonitor
 }
 
-// Session implements isql.DB.
-func (ief *InternalDB) Session(
-	ctx context.Context, name string, options ...isql.ExecutorOption,
-) (isql.Session, error) {
-	var cfg isql.ExecutorConfig
-	cfg.Init(options...)
-	sd := cfg.GetSessionData()
-	if sd == nil {
-		sd = NewInternalSessionData(ctx, ief.server.cfg.Settings, redact.SafeString(name))
-	}
-	return ief.server.NewInternalSession(ctx, name, sd, ief.memMetrics, ief.monitor)
-}
-
 // NewShimInternalDB is used to bootstrap the server which needs access to
 // components which will ultimately have a handle to an InternalDB. Some of
 // those components may attempt to access the *kv.DB before the InternalDB
@@ -2062,17 +2046,14 @@ func (ief *InternalDB) txn(
 			if err != nil {
 				return err
 			}
-			if err := descsCol.EmitDescriptorUpdatesKey(ctx, kvTxn); err != nil {
-				return err
-			}
 			// We check this testing condition here since a retry cannot be generated
 			// after a successful commit. Since we commit below, this is our last
 			// chance to generate a retry for users of (*InternalDB).Txn.
 			if kvTxn.TestingShouldRetry() {
-				return kvTxn.GenerateForcedRetryableErr(ctx, "injected retryable error")
+				return kvTxn.GenerateForcedRetryableErr(ctx, "injected retriable error")
 			}
 			return commitTxnFn(ctx)
-		}); ErrIsRetryable(err) {
+		}); errIsRetriable(err) {
 			continue
 		} else {
 			if err == nil {
@@ -2148,10 +2129,4 @@ func (db *internalDBWithOverrides) Executor(opts ...isql.ExecutorOption) isql.Ex
 		o(sd)
 	}
 	return db.baseDB.Executor(isql.WithSessionData(sd))
-}
-
-func (db *internalDBWithOverrides) Session(
-	ctx context.Context, name string, opts ...isql.ExecutorOption,
-) (isql.Session, error) {
-	return nil, errors.New("internalDBWithOverrides has not implemented Session()")
 }

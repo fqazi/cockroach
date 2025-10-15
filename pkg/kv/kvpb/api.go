@@ -248,9 +248,7 @@ var _ SafeFormatterRequest = (*EndTxnRequest)(nil)
 func (etr *EndTxnRequest) SafeFormat(s redact.SafePrinter, _ rune) {
 	s.Printf("%s(", etr.Method())
 	if etr.Commit {
-		if etr.Prepare {
-			s.Printf("prepare")
-		} else if etr.IsParallelCommit() {
+		if etr.IsParallelCommit() {
 			s.Printf("parallel commit")
 		} else {
 			s.Printf("commit")
@@ -986,9 +984,6 @@ func (*BarrierRequest) Method() Method { return Barrier }
 // Method implements the Request interface.
 func (*IsSpanEmptyRequest) Method() Method { return IsSpanEmpty }
 
-// Method implements the Request interface.
-func (*FlushLockTableRequest) Method() Method { return FlushLockTable }
-
 // ShallowCopy implements the Request interface.
 func (gr *GetRequest) ShallowCopy() Request {
 	shallowCopy := *gr
@@ -1277,12 +1272,6 @@ func (r *IsSpanEmptyRequest) ShallowCopy() Request {
 	return &shallowCopy
 }
 
-// ShallowCopy implements the Request interface.
-func (r *FlushLockTableRequest) ShallowCopy() Request {
-	shallowCopy := *r
-	return &shallowCopy
-}
-
 // ShallowCopy implements the Response interface.
 func (gr *GetResponse) ShallowCopy() Response {
 	shallowCopy := *gr
@@ -1565,12 +1554,6 @@ func (r *BarrierResponse) ShallowCopy() Response {
 
 // ShallowCopy implements the Response interface.
 func (r *IsSpanEmptyResponse) ShallowCopy() Response {
-	shallowCopy := *r
-	return &shallowCopy
-}
-
-// ShallowCopy implements the Response interface.
-func (r *FlushLockTableResponse) ShallowCopy() Response {
 	shallowCopy := *r
 	return &shallowCopy
 }
@@ -2103,9 +2086,6 @@ func (r *BarrierRequest) flags() flag {
 	return flags
 }
 func (*IsSpanEmptyRequest) flags() flag { return isRead | isRange }
-func (*FlushLockTableRequest) flags() flag {
-	return isWrite | isRange | isAlone | isUnsplittable
-}
 
 // IsParallelCommit returns whether the EndTxn request is attempting to perform
 // a parallel commit. See txn_interceptor_committer.go for a discussion about
@@ -2131,21 +2111,6 @@ func (b *BulkOpSummary) Add(other BulkOpSummary) {
 	for i := range other.EntryCounts {
 		b.EntryCounts[i] += other.EntryCounts[i]
 	}
-}
-
-// DeepCopy returns a deep copy of the original BulkOpSummary.
-func (b *BulkOpSummary) DeepCopy() BulkOpSummary {
-	cpy := BulkOpSummary{
-		DataSize:    b.DataSize,
-		SSTDataSize: b.SSTDataSize,
-	}
-	if b.EntryCounts != nil {
-		cpy.EntryCounts = make(map[uint64]int64, len(b.EntryCounts))
-		for k, v := range b.EntryCounts {
-			cpy.EntryCounts[k] = v
-		}
-	}
-	return cpy
 }
 
 // MustSetValue is like SetValue, except it resets the enum and panics if the
@@ -2176,9 +2141,6 @@ func (e *RangeFeedEvent) ShallowCopy() *RangeFeedEvent {
 	case *RangeFeedError:
 		cpyErr := *t
 		cpy.MustSetValue(&cpyErr)
-	case *RangeFeedBulkEvents:
-		cpyVals := *t
-		cpy.MustSetValue(&cpyVals)
 	default:
 		panic(fmt.Sprintf("unexpected RangeFeedEvent variant: %v", t))
 	}
@@ -2510,14 +2472,10 @@ func (s *ScanStats) SafeFormat(w redact.SafePrinter, _ rune) {
 		humanizeCount(s.NumReverseScans),
 	)
 	if s.SeparatedPointCount != 0 {
-		w.Printf(" separated: (count: %s, bytes: %s, bytes-fetched: %s, "+
-			"count-fetched: %s, reader-cache-misses: %s)",
+		w.Printf(" separated: (count: %s, bytes: %s, bytes-fetched: %s)",
 			humanizeCount(s.SeparatedPointCount),
 			humanizeutil.IBytes(int64(s.SeparatedPointValueBytes)),
-			humanizeutil.IBytes(int64(s.SeparatedPointValueBytesFetched)),
-			humanizeCount(s.SeparatedPointValueCountFetched),
-			humanizeCount(s.SeparatedPointValueReaderCacheMisses),
-		)
+			humanizeutil.IBytes(int64(s.SeparatedPointValueBytesFetched)))
 	}
 }
 

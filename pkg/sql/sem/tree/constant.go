@@ -547,7 +547,6 @@ var (
 		types.TSQuery,
 		types.TSVector,
 		types.VarBit,
-		types.LTree,
 		types.AnyEnum,
 		types.AnyEnumArray,
 		types.INetArray,

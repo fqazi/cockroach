@@ -200,7 +200,7 @@ func (bundle *diagnosticsBundle) insert(
 		bundle.collectionErr,
 	)
 	if err != nil {
-		log.Dev.Warningf(ctx, "failed to report statement diagnostics: %s", err)
+		log.Warningf(ctx, "failed to report statement diagnostics: %s", err)
 		if bundle.collectionErr != nil {
 			bundle.collectionErr = err
 		}
@@ -434,12 +434,6 @@ func (b *stmtBundleBuilder) addDistSQLDiagrams() {
 	}
 
 	for i, d := range b.plan.distSQLFlowInfos {
-		if d.diagram == nil {
-			if buildutil.CrdbTestBuild {
-				panic(errors.AssertionFailedf("diagram shouldn't be nil when building the bundle"))
-			}
-			continue
-		}
 		d.diagram.AddSpans(b.trace)
 		_, url, err := d.diagram.ToURL()
 
@@ -504,7 +498,7 @@ func (b *stmtBundleBuilder) addTrace() {
 This trace can be imported into Jaeger for visualization. From the Jaeger Search screen, select the JSON File.
 Jaeger can be started using docker with: docker run -d --name jaeger -p 16686:16686 jaegertracing/all-in-one:1.17
 The UI can then be accessed at http://localhost:16686/search`, b.stmt)
-	jaegerJSON, err := b.trace.ToJaegerJSON(b.stmt, comment, "", true /* indent */)
+	jaegerJSON, err := b.trace.ToJaegerJSON(b.stmt, comment, "")
 	if err != nil {
 		b.errorStrings = append(b.errorStrings, fmt.Sprintf("error getting jaeger trace: %v", err))
 		b.z.AddFile("trace-jaeger.txt", err.Error())
@@ -1132,9 +1126,7 @@ func (c *stmtEnvCollector) PrintSessionSettings(w io.Writer, sv *settings.Values
 		case "direct_columnar_scans_enabled":
 			// In test builds we might randomize some setting defaults, so
 			// we need to ignore them to make the tests deterministic.
-			if buildutil.CrdbTestBuild {
-				skip = true
-			}
+			skip = buildutil.CrdbTestBuild
 		case "role":
 			// If a role is set, we comment it out in env.sql. Otherwise, running
 			// 'debug sb recreate' will fail with a non-existent user/role error.

@@ -148,11 +148,6 @@ func (d DeploymentMode) IsExternal() bool {
 	return d == ExternalProcess
 }
 
-// IsSingleTenant returns whether the deployment mode is single tenant or not.
-func (d DeploymentMode) IsSingleTenant() bool {
-	return d == SingleTenant
-}
-
 // RPCConn defines a common interface for creating RPC clients. It hides the
 // underlying RPC connection (gRPC or DRPC), making it easy to swap
 // them without changing the caller code.
@@ -497,11 +492,6 @@ type ApplicationLayerInterface interface {
 	// tenant, which can be single-tenant (system-only), shared-process, or
 	// external-process.
 	DeploymentMode() DeploymentMode
-
-	// TxnRegistry returns the internal transaction diagnostics registry
-	// from the SQLServer. This registry holds the currently active
-	// transaction diagnostics requests.
-	TxnRegistry() interface{}
 }
 
 // TenantControlInterface defines the API of a test server that can

@@ -110,7 +110,7 @@ func (m *MemProvider) Load(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// New implements the VectorProvider interface.
+// New implements the VectorProvider interface
 func (m *MemProvider) New(ctx context.Context) error {
 	// Clear any existing state.
 	m.Close()
@@ -149,18 +149,6 @@ func (m *MemProvider) InsertVectors(
 	})
 }
 
-// CreateIndex implements the VectorProvider interface.
-func (m *MemProvider) CreateIndex(ctx context.Context) error {
-	// No-op for in-memory provider as index is built incrementally during insertion.
-	return nil
-}
-
-// CheckIndexCreationStatus implements the VectorProvider interface.
-func (m *MemProvider) CheckIndexCreationStatus(ctx context.Context) (float64, error) {
-	// Always return 100% complete for in-memory provider since index is built incrementally.
-	return 1.0, nil
-}
-
 // SetupSearch implements the VectorProvider interface.
 func (m *MemProvider) SetupSearch(
 	ctx context.Context, maxResults int, beamSize int,
@@ -189,9 +177,6 @@ func (m *MemProvider) Search(
 
 		// Get result keys.
 		results := searchSet.PopResults()
-		if len(results) > memState.maxResults {
-			results = results[:memState.maxResults]
-		}
 		keys = make([]cspann.KeyBytes, len(results))
 		for i, res := range results {
 			keys[i] = []byte(res.ChildKey.KeyBytes)
@@ -211,9 +196,7 @@ func (m *MemProvider) Save(ctx context.Context) error {
 	}
 
 	// Wait for any remaining background fixups to be processed.
-	if err := m.index.ProcessFixups(ctx); err != nil {
-		return err
-	}
+	m.index.ProcessFixups()
 
 	startTime := timeutil.Now()
 

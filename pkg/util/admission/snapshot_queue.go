@@ -111,10 +111,10 @@ func makeSnapshotQueue(snapshotGranter granter, metrics *SnapshotMetrics) *Snaps
 var _ requester = &SnapshotQueue{}
 var _ snapshotRequester = &SnapshotQueue{}
 
-func (s *SnapshotQueue) hasWaitingRequests() (bool, burstQualification) {
+func (s *SnapshotQueue) hasWaitingRequests() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return !s.mu.q.Empty(), canBurst /*arbitrary*/
+	return !s.mu.q.Empty()
 }
 
 func (s *SnapshotQueue) granted(_ grantChainID) int64 {
@@ -160,7 +160,7 @@ func (s *SnapshotQueue) Admit(ctx context.Context, count int64) error {
 		s.snapshotGranter.returnGrant(count)
 		return nil
 	}
-	if s.snapshotGranter.tryGet(canBurst /*arbitrary*/, count) {
+	if s.snapshotGranter.tryGet(count) {
 		return nil
 	}
 	// We were unable to get tokens for admission, so we queue.

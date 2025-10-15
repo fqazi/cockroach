@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
@@ -44,7 +43,6 @@ const (
 type allocationBenchSpec struct {
 	nodes, cpus int
 	load        allocBenchLoad
-	lbrMode     string // see kvserverbase.LoadBasedRebalancingMode
 
 	startRecord time.Duration
 	samples     int
@@ -173,7 +171,7 @@ func (r kvAllocBenchEventRunner) run(ctx context.Context, c cluster.Cluster, t t
 	return c.RunE(ctx, option.WithNodes(c.WorkloadNode()), runCmd)
 }
 func registerAllocationBench(r registry.Registry) {
-	specTemplates := []allocationBenchSpec{
+	for _, spec := range []allocationBenchSpec{
 		// TODO(kvoli): Add a background event runner and implement events for
 		// import and index backfills.
 		{
@@ -243,19 +241,8 @@ func registerAllocationBench(r registry.Registry) {
 				},
 			},
 		},
-	}
-	for _, spec := range specTemplates {
-		{
-			spec := spec
-			spec.lbrMode = "leases and replicas"
-			registerAllocationBenchSpec(r, spec)
-		}
-		{
-			spec := spec
-			spec.lbrMode = "multi-metric and count"
-			spec.load.desc += "/lbr=mmc"
-			registerAllocationBenchSpec(r, spec)
-		}
+	} {
+		registerAllocationBenchSpec(r, spec)
 	}
 }
 
@@ -272,7 +259,7 @@ func registerAllocationBenchSpec(r registry.Registry, allocSpec allocationBenchS
 		Timeout:           time.Duration(allocSpec.samples) * time.Hour,
 		NonReleaseBlocker: true,
 		CompatibleClouds:  registry.AllExceptAWS,
-		Suites:            registry.Suites(registry.Weekly),
+		Suites:            registry.Suites(registry.Nightly),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runAllocationBench(ctx, t, c, allocSpec)
 		},
@@ -285,18 +272,11 @@ func setupAllocationBench(
 	t.Status("starting cluster")
 	for i := 1; i <= spec.nodes; i++ {
 		// Don't start a backup schedule as this test reports to roachperf.
-		settings := install.MakeClusterSettings()
-		settings.Env = append(settings.Env, "COCKROACH_ALLOW_MMA=true")
 		startOpts := option.NewStartOpts(option.NoBackupSchedule)
 		startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs,
 			"--vmodule=store_rebalancer=2,allocator=2,replicate_queue=2")
-		c.Start(ctx, t.L(), startOpts, settings, c.Node(i))
+		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.Node(i))
 	}
-	require.NotEmpty(t, spec.lbrMode, "lbrMode must be set")
-	_, err := c.Conn(ctx, t.L(), 1).ExecContext(ctx, fmt.Sprintf(
-		`SET CLUSTER SETTING kv.allocator.load_based_rebalancing = '%s';`,
-		spec.lbrMode))
-	require.NoError(t, err)
 
 	return setupStatCollector(ctx, t, c, spec)
 }
@@ -350,10 +330,6 @@ func runAllocationBench(
 	}
 	samples := make([]*clusterstats.ClusterStatRun, spec.samples)
 
-	t.L().Printf("cpu(%) means: average of (max-min) node cpu utilization across intervals")
-	t.L().Printf("write(%) means: average of (max-min) write disk utilization across intervals")
-	t.L().Printf("cost(gb) means: GBs sent for rebalancing operations between initial and end")
-
 	for i := 0; i < spec.samples; i++ {
 		statCollector, cleanupFunc := setupAllocationBench(ctx, t, c, spec)
 		stats, err := runAllocationBenchSample(ctx, t, c, spec, statCollector)
@@ -361,7 +337,6 @@ func runAllocationBench(
 			t.L().PrintfCtx(ctx, "unable to collect allocation bench sample %s", err.Error())
 		} else {
 			samples[i] = stats
-			t.L().Printf("sample %d: %v", i+1, stats.Total)
 		}
 		// Completely wipe the cluster after each go. This avoid spurious
 		// results where prior information / statistics could influence the
@@ -569,21 +544,11 @@ func findMinDistanceClusterStatRun(
 		}
 	}
 
-	t.L().Printf("normalized result matrix:")
-	var buf strings.Builder
-	for i := 0; i < n; i++ {
-		fmt.Fprintf(&buf, "\tsample run %v [", i+1)
-		for j := 0; j < len(resultMatrix[i]); j++ {
-			if j > 0 {
-				fmt.Fprintf(&buf, ", ")
-			}
-			fmt.Fprintf(&buf, "%v: %.3f", tags[j], resultMatrix[i][j])
-		}
-		fmt.Fprintf(&buf, "]\n")
+	t.L().Printf("Selected row(%d) %v from samples (normalized) %v", minSample, samples[minSample].Total, resultMatrix)
+	t.L().Printf("Sample range %v", minMaxs)
+	t.L().Printf("Sample stddev %v", stddevs)
+	for _, sample := range samples {
+		t.L().Printf("%v", sample.Total)
 	}
-	t.L().Printf(buf.String())
-	t.L().Printf("selected sample %v (1-indexed) with total %v", minSample+1, samples[minSample].Total)
-	t.L().Printf("max-min differences across samples per tag: %v", minMaxs)
-	t.L().Printf("standard deviations across samples per tag: %v", stddevs)
 	return samples[minSample], stddevs
 }

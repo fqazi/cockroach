@@ -19,8 +19,7 @@ import (
 
 // Metrics are for production monitoring of each job type.
 type Metrics struct {
-	JobMetrics    [jobspb.NumJobTypes]*JobTypeMetrics
-	JobPTSMetrics [jobspb.NumJobTypes]*JobTypePTSMetrics
+	JobMetrics [jobspb.NumJobTypes]*JobTypeMetrics
 
 	// JobSpecificMetrics contains a list of job specific metrics, registered when
 	// the job was registered with the system.  Prior to this array, job
@@ -42,7 +41,6 @@ type Metrics struct {
 	Changefeed   metric.Struct
 	StreamIngest metric.Struct
 	Backup       metric.Struct
-	Inspect      metric.Struct
 
 	// AdoptIterations counts the number of adopt loops executed by Registry.
 	AdoptIterations *metric.Counter
@@ -66,21 +64,17 @@ type JobTypeMetrics struct {
 	ResumeFailed           *metric.Counter
 	FailOrCancelCompleted  *metric.Counter
 	FailOrCancelRetryError *metric.Counter
-}
+	// TODO (sajjad): FailOrCancelFailed metric is not updated after the modification
+	// of retrying all reverting jobs. Remove this metric in v22.1.
+	FailOrCancelFailed *metric.Counter
 
-// MetricStruct implements the metric.Struct interface.
-func (JobTypeMetrics) MetricStruct() {}
-
-// JobTypePTSMetrics is a metrics.Struct containing PTS-specific metrics for a
-// job type.
-type JobTypePTSMetrics struct {
 	NumJobsWithPTS *metric.Gauge
 	ExpiredPTS     *metric.Counter
 	ProtectedAge   *metric.Gauge
 }
 
 // MetricStruct implements the metric.Struct interface.
-func (JobTypePTSMetrics) MetricStruct() {}
+func (JobTypeMetrics) MetricStruct() {}
 
 func typeToString(jobType jobspb.Type) string {
 	return strings.ToLower(strings.Replace(jobType.String(), " ", "_", -1))
@@ -103,18 +97,14 @@ func makeMetaCurrentlyRunning(jt jobspb.Type) metric.Metadata {
 	}
 
 	switch jt {
-	case jobspb.TypeCreateStats, jobspb.TypeAutoCreateStats, jobspb.TypeAutoCreatePartialStats:
+	case jobspb.TypeAutoCreateStats:
 		m.Essential = true
 		m.Category = metric.Metadata_SQL
-		var detail string
-		if jt == jobspb.TypeCreateStats {
-			detail = "create"
-		} else if jt == jobspb.TypeAutoCreateStats {
-			detail = "automatically generated"
-		} else {
-			detail = "automatically generated partial"
-		}
-		m.HowToUse = fmt.Sprintf(`This metric tracks the number of active %s statistics jobs that could also be consuming resources. Ensure that foreground SQL traffic is not impacted by correlating this metric with SQL latency and query volume metrics.`, detail)
+		m.HowToUse = `This metric tracks the number of active automatically generated statistics jobs that could also be consuming resources. Ensure that foreground SQL traffic is not impacted by correlating this metric with SQL latency and query volume metrics.`
+	case jobspb.TypeCreateStats:
+		m.Essential = true
+		m.Category = metric.Metadata_SQL
+		m.HowToUse = `This metric tracks the number of active create statistics jobs that may be consuming resources. Ensure that foreground SQL traffic is not impacted by correlating this metric with SQL latency and query volume metrics.`
 	case jobspb.TypeBackup:
 		m.Essential = true
 		m.Category = metric.Metadata_SQL
@@ -161,14 +151,10 @@ func makeMetaCurrentlyPaused(jt jobspb.Type) metric.Metadata {
 		),
 	}
 	switch jt {
-	case jobspb.TypeAutoCreateStats, jobspb.TypeAutoCreatePartialStats:
+	case jobspb.TypeAutoCreateStats:
 		m.Essential = true
 		m.Category = metric.Metadata_SQL
-		var partialDetail string
-		if jt == jobspb.TypeAutoCreatePartialStats {
-			partialDetail = "partial "
-		}
-		m.HowToUse = fmt.Sprintf(`This metric is a high-level indicator that automatically generated %sstatistics jobs are paused which can lead to the query optimizer running with stale statistics. Stale statistics can cause suboptimal query plans to be selected leading to poor query performance.`, partialDetail)
+		m.HowToUse = `This metric is a high-level indicator that automatically generated statistics jobs are paused which can lead to the query optimizer running with stale statistics. Stale statistics can cause suboptimal query plans to be selected leading to poor query performance.`
 	case jobspb.TypeBackup:
 		m.Essential = true
 		m.Category = metric.Metadata_SQL
@@ -244,14 +230,10 @@ func makeMetaResumeFailed(jt jobspb.Type) metric.Metadata {
 	}
 
 	switch jt {
-	case jobspb.TypeAutoCreateStats, jobspb.TypeAutoCreatePartialStats:
+	case jobspb.TypeAutoCreateStats:
 		m.Essential = true
 		m.Category = metric.Metadata_SQL
-		var partialDetail string
-		if jt == jobspb.TypeAutoCreatePartialStats {
-			partialDetail = "partial "
-		}
-		m.HowToUse = fmt.Sprintf(`This metric is a high-level indicator that automatically generated %stable statistics is failing. Failed statistic creation can lead to the query optimizer running with stale statistics. Stale statistics can cause suboptimal query plans to be selected leading to poor query performance.`, partialDetail)
+		m.HowToUse = `This metric is a high-level indicator that automatically generated table statistics is failing. Failed statistic creation can lead to the query optimizer running with stale statistics. Stale statistics can cause suboptimal query plans to be selected leading to poor query performance.`
 	case jobspb.TypeRowLevelTTL:
 		m.Essential = true
 		m.Category = metric.Metadata_TTL
@@ -292,6 +274,24 @@ func makeMetaFailOrCancelRetryError(jt jobspb.Type) metric.Metadata {
 		StaticLabels: metric.MakeLabelPairs(
 			metric.LabelName, typeStr,
 			metric.LabelStatus, "retry_error",
+		),
+	}
+}
+
+func makeMetaFailOrCancelFailed(jt jobspb.Type) metric.Metadata {
+	typeStr := typeToString(jt)
+	return metric.Metadata{
+		Name: fmt.Sprintf("jobs.%s.fail_or_cancel_failed", typeStr),
+		Help: fmt.Sprintf("Number of %s jobs which failed with a "+
+			"non-retriable error on their failure or cancelation process",
+			typeStr),
+		Measurement: "jobs",
+		Unit:        metric.Unit_COUNT,
+		MetricType:  io_prometheus_client.MetricType_COUNTER,
+		LabeledName: "jobs.fail_or_cancel",
+		StaticLabels: metric.MakeLabelPairs(
+			metric.LabelName, typeStr,
+			metric.LabelStatus, "failed",
 		),
 	}
 }
@@ -403,9 +403,6 @@ func (m *Metrics) init(histogramWindowInterval time.Duration, lookup *cidr.Looku
 	if MakeBackupMetricsHook != nil {
 		m.Backup = MakeBackupMetricsHook(histogramWindowInterval)
 	}
-	if MakeInspectMetricsHook != nil {
-		m.Inspect = MakeInspectMetricsHook(histogramWindowInterval)
-	}
 
 	m.AdoptIterations = metric.NewCounter(metaAdoptIterations)
 	m.ClaimedJobs = metric.NewCounter(metaClaimedJobs)
@@ -425,13 +422,10 @@ func (m *Metrics) init(histogramWindowInterval time.Duration, lookup *cidr.Looku
 			ResumeFailed:           metric.NewCounter(makeMetaResumeFailed(jt)),
 			FailOrCancelCompleted:  metric.NewCounter(makeMetaFailOrCancelCompeted(jt)),
 			FailOrCancelRetryError: metric.NewCounter(makeMetaFailOrCancelRetryError(jt)),
-		}
-		if interactsWithPTS(jt) {
-			m.JobPTSMetrics[jt] = &JobTypePTSMetrics{
-				NumJobsWithPTS: metric.NewGauge(makeMetaProtectedCount(jt)),
-				ExpiredPTS:     metric.NewCounter(makeMetaExpiredPTS(jt)),
-				ProtectedAge:   metric.NewGauge(makeMetaProtectedAge(jt)),
-			}
+			FailOrCancelFailed:     metric.NewCounter(makeMetaFailOrCancelFailed(jt)),
+			NumJobsWithPTS:         metric.NewGauge(makeMetaProtectedCount(jt)),
+			ExpiredPTS:             metric.NewCounter(makeMetaExpiredPTS(jt)),
+			ProtectedAge:           metric.NewGauge(makeMetaProtectedAge(jt)),
 		}
 
 		if opts, ok := getRegisterOptions(jt); ok {
@@ -442,29 +436,6 @@ func (m *Metrics) init(histogramWindowInterval time.Duration, lookup *cidr.Looku
 				m.ResolvedMetrics[jt] = opts.resolvedMetric
 			}
 		}
-	}
-}
-
-// interactsWithPTS returns false when the given job is guaranteed to not
-// interact with the PTS system.
-func interactsWithPTS(jt jobspb.Type) bool {
-	switch jt {
-	case jobspb.TypeImport:
-		// Note that even though the IMPORT jobs as of 25.4 do not lay protected
-		// timestamps, we have plans to do so (see #91151), so we'll report that
-		// IMPORTs do interact with PTS system.
-		return true
-	case jobspb.TypeCreateStats, jobspb.TypeAutoCreateStats, jobspb.TypeAutoCreatePartialStats:
-		// None of the stats jobs interact with the PTS system.
-		return false
-	case jobspb.TypeImportRollback:
-		// IMPORT ROLLBACK job is used to roll back the table for the online
-		// restore and to bring it back online. It doesn't interact with the PTS
-		// system.
-		return false
-	default:
-		// TODO(yuzefovich): other job types should be audited.
-		return true
 	}
 }
 
@@ -485,9 +456,6 @@ var MakeRowLevelTTLMetricsHook func(time.Duration) metric.Struct
 
 // MakeBackupMetricsHook allows for registration of backup metrics.
 var MakeBackupMetricsHook func(time.Duration) metric.Struct
-
-// MakeInspectMetricsHook allows for registration of inspect metrics.
-var MakeInspectMetricsHook func(time.Duration) metric.Struct
 
 // JobTelemetryMetrics is a telemetry metrics for individual job types.
 type JobTelemetryMetrics struct {

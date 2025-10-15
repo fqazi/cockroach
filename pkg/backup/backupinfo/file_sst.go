@@ -55,6 +55,7 @@ func writeFilesSST(
 	if err != nil {
 		return err
 	}
+	defer w.Close()
 	fileSST := storage.MakeTransportSSTWriter(ctx, dest.Settings(), w)
 	defer fileSST.Close()
 
@@ -74,7 +75,11 @@ func writeFilesSST(
 		}
 	}
 
-	return fileSST.Finish()
+	err = fileSST.Finish()
+	if err != nil {
+		return err
+	}
+	return w.Close()
 }
 
 func encodeFileSSTKey(spanStart roachpb.Key, filename string) roachpb.Key {

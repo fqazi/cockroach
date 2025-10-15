@@ -95,7 +95,7 @@ func newCdcEventDecoder(
 		srcTablesBySrcID[s.srcDesc.GetID()] = s.srcDesc
 		cdcEventTargets.Add(changefeedbase.Target{
 			Type:              jobspb.ChangefeedTargetSpecification_EACH_FAMILY,
-			DescID:            s.srcDesc.GetID(),
+			TableID:           s.srcDesc.GetID(),
 			StatementTimeName: changefeedbase.StatementTimeName(s.srcDesc.GetName()),
 		})
 	}
@@ -384,7 +384,7 @@ func (p *kvRowProcessor) getWriter(
 		}
 	}
 
-	l, err := p.cfg.LeaseManager.(*lease.Manager).Acquire(ctx, lease.TimestampToReadTimestamp(ts), id)
+	l, err := p.cfg.LeaseManager.(*lease.Manager).Acquire(ctx, ts, id)
 	if err != nil {
 		return nil, err
 	}

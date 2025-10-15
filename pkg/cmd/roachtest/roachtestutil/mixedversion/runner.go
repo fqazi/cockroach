@@ -255,7 +255,7 @@ func (tr *testRunner) runSingleStep(ctx context.Context, ss *singleStep, l *logg
 	defer func() {
 		prefix := fmt.Sprintf("FINISHED [%s]", timeutil.Since(start))
 		tr.logStep(prefix, ss, l)
-		annotation := fmt.Sprintf("(%d): %s", ss.ID, ss.impl.Description(false))
+		annotation := fmt.Sprintf("(%d): %s", ss.ID, ss.impl.Description())
 		err := tr.addGrafanaAnnotation(tr.ctx, tr.logger, grafana.AddAnnotationRequest{
 			Text: annotation, StartTime: start.UnixMilli(), EndTime: timeutil.Now().UnixMilli(),
 		})
@@ -287,7 +287,7 @@ func (tr *testRunner) runSingleStep(ctx context.Context, ss *singleStep, l *logg
 func (tr *testRunner) startBackgroundStep(ss *singleStep, l *logger.Logger, stopChan shouldStop) {
 	stop := tr.background.GoWithCancel(func(ctx context.Context, l *logger.Logger) error {
 		return tr.runSingleStep(ctx, ss, l)
-	}, task.Logger(l), task.Name(ss.impl.Description(false)))
+	}, task.Logger(l), task.Name(ss.impl.Description()))
 
 	// We start a goroutine to listen for user-requests to stop the
 	// background function.
@@ -315,7 +315,7 @@ func (tr *testRunner) stepError(
 	stepErr := errors.Wrapf(
 		err,
 		"mixed-version test failure while running step %d (%s)",
-		step.ID, step.impl.Description(false),
+		step.ID, step.impl.Description(),
 	)
 
 	return tr.testFailure(ctx, stepErr, l, &step.context)
@@ -388,7 +388,7 @@ func (tr *testRunner) teardown(stepsChan chan error, testFailed bool) {
 
 func (tr *testRunner) logStep(prefix string, step *singleStep, l *logger.Logger) {
 	dashes := strings.Repeat("-", 10)
-	l.Printf("%[1]s %s (%d): %s %[1]s", dashes, prefix, step.ID, step.impl.Description(false))
+	l.Printf("%[1]s %s (%d): %s %[1]s", dashes, prefix, step.ID, step.impl.Description())
 }
 
 func (tr *testRunner) logVersions(l *logger.Logger, testContext Context) {
@@ -501,18 +501,11 @@ func versionsTable(
 // easy to go from the IDs displayed in the test plan to the
 // corresponding output of that step.
 func (tr *testRunner) loggerFor(step *singleStep) (*logger.Logger, error) {
-	name := invalidChars.ReplaceAllString(strings.ToLower(step.impl.Description(false)), "")
+	name := invalidChars.ReplaceAllString(strings.ToLower(step.impl.Description()), "")
 	name = fmt.Sprintf("%d_%s", step.ID, name)
 	prefix := filepath.Join(tr.tag, logPrefix, name)
 
 	return prefixedLoggerWithFilename(tr.logger, prefix, filepath.Join(logPrefix, name))
-}
-
-// getAvailableNodes returns the nodes that are available for the given service descriptor.
-func (tr *testRunner) getAvailableNodes(
-	serviceDescriptor *ServiceDescriptor,
-) option.NodeListOption {
-	return serviceDescriptor.Nodes.Intersect(tr.monitor.AvailableNodes(serviceDescriptor.Name))
 }
 
 // refreshBinaryVersions updates the `binaryVersions` field for every
@@ -525,7 +518,7 @@ func (tr *testRunner) refreshBinaryVersions(ctx context.Context, service *servic
 	defer cancel()
 
 	group := ctxgroup.WithContext(connectionCtx)
-	for j, node := range tr.getAvailableNodes(service.descriptor) {
+	for j, node := range service.descriptor.Nodes {
 		group.GoCtx(func(ctx context.Context) error {
 			bv, err := clusterupgrade.BinaryVersion(ctx, tr.conn(node, service.descriptor.Name))
 			if err != nil {
@@ -534,6 +527,7 @@ func (tr *testRunner) refreshBinaryVersions(ctx context.Context, service *servic
 					node, service.descriptor.Name, err,
 				)
 			}
+
 			newBinaryVersions[j] = bv
 			return nil
 		})
@@ -556,7 +550,7 @@ func (tr *testRunner) refreshClusterVersions(ctx context.Context, service *servi
 	defer cancel()
 
 	group := ctxgroup.WithContext(connectionCtx)
-	for j, node := range tr.getAvailableNodes(service.descriptor) {
+	for j, node := range service.descriptor.Nodes {
 		group.GoCtx(func(ctx context.Context) error {
 			cv, err := clusterupgrade.ClusterVersion(ctx, tr.conn(node, service.descriptor.Name))
 			if err != nil {
@@ -615,7 +609,7 @@ func (tr *testRunner) maybeInitConnections(service *serviceRuntime) error {
 	}
 
 	cc := map[int]*gosql.DB{}
-	for _, node := range tr.getAvailableNodes(service.descriptor) {
+	for _, node := range service.descriptor.Nodes {
 		conn, err := tr.cluster.ConnE(
 			tr.ctx, tr.logger, node, option.VirtualClusterName(service.descriptor.Name),
 		)
@@ -641,7 +635,6 @@ func (tr *testRunner) newHelper(
 		connFunc := func(node int) *gosql.DB {
 			return tr.conn(node, sc.Descriptor.Name)
 		}
-		nodes := sc.Descriptor.Nodes
 
 		return &Service{
 			ServiceContext: sc,
@@ -650,8 +643,6 @@ func (tr *testRunner) newHelper(
 			connFunc:        connFunc,
 			stepLogger:      l,
 			clusterVersions: cv,
-			monitor:         tr.monitor,
-			nodes:           nodes,
 		}
 	}
 

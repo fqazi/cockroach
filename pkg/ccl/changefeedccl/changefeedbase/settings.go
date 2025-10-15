@@ -215,23 +215,6 @@ var ProtectTimestampLag = settings.RegisterDurationSetting(
 	10*time.Minute,
 	settings.PositiveDuration)
 
-// PerTableProtectedTimestamps enables per-table protected timestamp records
-// instead of a single record for all tables in a changefeed.
-var PerTableProtectedTimestamps = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"changefeed.protect_timestamp.per_table.enabled",
-	"if true, creates separate protected timestamp records for each table in a changefeed; "+
-		"if false, uses a single protected timestamp record for all tables",
-	metamorphic.ConstantWithTestBool("changefeed.protect_timestamp.per_table.enabled", false))
-
-// BulkDelivery enables bulk delivery of rangefeed events, which can improve performance during catchup scans.
-var BulkDelivery = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"changefeed.bulk_delivery.enabled",
-	"if true, rangefeed events are delivered in bulk during catchup scans; "+
-		"if false, rangefeed events are delivered individually",
-	metamorphic.ConstantWithTestBool("changefeed.bulk_delivery.enabled", true))
-
 // MaxProtectedTimestampAge controls the frequency of protected timestamp record updates
 var MaxProtectedTimestampAge = settings.RegisterDurationSetting(
 	settings.ApplicationLevel,
@@ -367,26 +350,6 @@ var Quantize = settings.RegisterDurationSettingWithExplicitUnit(
 	settings.DurationWithMinimum(0),
 )
 
-// MaxRetryBackoff is the maximum time a changefeed will backoff when in
-// a top-level retry loop, for example during rolling restarts.
-var MaxRetryBackoff = settings.RegisterDurationSettingWithExplicitUnit(
-	settings.ApplicationLevel,
-	"changefeed.max_retry_backoff",
-	"the maximum time a changefeed will backoff when retrying after a restart and how long between retries before backoff resets",
-	10*time.Minute, /* defaultValue */
-	settings.DurationInRange(1*time.Second, 1*time.Hour),
-)
-
-// RetryBackoffReset is the time between changefeed retries before the
-// backoff timer resets.
-var RetryBackoffReset = settings.RegisterDurationSettingWithExplicitUnit(
-	settings.ApplicationLevel,
-	"changefeed.retry_backoff_reset",
-	"the time between changefeed retries before the backoff timer resets",
-	10*time.Minute, /* defaultValue */
-	settings.DurationInRange(1*time.Second, 1*time.Hour),
-)
-
 // KafkaV2IncludeErrorDetails enables detailed error messages for Kafka v2 sinks
 // when message_too_large errors occur. This includes the message key, size,
 // and MVCC timestamp in the error.
@@ -395,38 +358,5 @@ var KafkaV2ErrorDetailsEnabled = settings.RegisterBoolSetting(
 	"changefeed.kafka_v2_error_details.enabled",
 	"if enabled, Kafka v2 sinks will include the message key, size, and MVCC timestamp in message too large errors",
 	true,
-	settings.WithPublic,
-)
-
-// UseBareTableNames is used to enable and disable the use of bare table names
-// in changefeed topics.
-var UseBareTableNames = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"changefeed.bare_table_names.enabled",
-	"set to true to use bare table names in changefeed topics, false to use quoted table names; default is true",
-	true)
-
-// TrackPerTableProgress controls whether a changefeed's in-memory frontiers
-// should track span progress on a per-table basis (via partitioning into
-// one sub-frontier per table). Enabling this is necessary for any other
-// per-table progress features (e.g. per-table PTS) to work.
-var TrackPerTableProgress = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"changefeed.progress.per_table_tracking.enabled",
-	"track progress on a per-table basis in-memory; enabling this will enable more "+
-		"granular saving/restoring of progress, which will reduce duplicates during restarts, "+
-		"but doing so may incur additional overhead during ordinary changefeed execution",
-	metamorphic.ConstantWithTestBool("changefeed.progress.per_table_tracking.enabled", true),
-)
-
-// FrontierPersistenceInterval configures the minimum amount of time that must
-// elapse before a changefeed will persist its entire span frontier again.
-var FrontierPersistenceInterval = settings.RegisterDurationSettingWithExplicitUnit(
-	settings.ApplicationLevel,
-	"changefeed.progress.frontier_persistence.interval",
-	"minimum amount of time that must elapse before a changefeed "+
-		"will persist its entire span frontier again",
-	30*time.Second, /* defaultValue */
-	settings.DurationInRange(5*time.Second, 10*time.Minute),
 	settings.WithPublic,
 )

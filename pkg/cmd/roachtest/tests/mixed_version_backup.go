@@ -622,15 +622,14 @@ func newFingerprintContents(db *gosql.DB, table string) *fingerprintContents {
 	return &fingerprintContents{db: db, table: table}
 }
 
-// Load computes the fingerprints for the underlying table and stores the
-// contents in the `fingeprints` field. If timestamp is not set, computes
-// the fingerprint for the current time.
+// Load computes the fingerprints for the underlying table and stores
+// the contents in the `fingeprints` field.
 func (fc *fingerprintContents) Load(
 	ctx context.Context, l *logger.Logger, timestamp string, _ tableContents,
 ) error {
 	l.Printf("computing fingerprints for table %s", fc.table)
 	query := fmt.Sprintf(
-		"SELECT index_name, COALESCE(fingerprint, '') FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE %s]%s ORDER BY index_name",
+		"SELECT index_name, fingerprint FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE %s]%s ORDER BY index_name",
 		fc.table, aostFor(timestamp),
 	)
 	rows, err := fc.db.QueryContext(ctx, query)
@@ -2707,7 +2706,7 @@ func (u *CommonTestUtils) resetCluster(
 	}
 
 	cockroachPath := clusterupgrade.CockroachPathForVersion(u.t, version)
-	settings = append(settings, install.BinaryOption(cockroachPath), install.SimpleSecureOption(true))
+	settings = append(settings, install.BinaryOption(cockroachPath), install.SecureOption(true))
 	return clusterupgrade.StartWithSettings(
 		ctx, l, u.cluster, u.roachNodes, option.NewStartOpts(opts...), settings...,
 	)
@@ -2918,7 +2917,6 @@ func registerBackupMixedVersion(r registry.Registry) {
 				// migrations enough time to finish considering all the data
 				// that might exist in the cluster by the time the upgrade is
 				// attempted.
-				mixedversion.WithWorkloadNodes(c.WorkloadNode()),
 				mixedversion.UpgradeTimeout(30*time.Minute),
 				mixedversion.AlwaysUseLatestPredecessors,
 				mixedversion.EnabledDeploymentModes(enabledDeploymentModes...),
@@ -2933,10 +2931,6 @@ func registerBackupMixedVersion(r registry.Registry) {
 				mixedversion.DisableAllClusterSettingMutators(),
 			)
 			testRNG := mvt.RNG()
-
-			// Workload can only take a positive int as a seed, but seed could be a
-			// negative int. Ensure the seed passed to workload is an int.
-			workloadSeed := testRNG.Int63()
 
 			dbs := []string{"bank", "tpcc"}
 			backupTest, err := newMixedVersionBackup(t, c, c.CRDBNodes(), dbs)
@@ -2955,8 +2949,8 @@ func registerBackupMixedVersion(r registry.Registry) {
 			// for the cluster used in this test without overloading it,
 			// which can make the backups take much longer to finish.
 			const numWarehouses = 100
-			bankInit, bankRun := bankWorkloadCmd(t.L(), testRNG, workloadSeed, c.CRDBNodes(), false)
-			tpccInit, tpccRun := tpccWorkloadCmd(t.L(), testRNG, workloadSeed, numWarehouses, c.CRDBNodes())
+			bankInit, bankRun := bankWorkloadCmd(t.L(), testRNG, c.CRDBNodes(), false)
+			tpccInit, tpccRun := tpccWorkloadCmd(t.L(), testRNG, numWarehouses, c.CRDBNodes())
 
 			mvt.OnStartup("set short job interval", backupTest.setShortJobIntervals)
 			mvt.OnStartup("take backup in previous version", backupTest.maybeTakePreviousVersionBackup)
@@ -2989,21 +2983,15 @@ func registerBackupMixedVersion(r registry.Registry) {
 }
 
 func tpccWorkloadCmd(
-	l *logger.Logger,
-	testRNG *rand.Rand,
-	seed int64,
-	numWarehouses int,
-	roachNodes option.NodeListOption,
+	l *logger.Logger, testRNG *rand.Rand, numWarehouses int, roachNodes option.NodeListOption,
 ) (init *roachtestutil.Command, run *roachtestutil.Command) {
 	init = roachtestutil.NewCommand("./cockroach workload init tpcc").
 		MaybeOption(testRNG.Intn(2) == 0, "families").
 		Arg("{pgurl%s}", roachNodes).
-		Flag("warehouses", numWarehouses).
-		MaybeFlag(seed != 0, "seed", seed)
+		Flag("warehouses", numWarehouses)
 	run = roachtestutil.NewCommand("./cockroach workload run tpcc").
 		Arg("{pgurl%s}", roachNodes).
 		Flag("warehouses", numWarehouses).
-		MaybeFlag(seed != 0, "seed", seed).
 		Option("tolerate-errors")
 	l.Printf("tpcc init: %s", init)
 	l.Printf("tpcc run: %s", run)
@@ -3011,7 +2999,7 @@ func tpccWorkloadCmd(
 }
 
 func bankWorkloadCmd(
-	l *logger.Logger, testRNG *rand.Rand, seed int64, roachNodes option.NodeListOption, mock bool,
+	l *logger.Logger, testRNG *rand.Rand, roachNodes option.NodeListOption, mock bool,
 ) (init *roachtestutil.Command, run *roachtestutil.Command) {
 	bankRows := bankPossibleRows[testRNG.Intn(len(bankPossibleRows))]
 	possiblePayloads := bankPossiblePayloadBytes
@@ -3026,15 +3014,14 @@ func bankWorkloadCmd(
 		bankPayload = 9
 		bankRows = 10
 	}
+
 	init = roachtestutil.NewCommand("./cockroach workload init bank").
 		Flag("rows", bankRows).
 		MaybeFlag(bankPayload != 0, "payload-bytes", bankPayload).
-		MaybeFlag(seed != 0, "seed", seed).
 		Flag("ranges", 0).
 		Arg("{pgurl%s}", roachNodes)
 	run = roachtestutil.NewCommand("./cockroach workload run bank").
 		Arg("{pgurl%s}", roachNodes).
-		MaybeFlag(seed != 0, "seed", seed).
 		Option("tolerate-errors")
 	l.Printf("bank init: %s", init)
 	l.Printf("bank run: %s", run)
@@ -3042,7 +3029,7 @@ func bankWorkloadCmd(
 }
 
 func schemaChangeWorkloadCmd(
-	l *logger.Logger, testRNG *rand.Rand, seed int64, roachNodes option.NodeListOption, mock bool,
+	l *logger.Logger, testRNG *rand.Rand, roachNodes option.NodeListOption, mock bool,
 ) (init *roachtestutil.Command, run *roachtestutil.Command) {
 	maxOps := 1000
 	concurrency := 5
@@ -3050,15 +3037,12 @@ func schemaChangeWorkloadCmd(
 		maxOps = 10
 		concurrency = 2
 	}
-	if seed == 0 {
-		seed = testRNG.Int63()
-	}
-	initCmd := roachtestutil.NewCommand("COCKROACH_RANDOM_SEED=%d ./workload init schemachange", seed).
+	initCmd := roachtestutil.NewCommand("./workload init schemachange").
 		Arg("{pgurl%s}", roachNodes)
 	// TODO (msbutler): ideally we'd use the `db` flag to explicitly set the
 	// database, but it is currently broken:
 	// https://github.com/cockroachdb/cockroach/issues/115545
-	runCmd := roachtestutil.NewCommand("COCKROACH_RANDOM_SEED=%d ./workload run schemachange", seed).
+	runCmd := roachtestutil.NewCommand("COCKROACH_RANDOM_SEED=%d ./workload run schemachange", testRNG.Int63()).
 		Flag("verbose", 1).
 		Flag("max-ops", maxOps).
 		Flag("concurrency", concurrency).

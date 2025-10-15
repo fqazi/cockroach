@@ -831,7 +831,7 @@ func addSecondaryIndexTargetsForAddColumn(
 		IndexID: index.IndexID,
 		Name:    indexName,
 	})
-	tempSpec := makeTempIndexSpec(b, spec.indexSpec)
+	tempSpec := makeTempIndexSpec(spec.indexSpec)
 	tempSpec.apply(b.AddTransient)
 }
 

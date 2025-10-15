@@ -5,20 +5,24 @@
 
 package spec
 
-import "time"
+import (
+	"time"
+
+	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
+)
 
 // Option for MakeClusterSpec.
 type Option func(spec *ClusterSpec)
 
-// Arch requests specific CPU architecture(s).
+// Arch requests a specific CPU architecture.
 //
 // Note that it is not guaranteed that this architecture will be used (e.g. if
 // the requested machine size isn't available in this architecture).
 //
 // TODO(radu): add a flag to indicate whether it's a preference or a requirement.
-func Arch(as ArchSet) Option {
+func Arch(arch vm.CPUArch) Option {
 	return func(spec *ClusterSpec) {
-		spec.CompatibleArchs = as
+		spec.Arch = arch
 	}
 }
 
@@ -50,15 +54,6 @@ func WorkloadNode() Option {
 func WorkloadNodeCPU(n int) Option {
 	return func(spec *ClusterSpec) {
 		spec.WorkloadNodeCPUs = n
-	}
-}
-
-// WorkloadRequiresDisk should be used if the workload nodes should have the
-// exact same disk configuration as the rest of the cluster. Otherwise, all
-// workload nodes only have a boot disk.
-func WorkloadRequiresDisk() Option {
-	return func(spec *ClusterSpec) {
-		spec.WorkloadRequiresDisk = true
 	}
 }
 
@@ -284,14 +279,6 @@ func AWSMachineType(machineType string) Option {
 func AWSVolumeThroughput(throughput int) Option {
 	return func(spec *ClusterSpec) {
 		spec.AWS.VolumeThroughput = throughput
-	}
-}
-
-// AWSVolumeIOPS sets the provisioned IOPS for EBS volumes when the cluster is
-// on AWS.
-func AWSVolumeIOPS(iops int) Option {
-	return func(spec *ClusterSpec) {
-		spec.AWS.VolumeIOPS = iops
 	}
 }
 

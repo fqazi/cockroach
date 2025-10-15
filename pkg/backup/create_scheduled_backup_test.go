@@ -1437,6 +1437,7 @@ func TestCreateScheduledBackupTelemetry(t *testing.T) {
 
 	th, cleanup := newTestHelper(t)
 	defer cleanup()
+	var asOfInterval int64
 
 	// We'll be manipulating schedule time via th.env, but we can't fool actual backup
 	// when it comes to AsOf time.  So, override AsOf backup clause to be the current time.
@@ -1444,6 +1445,7 @@ func TestCreateScheduledBackupTelemetry(t *testing.T) {
 		knobs := th.cfg.TestingKnobs.(*jobs.TestingKnobs)
 		knobs.OverrideAsOfClause = func(clause *tree.AsOfClause, stmtTimestamp time.Time) {
 			expr, err := tree.MakeDTimestampTZ(th.cfg.DB.KV().Clock().PhysicalTime(), time.Microsecond)
+			asOfInterval = expr.Time.UnixNano() - stmtTimestamp.UnixNano()
 			require.NoError(t, err)
 			clause.Expr = expr
 		}
@@ -1475,11 +1477,15 @@ WITH SCHEDULE OPTIONS on_execution_failure = 'pause', ignore_existing_backups, f
 		RecoveryType:            createdScheduleEventType,
 		TargetScope:             clusterScope.String(),
 		TargetCount:             1,
+		DestinationSubdirType:   standardSubdirType,
 		DestinationStorageTypes: []string{"userfile"},
 		DestinationAuthTypes:    []string{"specified"},
+		AsOfInterval:            asOfInterval,
 		Options:                 []string{telemetryOptionDetached},
 		RecurringCron:           "@hourly",
 		FullBackupCron:          "@daily",
+		OnExecutionFailure:      "PAUSE_SCHED",
+		OnPreviousRunning:       "WAIT",
 		IgnoreExistingBackup:    true,
 		CustomFirstRunTime:      firstRun.UnixNano(),
 		ApplicationName:         "backup_test",
@@ -1500,8 +1506,10 @@ WITH SCHEDULE OPTIONS on_execution_failure = 'pause', ignore_existing_backups, f
 		RecoveryType:            scheduledBackupEventType,
 		TargetScope:             clusterScope.String(),
 		TargetCount:             1,
+		DestinationSubdirType:   standardSubdirType,
 		DestinationStorageTypes: []string{"userfile"},
 		DestinationAuthTypes:    []string{"specified"},
+		AsOfInterval:            asOfInterval,
 		Options:                 []string{telemetryOptionDetached},
 	}
 	requireRecoveryEvent(t, beforeBackup.UnixNano(), scheduledBackupEventType, expectedScheduledBackup)

@@ -380,8 +380,11 @@ func newTestReplicatedWriteGranter(
 		buf: buf,
 	}
 }
+func (tg *testReplicatedWriteGranter) grantKind() grantKind {
+	return token
+}
 
-func (tg *testReplicatedWriteGranter) tryGet(_ burstQualification, count int64) bool {
+func (tg *testReplicatedWriteGranter) tryGet(count int64) bool {
 	if count > tg.tokens {
 		tg.buf.printf("[%s] try-get=%s available=%s => insufficient tokens",
 			tg.wc, printTrimmedBytes(count), printTrimmedBytes(tg.tokens))
@@ -411,8 +414,7 @@ func (tg *testReplicatedWriteGranter) grant() {
 		if tg.tokens <= 0 {
 			return // nothing left to do
 		}
-		hasWaiting, _ := tg.r.hasWaitingRequests()
-		if !hasWaiting {
+		if !tg.r.hasWaitingRequests() {
 			return // nothing left to do
 		}
 		_ = tg.r.granted(0 /* unused */)

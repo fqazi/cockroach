@@ -2203,16 +2203,9 @@ func TestSplitTriggerWritesInitialReplicaState(t *testing.T) {
 	err = sl.SetVersion(ctx, batch, nil, &version)
 	require.NoError(t, err)
 
-	in := splitTriggerHelperInput{
-		leftLease:      lease,
-		gcThreshold:    &gcThreshold,
-		gcHint:         &gcHint,
-		replicaVersion: version,
-	}
-
 	// Run the split trigger, which is normally run as a subset of EndTxn request
 	// evaluation.
-	_, _, err = splitTrigger(ctx, rec, batch, enginepb.MVCCStats{}, split, in, hlc.Timestamp{})
+	_, _, err = splitTrigger(ctx, rec, batch, enginepb.MVCCStats{}, split, hlc.Timestamp{})
 	require.NoError(t, err)
 
 	// Verify that range state was migrated to the right-hand side properly.
@@ -2239,14 +2232,13 @@ func TestSplitTriggerWritesInitialReplicaState(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, loadedGCHint)
 	require.Equal(t, gcHint, *loadedGCHint)
-
-	// The split trigger doesn't write the initial truncated state for the RHS
-	// as it isn't part of the range's applied state.
-	expTruncState := kvserverpb.RaftTruncatedState{}
+	expTruncState := kvserverpb.RaftTruncatedState{
+		Term:  stateloader.RaftInitialLogTerm,
+		Index: stateloader.RaftInitialLogIndex,
+	}
 	loadedTruncState, err := slRight.LoadRaftTruncatedState(ctx, batch)
 	require.NoError(t, err)
 	require.Equal(t, expTruncState, loadedTruncState)
-
 	loadedVersion, err := slRight.LoadVersion(ctx, batch)
 	require.NoError(t, err)
 	require.Equal(t, version, loadedVersion)

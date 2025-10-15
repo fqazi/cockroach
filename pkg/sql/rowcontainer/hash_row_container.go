@@ -163,7 +163,7 @@ func (e *columnEncoder) encodeEqualityCols(
 	}
 	e.scratch = encoded[:0]
 	if hasNull {
-		log.Dev.Fatal(ctx, "cannot process rows with NULL in an equality column")
+		log.Fatal(ctx, "cannot process rows with NULL in an equality column")
 	}
 	return encoded, nil
 }
@@ -362,7 +362,8 @@ func (i *hashMemRowBucketIterator) Next() {
 
 // EncRow implements the RowIterator interface.
 func (i *hashMemRowBucketIterator) EncRow() (rowenc.EncDatumRow, error) {
-	return i.scratchEncRow, i.container.getEncRow(i.scratchEncRow, i.rowIdxs[i.curIdx])
+	i.container.getEncRow(i.scratchEncRow, i.rowIdxs[i.curIdx])
+	return i.scratchEncRow, nil
 }
 
 // Row implements the RowIterator interface.
@@ -373,7 +374,7 @@ func (i *hashMemRowBucketIterator) Row() (tree.Datums, error) {
 // IsMarked implements the RowMarkerIterator interface.
 func (i *hashMemRowBucketIterator) IsMarked(ctx context.Context) bool {
 	if !i.container.shouldMark {
-		log.Dev.Fatal(ctx, "hash mem row container not set up for marking")
+		log.Fatal(ctx, "hash mem row container not set up for marking")
 	}
 	if i.container.marked == nil {
 		return false
@@ -385,7 +386,7 @@ func (i *hashMemRowBucketIterator) IsMarked(ctx context.Context) bool {
 // Mark implements the RowMarkerIterator interface.
 func (i *hashMemRowBucketIterator) Mark(ctx context.Context) error {
 	if !i.container.shouldMark {
-		log.Dev.Fatal(ctx, "hash mem row container not set up for marking")
+		log.Fatal(ctx, "hash mem row container not set up for marking")
 	}
 	if i.container.marked == nil {
 		if !i.container.markMemoryReserved {
@@ -451,7 +452,7 @@ func (i *hashMemRowIterator) computeKey() error {
 	}
 
 	if valid {
-		err = i.container.getEncRow(i.scratchEncRow, i.curIdx)
+		i.container.getEncRow(i.scratchEncRow, i.curIdx)
 	} else {
 		if i.curIdx == 0 {
 			// There are no rows in the container, so the key corresponding to the
@@ -463,10 +464,7 @@ func (i *hashMemRowIterator) computeKey() error {
 		// will "simulate" the key corresponding to the non-existent row as the key
 		// to the last existing row plus one (plus one part is done below where we
 		// append the index of the row to curKey).
-		err = i.container.getEncRow(i.scratchEncRow, i.curIdx-1)
-	}
-	if err != nil {
-		return err
+		i.container.getEncRow(i.scratchEncRow, i.curIdx-1)
 	}
 
 	i.curKey = i.curKey[:0]
@@ -498,7 +496,8 @@ func (i *hashMemRowIterator) Next() {
 
 // EncRow implements the RowIterator interface.
 func (i *hashMemRowIterator) EncRow() (rowenc.EncDatumRow, error) {
-	return i.scratchEncRow, i.container.getEncRow(i.scratchEncRow, i.curIdx)
+	i.container.getEncRow(i.scratchEncRow, i.curIdx)
+	return i.scratchEncRow, nil
 }
 
 // Row implements the RowIterator interface.
@@ -559,7 +558,7 @@ func (h *HashDiskRowContainer) Init(
 		h.scratchEncRow = make(rowenc.EncDatumRow, len(storedTypes))
 		// Initialize the last column of the scratch row we use in AddRow() to
 		// be unmarked.
-		h.scratchEncRow[len(h.scratchEncRow)-1] = rowenc.DatumToEncDatumUnsafe(
+		h.scratchEncRow[len(h.scratchEncRow)-1] = rowenc.DatumToEncDatum(
 			types.Bool,
 			tree.MakeDBool(false),
 		)
@@ -689,7 +688,7 @@ func (i *hashDiskRowBucketIterator) Reset(ctx context.Context, row rowenc.EncDat
 // IsMarked implements the RowMarkerIterator interface.
 func (i *hashDiskRowBucketIterator) IsMarked(ctx context.Context) bool {
 	if !i.container.shouldMark {
-		log.Dev.Fatal(ctx, "hash disk row container not set up for marking")
+		log.Fatal(ctx, "hash disk row container not set up for marking")
 	}
 	ok, err := i.diskRowIterator.Valid()
 	if !ok || err != nil {
@@ -703,7 +702,7 @@ func (i *hashDiskRowBucketIterator) IsMarked(ctx context.Context) bool {
 // Mark implements the RowMarkerIterator interface.
 func (i *hashDiskRowBucketIterator) Mark(ctx context.Context) error {
 	if !i.container.shouldMark {
-		log.Dev.Fatal(ctx, "hash disk row container not set up for marking")
+		log.Fatal(ctx, "hash disk row container not set up for marking")
 	}
 	i.haveMarkedRows = true
 	markBytes := encodedTrue

@@ -81,8 +81,6 @@ func checkPopulatedDatabase(
 	if err != nil {
 		return false, err
 	}
-	defer dbsCount.Close()
-
 	dbsCount.Next()
 	var count int
 	if err := dbsCount.Scan(&count); err != nil {
@@ -101,8 +99,6 @@ func checkZeroUnavailableRanges(
 	if err != nil {
 		return false, err
 	}
-	defer rangesCur.Close()
-
 	rangesCur.Next()
 	var count int
 	if err := rangesCur.Scan(&count); err != nil {
@@ -121,8 +117,6 @@ func checkZeroUnderreplicatedRanges(
 	if err != nil {
 		return false, err
 	}
-	defer rangesCur.Close()
-
 	rangesCur.Next()
 	var count int
 	if err := rangesCur.Scan(&count); err != nil {
@@ -141,8 +135,6 @@ func checkLDRJobRunning(
 	if err != nil {
 		return false, err
 	}
-	defer jobsCur.Close()
-
 	jobsCur.Next()
 	var jobId string
 	_ = jobsCur.Scan(&jobId)
@@ -160,8 +152,6 @@ func checkBackupJobRunning(
 	if err != nil {
 		return false, err
 	}
-	defer jobsCur.Close()
-
 	jobsCur.Next()
 	var jobId string
 	_ = jobsCur.Scan(&jobId)
@@ -179,8 +169,6 @@ func checkRestoreJobRunning(
 	if err != nil {
 		return false, err
 	}
-	defer jobsCur.Close()
-
 	jobsCur.Next()
 	var jobId string
 	_ = jobsCur.Scan(&jobId)

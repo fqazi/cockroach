@@ -135,7 +135,7 @@ func (s *SSTSinkKeyWriter) Reset(ctx context.Context, newSpan roachpb.Span) erro
 			return err
 		}
 	}
-	if !s.isOpen {
+	if s.out == nil {
 		if err := s.open(ctx); err != nil {
 			return err
 		}

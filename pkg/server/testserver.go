@@ -285,7 +285,7 @@ func makeTestConfigFromParams(params base.TestServerArgs) Config {
 	// Validate the store specs.
 	for _, storeSpec := range params.StoreSpecs {
 		if storeSpec.InMemory {
-			if storeSpec.Size.IsPercent() {
+			if storeSpec.Size.Percent > 0 {
 				panic(fmt.Sprintf("test server does not yet support in memory stores based on percentage of total memory: %s", base.StoreSpecCmdLineString(storeSpec)))
 			}
 		} else {
@@ -331,13 +331,6 @@ func makeTestConfigFromParams(params base.TestServerArgs) Config {
 
 	if params.Knobs.AdmissionControlOptions == nil {
 		cfg.TestingKnobs.AdmissionControlOptions = &admission.Options{}
-	}
-
-	switch params.DefaultDRPCOption {
-	case base.TestDRPCEnabled:
-		rpcbase.ExperimentalDRPCEnabled.Override(context.Background(), &st.SV, true)
-	case base.TestDRPCDisabled:
-		rpcbase.ExperimentalDRPCEnabled.Override(context.Background(), &st.SV, false)
 	}
 
 	return cfg
@@ -624,11 +617,6 @@ func (ts *testServer) TestTenant() serverutils.ApplicationLayerInterface {
 	return ts.testTenants[0]
 }
 
-// GetTxnRegistry is part of the serverutils.ApplicationLayerInterface.
-func (ts *testServer) TxnRegistry() interface{} {
-	return ts.sqlServer.txnDiagnosticsRegistry
-}
-
 func (ts *testServer) startDefaultTestTenant(
 	ctx context.Context,
 ) (serverutils.ApplicationLayerInterface, error) {
@@ -796,7 +784,7 @@ func (ts *testServer) grantDefaultTenantCapabilities(
 			fmt.Sprintf("ALTER VIRTUAL CLUSTER [$1] SET CLUSTER SETTING %s = true", setting.Name()), tenantID.ToUint64())
 		if err != nil {
 			if skipTenantCheck {
-				log.Dev.Infof(ctx, "ignoring error changing setting because SkipTenantCheck is true: %v", err)
+				log.Infof(ctx, "ignoring error changing setting because SkipTenantCheck is true: %v", err)
 			} else {
 				return err
 			}
@@ -813,7 +801,7 @@ func (ts *testServer) grantDefaultTenantCapabilities(
 			"ALTER TENANT [$1] GRANT CAPABILITY can_use_nodelocal_storage", tenantID.ToUint64())
 		if err != nil {
 			if skipTenantCheck {
-				log.Dev.Infof(ctx, "ignoring error granting capability because SkipTenantCheck is true: %v", err)
+				log.Infof(ctx, "ignoring error granting capability because SkipTenantCheck is true: %v", err)
 			} else {
 				return err
 			}
@@ -906,7 +894,7 @@ func (ts *testServer) Activate(ctx context.Context) error {
 		select {
 		case req := <-ts.topLevelServer.ShutdownRequested():
 			shutdownCtx := ts.topLevelServer.AnnotateCtx(context.Background())
-			log.Dev.Infof(shutdownCtx, "server requesting spontaneous shutdown: %v", req.ShutdownCause())
+			log.Infof(shutdownCtx, "server requesting spontaneous shutdown: %v", req.ShutdownCause())
 			// TODO(knz): evaluate whether there is value in shutting down
 			// test servers using a graceful drain when
 			// req.TerminateUsingGracefulDrain() is true.
@@ -1600,7 +1588,7 @@ func (ts *testServer) waitForTenantReadinessImpl(
 	ts.sqlServer.settingsWatcher.TestingRestart()
 	ts.node.tenantSettingsWatcher.TestingRestart()
 
-	log.Dev.Infof(ctx, "waiting for rangefeed to catch up with record for tenant %v", tenantID)
+	log.Infof(ctx, "waiting for rangefeed to catch up with record for tenant %v", tenantID)
 
 	// Wait for the watcher to handle the complete update from the initial scan
 	// and notify our previously registered listener.
@@ -1612,7 +1600,7 @@ func (ts *testServer) waitForTenantReadinessImpl(
 	for {
 		info, infoCh, found := infoWatcher.GetInfo(tenantID)
 		if found && info.ServiceMode != mtinfopb.ServiceModeNone {
-			log.Dev.Infof(ctx, "cached record found for tenant %v", tenantID)
+			log.Infof(ctx, "cached record found for tenant %v", tenantID)
 			return nil
 		}
 		// Not found: wait and try again.
@@ -1806,7 +1794,7 @@ func (ts *testServer) StartTenant(
 		baseCfg.SSLCertsDir = params.SSLCertsDir
 	}
 	if params.StartingRPCAndSQLPort > 0 {
-		log.Dev.Infof(ctx, "computing tenant server sql/rpc addr from %d", params.StartingRPCAndSQLPort)
+		log.Infof(ctx, "computing tenant server sql/rpc addr from %d", params.StartingRPCAndSQLPort)
 		baseCfg.SplitListenSQL = false
 		addr, _, err := addrutil.SplitHostPort(baseCfg.Addr, strconv.Itoa(params.StartingRPCAndSQLPort))
 		if err != nil {
@@ -1819,7 +1807,7 @@ func (ts *testServer) StartTenant(
 		baseCfg.SQLAdvertiseAddr = newAddr
 	}
 	if params.StartingHTTPPort > 0 {
-		log.Dev.Infof(ctx, "computing tenant server http addr from %d", params.StartingHTTPPort)
+		log.Infof(ctx, "computing tenant server http addr from %d", params.StartingHTTPPort)
 		addr, _, err := addrutil.SplitHostPort(baseCfg.HTTPAddr, strconv.Itoa(params.StartingHTTPPort))
 		if err != nil {
 			return nil, err
@@ -1829,7 +1817,7 @@ func (ts *testServer) StartTenant(
 		baseCfg.HTTPAdvertiseAddr = newAddr
 	}
 
-	log.Dev.Infof(ctx, "tenant server configuration (no controller): rpc %v/%v sql %v/%v http %v/%v",
+	log.Infof(ctx, "tenant server configuration (no controller): rpc %v/%v sql %v/%v http %v/%v",
 		baseCfg.Addr, baseCfg.AdvertiseAddr,
 		baseCfg.SQLAddr, baseCfg.SQLAdvertiseAddr,
 		baseCfg.HTTPAddr, baseCfg.HTTPAdvertiseAddr,
@@ -1850,7 +1838,7 @@ func (ts *testServer) StartTenant(
 		select {
 		case req := <-sw.ShutdownRequested():
 			shutdownCtx := sw.AnnotateCtx(context.Background())
-			log.Dev.Infof(shutdownCtx, "server requesting spontaneous shutdown: %v", req.ShutdownCause())
+			log.Infof(shutdownCtx, "server requesting spontaneous shutdown: %v", req.ShutdownCause())
 			stopper.Stop(shutdownCtx)
 		case <-stopper.ShouldQuiesce():
 		}
@@ -2648,18 +2636,11 @@ func (ts *testServer) RPCClientConn(
 func (ts *testServer) RPCClientConnE(user username.SQLUsername) (serverutils.RPCConn, error) {
 	ctx := context.Background()
 	rpcCtx := ts.NewClientRPCContext(ctx, user)
-	if !rpcbase.DRPCEnabled(ctx, rpcCtx.Settings) {
-		conn, err := rpcCtx.GRPCDialNode(ts.AdvRPCAddr(), ts.NodeID(), ts.Locality(), rpcbase.DefaultClass).Connect(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return serverutils.FromGRPCConn(conn), nil
-	}
-	conn, err := rpcCtx.DRPCDialNode(ts.AdvRPCAddr(), ts.NodeID(), ts.Locality(), rpcbase.DefaultClass).Connect(ctx)
+	conn, err := rpcCtx.GRPCDialNode(ts.AdvRPCAddr(), ts.NodeID(), ts.Locality(), rpcbase.DefaultClass).Connect(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return serverutils.FromDRPCConn(conn), nil
+	return serverutils.FromGRPCConn(conn), nil
 }
 
 // GetAdminClient is part of the serverutils.ApplicationLayerInterface.
@@ -2700,18 +2681,14 @@ func (t *testTenant) RPCClientConn(
 func (t *testTenant) RPCClientConnE(user username.SQLUsername) (serverutils.RPCConn, error) {
 	ctx := context.Background()
 	rpcCtx := t.NewClientRPCContext(ctx, user)
-	if !rpcbase.DRPCEnabled(ctx, rpcCtx.Settings) {
+	if !rpcbase.TODODRPC {
 		conn, err := rpcCtx.GRPCDialPod(t.AdvRPCAddr(), t.SQLInstanceID(), t.Locality(), rpcbase.DefaultClass).Connect(ctx)
 		if err != nil {
 			return nil, err
 		}
 		return serverutils.FromGRPCConn(conn), nil
 	}
-	conn, err := rpcCtx.DRPCDialPod(t.AdvRPCAddr(), t.SQLInstanceID(), t.Locality(), rpcbase.DefaultClass).Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return serverutils.FromDRPCConn(conn), nil
+	return nil, nil
 }
 
 // GetAdminClient is part of the serverutils.ApplicationLayerInterface.
@@ -2734,11 +2711,9 @@ func newClientRPCContext(
 	cid *base.ClusterIDContainer,
 	s serverutils.ApplicationLayerInterface,
 ) *rpc.Context {
-	tags := logtags.BuildBuffer()
-	tags.Add("testclient", nil)
-	tags.Add("user", user)
-	tags.Add("nsql", s.SQLInstanceID())
-	ctx = logtags.AddTags(ctx, tags.Finish())
+	ctx = logtags.AddTag(ctx, "testclient", nil)
+	ctx = logtags.AddTag(ctx, "user", user)
+	ctx = logtags.AddTag(ctx, "nsql", s.SQLInstanceID())
 
 	stopper := s.AppStopper()
 	if ctx.Done() == nil {
@@ -2773,9 +2748,4 @@ func newClientRPCContext(
 
 	stopper.AddCloser(stop.CloserFn(func() { clientStopper.Stop(ctx) }))
 	return rpcCtx
-}
-
-// GetTxnRegistry is part of the serverutils.ApplicationLayerInterface.
-func (t *testTenant) TxnRegistry() interface{} {
-	return t.sql.txnDiagnosticsRegistry
 }

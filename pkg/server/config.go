@@ -56,12 +56,12 @@ import (
 // Context defaults.
 const (
 	// DefaultCacheSize is the default size of the Pebble cache. We default the
-	// cache size and SQL memory pool size to 256 MiB. Larger values might
-	// provide significantly better performance, but we're not sure what type of
-	// system we're running on (development or production or some shared
+	// cache size to 128MiB and SQL memory pool size to 256 MiB. Larger values
+	// might provide significantly better performance, but we're not sure what
+	// type of system we're running on (development or production or some shared
 	// environment). Production users should almost certainly override these
 	// settings and we'll warn in the logs about doing so.
-	DefaultCacheSize         = 256 << 20 // 256 MiB
+	DefaultCacheSize         = 128 << 20 // 128 MiB
 	defaultSQLMemoryPoolSize = 256 << 20 // 256 MiB
 	defaultScanInterval      = 10 * time.Minute
 	defaultScanMinIdleTime   = 10 * time.Millisecond
@@ -608,9 +608,9 @@ func SetOpenFileLimitForOneStore() (uint64, error) {
 
 // MakeConfig returns a Config for the system tenant with default values.
 func MakeConfig(ctx context.Context, st *cluster.Settings) Config {
-	storeSpec := makeStorageCfg(ctx, st)
+	storeSpec, tempStorageCfg := makeStorageCfg(ctx, st)
 	sqlCfg := MakeSQLConfig(roachpb.SystemTenantID,
-		roachpb.TenantName(roachpb.SystemTenantID.String()), base.TempStorageConfig{})
+		roachpb.TenantName(roachpb.SystemTenantID.String()), tempStorageCfg)
 	tr := tracing.NewTracerWithOpt(ctx, tracing.WithClusterSettings(&st.SV))
 	baseCfg := MakeBaseConfig(st, tr, storeSpec)
 	kvCfg := MakeKVConfig()
@@ -628,19 +628,23 @@ func MakeConfig(ctx context.Context, st *cluster.Settings) Config {
 // preserving the base.Config reference. Enables running tests
 // multiple times.
 func (cfg *Config) SetDefaults(ctx context.Context, st *cluster.Settings) {
-	storeSpec := makeStorageCfg(ctx, st)
-	cfg.SQLConfig.SetDefaults(base.TempStorageConfig{})
+	storeSpec, tempStorageCfg := makeStorageCfg(ctx, st)
+	cfg.SQLConfig.SetDefaults(tempStorageCfg)
 	cfg.KVConfig.SetDefaults()
 	tr := tracing.NewTracerWithOpt(ctx, tracing.WithClusterSettings(&st.SV))
 	cfg.BaseConfig.SetDefaults(st, tr, storeSpec)
 }
 
-func makeStorageCfg(ctx context.Context, st *cluster.Settings) base.StoreSpec {
+func makeStorageCfg(
+	ctx context.Context, st *cluster.Settings,
+) (base.StoreSpec, base.TempStorageConfig) {
 	storeSpec, err := base.NewStoreSpec(DefaultStorePath)
 	if err != nil {
 		panic(err)
 	}
-	return storeSpec
+	tempStorageCfg := base.TempStorageConfigFromEnv(
+		ctx, st, storeSpec, "" /* parentDir */, base.DefaultTempStorageMaxSizeBytes)
+	return storeSpec, tempStorageCfg
 }
 
 // String implements the fmt.Stringer interface.
@@ -671,11 +675,11 @@ func (cfg *Config) SafeFormat(sp redact.SafePrinter, _ rune) {
 // the given context.
 func (cfg *Config) Report(ctx context.Context) {
 	if memSize, err := status.GetTotalMemory(ctx); err != nil {
-		log.Dev.Infof(ctx, "unable to retrieve system total memory: %v", err)
+		log.Infof(ctx, "unable to retrieve system total memory: %v", err)
 	} else {
-		log.Dev.Infof(ctx, "system total memory: %s", humanizeutil.IBytes(memSize))
+		log.Infof(ctx, "system total memory: %s", humanizeutil.IBytes(memSize))
 	}
-	log.Dev.Infof(ctx, "server configuration:\n%s", cfg)
+	log.Infof(ctx, "server configuration:\n%s", cfg)
 }
 
 // Engines is a container of engines, allowing convenient closing.
@@ -739,25 +743,8 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 	if err != nil {
 		return Engines{}, err
 	}
-	log.Event(ctx, "initializing engines")
 
-	// The (pebble.Options).MemTableStopWritesThreshold configures the number of
-	// memtables that may be queued before Pebble induces a write stall.
-	// Queueing memtables consume memory from the block cache, evicting resident
-	// blocks. If flushes are not keeping up and the count of queued memtables
-	// grows too large, read performance will degrade severely:
-	//
-	// - Every read needs to seek in every queued memtable.
-	// - Memtables take memory from the block cache, meaning that block
-	//   cache effectiveness decreases the more memtables that are queued.
-	//
-	// We constrain the count of queued memtables to be between 4 and 16. Within
-	// those bounds, we'll grow it to use up to half of the block cache. If
-	// there are multiple stores, we need to divide that half by the count of
-	// stores.
-	stopWritesThreshold := int(cfg.CacheSize/2/storage.DefaultMemtableSize) / len(cfg.Stores.Specs)
-	stopWritesThreshold = max(stopWritesThreshold, 4)
-	stopWritesThreshold = min(stopWritesThreshold, 16)
+	log.Event(ctx, "initializing engines")
 
 	var fileCache *pebble.FileCache
 	// TODO(radu): use the fileCache for in-memory stores as well.
@@ -777,10 +764,7 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 		stickyRegistry = serverKnobs.StickyVFSRegistry
 	}
 
-	storeEnvs, err := fs.InitEnvsFromStoreSpecs(ctx, cfg.Stores.Specs, fs.EnvConfig{
-		RW:      fs.ReadWrite,
-		Version: cfg.Settings.Version,
-	}, stickyRegistry, cfg.DiskWriteStats)
+	storeEnvs, err := fs.InitEnvsFromStoreSpecs(ctx, cfg.Stores.Specs, fs.ReadWrite, stickyRegistry, cfg.DiskWriteStats)
 	if err != nil {
 		return Engines{}, err
 	}
@@ -796,7 +780,6 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 			storage.Attributes(roachpb.Attributes{Attrs: spec.Attributes}),
 			storage.If(storeKnobs.SmallEngineBlocks, storage.BlockSize(1)),
 			storage.BlockConcurrencyLimitDivisor(len(cfg.Stores.Specs)),
-			storage.MemTableStopWritesThreshold(stopWritesThreshold),
 		}
 		if len(storeKnobs.EngineKnobs) > 0 {
 			storageConfigOpts = append(storageConfigOpts, storeKnobs.EngineKnobs...)
@@ -806,23 +789,19 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 		}
 
 		if spec.InMemory {
-			var sizeInBytes int64
-			if spec.Size.IsSet() {
-				if spec.Size.IsBytes() {
-					sizeInBytes = spec.Size.Bytes()
-				} else {
-					sysMem, err := status.GetTotalMemory(ctx)
-					if err != nil {
-						return Engines{}, errors.Errorf("could not retrieve system memory")
-					}
-					sizeInBytes = spec.Size.Calculate(sysMem)
+			var sizeInBytes = spec.Size.Bytes
+			if spec.Size.Percent > 0 {
+				sysMem, err := status.GetTotalMemory(ctx)
+				if err != nil {
+					return Engines{}, errors.Errorf("could not retrieve system memory")
 				}
-				if !storeKnobs.SkipMinSizeCheck && sizeInBytes < storageconfig.MinimumStoreSize {
-					return Engines{}, errors.Errorf("%s (%s) is below the minimum requirement of %s",
-						spec.Size, humanizeutil.IBytes(sizeInBytes), humanizeutil.IBytes(storageconfig.MinimumStoreSize))
-				}
-				addCfgOpt(storage.MaxSizeBytes(sizeInBytes))
+				sizeInBytes = int64(float64(sysMem) * spec.Size.Percent / 100)
 			}
+			if sizeInBytes != 0 && !storeKnobs.SkipMinSizeCheck && sizeInBytes < base.MinimumStoreSize {
+				return Engines{}, errors.Errorf("%f%% of memory is only %s bytes, which is below the minimum requirement of %s",
+					spec.Size.Percent, humanizeutil.IBytes(sizeInBytes), humanizeutil.IBytes(base.MinimumStoreSize))
+			}
+			addCfgOpt(storage.MaxSizeBytes(sizeInBytes))
 			addCfgOpt(storage.CacheSize(cfg.CacheSize))
 			addCfgOpt(storage.RemoteStorageFactory(cfg.EarlyBootExternalStorageAccessor))
 
@@ -835,10 +814,13 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 			if err != nil {
 				return Engines{}, errors.Wrap(err, "retrieving disk usage")
 			}
-			var sizeInBytes = spec.Size.Calculate(int64(du.TotalBytes))
-			if spec.Size.IsSet() && !storeKnobs.SkipMinSizeCheck && sizeInBytes < storageconfig.MinimumStoreSize {
-				return Engines{}, errors.Errorf("%s: %s (%s) is below the minimum requirement of %s",
-					spec.Path, spec.Size, humanizeutil.IBytes(sizeInBytes), humanizeutil.IBytes(storageconfig.MinimumStoreSize))
+			var sizeInBytes = spec.Size.Bytes
+			if spec.Size.Percent > 0 {
+				sizeInBytes = int64(float64(du.TotalBytes) * spec.Size.Percent / 100)
+			}
+			if sizeInBytes != 0 && !storeKnobs.SkipMinSizeCheck && sizeInBytes < base.MinimumStoreSize {
+				return Engines{}, errors.Errorf("%f%% of %s's total free space is only %s bytes, which is below the minimum requirement of %s",
+					spec.Size.Percent, spec.Path, humanizeutil.IBytes(sizeInBytes), humanizeutil.IBytes(base.MinimumStoreSize))
 			}
 			monitor, err := cfg.DiskMonitorManager.Monitor(spec.Path)
 			if err != nil {
@@ -852,9 +834,9 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 			}
 			addCfgOpt(storage.DiskWriteStatsCollector(statsCollector))
 
-			if spec.Size.IsPercent() {
+			if spec.Size.Percent > 0 {
 				detail(redact.Sprintf("store %d: max size %s (calculated from %.2f percent of total), max open file limit %d", i, humanizeutil.IBytes(sizeInBytes), spec.Size.Percent, openFileLimitPerStore))
-				addCfgOpt(storage.MaxSizePercent(spec.Size.Percent() / 100))
+				addCfgOpt(storage.MaxSizePercent(spec.Size.Percent / 100))
 			} else {
 				detail(redact.Sprintf("store %d: max size %s, max open file limit %d", i, humanizeutil.IBytes(sizeInBytes), openFileLimitPerStore))
 				addCfgOpt(storage.MaxSizeBytes(sizeInBytes))
@@ -902,10 +884,10 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 		fileCache.Unref()
 	}
 
-	log.Dev.Infof(ctx, "%d storage engine%s initialized",
+	log.Infof(ctx, "%d storage engine%s initialized",
 		len(engines), redact.Safe(util.Pluralize(int64(len(engines)))))
 	for _, s := range details {
-		log.Dev.Infof(ctx, "%v", s)
+		log.Infof(ctx, "%v", s)
 	}
 
 	// Clear out engines because we have deferred engines.Close().
@@ -957,7 +939,7 @@ func (cfg *Config) FilterGossipBootstrapAddresses(ctx context.Context) []util.Un
 	for _, addr := range cfg.GossipBootstrapAddresses {
 		if addr.String() == advert.String() || addr.String() == listen.String() {
 			if log.V(1) {
-				log.Dev.Infof(ctx, "skipping -join address %q, because a node cannot join itself", addr)
+				log.Infof(ctx, "skipping -join address %q, because a node cannot join itself", addr)
 			}
 		} else {
 			filtered = append(filtered, addr)
@@ -965,7 +947,7 @@ func (cfg *Config) FilterGossipBootstrapAddresses(ctx context.Context) []util.Un
 		}
 	}
 	if log.V(1) {
-		log.Dev.Infof(ctx, "initial addresses: %v", addrs)
+		log.Infof(ctx, "initial addresses: %v", addrs)
 	}
 	return filtered
 }

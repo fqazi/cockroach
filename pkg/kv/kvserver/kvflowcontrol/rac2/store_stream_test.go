@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/echotest"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
@@ -38,7 +37,9 @@ func TestBlockedStreamLogging(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	s := log.ScopeWithoutShowLogs(t)
 	// Causes every call to update the gauges to log.
-	testutils.SetVModule(t, "store_stream=2")
+	prevVModule := log.GetVModule()
+	_ = log.SetVModule("store_stream=2")
+	defer func() { _ = log.SetVModule(prevVModule) }()
 	defer s.Close(t)
 
 	ctx := context.Background()
@@ -76,7 +77,7 @@ func TestBlockedStreamLogging(t *testing.T) {
 	}
 	// 25th stream will also be blocked. The detailed stats will only cover an
 	// arbitrary subset of 20 streams.
-	log.KvDistribution.Infof(ctx, "creating stream id %d", id)
+	log.Infof(ctx, "creating stream id %d", id)
 	createStreamAndExhaustTokens(id, true)
 
 	// Total 104 streams are blocked.
@@ -85,7 +86,7 @@ func TestBlockedStreamLogging(t *testing.T) {
 	}
 	// 105th stream will also be blocked. The blocked stream names will only
 	// list 100 streams.
-	log.KvDistribution.Infof(ctx, "creating stream id %d", id)
+	log.Infof(ctx, "creating stream id %d", id)
 	createStreamAndExhaustTokens(id, true)
 
 	log.FlushFiles()

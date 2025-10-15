@@ -46,12 +46,6 @@ const (
 	remoteUser   = "ubuntu"
 	tagComment   = "comment"
 	tagSubnet    = "subnetPrefix"
-
-	// UserManagedIdentity expected to exist in the subscription.
-	// This identity will be associated to the VMs and will grant permissions
-	// for roachprod testing.
-	userManagedIdentityName          = "rp-roachtest"
-	userManagedIdentityResourceGroup = "rp-roachtest"
 )
 
 // providerInstance is the instance to be registered into vm.Providers by Init.
@@ -931,9 +925,6 @@ func (p *Provider) createVM(
 		startupArgs.AttachedDiskLun = &lun
 	}
 
-	// Check if we only require a boot disk (workload only machines).
-	startupArgs.BootDiskOnly = providerOpts.BootDiskOnly
-
 	startupScript, err := evalStartupTemplate(startupArgs)
 	if err != nil {
 		return machine, err
@@ -992,17 +983,6 @@ func (p *Provider) createVM(
 		Location: group.Location,
 		Zones:    to.StringSlicePtr([]string{zone.AvailabilityZone}),
 		Tags:     tags,
-		Identity: &compute.VirtualMachineIdentity{
-			Type: compute.ResourceIdentityTypeUserAssigned,
-			UserAssignedIdentities: map[string]*compute.UserAssignedIdentitiesValue{
-				fmt.Sprintf(
-					"/subscriptions/%s/resourceGroups/%s/providers/Microsoft.ManagedIdentity/userAssignedIdentities/%s",
-					sub,
-					userManagedIdentityResourceGroup,
-					userManagedIdentityName,
-				): {},
-			},
-		},
 		VirtualMachineProperties: &compute.VirtualMachineProperties{
 			HardwareProfile: &compute.HardwareProfile{
 				VMSize: compute.VirtualMachineSizeTypes(providerOpts.MachineType),
@@ -1061,7 +1041,7 @@ func (p *Provider) createVM(
 		machine.VirtualMachineProperties.StorageProfile.DiskControllerType = compute.NVMe
 	}
 
-	if !opts.SSDOpts.UseLocalSSD && !providerOpts.BootDiskOnly {
+	if !opts.SSDOpts.UseLocalSSD {
 		caching := compute.CachingTypesNone
 
 		switch providerOpts.DiskCaching {
@@ -1122,7 +1102,6 @@ func (p *Provider) createVM(
 	if err = future.WaitForCompletionRef(ctx, client.Client); err != nil {
 		return
 	}
-
 	return future.Result(client)
 }
 

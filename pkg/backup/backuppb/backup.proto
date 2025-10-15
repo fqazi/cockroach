@@ -156,19 +156,7 @@ message BackupManifest {
   // NEXT ID: 30.
 }
 
-message BackupIndexMetadata {
-  util.hlc.Timestamp start_time = 1 [(gogoproto.nullable) = false];
-  util.hlc.Timestamp end_time = 2 [(gogoproto.nullable) = false];
-  // The path to the directory containing the backup relative to the collection
-  // URI.
-  string path = 3;
-  bool is_compacted = 4;
-  MVCCFilter mvcc_filter = 5 [(gogoproto.customname) = "MVCCFilter"];
-  util.hlc.Timestamp revision_start_time = 6 [(gogoproto.nullable) = false];
-  // Next ID: 7.
-}
-
-message BackupPartitionDescriptor {
+message BackupPartitionDescriptor{
   string locality_kv = 1 [(gogoproto.customname) = "LocalityKV"];
   repeated BackupManifest.File files = 2 [(gogoproto.nullable) = false];
   bytes backup_id = 3 [(gogoproto.nullable) = false,

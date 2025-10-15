@@ -247,7 +247,7 @@ func (h *ProcOutputHelper) EmitRow(
 	// TODO(yuzefovich): consider removing this logging since the verbosity
 	// check is not exactly free.
 	if log.V(3) {
-		log.Dev.InfofDepth(ctx, 1, "pushing row %s", outRow.String(h.OutputTypes))
+		log.InfofDepth(ctx, 1, "pushing row %s", outRow.String(h.OutputTypes))
 	}
 	if r := output.Push(outRow, nil); r != NeedMoreRows {
 		log.VEventf(ctx, 1, "no more rows required. drain requested: %t",
@@ -295,10 +295,7 @@ func (h *ProcOutputHelper) ProcessRow(
 			if err != nil {
 				return nil, false, err
 			}
-			h.outputRow[i], err = rowenc.DatumToEncDatum(h.OutputTypes[i], datum)
-			if err != nil {
-				return nil, false, err
-			}
+			h.outputRow[i] = rowenc.DatumToEncDatum(h.OutputTypes[i], datum)
 		}
 	} else if h.outputCols != nil {
 		// Projection.
@@ -329,7 +326,6 @@ type ProcessorConstructor func(
 	ctx context.Context,
 	flowCtx *FlowCtx,
 	processorID int32,
-	stageID int32,
 	core *execinfrapb.ProcessorCoreUnion,
 	post *execinfrapb.PostProcessSpec,
 	inputs []RowSource,

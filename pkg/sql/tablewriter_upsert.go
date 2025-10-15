@@ -37,12 +37,10 @@ import (
 // block comment on Builder.buildInsert in opt/optbuilder/insert.go.
 type tableUpserter struct {
 	tableWriterBase
-	mutationOutputHelper
 
 	ri row.Inserter
 
-	// rowsNeeded is set to true if the mutation operator needs to return the rows
-	// that were affected by the mutation.
+	// Should we collect the rows for a RETURNING clause?
 	rowsNeeded bool
 
 	// A mapping of column IDs to the return index used to shape the resulting
@@ -173,7 +171,6 @@ func (tu *tableUpserter) row(
 	traceKV bool,
 ) error {
 	tu.currentBatchSize++
-	tu.onModifiedRow()
 
 	// Consult the canary column to determine whether to insert or update. For
 	// more details on how canary columns work, see the block comment on
@@ -203,7 +200,8 @@ func (tu *tableUpserter) row(
 		if !tu.rowsNeeded {
 			return nil
 		}
-		return tu.addRow(ctx, datums[insertEnd:fetchEnd])
+		_, err := tu.rows.AddRow(ctx, datums[insertEnd:fetchEnd])
+		return err
 	}
 
 	// Update the row.
@@ -258,7 +256,8 @@ func (tu *tableUpserter) insertNonConflictingRow(
 				tu.resultRow[retIdx] = tableRow[tabIdx]
 			}
 		}
-		return tu.addRow(ctx, tu.resultRow)
+		_, err := tu.rows.AddRow(ctx, tu.resultRow)
+		return err
 	}
 
 	// Map the upserted columns into the result row before adding it.
@@ -267,7 +266,8 @@ func (tu *tableUpserter) insertNonConflictingRow(
 			tu.resultRow[retIdx] = insertRow[tabIdx]
 		}
 	}
-	return tu.addRow(ctx, tu.resultRow)
+	_, err := tu.rows.AddRow(ctx, tu.resultRow)
+	return err
 }
 
 // updateConflictingRow updates an existing row in the table when there was a
@@ -325,7 +325,8 @@ func (tu *tableUpserter) updateConflictingRow(
 
 	// The resulting row may have nil values for columns that aren't
 	// being upserted, updated or fetched.
-	return tu.addRow(ctx, tu.resultRow)
+	_, err = tu.rows.AddRow(ctx, tu.resultRow)
+	return err
 }
 
 // tableDesc returns the TableDescriptor for the table that the optTableInserter

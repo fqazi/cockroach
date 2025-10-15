@@ -29,7 +29,6 @@ for var in "${env_vars[@]}"; do
 done
 
 export ROACHPROD_DISABLED_PROVIDERS=IBM
-export COCKROACH_ROACHPROD_INSECURE="${COCKROACH_ROACHPROD_INSECURE:-false}"
 
 for NODE in $(seq 1 $NUM_REGIONS)
 do
@@ -50,12 +49,11 @@ do
 
 export ROACHPROD_DISABLED_PROVIDERS=IBM
 export ROACHPROD_GCE_DEFAULT_PROJECT=$ROACHPROD_GCE_DEFAULT_PROJECT
-export COCKROACH_ROACHPROD_INSECURE="${COCKROACH_ROACHPROD_INSECURE:-false}"
-./drtprod sync
-PGURLS=\$(./drtprod load-balancer pgurl $CLUSTER | sed s/\'//g)
+./roachprod sync
+PGURLS=\$(./roachprod load-balancer pgurl $CLUSTER | sed s/\'//g)
 if [ -z "\$PGURLS" ]; then
     echo ">> No load-balancer configured; falling back to direct pgurl"
-    PGURLS=\$(./drtprod pgurl $CLUSTER | sed s/\'//g)
+    PGURLS=\$(./roachprod pgurl $CLUSTER | sed s/\'//g)
 fi
 read -r -a PGURLS_REGION <<< "\$PGURLS"
 
@@ -73,8 +71,6 @@ echo ">> Starting tpcc workload"
     --survival-goal region \
     --regions=$REGIONS \
     --max-conn-lifetime=$MAX_CONN_LIFETIME \
-    --conns=$NUM_CONNECTIONS \
-    --local-warehouses=true \
     \${PGURLS_REGION[@]}
 EOF
 

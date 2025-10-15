@@ -436,7 +436,7 @@ func (e *Error) checkTxnStatusValid() {
 		return
 	}
 	if txn.Status.IsFinalized() {
-		log.Dev.Fatalf(context.TODO(), "transaction unexpectedly finalized in (%T): %v", err, e)
+		log.Fatalf(context.TODO(), "transaction unexpectedly finalized in (%T): %v", err, e)
 	}
 }
 
@@ -660,7 +660,7 @@ func (e *RangeKeyMismatchError) AppendRangeInfo(ctx context.Context, ris ...roac
 	for _, ri := range ris {
 		if !ri.Lease.Empty() {
 			if _, ok := ri.Desc.GetReplicaDescriptorByID(ri.Lease.Replica.ReplicaID); !ok {
-				log.Dev.Fatalf(ctx, "lease names missing replica; lease: %s, desc: %s", ri.Lease, ri.Desc)
+				log.Fatalf(ctx, "lease names missing replica; lease: %s, desc: %s", ri.Lease, ri.Desc)
 			}
 		}
 		e.Ranges = append(e.Ranges, ri)
@@ -1571,10 +1571,10 @@ func NewRefreshFailedError(
 		o.apply(&options)
 	}
 	if reason == RefreshFailedError_REASON_INTENT && options.conflictingTxn == nil {
-		log.Dev.Fatal(ctx, "conflictingTxn should be set if refresh failed with REASON_INTENT")
+		log.Fatal(ctx, "conflictingTxn should be set if refresh failed with REASON_INTENT")
 	}
 	if reason != RefreshFailedError_REASON_INTENT && options.conflictingTxn != nil {
-		log.Dev.Fatal(ctx, "conflictingTxn should not be set if refresh failed without REASON_INTENT")
+		log.Fatal(ctx, "conflictingTxn should not be set if refresh failed without REASON_INTENT")
 	}
 	return &RefreshFailedError{
 		Reason:         reason,
@@ -1830,6 +1830,34 @@ func NewKeyCollisionError(key roachpb.Key, value []byte) error {
 	return ret
 }
 
+// snapshotReservationTimeoutError represents an error that occurs when
+// giving up during snapshot reservation due to cluster setting timeout.
+type SnapshotReservationTimeoutError struct {
+	cause       error
+	settingName string
+}
+
+// Error implements the error interface.
+func (e *SnapshotReservationTimeoutError) Error() string {
+	return redact.Sprint(e).StripMarkers()
+}
+
+// SafeFormatError implements errors.SafeFormatter.
+func (e *SnapshotReservationTimeoutError) SafeFormatError(p errors.Printer) (next error) {
+	p.Printf("giving up during snapshot reservation due to cluster setting %q: %v", redact.SafeString(e.settingName), redact.SafeString(e.cause.Error()))
+	return nil
+}
+
+// NewSnapshotReservationTimeoutError creates a new SnapshotReservationTimeoutError.
+func NewSnapshotReservationTimeoutError(
+	cause error, settingName string,
+) *SnapshotReservationTimeoutError {
+	return &SnapshotReservationTimeoutError{
+		cause:       cause,
+		settingName: settingName,
+	}
+}
+
 // NewExclusionViolationError creates a new ExclusionViolationError. This error
 // is returned by requests that encounter an existing value written at a
 // timestamp at which they expected to have an exclusive lock on the key. This
@@ -1974,4 +2002,5 @@ var _ errors.SafeFormatter = &UnhandledRetryableError{}
 var _ errors.SafeFormatter = &ReplicaUnavailableError{}
 var _ errors.SafeFormatter = &ProxyFailedError{}
 var _ errors.SafeFormatter = &KeyCollisionError{}
+var _ errors.SafeFormatter = &SnapshotReservationTimeoutError{}
 var _ errors.SafeFormatter = &ExclusionViolationError{}

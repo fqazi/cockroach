@@ -147,9 +147,6 @@ func TestAllRegisteredSetup(t *testing.T) {
 			// This requires downloading from a GCP bucket and storing in the
 			// machine's ~/.cache directory.
 			continue
-		case `workload_generator`:
-			// This will take its schema generation data from flags at run time, so static checks are not valid.
-			continue
 		}
 
 		t.Run(meta.Name, func(t *testing.T) {
@@ -296,7 +293,7 @@ func TestDeterministicInitialData(t *testing.T) {
 		`startrek`:   0xa0249fbdf612734c,
 		`tpcc`:       0xccfecd06eed59975,
 		`tpch`:       0xcd2abbd021ed895d,
-		`ycsb`:       0xa00a7efc9d3b8532,
+		`ycsb`:       0x0e6012ee6491a0fb,
 	}
 
 	var a bufalloc.ByteAllocator

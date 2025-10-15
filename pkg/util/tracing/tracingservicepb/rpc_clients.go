@@ -9,7 +9,6 @@ import (
 	context "context"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 )
 
@@ -17,7 +16,14 @@ import (
 // it falls back to gRPC. The established connection is used to create a
 // RPCTracingClient.
 func DialTracingClient(
-	nd *nodedialer.Dialer, ctx context.Context, nodeID roachpb.NodeID, class rpcbase.ConnectionClass,
+	nd rpcbase.NodeDialer, ctx context.Context, nodeID roachpb.NodeID, class rpcbase.ConnectionClass,
 ) (RPCTracingClient, error) {
-	return nodedialer.DialRPCClient(nd, ctx, nodeID, class, NewGRPCTracingClientAdapter, NewDRPCTracingClientAdapter)
+	if !rpcbase.TODODRPC {
+		conn, err := nd.Dial(ctx, nodeID, class)
+		if err != nil {
+			return nil, err
+		}
+		return NewGRPCTracingClientAdapter(conn), nil
+	}
+	return nil, nil
 }

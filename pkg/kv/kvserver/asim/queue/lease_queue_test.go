@@ -140,11 +140,9 @@ func TestLeaseQueue(t *testing.T) {
 			store, _ := s.Store(testingStore)
 			lq := NewLeaseQueue(
 				store.StoreID(),
-				store.NodeID(),
 				changer,
 				testSettings,
-				s.Allocator(store.StoreID()),
-				s.Node(store.NodeID()).AllocatorSync(),
+				s.MakeAllocator(store.StoreID()),
 				s.StorePool(store.StoreID()),
 				start,
 			)
@@ -172,7 +170,7 @@ func TestLeaseQueue(t *testing.T) {
 				s.TickClock(state.OffsetTick(start, tick))
 
 				// Tick state updates that are queued for completion.
-				changer.Tick(ctx, state.OffsetTick(start, tick), s)
+				changer.Tick(state.OffsetTick(start, tick), s)
 
 				// Update the store's view of the cluster, we update all stores
 				// but only care about s1's view.

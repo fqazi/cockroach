@@ -586,6 +586,7 @@ func (ot *OptTester) RunCommand(tb testing.TB, d *datadriven.TestData) string {
 
 	ot.evalCtx.TestingKnobs.OptimizerCostPerturbation = ot.Flags.PerturbCost
 	ot.evalCtx.Locality = ot.Flags.Locality
+	ot.evalCtx.OriginalLocality = ot.Flags.Locality
 	ot.evalCtx.Placeholders = nil
 	ot.evalCtx.TxnIsoLevel = ot.Flags.TxnIsoLevel
 
@@ -2316,7 +2317,6 @@ func (ot *OptTester) buildExpr(factory *norm.Factory) error {
 	ot.semaCtx.Placeholders.Init(stmt.NumPlaceholders, nil /* typeHints */)
 	ot.semaCtx.Annotations = tree.MakeAnnotations(stmt.NumAnnotations)
 	ot.semaCtx.TypeResolver = ot.catalog
-	ot.evalCtx.Annotations = &ot.semaCtx.Annotations
 	b := optbuilder.New(ot.ctx, &ot.semaCtx, &ot.evalCtx, ot.catalog, factory, stmt.AST)
 	return b.Build()
 }

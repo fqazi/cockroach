@@ -27,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
-	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/assert"
@@ -70,7 +69,6 @@ func TestProcessorBasic(t *testing.T) {
 			false, /* withDiff */
 			false, /* withFiltering */
 			false, /* withOmitRemote */
-			noBulkDelivery,
 			h.toBufferedStreamIfNeeded(r1Stream),
 		)
 		require.True(t, r1OK)
@@ -205,7 +203,6 @@ func TestProcessorBasic(t *testing.T) {
 			true,  /* withDiff */
 			true,  /* withFiltering */
 			false, /* withOmitRemote */
-			noBulkDelivery,
 			h.toBufferedStreamIfNeeded(r2Stream),
 		)
 		require.True(t, r2OK)
@@ -318,7 +315,6 @@ func TestProcessorBasic(t *testing.T) {
 			false, /* withDiff */
 			false, /* withFiltering */
 			false, /* withOmitRemote */
-			noBulkDelivery,
 			h.toBufferedStreamIfNeeded(r3Stream),
 		)
 		require.True(t, r30K)
@@ -340,7 +336,6 @@ func TestProcessorBasic(t *testing.T) {
 			false, /* withDiff */
 			false, /* withFiltering */
 			false, /* withOmitRemote */
-			noBulkDelivery,
 			h.toBufferedStreamIfNeeded(r4Stream),
 		)
 		require.False(t, r4OK)
@@ -366,7 +361,6 @@ func TestProcessorOmitRemote(t *testing.T) {
 			false, /* withDiff */
 			false, /* withFiltering */
 			false, /* withOmitRemote */
-			noBulkDelivery,
 			h.toBufferedStreamIfNeeded(r1Stream),
 		)
 		require.True(t, r1OK)
@@ -392,7 +386,6 @@ func TestProcessorOmitRemote(t *testing.T) {
 			false, /* withDiff */
 			false, /* withFiltering */
 			true,  /* withOmitRemote */
-			noBulkDelivery,
 			h.toBufferedStreamIfNeeded(r2Stream),
 		)
 		require.True(t, r2OK)
@@ -450,7 +443,6 @@ func TestProcessorSlowConsumer(t *testing.T) {
 				false, /* withDiff */
 				false, /* withFiltering */
 				false, /* withOmitRemote */
-				noBulkDelivery,
 				h.toBufferedStreamIfNeeded(r1Stream),
 			)
 			r2Stream := newTestStream()
@@ -462,7 +454,6 @@ func TestProcessorSlowConsumer(t *testing.T) {
 				false, /* withDiff */
 				false, /* withFiltering */
 				false, /* withOmitRemote */
-				noBulkDelivery,
 				h.toBufferedStreamIfNeeded(r2Stream),
 			)
 			h.syncEventAndRegistrations()
@@ -558,7 +549,6 @@ func TestProcessorMemoryBudgetExceeded(t *testing.T) {
 			false, /* withDiff */
 			false, /* withFiltering */
 			false, /* withOmitRemote */
-			noBulkDelivery,
 			h.toBufferedStreamIfNeeded(r1Stream),
 		)
 		h.syncEventAndRegistrations()
@@ -614,7 +604,6 @@ func TestProcessorMemoryBudgetReleased(t *testing.T) {
 			false, /* withDiff */
 			false, /* withFiltering */
 			false, /* withOmitRemote */
-			noBulkDelivery,
 			h.toBufferedStreamIfNeeded(r1Stream),
 		)
 		h.syncEventAndRegistrations()
@@ -696,7 +685,6 @@ func TestProcessorInitializeResolvedTimestamp(t *testing.T) {
 			false, /* withDiff */
 			false, /* withFiltering */
 			false, /* withOmitRemote */
-			noBulkDelivery,
 			h.toBufferedStreamIfNeeded(r1Stream),
 		)
 		h.syncEventAndRegistrations()
@@ -1005,7 +993,6 @@ func TestProcessorConcurrentStop(t *testing.T) {
 				s := newTestStream()
 				p.Register(s.ctx, h.span, hlc.Timestamp{}, nil, /* catchUpIter */
 					false /* withDiff */, false /* withFiltering */, false, /* withOmitRemote */
-					noBulkDelivery,
 					h.toBufferedStreamIfNeeded(s))
 			}()
 			go func() {
@@ -1079,7 +1066,6 @@ func TestProcessorRegistrationObservesOnlyNewEvents(t *testing.T) {
 				regs[s] = firstIdx
 				p.Register(s.ctx, h.span, hlc.Timestamp{}, nil, /* catchUpIter */
 					false /* withDiff */, false /* withFiltering */, false, /* withOmitRemote */
-					noBulkDelivery,
 					h.toBufferedStreamIfNeeded(s))
 				regDone <- struct{}{}
 			}
@@ -1140,7 +1126,6 @@ func TestBudgetReleaseOnProcessorStop(t *testing.T) {
 			false, /* withDiff */
 			false, /* withFiltering */
 			false, /* withOmitRemote */
-			noBulkDelivery,
 			h.toBufferedStreamIfNeeded(rStream),
 		)
 		h.syncEventAndRegistrations()
@@ -1221,7 +1206,6 @@ func TestBudgetReleaseOnLastStreamError(t *testing.T) {
 			false, /* withDiff */
 			false, /* withFiltering */
 			false, /* withOmitRemote */
-			noBulkDelivery,
 			h.toBufferedStreamIfNeeded(rStream),
 		)
 		h.syncEventAndRegistrations()
@@ -1292,7 +1276,6 @@ func TestBudgetReleaseOnOneStreamError(t *testing.T) {
 			false, /* withDiff */
 			false, /* withFiltering */
 			false, /* withOmitRemote */
-			noBulkDelivery,
 			h.toBufferedStreamIfNeeded(r1Stream),
 		)
 
@@ -1305,7 +1288,7 @@ func TestBudgetReleaseOnOneStreamError(t *testing.T) {
 			nil,   /* catchUpIter */
 			false, /* withDiff */
 			false, /* withFiltering */
-			false /* withOmitRemote */, noBulkDelivery,
+			false, /* withOmitRemote */
 			h.toBufferedStreamIfNeeded(r2Stream),
 		)
 		h.syncEventAndRegistrations()
@@ -1475,7 +1458,6 @@ func TestProcessorBackpressure(t *testing.T) {
 		stream := newTestStream()
 		ok, _, _ := p.Register(stream.ctx, span, hlc.MinTimestamp, nil, /* catchUpIter */
 			false /* withDiff */, false /* withFiltering */, false, /* withOmitRemote */
-			noBulkDelivery,
 			h.toBufferedStreamIfNeeded(stream))
 		require.True(t, ok)
 
@@ -1580,55 +1562,6 @@ func TestProcessorContextCancellation(t *testing.T) {
 		case <-pushDoneC:
 		case <-time.After(3 * time.Second):
 			t.Fatal("txn pusher did not exit")
-		}
-	})
-}
-
-// TestIntentScannerOnError tests that when a processor is given with an intent
-// scanner constructor that fails to create a scanner, the processor will fail
-// to start gracefully.
-func TestIntentScannerOnError(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	ctx := context.Background()
-	stopper := stop.NewStopper()
-	defer stopper.Stop(ctx)
-
-	cfg := testConfig{
-		Config: Config{
-			RangeID:  2,
-			Stopper:  stopper,
-			Span:     roachpb.RSpan{Key: roachpb.RKey("a"), EndKey: roachpb.RKey("z")},
-			Metrics:  NewMetrics(),
-			Priority: true,
-		},
-	}
-	sch := NewScheduler(SchedulerConfig{
-		Workers:         1,
-		PriorityWorkers: 1,
-		Metrics:         NewSchedulerMetrics(time.Second),
-	})
-	require.NoError(t, sch.Start(ctx, stopper))
-	cfg.Scheduler = sch
-
-	s := NewProcessor(cfg.Config)
-	erroringScanConstructor := func() (IntentScanner, error) {
-		return nil, errors.New("scanner error")
-	}
-	err := s.Start(stopper, erroringScanConstructor)
-	require.ErrorContains(t, err, "scanner error")
-
-	// The processor should be stopped eventually.
-	p := (s).(*ScheduledProcessor)
-	testutils.SucceedsSoon(t, func() error {
-		select {
-		case <-p.stoppedC:
-			_, ok := sch.shards[shardIndex(p.ID(), len(sch.shards), p.Priority)].procs[p.ID()]
-			require.False(t, ok)
-			require.False(t, sch.priorityIDs.Contains(p.ID()))
-			return nil
-		default:
-			return errors.New("processor not stopped")
 		}
 	})
 }

@@ -7,11 +7,13 @@ package kvcoord
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -59,7 +61,7 @@ func TestTxnCoordSenderWriteBufferingDisablesPipelining(t *testing.T) {
 	// buffered.
 	require.NoError(t, db.Put(ctx, "test-key-a", "hello"))
 
-	bufferedWritesScanTransformEnabled.Override(ctx, &st.SV, false)
+	BufferedWritesScanTransformEnabled.Override(ctx, &st.SV, false)
 	BufferedWritesMaxBufferSize.Override(ctx, &st.SV, defaultBufferSize)
 
 	// Without write buffering
@@ -93,70 +95,107 @@ func TestTxnCoordSenderWriteBufferingDisablesPipelining(t *testing.T) {
 	}, calls)
 }
 
-// TestTxnCoordSenderWriteBufferingReEnablesPipelining verifies that pipelining
-// is re-enabled after a mid-transaction flush.
-func TestTxnCoordSenderWriteBufferingReEnablesPipelining(t *testing.T) {
+// TestTxnWriteBufferFlushedWithMaxKeysOnBatch is a regression test for a bug
+// related to flushing the write buffer in response to a batch with a MaxKeys or
+// TargetBytes set.
+//
+// The bug requires that:
+//
+// 0. Buffered writes is enabled, either buffered writes for weak isolation is
+// enabled or durable locks for serializable is enabled.
+//
+// 1. The user makes replicated, locking Get requests. This can occur via SELECT
+// FOR UPDATE statements whose predicate contains all primary key columns and
+// which isn't transformed to a Scan. These Get's will be transformed to unreplicated
+// locking Get's and a replicated locking Get request will be buffered.
+//
+// 2. The user also writes some rows.
+//
+// 3. The Get's and writes are split over more than 1 range.
+//
+// 4. At least some of the buffered Get's are not replaced with later writes.
+//
+// 5. A batch with TargetBytes or MaxSpanRequestKeys set causes the buffer to flush.
+//
+// 6. The number of buffered Get's exceeds the MaxSpanRequestKeys.
+func TestTxnWriteBufferFlushedWithMaxKeysOnBatch(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	s := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	s, _, db := serverutils.StartServer(t, base.TestServerArgs{})
 	defer s.Stopper().Stop(ctx)
 
-	distSender := s.DistSenderI().(*DistSender)
-	batchCount := 0
-	var calls []kvpb.Method
-	var senderFn kv.SenderFunc = func(
-		ctx context.Context, ba *kvpb.BatchRequest,
-	) (*kvpb.BatchResponse, *kvpb.Error) {
-		batchCount++
-		t.Logf("Batch: %#+v", ba.Methods())
-		calls = append(calls, ba.Methods()...)
-		if et, ok := ba.GetArg(kvpb.EndTxn); ok {
-			// Ensure that no transactions enter a STAGING state.
-			et.(*kvpb.EndTxnRequest).InFlightWrites = nil
-		}
-		return distSender.Send(ctx, ba)
+	scratchStart, err := s.ScratchRange()
+	require.NoError(t, err)
+
+	scratchKey := func(idx int) roachpb.Key {
+		key := scratchStart.Clone()
+		key = append(key, []byte(fmt.Sprintf("key-%03d", idx))...)
+		return key
 	}
 
+	// We split the scratch range at a known place so that we can arrange for bug
+	// requirement (3).
+	_, _, err = s.SplitRange(scratchKey(6))
+	require.NoError(t, err)
+
 	st := s.ClusterSettings()
-	BufferedWritesMaxBufferSize.Override(ctx, &st.SV, defaultBufferSize)
 
-	tsf := NewTxnCoordSenderFactory(TxnCoordSenderFactoryConfig{
-		AmbientCtx: s.AmbientCtx(),
-		Settings:   st,
-		Clock:      s.Clock(),
-		Stopper:    s.Stopper(),
-		// Disable transaction heartbeats so that they don't disrupt our attempt to
-		// track the requests issued by the transactions.
-		HeartbeatInterval: -1,
-	}, senderFn)
-	db := kv.NewDB(s.AmbientCtx(), tsf, s.Clock(), s.Stopper())
+	// The bug requires that we transform Gets. Here, we disable it to prove that
+	// this tets passes.
+	BufferedWritesGetTransformEnabled.Override(ctx, &st.SV, false)
 
-	require.NoError(t, db.Put(ctx, "test-key-a", "hello"))
-	require.NoError(t, db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
+	// The locks need to actually be taken, so let's write to every key we are
+	// going to lock.
+	for i := range []int{1, 2, 3, 7, 8, 9} {
+		require.NoError(t, db.Put(ctx, scratchKey(i), "before-txn-value"))
+	}
+
+	txnCtx := ctx
+	// To trace the transaction:
+	//
+	// tracer := s.TracerI().(*tracing.Tracer)
+	// txnCtx, collectAndFinish := tracing.ContextWithRecordingSpan(context.Background(), tracer, "test")
+	err = db.Txn(txnCtx, func(ctx context.Context, txn *kv.Txn) error {
 		txn.SetBufferedWritesEnabled(true)
-		if err := txn.Put(ctx, "test-key-c", "hello"); err != nil {
+		// 1. Replicated locking Gets. We are putting 3 on both sides of the split
+		// to ensure we satisfy (3)
+		b := txn.NewBatch()
+		b.GetForUpdate(scratchKey(1), kvpb.GuaranteedDurability)
+		b.GetForUpdate(scratchKey(2), kvpb.GuaranteedDurability)
+		b.GetForUpdate(scratchKey(3), kvpb.GuaranteedDurability)
+		b.GetForUpdate(scratchKey(7), kvpb.GuaranteedDurability)
+		b.GetForUpdate(scratchKey(8), kvpb.GuaranteedDurability)
+		b.GetForUpdate(scratchKey(9), kvpb.GuaranteedDurability)
+		if err := txn.Run(ctx, b); err != nil {
 			return err
 		}
-		if _, err := txn.DelRange(ctx, "test-key", "test-key-d", true); err != nil {
-			return err
-		}
-		if err := txn.Put(ctx, "test-key-a", "hello"); err != nil {
-			return err
-		}
-		return nil
-	}))
 
-	require.Equal(t, 4, batchCount)
-	require.Equal(t, []kvpb.Method{
-		// The initial setup
-		kvpb.Put,
-		// The first (buffered) Put and the DeleteRange that flushes the buffer.
-		kvpb.Put, kvpb.DeleteRange,
-		// The second (pipelined) Put
-		kvpb.Put,
-		// EndTxn with the QueryIntent because pipelining was turned back on.
-		kvpb.QueryIntent, kvpb.EndTxn,
-	}, calls)
+		// 2. Our write that will be lost if we hit the bug.
+		if err := txn.Put(ctx, scratchKey(10), "from-txn-value"); err != nil {
+			return err
+		}
+
+		// 3. We force the flush of the buffer with a DeleteRange request that
+		// has MaxSpanRequestKeys set
+		b = txn.NewBatch()
+		b.Header.MaxSpanRequestKeys = 2
+		b.DelRange(scratchKey(21), scratchKey(24), true)
+		if err := txn.Run(ctx, b); err != nil {
+			return err
+		}
+
+		return nil
+	})
+	// To print the trace:
+	// recording := collectAndFinish()
+	// t.Logf("TRACE: %s", recording)
+	require.NoError(t, err)
+	actualKV, err := db.Get(ctx, scratchKey(10))
+	require.NoError(t, err)
+	require.NotNil(t, actualKV.Value)
+	actualValue, err := actualKV.Value.GetBytes()
+	require.NoError(t, err)
+	require.Equal(t, []byte("from-txn-value"), actualValue)
 }

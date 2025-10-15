@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
-	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/netutil/addr"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -84,7 +83,7 @@ func (s *topLevelServer) newTenantServer(
 	// Apply the TestTenantArgs, if any.
 	baseCfg.TestingKnobs = testArgs.Knobs
 
-	tenantServer, err := newTenantServerInternal(ctx, baseCfg, sqlCfg, tenantStopper, tenantNameContainer, s.db.AdmissionPacerFactory)
+	tenantServer, err := newTenantServerInternal(ctx, baseCfg, sqlCfg, tenantStopper, tenantNameContainer)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +139,6 @@ func newTenantServerInternal(
 	sqlCfg SQLConfig,
 	stopper *stop.Stopper,
 	tenantNameContainer *roachpb.TenantNameContainer,
-	elastic admission.PacerFactory,
 ) (*SQLServerWrapper, error) {
 	ambientCtx := baseCfg.AmbientCtx
 	stopper.SetTracer(baseCfg.Tracer)
@@ -149,10 +147,10 @@ func newTenantServerInternal(
 	newCtx := ambientCtx.AnnotateCtx(context.Background())
 
 	// Inform the logs we're starting a new server.
-	log.Dev.Infof(newCtx, "creating tenant server")
+	log.Infof(newCtx, "creating tenant server")
 
 	// Now instantiate the tenant server proper.
-	return newSharedProcessTenantServer(newCtx, stopper, baseCfg, sqlCfg, tenantNameContainer, elastic)
+	return newSharedProcessTenantServer(newCtx, stopper, baseCfg, sqlCfg, tenantNameContainer)
 }
 
 func (s *topLevelServer) makeSharedProcessTenantConfig(
@@ -227,7 +225,7 @@ func makeSharedProcessTenantServerConfig(
 		}
 		stopper.AddCloser(stop.CloserFn(func() {
 			if err := os.RemoveAll(storeDir); err != nil {
-				log.Dev.Warningf(context.Background(), "unable to delete tenant directory: %v", err)
+				log.Warningf(context.Background(), "unable to delete tenant directory: %v", err)
 			}
 		}))
 		storeSpec.Path = storeDir
@@ -329,19 +327,17 @@ func makeSharedProcessTenantServerConfig(
 
 	tempStorageCfg := base.InheritTempStorageConfig(ctx, st, kvServerCfg.SQLConfig.TempStorageConfig)
 	if !tempStorageCfg.InMemory {
-		// We create another temp directory alongside the existing one.
-		parentDir := filepath.Dir(tempStorageCfg.Path)
-		if parentDir == "" {
-			return BaseConfig{}, SQLConfig{}, errors.Newf("invalid temp storage config path %q", tempStorageCfg.Path)
-		}
-		tmpDir, unlockDirFn, err := fs.CreateTempDir(parentDir, TempDirPrefix)
-		if err != nil {
+		useStore := tempStorageCfg.Spec
+		// TODO(knz): Make tempDir configurable.
+		tempDir := useStore.Path
+		var unlockDirFn func()
+		if tempStorageCfg.Path, unlockDirFn, err = fs.CreateTempDir(tempDir, TempDirPrefix); err != nil {
 			return BaseConfig{}, SQLConfig{}, errors.Wrap(err, "could not create temporary directory for temp storage")
 		}
 		stopper.AddCloser(stop.CloserFn(unlockDirFn))
-		tempStorageCfg.Path = tmpDir
-		if tempStorageCfg.TempDirsRecordPath != "" {
-			if err := fs.RecordTempDir(tempStorageCfg.TempDirsRecordPath, tempStorageCfg.Path); err != nil {
+		if useStore.Path != "" {
+			recordPath := filepath.Join(useStore.Path, TempDirsRecordFilename)
+			if err := fs.RecordTempDir(recordPath, tempStorageCfg.Path); err != nil {
 				return BaseConfig{}, SQLConfig{}, errors.Wrap(err, "could not record temp dir")
 			}
 		}
@@ -392,7 +388,7 @@ func (s *SQLServerWrapper) reportTenantInfo(ctx context.Context) error {
 	clientConnOptions, serverParams := MakeServerOptionsForURL(s.cfg.Config)
 	pgURL, err := clientsecopts.MakeURLForServer(clientConnOptions, serverParams, url.User(username.RootUser))
 	if err != nil {
-		log.Dev.Errorf(ctx, "failed computing the URL: %v", err)
+		log.Errorf(ctx, "failed computing the URL: %v", err)
 	} else {
 		buf.Printf("sql:\t%s\n", pgURL.ToPQ())
 		buf.Printf("sql (JDBC):\t%s\n", pgURL.ToJDBC())

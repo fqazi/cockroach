@@ -57,7 +57,7 @@ func runProcessorTest(
 	}
 
 	p, err := NewProcessor(
-		context.Background(), &flowCtx, 0 /* processorID */, 0 /* stageID */, &core, &post,
+		context.Background(), &flowCtx, 0 /* processorID */, &core, &post,
 		[]execinfra.RowSource{in}, []execinfra.LocalProcessor{})
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +137,7 @@ func (r *rowGeneratingSource) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerM
 	}
 
 	for i := range r.scratchEncDatumRow {
-		r.scratchEncDatumRow[i] = rowenc.DatumToEncDatumUnsafe(r.types[i], datumRow[i])
+		r.scratchEncDatumRow[i] = rowenc.DatumToEncDatum(r.types[i], datumRow[i])
 	}
 	r.rowIdx++
 	return r.scratchEncDatumRow, nil

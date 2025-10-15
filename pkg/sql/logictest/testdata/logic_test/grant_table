@@ -251,12 +251,6 @@ test           pg_catalog          jsonpath                               type  
 test           pg_catalog          jsonpath[]                             type         admin    ALL             false
 test           pg_catalog          jsonpath[]                             type         public   USAGE           false
 test           pg_catalog          jsonpath[]                             type         root     ALL             false
-test           pg_catalog          ltree                                  type         admin    ALL             false
-test           pg_catalog          ltree                                  type         public   USAGE           false
-test           pg_catalog          ltree                                  type         root     ALL             false
-test           pg_catalog          ltree[]                                type         admin    ALL             false
-test           pg_catalog          ltree[]                                type         public   USAGE           false
-test           pg_catalog          ltree[]                                type         root     ALL             false
 test           pg_catalog          name                                   type         admin    ALL             false
 test           pg_catalog          name                                   type         public   USAGE           false
 test           pg_catalog          name                                   type         root     ALL             false
@@ -638,10 +632,6 @@ test           pg_catalog   jsonpath        type         admin    ALL           
 test           pg_catalog   jsonpath        type         root     ALL             false
 test           pg_catalog   jsonpath[]      type         admin    ALL             false
 test           pg_catalog   jsonpath[]      type         root     ALL             false
-test           pg_catalog   ltree           type         admin    ALL             false
-test           pg_catalog   ltree           type         root     ALL             false
-test           pg_catalog   ltree[]         type         admin    ALL             false
-test           pg_catalog   ltree[]         type         root     ALL             false
 test           pg_catalog   name            type         admin    ALL             false
 test           pg_catalog   name            type         root     ALL             false
 test           pg_catalog   name[]          type         admin    ALL             false
@@ -898,10 +888,6 @@ a              pg_catalog   jsonpath        type         admin    ALL           
 a              pg_catalog   jsonpath        type         root     ALL             false
 a              pg_catalog   jsonpath[]      type         admin    ALL             false
 a              pg_catalog   jsonpath[]      type         root     ALL             false
-a              pg_catalog   ltree           type         admin    ALL             false
-a              pg_catalog   ltree           type         root     ALL             false
-a              pg_catalog   ltree[]         type         admin    ALL             false
-a              pg_catalog   ltree[]         type         root     ALL             false
 a              pg_catalog   name            type         admin    ALL             false
 a              pg_catalog   name            type         root     ALL             false
 a              pg_catalog   name[]          type         admin    ALL             false
@@ -1096,10 +1082,6 @@ defaultdb      pg_catalog   jsonpath        type         admin    ALL           
 defaultdb      pg_catalog   jsonpath        type         root     ALL             false
 defaultdb      pg_catalog   jsonpath[]      type         admin    ALL             false
 defaultdb      pg_catalog   jsonpath[]      type         root     ALL             false
-defaultdb      pg_catalog   ltree           type         admin    ALL             false
-defaultdb      pg_catalog   ltree           type         root     ALL             false
-defaultdb      pg_catalog   ltree[]         type         admin    ALL             false
-defaultdb      pg_catalog   ltree[]         type         root     ALL             false
 defaultdb      pg_catalog   name            type         admin    ALL             false
 defaultdb      pg_catalog   name            type         root     ALL             false
 defaultdb      pg_catalog   name[]          type         admin    ALL             false
@@ -1294,10 +1276,6 @@ postgres       pg_catalog   jsonpath        type         admin    ALL           
 postgres       pg_catalog   jsonpath        type         root     ALL             false
 postgres       pg_catalog   jsonpath[]      type         admin    ALL             false
 postgres       pg_catalog   jsonpath[]      type         root     ALL             false
-postgres       pg_catalog   ltree           type         admin    ALL             false
-postgres       pg_catalog   ltree           type         root     ALL             false
-postgres       pg_catalog   ltree[]         type         admin    ALL             false
-postgres       pg_catalog   ltree[]         type         root     ALL             false
 postgres       pg_catalog   name            type         admin    ALL             false
 postgres       pg_catalog   name            type         root     ALL             false
 postgres       pg_catalog   name[]          type         admin    ALL             false
@@ -1500,10 +1478,6 @@ test           pg_catalog   jsonpath        type         admin    ALL           
 test           pg_catalog   jsonpath        type         root     ALL             false
 test           pg_catalog   jsonpath[]      type         admin    ALL             false
 test           pg_catalog   jsonpath[]      type         root     ALL             false
-test           pg_catalog   ltree           type         admin    ALL             false
-test           pg_catalog   ltree           type         root     ALL             false
-test           pg_catalog   ltree[]         type         admin    ALL             false
-test           pg_catalog   ltree[]         type         root     ALL             false
 test           pg_catalog   name            type         admin    ALL             false
 test           pg_catalog   name            type         root     ALL             false
 test           pg_catalog   name[]          type         admin    ALL             false

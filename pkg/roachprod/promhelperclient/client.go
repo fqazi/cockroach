@@ -113,8 +113,8 @@ func NewPromClient(options ...Option) (*PromClient, error) {
 		option.apply(c)
 	}
 
-	// If the client is not set and not disabled, create a new client
-	if c.httpClient == nil && !c.disabled {
+	// If the client is not set, create a new client
+	if c.httpClient == nil {
 		iapTokenSource, err := roachprodutil.NewIAPTokenSource(roachprodutil.IAPTokenSourceOptions{
 			OAuthClientID:       OAuthClientID,
 			ServiceAccountEmail: ServiceAccountEmail,

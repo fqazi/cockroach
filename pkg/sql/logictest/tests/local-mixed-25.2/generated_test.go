@@ -25,7 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 )
 
-const configIdx = 20
+const configIdx = 19
 
 var logicTestDir string
 
@@ -1144,13 +1144,6 @@ func TestLogic_jsonb_path_exists(
 	runLogicTest(t, "jsonb_path_exists")
 }
 
-func TestLogic_jsonb_path_exists_index_acceleration(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "jsonb_path_exists_index_acceleration")
-}
-
 func TestLogic_jsonb_path_match(
 	t *testing.T,
 ) {
@@ -1996,13 +1989,6 @@ func TestLogic_show_indexes(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "show_indexes")
-}
-
-func TestLogic_show_inspect_errors(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_inspect_errors")
 }
 
 func TestLogic_show_tenant_fingerprints(

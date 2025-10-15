@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing/drpcinterceptor"
 	"github.com/cockroachdb/errors"
 	"storj.io/drpc"
 	"storj.io/drpc/drpcclient"
@@ -54,12 +53,7 @@ func DialDRPC(
 		pooledConn := pool.Get(ctx /* unused */, struct{}{}, func(ctx context.Context,
 			_ struct{}) (drpcpool.Conn, error) {
 
-			netConn, err := func(ctx context.Context) (net.Conn, error) {
-				if rpcCtx.ContextOptions.AdvertiseAddr == target && !rpcCtx.ClientOnly {
-					return rpcCtx.loopbackDRPCDialFn(ctx)
-				}
-				return drpcmigrate.DialWithHeader(ctx, "tcp", target, drpcmigrate.DRPCHeader)
-			}(ctx)
+			netConn, err := drpcmigrate.DialWithHeader(ctx, "tcp", target, drpcmigrate.DRPCHeader)
 			if err != nil {
 				return nil, err
 			}
@@ -85,11 +79,9 @@ func DialDRPC(
 				}
 				// Clone TLS config to avoid modifying a cached TLS config.
 				tlsConfig = tlsConfig.Clone()
-				sn, _, err := net.SplitHostPort(target)
-				if err != nil {
-					return nil, err
-				}
-				tlsConfig.ServerName = sn
+				// TODO(server): remove this hack which is necessary at least in
+				// testing to get TestDRPCSelectQuery to pass.
+				tlsConfig.InsecureSkipVerify = true
 				tlsConn := tls.Client(netConn, tlsConfig)
 				conn = drpcconn.NewWithOptions(tlsConn, opts)
 			}
@@ -97,32 +89,22 @@ func DialDRPC(
 			return conn, nil
 		})
 
-		unaryInterceptors := rpcCtx.clientUnaryInterceptorsDRPC
 		if rpcCtx.Knobs.UnaryClientInterceptorDRPC != nil {
-			interceptor := rpcCtx.Knobs.UnaryClientInterceptorDRPC(target, rpcbase.DefaultClass)
-			if interceptor != nil {
-				unaryInterceptors = append(unaryInterceptors, interceptor)
+			if interceptor := rpcCtx.Knobs.UnaryClientInterceptorDRPC(target, rpcbase.DefaultClass); interceptor != nil {
+				rpcCtx.clientUnaryInterceptorsDRPC = append(rpcCtx.clientUnaryInterceptorsDRPC, interceptor)
 			}
 		}
-		streamInterceptors := rpcCtx.clientStreamInterceptorsDRPC
 		if rpcCtx.Knobs.StreamClientInterceptorDRPC != nil {
-			interceptor := rpcCtx.Knobs.StreamClientInterceptorDRPC(target, rpcbase.DefaultClass)
-			if interceptor != nil {
-				streamInterceptors = append(streamInterceptors, interceptor)
+			if interceptor := rpcCtx.Knobs.StreamClientInterceptorDRPC(target, rpcbase.DefaultClass); interceptor != nil {
+				rpcCtx.clientStreamInterceptorsDRPC = append(rpcCtx.clientStreamInterceptorsDRPC, interceptor)
 			}
 		}
-
-		opts := []drpcclient.DialOption{
-			drpcclient.WithChainUnaryInterceptor(unaryInterceptors...),
-			drpcclient.WithChainStreamInterceptor(streamInterceptors...),
-		}
-
-		if !rpcCtx.TenantID.IsSystem() {
-			key, value := newPerRPCTIDMetdata(rpcCtx.TenantID)
-			opts = append(opts, drpcclient.WithPerRPCMetadata(map[string]string{key: value}))
-		}
-
-		clientConn, _ := drpcclient.NewClientConnWithOptions(ctx, pooledConn, opts...)
+		clientConn, _ := drpcclient.NewClientConnWithOptions(
+			ctx,
+			pooledConn,
+			drpcclient.WithChainUnaryInterceptor(rpcCtx.clientUnaryInterceptorsDRPC...),
+			drpcclient.WithChainStreamInterceptor(rpcCtx.clientStreamInterceptorsDRPC...),
+		)
 
 		// Wrap the clientConn to ensure the entire pool is closed when this connection handle is closed.
 		return &closeEntirePoolConn{
@@ -162,110 +144,13 @@ type drpcServer struct {
 	drpc.Mux
 }
 
-// makeStopperInterceptors returns unary and stream interceptors that run
-// incoming RPCs in stopper tasks.
-func makeStopperInterceptors(
-	rpcCtx *Context,
-) (drpcmux.UnaryServerInterceptor, drpcmux.StreamServerInterceptor) {
-	unary := func(
-		ctx context.Context, req interface{}, rpc string, handler drpcmux.UnaryHandler,
-	) (interface{}, error) {
-		var resp interface{}
-		if err := rpcCtx.Stopper.RunTaskWithErr(ctx, rpc, func(ctx context.Context) error {
-			var err error
-			resp, err = handler(ctx, req)
-			return err
-		}); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-
-	stream := func(
-		stream drpc.Stream, rpc string, handler drpcmux.StreamHandler,
-	) (interface{}, error) {
-		var resp interface{}
-		if err := rpcCtx.Stopper.RunTaskWithErr(stream.Context(), rpc, func(ctx context.Context) error {
-			var err error
-			resp, err = handler(stream)
-			return err
-		}); err != nil {
-			return nil, err
-		}
-		return resp, nil
-	}
-	return unary, stream
-}
-
 // NewDRPCServer creates a new DRPCServer with the provided rpc context.
-func NewDRPCServer(_ context.Context, rpcCtx *Context, opts ...ServerOption) (DRPCServer, error) {
+func NewDRPCServer(_ context.Context, _ *Context) (DRPCServer, error) {
 	d := &drpcServer{}
-
-	var o serverOpts
-	for _, f := range opts {
-		f(&o)
-	}
-
-	var unaryInterceptors []drpcmux.UnaryServerInterceptor
-	var streamInterceptors []drpcmux.StreamServerInterceptor
-
-	// These interceptors run in the order they're appended. The first
-	// interceptor added becomes the outermost wrapper around the handler.
-
-	// We start with an interceptor that ensures every RPC executes inside a
-	// stopper task. Running the handler in a stopper task lets the stopper
-	// keep track of in-flight RPCs and reject new ones once draining begins.
-	stopUnary, stopStream := makeStopperInterceptors(rpcCtx)
-	unaryInterceptors = append(unaryInterceptors, stopUnary)
-	streamInterceptors = append(streamInterceptors, stopStream)
-
-	// Recover from any uncaught panics caused by DB Console requests.
-	unaryInterceptors = append(unaryInterceptors, DRPCGatewayRequestRecoveryInterceptor)
-
-	if !rpcCtx.ContextOptions.Insecure {
-		a := kvAuth{
-			sv: &rpcCtx.Settings.SV,
-			tenant: tenantAuthorizer{
-				tenantID:               rpcCtx.tenID,
-				capabilitiesAuthorizer: rpcCtx.capabilitiesAuthorizer,
-			},
-			isDRPC: true,
-		}
-
-		unaryInterceptors = append(unaryInterceptors, a.AuthDRPCUnary())
-		streamInterceptors = append(streamInterceptors, a.AuthDRPCStream())
-	}
-
-	if o.interceptor != nil {
-		unaryInterceptors = append(unaryInterceptors, func(
-			ctx context.Context, req interface{}, fullMethod string, handler drpcmux.UnaryHandler,
-		) (interface{}, error) {
-			if err := o.interceptor(fullMethod); err != nil {
-				return nil, err
-			}
-			return handler(ctx, req)
-		})
-
-		streamInterceptors = append(streamInterceptors, func(
-			stream drpc.Stream, fullMethod string, handler drpcmux.StreamHandler,
-		) (interface{}, error) {
-			if err := o.interceptor(fullMethod); err != nil {
-				return nil, err
-			}
-			return handler(stream)
-		})
-	}
-
-	if tracer := rpcCtx.Stopper.Tracer(); tracer != nil {
-		unaryInterceptors = append(unaryInterceptors, drpcinterceptor.ServerInterceptor(tracer))
-		streamInterceptors = append(streamInterceptors, drpcinterceptor.StreamServerInterceptor(tracer))
-	}
-
-	mux := drpcmux.NewWithInterceptors(unaryInterceptors, streamInterceptors)
-
+	mux := drpcmux.New()
 	d.Server = drpcserver.NewWithOptions(mux, drpcserver.Options{
 		Log: func(err error) {
-			log.Dev.Warningf(context.Background(), "drpc server error %v", err)
+			log.Warningf(context.Background(), "drpc server error %v", err)
 		},
 		// The reader's max buffer size defaults to 4mb, and if it is exceeded (such
 		// as happens with AddSSTable) the RPCs fail.
@@ -273,6 +158,19 @@ func NewDRPCServer(_ context.Context, rpcCtx *Context, opts ...ServerOption) (DR
 	})
 	d.Mux = mux
 
+	// NB: any server middleware (server interceptors in gRPC parlance) would go
+	// here:
+	//     dmux = whateverMiddleware1(dmux)
+	//     dmux = whateverMiddleware2(dmux)
+	//     ...
+	//
+	// Each middleware must implement the Handler interface:
+	//
+	//   HandleRPC(stream Stream, rpc string) error
+	//
+	// where Stream
+	// See here for an example:
+	// https://github.com/bryk-io/pkg/blob/4da5fbfef47770be376e4022eab5c6c324984bf7/net/drpc/server.go#L91-L101
 	return d, nil
 }
 

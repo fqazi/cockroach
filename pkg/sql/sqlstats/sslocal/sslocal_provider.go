@@ -23,14 +23,13 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-// NewSQLStats returns an instance of SQLStats.
-func NewSQLStats(
+// New returns an instance of SQLStats.
+func New(
 	settings *cluster.Settings,
 	maxStmtFingerprints *settings.IntSetting,
 	maxTxnFingerprints *settings.IntSetting,
 	curMemoryBytesCount *metric.Gauge,
 	maxMemoryBytesHist metric.IHistogram,
-	discarededCount *metric.Counter,
 	pool *mon.BytesMonitor,
 	reportingSink Sink,
 	knobs *sqlstats.TestingKnobs,
@@ -41,7 +40,6 @@ func NewSQLStats(
 		maxTxnFingerprints,
 		curMemoryBytesCount,
 		maxMemoryBytesHist,
-		discarededCount,
 		pool,
 		reportingSink,
 		knobs,
@@ -65,7 +63,7 @@ func (s *SQLStats) Start(ctx context.Context, stopper *stop.Stopper) {
 				err := s.Reset(ctx)
 				if err != nil {
 					if log.V(1) {
-						log.Dev.Warningf(ctx, "unexpected error: %s", err)
+						log.Warningf(ctx, "unexpected error: %s", err)
 					}
 				}
 			} else {
@@ -134,7 +132,7 @@ func (s *SQLStats) DrainStats(
 	for _, app := range apps {
 		container := s.GetApplicationStats(app)
 		if err := s.MaybeDumpStatsToLog(ctx, app, container, s.flushTarget); err != nil {
-			log.Dev.Warningf(ctx, "failed to dump stats to log, %s", err.Error())
+			log.Warningf(ctx, "failed to dump stats to log, %s", err.Error())
 		}
 		containerStmtStats, containerTxnStats := container.DrainStats(ctx)
 		stmtStats = append(stmtStats, containerStmtStats...)

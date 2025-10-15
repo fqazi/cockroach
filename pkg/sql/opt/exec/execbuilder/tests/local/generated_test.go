@@ -393,13 +393,6 @@ func TestExecBuild_json(
 	runExecBuildLogicTest(t, "json")
 }
 
-func TestExecBuild_jsonb_path_query(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "jsonb_path_query")
-}
-
 func TestExecBuild_limit(
 	t *testing.T,
 ) {
@@ -629,13 +622,6 @@ func TestExecBuild_subquery_correlated(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "subquery_correlated")
-}
-
-func TestExecBuild_system(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "system")
 }
 
 func TestExecBuild_topk(

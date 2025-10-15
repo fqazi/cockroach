@@ -85,7 +85,7 @@ type sqlActivityUpdateJob struct {
 // The SQL activity job runs AS a forever-running background job
 // and runs the sqlActivityUpdater according to sql.stats.activity.flush.interval.
 func (j *sqlActivityUpdateJob) Resume(ctx context.Context, execCtxI interface{}) (jobErr error) {
-	log.Dev.Infof(ctx, "starting sql stats activity flush job")
+	log.Infof(ctx, "starting sql stats activity flush job")
 	// The sql activity update job is a forever running background job.
 	// It's always safe to wind the SQL pod down whenever it's
 	// running, something we indicate through the job's idle
@@ -95,7 +95,7 @@ func (j *sqlActivityUpdateJob) Resume(ctx context.Context, execCtxI interface{})
 	execCtx := execCtxI.(JobExecContext)
 	stopper := execCtx.ExecCfg().DistSQLSrv.Stopper
 	settings := execCtx.ExecCfg().Settings
-	statsFlush := execCtx.ExecCfg().InternalDB.server.persistedSQLStats
+	statsFlush := execCtx.ExecCfg().InternalDB.server.sqlStats
 	metrics := execCtx.ExecCfg().JobRegistry.MetricsStruct().JobSpecificMetrics[jobspb.TypeAutoUpdateSQLActivity].(ActivityUpdaterMetrics)
 
 	flushDoneSignal := make(chan struct{})
@@ -112,7 +112,7 @@ func (j *sqlActivityUpdateJob) Resume(ctx context.Context, execCtxI interface{})
 				startTime := timeutil.Now().UnixNano()
 				updater := newSqlActivityUpdater(settings, execCtx.ExecCfg().InternalDB, nil)
 				if err := updater.TransferStatsToActivity(ctx); err != nil {
-					log.Dev.Warningf(ctx, "error running sql activity updater job: %v", err)
+					log.Warningf(ctx, "error running sql activity updater job: %v", err)
 					metrics.NumFailedUpdates.Inc(1)
 				} else {
 					metrics.NumSuccessfulUpdates.Inc(1)
@@ -176,7 +176,7 @@ func (r *sqlActivityUpdateJob) OnFailOrCancel(
 	if jobs.HasErrJobCanceled(jobErr) {
 		err := errors.NewAssertionErrorWithWrappedErrf(jobErr,
 			"sql activity is not cancelable")
-		log.Dev.Errorf(ctx, "%v", err)
+		log.Errorf(ctx, "%v", err)
 	}
 	return nil
 }
@@ -247,7 +247,7 @@ func (u *sqlActivityUpdater) upsertStatsForAggregatedTs(
 
 	// No need to continue since there are no rows to transfer
 	if stmtRowCount == 0 && txnRowCount == 0 {
-		log.Dev.Infof(ctx, "sql stats activity found no rows at %s", aggTs)
+		log.Infof(ctx, "sql stats activity found no rows at %s", aggTs)
 		return nil
 	}
 

@@ -122,8 +122,8 @@ func (s *PersistedSQLStats) Start(ctx context.Context, stopper *stop.Stopper) {
 // Stop stops the background tasks. This is used during graceful drain
 // to quiesce just the SQL activity.
 func (s *PersistedSQLStats) Stop(ctx context.Context) {
-	log.Dev.Infof(ctx, "stopping persisted SQL stats tasks")
-	defer log.Dev.Infof(ctx, "persisted SQL stats tasks successfully shut down")
+	log.Infof(ctx, "stopping persisted SQL stats tasks")
+	defer log.Infof(ctx, "persisted SQL stats tasks successfully shut down")
 	s.setDraining.Do(func() {
 		close(s.drain)
 	})
@@ -154,7 +154,7 @@ func (s *PersistedSQLStats) startSQLStatsFlushLoop(ctx context.Context, stopper 
 		var timer timeutil.Timer
 		timer.Reset(initialDelay)
 
-		log.Dev.Infof(ctx, "starting sql-stats-worker with initial delay: %s", initialDelay)
+		log.Infof(ctx, "starting sql-stats-worker with initial delay: %s", initialDelay)
 		for {
 			waitInterval := s.nextFlushInterval()
 			timer.Reset(waitInterval)
@@ -197,7 +197,7 @@ func (s *PersistedSQLStats) startSQLStatsFlushLoop(ctx context.Context, stopper 
 					// stats for this node.
 					s.cfg.FlushDoneSignalsIgnored.Inc(1)
 					if log.V(1) {
-						log.Dev.Warning(ctx, "sql-stats-worker: unable to signal flush completion")
+						log.Warning(ctx, "sql-stats-worker: unable to signal flush completion")
 					}
 				}
 			}
@@ -205,7 +205,7 @@ func (s *PersistedSQLStats) startSQLStatsFlushLoop(ctx context.Context, stopper 
 	})
 	if err != nil {
 		s.tasksDoneWG.Done()
-		log.Dev.Warningf(ctx, "failed to start sql-stats-worker: %v", err)
+		log.Warningf(ctx, "failed to start sql-stats-worker: %v", err)
 	}
 }
 
@@ -265,7 +265,7 @@ func (s *PersistedSQLStats) ResetClusterSQLStats(ctx context.Context) error {
 	if _, err := s.cfg.FanoutServer.ResetSQLStats(ctx, req); err != nil {
 		// Failure to flush in-memory stats is not fatal. We should still
 		// try to reset the persisted stats.
-		log.Dev.Warningf(ctx, "error resetting in-memory sql stats: %s", err)
+		log.Warningf(ctx, "error resetting in-memory sql stats: %s", err)
 	}
 
 	// Reset persisted stats by truncating tables.

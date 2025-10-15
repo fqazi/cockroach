@@ -103,7 +103,6 @@ func TestSchemaChangeProcess(t *testing.T) {
 	rf, err := rangefeed.NewFactory(stopper, kvDB, execCfg.Settings, nil /* knobs */)
 	require.NoError(t, err)
 	leaseMgr := lease.NewLeaseManager(
-		ctx,
 		s.AmbientCtx(),
 		execCfg.NodeInfo.NodeID,
 		s.InternalDB().(isql.DB),
@@ -115,7 +114,6 @@ func TestSchemaChangeProcess(t *testing.T) {
 		lease.ManagerTestingKnobs{},
 		stopper,
 		rf,
-		execCfg.RootMemoryMonitor,
 	)
 	jobRegistry := s.JobRegistry().(*jobs.Registry)
 	defer stopper.Stop(context.Background())
@@ -3951,7 +3949,7 @@ CREATE TABLE t.test (k INT PRIMARY KEY, v INT, pi DECIMAL DEFAULT (DECIMAL '3.14
 	testutils.SucceedsSoon(t, func() error {
 		return jobutils.VerifySystemJob(t, sqlRun, 0, jobspb.TypeSchemaChangeGC, jobs.StateRunning, jobs.Record{
 			Description:   "GC for TRUNCATE TABLE t.public.test",
-			Username:      username.NodeUserName(),
+			Username:      username.RootUserName(),
 			DescriptorIDs: descpb.IDs{tableDesc.GetID()},
 		})
 	})
@@ -3961,138 +3959,127 @@ CREATE TABLE t.test (k INT PRIMARY KEY, v INT, pi DECIMAL DEFAULT (DECIMAL '3.14
 func TestTruncateCompletion(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	for _, declarativeEnabled := range []bool{true, false} {
-		t.Run(fmt.Sprintf("declarative_schema_changer=%t", declarativeEnabled), func(t *testing.T) {
-			const maxValue = 2000
-			defer gcjob.SetSmallMaxGCIntervalForTest()()
+	const maxValue = 2000
 
-			params, _ := createTestServerParamsAllowTenants()
-			// Decrease the adopt loop interval so that retries happen quickly.
-			params.Knobs.JobsTestingKnobs = jobs.NewTestingKnobsWithShortIntervals()
+	defer gcjob.SetSmallMaxGCIntervalForTest()()
 
-			s, sqlDB, kvDB := serverutils.StartServer(t, params)
-			ctx := context.Background()
-			defer s.Stopper().Stop(ctx)
-			codec := s.ApplicationLayer().Codec()
+	params, _ := createTestServerParamsAllowTenants()
+	// Decrease the adopt loop interval so that retries happen quickly.
+	params.Knobs.JobsTestingKnobs = jobs.NewTestingKnobsWithShortIntervals()
 
-			// Disable strict GC TTL enforcement because we're going to shove a zero-value
-			// TTL into the system with AddImmediateGCZoneConfig.
-			defer sqltestutils.DisableGCTTLStrictEnforcement(t, sqlDB)()
+	s, sqlDB, kvDB := serverutils.StartServer(t, params)
+	ctx := context.Background()
+	defer s.Stopper().Stop(ctx)
+	codec := s.ApplicationLayer().Codec()
 
-			sqlRunner := sqlutils.MakeSQLRunner(sqlDB)
-			sqlRunner.Exec(t, `CREATE DATABASE t;`)
-			sqlRunner.Exec(t, `CREATE TABLE t.pi (d DECIMAL PRIMARY KEY);`)
-			sqlRunner.Exec(t, `CREATE TABLE t.test (k INT PRIMARY KEY, v INT, pi DECIMAL REFERENCES t.pi (d) DEFAULT (DECIMAL '3.14')) WITH (schema_locked=false);`)
+	// Disable strict GC TTL enforcement because we're going to shove a zero-value
+	// TTL into the system with AddImmediateGCZoneConfig.
+	defer sqltestutils.DisableGCTTLStrictEnforcement(t, sqlDB)()
 
-			sqlRunner.Exec(t, `INSERT INTO t.pi VALUES (3.14)`)
+	sqlRunner := sqlutils.MakeSQLRunner(sqlDB)
+	sqlRunner.Exec(t, `CREATE DATABASE t;`)
+	sqlRunner.Exec(t, `CREATE TABLE t.pi (d DECIMAL PRIMARY KEY);`)
+	sqlRunner.Exec(t, `CREATE TABLE t.test (k INT PRIMARY KEY, v INT, pi DECIMAL REFERENCES t.pi (d) DEFAULT (DECIMAL '3.14')) WITH (schema_locked=false);`)
 
-			// Bulk insert.
-			if err := sqltestutils.BulkInsertIntoTable(sqlDB, maxValue); err != nil {
-				t.Fatal(err)
-			}
+	sqlRunner.Exec(t, `INSERT INTO t.pi VALUES (3.14)`)
 
-			if err := sqltestutils.CheckTableKeyCount(ctx, kvDB, codec, 1, maxValue); err != nil {
-				t.Fatal(err)
-			}
-			if err := sqlutils.RunScrub(sqlDB, "t", "test"); err != nil {
-				t.Fatal(err)
-			}
+	// Bulk insert.
+	if err := sqltestutils.BulkInsertIntoTable(sqlDB, maxValue); err != nil {
+		t.Fatal(err)
+	}
 
-			tableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, codec, "t", "test")
+	if err := sqltestutils.CheckTableKeyCount(ctx, kvDB, codec, 1, maxValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlutils.RunScrub(sqlDB, "t", "test"); err != nil {
+		t.Fatal(err)
+	}
 
-			// Add a zone config.
-			var cfg zonepb.ZoneConfig
-			cfg, err := sqltestutils.AddImmediateGCZoneConfig(sqlDB, tableDesc.GetID())
-			if err != nil {
-				t.Fatal(err)
-			}
+	tableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, codec, "t", "test")
 
-			if err := zoneExists(sqlDB, &cfg, tableDesc.GetID()); err != nil {
-				t.Fatal(err)
-			}
+	// Add a zone config.
+	var cfg zonepb.ZoneConfig
+	cfg, err := sqltestutils.AddImmediateGCZoneConfig(sqlDB, tableDesc.GetID())
+	if err != nil {
+		t.Fatal(err)
+	}
 
-			if !declarativeEnabled {
-				sqlRunner.Exec(t, "SET use_declarative_schema_changer='off'")
-			}
-			sqlRunner.Exec(t, "TRUNCATE TABLE t.test")
+	if err := zoneExists(sqlDB, &cfg, tableDesc.GetID()); err != nil {
+		t.Fatal(err)
+	}
 
-			// Check that SQL thinks the table is empty.
-			row := sqlRunner.QueryRow(t, "SELECT count(*) FROM t.test")
-			var count int
-			row.Scan(&count)
-			require.Equal(t, 0, count)
+	sqlRunner.Exec(t, "TRUNCATE TABLE t.test")
 
-			// Bulk insert.
-			if err := sqltestutils.BulkInsertIntoTable(sqlDB, maxValue); err != nil {
-				t.Fatal(err)
-			}
+	// Check that SQL thinks the table is empty.
+	row := sqlRunner.QueryRow(t, "SELECT count(*) FROM t.test")
+	var count int
+	row.Scan(&count)
+	require.Equal(t, 0, count)
 
-			row = sqlRunner.QueryRow(t, "SELECT count(*) FROM t.test")
-			row.Scan(&count)
-			require.Equal(t, maxValue+1, count)
+	// Bulk insert.
+	if err := sqltestutils.BulkInsertIntoTable(sqlDB, maxValue); err != nil {
+		t.Fatal(err)
+	}
 
-			if err := sqlutils.RunScrub(sqlDB, "t", "test"); err != nil {
-				t.Fatal(err)
-			}
+	row = sqlRunner.QueryRow(t, "SELECT count(*) FROM t.test")
+	row.Scan(&count)
+	require.Equal(t, maxValue+1, count)
 
-			// Ensure that the FK property still holds.
-			if _, err := sqlDB.Exec(
-				`INSERT INTO t.test VALUES ($1 , $2, $3)`, maxValue+2, maxValue+2, 3.15,
-			); !testutils.IsError(err, "foreign key violation|violates foreign key") {
-				t.Fatalf("err = %v", err)
-			}
+	if err := sqlutils.RunScrub(sqlDB, "t", "test"); err != nil {
+		t.Fatal(err)
+	}
 
-			// Get the table descriptor after the truncation.
-			newTableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, codec, "t", "test")
-			if newTableDesc.Adding() {
-				t.Fatalf("bad state = %s", newTableDesc.GetState())
-			}
-			if err := zoneExists(sqlDB, &cfg, newTableDesc.GetID()); err != nil {
-				t.Fatal(err)
-			}
+	// Ensure that the FK property still holds.
+	if _, err := sqlDB.Exec(
+		`INSERT INTO t.test VALUES ($1 , $2, $3)`, maxValue+2, maxValue+2, 3.15,
+	); !testutils.IsError(err, "foreign key violation|violates foreign key") {
+		t.Fatalf("err = %v", err)
+	}
 
-			// Ensure that the table data has been deleted.
-			tablePrefix := codec.IndexPrefix(uint32(tableDesc.GetID()), uint32(tableDesc.GetPrimaryIndexID()))
-			tableEnd := tablePrefix.PrefixEnd()
-			testutils.SucceedsSoon(t, func() error {
-				if kvs, err := kvDB.Scan(ctx, tablePrefix, tableEnd, 0); err != nil {
-					t.Fatal(err)
-				} else if e := 0; len(kvs) != e {
-					return errors.Errorf("expected %d key value pairs, but got %d", e, len(kvs))
-				}
-				return nil
-			})
+	// Get the table descriptor after the truncation.
+	newTableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, codec, "t", "test")
+	if newTableDesc.Adding() {
+		t.Fatalf("bad state = %s", newTableDesc.GetState())
+	}
+	if err := zoneExists(sqlDB, &cfg, newTableDesc.GetID()); err != nil {
+		t.Fatal(err)
+	}
 
-			fkTableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, codec, "t", "pi")
-			tablePrefix = codec.TablePrefix(uint32(fkTableDesc.GetID()))
-			tableEnd = tablePrefix.PrefixEnd()
-			if kvs, err := kvDB.Scan(ctx, tablePrefix, tableEnd, 0); err != nil {
-				t.Fatal(err)
-			} else if e := 1; len(kvs) != e {
-				t.Fatalf("expected %d key value pairs, but got %d", e, len(kvs))
-			}
+	// Ensure that the table data has been deleted.
+	tablePrefix := codec.IndexPrefix(uint32(tableDesc.GetID()), uint32(tableDesc.GetPrimaryIndexID()))
+	tableEnd := tablePrefix.PrefixEnd()
+	testutils.SucceedsSoon(t, func() error {
+		if kvs, err := kvDB.Scan(ctx, tablePrefix, tableEnd, 0); err != nil {
+			t.Fatal(err)
+		} else if e := 0; len(kvs) != e {
+			return errors.Errorf("expected %d key value pairs, but got %d", e, len(kvs))
+		}
+		return nil
+	})
 
-			// Ensure that the job is marked as succeeded.
-			sqlRun := sqlutils.MakeSQLRunner(sqlDB)
+	fkTableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, codec, "t", "pi")
+	tablePrefix = codec.TablePrefix(uint32(fkTableDesc.GetID()))
+	tableEnd = tablePrefix.PrefixEnd()
+	if kvs, err := kvDB.Scan(ctx, tablePrefix, tableEnd, 0); err != nil {
+		t.Fatal(err)
+	} else if e := 1; len(kvs) != e {
+		t.Fatalf("expected %d key value pairs, but got %d", e, len(kvs))
+	}
 
-			// TODO (lucy): This test API should use an offset starting from the
-			// most recent job instead.
-			schemaChangeJobOffset := 0
-			jobName := jobspb.TypeNewSchemaChange
-			if !declarativeEnabled {
-				jobName = jobspb.TypeSchemaChange
-				schemaChangeJobOffset = 2
-			}
-			if err := jobutils.VerifySystemJob(t, sqlRun, schemaChangeJobOffset, jobName, jobs.StateSucceeded, jobs.Record{
-				Username:    username.RootUserName(),
-				Description: "TRUNCATE TABLE t.public.test",
-				DescriptorIDs: descpb.IDs{
-					tableDesc.GetID(),
-				},
-			}); err != nil {
-				t.Fatal(err)
-			}
-		})
+	// Ensure that the job is marked as succeeded.
+	sqlRun := sqlutils.MakeSQLRunner(sqlDB)
+
+	// TODO (lucy): This test API should use an offset starting from the
+	// most recent job instead.
+	schemaChangeJobOffset := 0
+	if err := jobutils.VerifySystemJob(t, sqlRun, schemaChangeJobOffset+2, jobspb.TypeSchemaChange, jobs.StateSucceeded, jobs.Record{
+		Username:    username.RootUserName(),
+		Description: "TRUNCATE TABLE t.public.test",
+		DescriptorIDs: descpb.IDs{
+			tableDesc.GetID(),
+		},
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -4777,7 +4764,6 @@ func TestBlockedSchemaChange(t *testing.T) {
 	codec := s.ApplicationLayer().Codec()
 	sqlDB := sqlutils.MakeSQLRunner(db)
 
-	sqlDB.Exec(t, `SET CLUSTER SETTING sql.defaults.use_declarative_schema_changer = 'off'`)
 	sqlDB.Exec(t, `
 	  SET create_table_with_schema_locked=false;
 	  SET use_declarative_schema_changer='off';
@@ -5774,9 +5760,9 @@ ALTER TABLE t.public.test DROP COLUMN v;`)
 	}, rows)
 }
 
-// TestRetryableErrorDuringRollback tests that a retryable error while rolling
+// TestRetriableErrorDuringRollback tests that a retriable error while rolling
 // back a schema change causes the rollback to retry and succeed.
-func TestRetryableErrorDuringRollback(t *testing.T) {
+func TestRetriableErrorDuringRollback(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
@@ -5840,7 +5826,7 @@ SELECT usage_count
 				},
 				RunBeforeBackfill: func() error {
 					// The first time through the backfiller in OnFailOrCancel, return a
-					// retryable error.
+					// retriable error.
 					if !onFailOrCancelStarted || injectedError {
 						return nil
 					}
@@ -5866,7 +5852,7 @@ SELECT usage_count
 					return nil
 				},
 				RunBeforeMutationReversal: func(_ jobspb.JobID) error {
-					// The first time through reversing mutations, return a retryable
+					// The first time through reversing mutations, return a retriable
 					// error.
 					if !onFailOrCancelStarted || injectedError {
 						return nil
@@ -6011,7 +5997,7 @@ CREATE UNIQUE INDEX i ON t.test(v);
 						return nil
 					}
 					injectedError = true
-					// Any error not on the allowlist of retryable errors is considered permanent.
+					// Any error not on the allowlist of retriable errors is considered permanent.
 					return errors.New("permanent error")
 				},
 			},
@@ -6040,7 +6026,7 @@ CREATE UNIQUE INDEX i ON t.test(v);
 						return nil
 					}
 					injectedError = true
-					// Any error not on the allowlist of retryable errors is considered permanent.
+					// Any error not on the allowlist of retriable errors is considered permanent.
 					return errors.New("permanent error")
 				},
 			},
@@ -6368,11 +6354,9 @@ func TestRollbackForeignKeyAddition(t *testing.T) {
 	tdb.Exec(t, `CREATE TABLE db.t2 (a INT)`)
 	tdb.Exec(t, `SET use_declarative_schema_changer = off`)
 
-	const alterTableSQL = `ALTER TABLE db.public.t2 ADD FOREIGN KEY (a) REFERENCES db.public.t`
-
 	g := ctxgroup.WithContext(ctx)
 	g.GoCtx(func(ctx context.Context) error {
-		_, err := sqlDB.ExecContext(ctx, alterTableSQL)
+		_, err := sqlDB.ExecContext(ctx, `ALTER TABLE db.t2 ADD FOREIGN KEY (a) REFERENCES db.t`)
 		require.Regexp(t, "job canceled by user", err)
 		return nil
 	})
@@ -6381,54 +6365,9 @@ func TestRollbackForeignKeyAddition(t *testing.T) {
 
 	var jobID jobspb.JobID
 
-	// The ALTER creates two jobs, but we only end up pausing one with the
-	// RunBeforeBackfill callback. Capture the job ID of the one that is paused
-	// and allow the other one to complete.
-	testutils.SucceedsSoon(t, func() error {
-		rows, err := sqlDB.Query(`SELECT job_id, status FROM crdb_internal.jobs WHERE description = $1 ORDER BY job_id`, alterTableSQL)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		var jobs []struct {
-			id     jobspb.JobID
-			status string
-		}
-
-		for rows.Next() {
-			var id jobspb.JobID
-			var status string
-			if err := rows.Scan(&id, &status); err != nil {
-				return err
-			}
-			jobs = append(jobs, struct {
-				id     jobspb.JobID
-				status string
-			}{id, status})
-		}
-
-		if len(jobs) != 2 {
-			return errors.Errorf("expected 2 jobs, found %d", len(jobs))
-		}
-
-		var runningCount, succeededCount int
-		for _, job := range jobs {
-			switch job.status {
-			case "running":
-				runningCount++
-				jobID = job.id
-			case "succeeded":
-				succeededCount++
-			}
-		}
-
-		if runningCount != 1 || succeededCount != 1 {
-			return errors.Errorf("expected 1 running and 1 succeeded job, found %d running, %d succeeded", runningCount, succeededCount)
-		}
-
-		return nil
-	})
+	// We filter by running because there's a bug where we create an extra
+	// no-op job for the referenced table (#57624).
+	require.NoError(t, sqlDB.QueryRow(`SELECT job_id FROM crdb_internal.jobs WHERE description LIKE '%ALTER TABLE%' AND status = 'running'`).Scan(&jobID))
 	tdb.Exec(t, "CANCEL JOB $1", jobID)
 
 	close(continueNotification)
@@ -6440,15 +6379,6 @@ func TestRollbackForeignKeyAddition(t *testing.T) {
 		Scan(&status, &error)
 	require.Equal(t, status, jobs.StateCanceled)
 	require.Equal(t, error, "job canceled by user")
-
-	// Verify that descriptors are valid after job cancellation
-	rows, err := sqlDB.Query(`SELECT * FROM "".crdb_internal.invalid_objects`)
-	require.NoError(t, err)
-	defer rows.Close()
-	if rows.Next() {
-		t.Fatal("found catalog corruptions after job cancellation")
-	}
-	require.NoError(t, rows.Err())
 }
 
 // TestRevertingJobsOnDatabasesAndSchemas tests that schema change jobs on
@@ -7801,7 +7731,7 @@ func TestLegacySchemaChangerWaitsForOtherSchemaChanges(t *testing.T) {
 }
 
 // TestMemoryMonitorErrorsDuringBackfillAreRetried tests that we properly classify memory
-// monitor errors as retryable. It's a regression test to ensure that we don't end up
+// monitor errors as retriable. It's a regression test to ensure that we don't end up
 // trying to revert schema changes which encounter such errors. Prior to the commit which
 // added this test, these errors would result in failures which looked like:
 //
@@ -8025,42 +7955,4 @@ func TestLeaseGenerationBumpWithSchemaChange(t *testing.T) {
 	descIDToDelay = tableDesc.GetID()
 	runner.Exec(t, "ALTER TABLE t1 ALTER PRIMARY KEY USING COLUMNS(n, j)")
 	require.NoError(t, grp.Wait())
-}
-
-// TestCreateTableAsValidationFailure simulates a synthetic validation
-// failure for CREATE TABLE AS.
-func TestCreateTableAsValidationFailure(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	var hookEnabled atomic.Bool
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
-		Knobs: base.TestingKnobs{
-			SQLSchemaChanger: &sql.SchemaChangerTestingKnobs{
-				RunDuringQueryBackfillValidation: func(expectedCount int64, currentCount int64) (newCurrentCount int64, err error) {
-					if hookEnabled.Load() {
-						return 0, nil
-					}
-					return currentCount, nil
-				},
-			},
-		},
-	})
-
-	defer s.Stopper().Stop(context.Background())
-	runner := sqlutils.MakeSQLRunner(sqlDB)
-	// Create table table and populate it.
-	runner.Exec(t, "CREATE TABLE t1(n int PRIMARY KEY)")
-	runner.Exec(t, "INSERT INTO t1 VALUES (1)")
-	runner.Exec(t, "INSERT INTO t1 VALUES (2)")
-	runner.Exec(t, "INSERT INTO t1 VALUES (3)")
-	// Validate cases that should work
-	runner.Exec(t, "CREATE TABLE simple_copy AS (SELECT * FROM t1)")
-	// Row count is can change.
-	runner.Exec(t, "CREATE TABLE t_random AS (SELECT * FROM t1 WHERE random() > 0.5)")
-	runner.Exec(t, " CREATE TABLE t_random2 AS (SELECT * FROM generate_series(0, CAST((100 * random()) AS INT)));")
-	// Execute a CTAS and CREATE MATERIALIZED VIEW statements that should fail.
-	hookEnabled.Store(true)
-	runner.ExpectErr(t, "backfill query did not populate index \"t2_pkey\" with expected number of rows", "CREATE TABLE t2 AS (SELECT * FROM t1)")
-	runner.ExpectErr(t, "backfill query did not populate index \"t2_pkey\" with expected number of rows", "CREATE MATERIALIZED VIEW t2 AS (SELECT n FROM t1)")
 }

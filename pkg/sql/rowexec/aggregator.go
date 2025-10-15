@@ -543,11 +543,7 @@ func (ag *aggregatorBase) getAggResults(
 			// We can't encode nil into an EncDatum, so we represent it with DNull.
 			result = tree.DNull
 		}
-		ag.row[i], err = rowenc.DatumToEncDatum(ag.outputTypes[i], result)
-		if err != nil {
-			ag.MoveToDraining(err)
-			return aggStateUnknown, nil, nil
-		}
+		ag.row[i] = rowenc.DatumToEncDatum(ag.outputTypes[i], result)
 	}
 
 	if outRow := ag.ProcessRowHelper(ag.row); outRow != nil {
@@ -695,7 +691,7 @@ func (ag *hashAggregator) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerMetad
 		case aggEmittingRows:
 			ag.runningState, row, meta = ag.emitRow()
 		default:
-			log.Dev.Fatalf(ag.Ctx(), "unsupported state: %d", ag.runningState)
+			log.Fatalf(ag.Ctx(), "unsupported state: %d", ag.runningState)
 		}
 
 		if row == nil && meta == nil {
@@ -717,7 +713,7 @@ func (ag *orderedAggregator) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerMe
 		case aggEmittingRows:
 			ag.runningState, row, meta = ag.emitRow()
 		default:
-			log.Dev.Fatalf(ag.Ctx(), "unsupported state: %d", ag.runningState)
+			log.Fatalf(ag.Ctx(), "unsupported state: %d", ag.runningState)
 		}
 
 		if row == nil && meta == nil {

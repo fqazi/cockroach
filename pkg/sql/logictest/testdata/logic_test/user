@@ -184,14 +184,13 @@ CREATE USER user5 NOLOGIN
 
 user root
 
-query TTT rowsort,colnames
-SELECT username, option, value FROM system.role_options
+query TTTO rowsort
+SELECT * FROM system.role_options
 ----
-username  option      value
-testuser  CREATEROLE  NULL
-user4     CREATEROLE  NULL
-user4     NOLOGIN     NULL
-user5     NOLOGIN     NULL
+testuser  CREATEROLE  NULL  100
+user4     CREATEROLE  NULL  108
+user4     NOLOGIN     NULL  108
+user5     NOLOGIN     NULL  109
 
 user testuser
 
@@ -306,3 +305,4 @@ statement error pq: column "estimated_last_login_time" does not exist
 select estimated_last_login_time from [SHOW USERS] where username = 'testuser2';
 
 subtest end
+

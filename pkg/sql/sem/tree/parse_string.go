@@ -115,8 +115,6 @@ func ParseAndRequireString(
 		d, err = ParseDTSQuery(s)
 	case types.TSVectorFamily:
 		d, err = ParseDTSVector(s)
-	case types.LTreeFamily:
-		d, err = ParseDLTree(s)
 	case types.TupleFamily:
 		d, dependsOnContext, err = ParseDTupleFromString(ctx, s, t)
 	case types.VoidFamily:

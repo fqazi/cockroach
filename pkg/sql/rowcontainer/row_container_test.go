@@ -97,8 +97,8 @@ func TestRowContainerReplaceMax(t *testing.T) {
 			b = append(b, 'a')
 		}
 		return rowenc.EncDatumRow{
-			rowenc.DatumToEncDatumUnsafe(types.Int, tree.NewDInt(tree.DInt(intVal))),
-			rowenc.DatumToEncDatumUnsafe(types.String, tree.NewDString(string(b))),
+			rowenc.DatumToEncDatum(types.Int, tree.NewDInt(tree.DInt(intVal))),
+			rowenc.DatumToEncDatum(types.String, tree.NewDString(string(b))),
 		}
 	}
 
@@ -204,6 +204,7 @@ func TestDiskBackedRowContainer(t *testing.T) {
 			InMemory: true,
 			Settings: st,
 		},
+		base.DefaultTestStoreSpec,
 		nil, /* statsCollector */
 	)
 	if err != nil {
@@ -399,6 +400,7 @@ func TestDiskBackedRowContainerDeDuping(t *testing.T) {
 			InMemory: true,
 			Settings: st,
 		},
+		base.DefaultTestStoreSpec,
 		nil, /* statsCollector */
 	)
 	if err != nil {
@@ -519,6 +521,7 @@ func TestDiskBackedIndexedRowContainer(t *testing.T) {
 			InMemory: true,
 			Settings: st,
 		},
+		base.DefaultTestStoreSpec,
 		nil, /* statsCollector */
 	)
 	if err != nil {
@@ -987,6 +990,7 @@ func BenchmarkDiskBackedIndexedRowContainer(b *testing.B) {
 			InMemory: true,
 			Settings: st,
 		},
+		base.DefaultTestStoreSpec,
 		nil, /* statsCollector */
 	)
 	if err != nil {

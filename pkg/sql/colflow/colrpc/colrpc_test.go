@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/col/coldatatestutils"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexec/colexecargs"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexec/colexectestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexec/colexecutils"
@@ -867,12 +866,7 @@ func TestOutboxStreamIDPropagation(t *testing.T) {
 	outboxMemAcc := testMemMonitor.MakeBoundAccount()
 	defer outboxMemAcc.Close(ctx)
 	outbox, err := NewOutbox(
-		&execinfra.FlowCtx{
-			Gateway: false,
-			Cfg: &execinfra.ServerConfig{
-				Settings: cluster.MakeTestingClusterSettings(),
-			},
-		},
+		&execinfra.FlowCtx{Gateway: false},
 		0, /* processorID */
 		colmem.NewAllocator(ctx, &outboxMemAcc, coldata.StandardColumnFactory),
 		testMemAcc, colexecargs.OpWithMetaInfo{Root: input}, typs, nil, /* getStats */

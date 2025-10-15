@@ -95,7 +95,6 @@ func optBuildScalar(evalCtx *eval.Context, e tree.Expr) (tree.TypedExpr, error) 
 	o.Init(ctx, evalCtx, nil /* catalog */)
 	semaCtx := tree.MakeSemaContext(nil /* resolver */)
 	b := optbuilder.NewScalar(ctx, &semaCtx, evalCtx, o.Factory())
-	defer b.DisableUnsafeInternalCheck()()
 	scalar, err := b.Build(e)
 	if err != nil {
 		return nil, err
@@ -352,8 +351,6 @@ func TestEvalError(t *testing.T) {
 		{`B'1001' & B'101'`, `cannot AND bit strings of different sizes`},
 		{`B'1001' | B'101'`, `cannot OR bit strings of different sizes`},
 		{`B'1001' # B'101'`, `cannot XOR bit strings of different sizes`},
-		{`ARRAY['A.B.C', NULL]::LTREE[] ?@> 'A.B.C'`, `array must not contain nulls`},
-		{`ARRAY['A.B.C', NULL]::LTREE[] ?<@ 'A.B.C'`, `array must not contain nulls`},
 	}
 	ctx := context.Background()
 	for _, d := range testData {

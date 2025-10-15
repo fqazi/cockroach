@@ -229,9 +229,9 @@ function StatementDiagnosticsSelector(props: {
   return (
     canSeeDebugPanelLink && (
       <DebugPanelLink
-        name="Diagnostics History"
-        url="#/reports/diagnosticshistory"
-        note="View the history of statement and transaction diagnostics requests"
+        name="Statement Diagnostics History"
+        url="#/reports/statements/diagnosticshistory"
+        note="View the history of statement diagnostics requests"
       />
     )
   );

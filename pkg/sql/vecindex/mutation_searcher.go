@@ -52,6 +52,12 @@ func (s *MutationSearcher) Init(
 	s.txn.Init(evalCtx, idx.Store().(*vecstore.Store), txn, getFullVectorsFetchSpec)
 	s.idxCtx.Init(&s.txn)
 	s.evalCtx = evalCtx
+
+	// If the index is deterministic, then synchronously run the background worker
+	// to process any pending fixups.
+	if s.idx.Options().IsDeterministic {
+		s.idx.ProcessFixups()
+	}
 }
 
 // SearchForInsert triggers a search for the partition in which to insert the
@@ -69,15 +75,15 @@ func (s *MutationSearcher) SearchForInsert(
 	}
 
 	// NOTE: The insert partition's centroid vector is already randomized, so
-	// only need to get the randomized (and normalized) input vector.
+	// only need to get the randomized input vector.
 	partitionKey := res.ChildKey.PartitionKey
 	s.partitionKey = tree.NewDInt(tree.DInt(partitionKey))
 	centroid := res.Vector
-	queryVec := s.idxCtx.TransformedVector()
+	randomizedVec := s.idxCtx.RandomizedVector()
 
 	// Quantize and encode the input vector with respect to the insert partition's
 	// centroid.
-	quantizedVec, err := s.txn.QuantizeAndEncode(partitionKey, centroid, queryVec)
+	quantizedVec, err := s.txn.QuantizeAndEncode(partitionKey, centroid, randomizedVec)
 	if err != nil {
 		return err
 	}

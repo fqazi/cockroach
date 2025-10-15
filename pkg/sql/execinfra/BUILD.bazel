@@ -6,6 +6,7 @@ go_library(
     name = "execinfra",
     srcs = [
         "base.go",
+        "errors.go",
         "flow_context.go",
         "metrics.go",
         "outboxbase.go",
@@ -51,6 +52,7 @@ go_library(
         "//pkg/sql/evalcatalog",
         "//pkg/sql/execinfra/execexpr",
         "//pkg/sql/execinfrapb",
+        "//pkg/sql/pgwire/pgerror",
         "//pkg/sql/rowenc",
         "//pkg/sql/rowenc/valueside",
         "//pkg/sql/rowinfra",
@@ -81,6 +83,7 @@ go_library(
         "@com_github_cockroachdb_redact//interfaces",
         "@com_github_marusama_semaphore//:semaphore",
         "@io_opentelemetry_go_otel//attribute",
+        "@org_golang_google_grpc//:grpc",
     ],
 )
 

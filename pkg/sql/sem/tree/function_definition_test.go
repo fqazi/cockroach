@@ -71,7 +71,8 @@ func TestBuiltinFunctionResolver(t *testing.T) {
 		t.Run(tc.testName, func(t *testing.T) {
 			fnName, err := tc.fnName.ToRoutineName()
 			require.NoError(t, err)
-			funcDef := tree.GetBuiltinFuncDefinition(fnName, &path)
+			funcDef, err := tree.GetBuiltinFuncDefinition(fnName, &path)
+			require.NoError(t, err)
 			if tc.expectNoFound {
 				require.Nil(t, funcDef)
 				return

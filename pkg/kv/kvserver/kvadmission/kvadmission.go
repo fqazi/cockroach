@@ -150,7 +150,7 @@ var useRangeTenantIDForNonAdminEnabled = settings.RegisterBoolSetting(
 	"kvadmission.use_range_tenant_id_for_non_admin.enabled",
 	"when true, and the caller is the system tenant, the tenantID used by admission control "+
 		"for non-admin requests is overridden to the range's tenantID",
-	true,
+	false,
 )
 
 // Controller provides admission control for the KV layer.
@@ -435,7 +435,7 @@ func (n *controllerImpl) AdmittedKVWorkDone(ah Handle, writeBytes *StoreWriteByt
 			// This issue is tracked by
 			// https://github.com/cockroachdb/cockroach/issues/126681.
 			if buildutil.CrdbTestBuild {
-				log.KvDistribution.Warningf(context.Background(), "grunning.Time() should be non-decreasing, cpuTime=%s", cpuTime)
+				log.Warningf(context.Background(), "grunning.Time() should be non-decreasing, cpuTime=%s", cpuTime)
 			}
 			cpuTime = 1
 		}
@@ -450,10 +450,10 @@ func (n *controllerImpl) AdmittedKVWorkDone(ah Handle, writeBytes *StoreWriteByt
 		if err != nil {
 			// This shouldn't be happening.
 			if buildutil.CrdbTestBuild {
-				log.KvDistribution.Fatalf(context.Background(), "%s", errors.WithAssertionFailure(err))
+				log.Fatalf(context.Background(), "%s", errors.WithAssertionFailure(err))
 			}
 			if n.every.ShouldLog() {
-				log.KvDistribution.Errorf(context.Background(), "%s", err)
+				log.Errorf(context.Background(), "%s", err)
 			}
 		}
 	}
@@ -554,12 +554,12 @@ var _ replica_rac2.ACWorkQueue = &controllerImpl{}
 func (n *controllerImpl) Admit(ctx context.Context, entry replica_rac2.EntryForAdmission) bool {
 	storeAdmissionQ := n.storeGrantCoords.TryGetQueueForStore(entry.StoreID)
 	if storeAdmissionQ == nil {
-		log.KvDistribution.Errorf(ctx, "unable to find queue for store: %s", entry.StoreID)
+		log.Errorf(ctx, "unable to find queue for store: %s", entry.StoreID)
 		return false // nothing to do
 	}
 
 	if entry.RequestedCount == 0 {
-		log.KvDistribution.Fatal(ctx, "found (unexpected) empty raft command for below-raft admission")
+		log.Fatal(ctx, "found (unexpected) empty raft command for below-raft admission")
 	}
 	wi := admission.WorkInfo{
 		TenantID:        entry.TenantID,
@@ -585,11 +585,11 @@ func (n *controllerImpl) Admit(ctx context.Context, entry replica_rac2.EntryForA
 		WorkInfo: wi,
 	})
 	if err != nil {
-		log.KvDistribution.Errorf(ctx, "error while admitting to store admission queue: %v", err)
+		log.Errorf(ctx, "error while admitting to store admission queue: %v", err)
 		return false
 	}
 	if handle.UseAdmittedWorkDone() {
-		log.KvDistribution.Fatalf(ctx, "unexpected handle.UseAdmittedWorkDone")
+		log.Fatalf(ctx, "unexpected handle.UseAdmittedWorkDone")
 	}
 	return true
 }

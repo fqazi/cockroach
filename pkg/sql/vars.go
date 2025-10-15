@@ -751,7 +751,7 @@ var varGen = map[string]sessionVar{
 		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
 			return formatBoolAsPostgresSetting(evalCtx.SessionData().UseSoftLimitForDistributeScan), nil
 		},
-		GlobalDefault: globalTrue,
+		GlobalDefault: globalFalse,
 	},
 
 	// CockroachDB extension.
@@ -1684,21 +1684,15 @@ var varGen = map[string]sessionVar{
 	// results received by clients, we accept both values.
 	`synchronize_seqscans`: makeCompatBoolVar(`synchronize_seqscans`, true, true /* anyAllowed */),
 
-	`row_security`: {
-		GetStringVal: makePostgresBoolGetStringValFn("row_security"),
-		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
-			return formatBoolAsPostgresSetting(evalCtx.SessionData().RowSecurity), nil
-		},
-		Set: func(_ context.Context, m sessionDataMutator, s string) error {
-			b, err := paramparse.ParseBoolVar("row_security", s)
-			if err != nil {
-				return err
-			}
-			m.SetRowSecurity(b)
-			return nil
-		},
-		GlobalDefault: globalTrue,
-	},
+	// See https://www.postgresql.org/docs/10/static/runtime-config-client.html#GUC-ROW-SECURITY
+	// The default in pg is "on" but row security is not supported in CockroachDB.
+	// We blindly accept both values because as long as there are now row security policies defined,
+	// either value produces the same query results in PostgreSQL. That is, as long as CockroachDB
+	// does not support row security, accepting either "on" and "off" but ignoring the result
+	// is postgres-compatible.
+	// If/when CockroachDB is extended to support row security, the default and allowed values
+	// should be modified accordingly.
+	`row_security`: makeCompatBoolVar(`row_security`, false, true /* anyAllowed */),
 
 	`statement_timeout`: {
 		GetStringVal: makeTimeoutVarGetter(`statement_timeout`),
@@ -2057,24 +2051,6 @@ var varGen = map[string]sessionVar{
 		GlobalDefault: func(sv *settings.Values) string {
 			return formatBoolAsPostgresSetting(experimentalAlterColumnTypeGeneralMode.Get(sv))
 		},
-	},
-
-	// CockroachDB extension.
-	`allow_view_with_security_invoker_clause`: {
-		Hidden:       true,
-		GetStringVal: makePostgresBoolGetStringValFn(`allow_view_with_security_invoker_clause`),
-		Set: func(_ context.Context, m sessionDataMutator, s string) error {
-			b, err := paramparse.ParseBoolVar("allow_view_with_security_invoker_clause", s)
-			if err != nil {
-				return err
-			}
-			m.SetAllowViewWithSecurityInvokerClause(b)
-			return nil
-		},
-		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
-			return formatBoolAsPostgresSetting(evalCtx.SessionData().AllowViewWithSecurityInvokerClause), nil
-		},
-		GlobalDefault: globalFalse,
 	},
 
 	// TODO(rytaft): remove this once unique without index constraints are fully
@@ -3116,8 +3092,31 @@ var varGen = map[string]sessionVar{
 	},
 
 	// CockroachDB extension.
-	// This is only kept for backwards compatibility and no longer has any effect.
-	`enforce_home_region_follower_reads_enabled`: makeBackwardsCompatBoolVar("enforce_home_region_follower_reads_enabled", false),
+	`enforce_home_region_follower_reads_enabled`: {
+		GetStringVal: makePostgresBoolGetStringValFn(`enforce_home_region_follower_reads_enabled`),
+		SetWithPlanner: func(ctx context.Context, p *planner, local bool, s string) error {
+			p.BufferClientNotice(ctx, pgnotice.Newf(
+				"enforce_home_region_follower_reads_enabled is deprecated and will be removed in a future "+
+					"release",
+			))
+			return p.applyOnSessionDataMutators(
+				ctx,
+				local,
+				func(m sessionDataMutator) error {
+					b, err := paramparse.ParseBoolVar("enforce_home_region_follower_reads_enabled", s)
+					if err != nil {
+						return err
+					}
+					m.SetEnforceHomeRegionFollowerReadsEnabled(b)
+					return nil
+				},
+			)
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return formatBoolAsPostgresSetting(evalCtx.SessionData().EnforceHomeRegionFollowerReadsEnabled), nil
+		},
+		GlobalDefault: globalFalse,
+	},
 
 	// CockroachDB extension.
 	`optimizer_always_use_histograms`: {
@@ -4245,40 +4244,6 @@ var varGen = map[string]sessionVar{
 		GlobalDefault: globalTrue,
 	},
 
-	// CockroachDB extension.
-	`enable_scrub_job`: {
-		GetStringVal: makePostgresBoolGetStringValFn(`enable_scrub_job`),
-		Set: func(_ context.Context, m sessionDataMutator, s string) error {
-			b, err := paramparse.ParseBoolVar("enable_scrub_job", s)
-			if err != nil {
-				return err
-			}
-			m.SetEnableScrubJob(b)
-			return nil
-		},
-		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
-			return formatBoolAsPostgresSetting(evalCtx.SessionData().EnableScrubJob), nil
-		},
-		GlobalDefault: globalFalse,
-	},
-
-	// CockroachDB extension.
-	`enable_inspect_command`: {
-		GetStringVal: makePostgresBoolGetStringValFn(`enable_inspect_command`),
-		Set: func(_ context.Context, m sessionDataMutator, s string) error {
-			b, err := paramparse.ParseBoolVar("enable_inspect_command", s)
-			if err != nil {
-				return err
-			}
-			m.SetEnableInspectCommand(b)
-			return nil
-		},
-		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
-			return formatBoolAsPostgresSetting(evalCtx.SessionData().EnableInspectCommand), nil
-		},
-		GlobalDefault: globalFalse,
-	},
-
 	// CockroachDB extension. Configures the initial backoff duration for
 	// automatic retries of statements in explicit READ COMMITTED transactions
 	// that see a transaction retry error. For statements experiencing contention
@@ -4370,41 +4335,6 @@ var varGen = map[string]sessionVar{
 		},
 		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
 			return formatBoolAsPostgresSetting(evalCtx.SessionData().UseProcTxnControlExtendedProtocolFix), nil
-		},
-		GlobalDefault: globalTrue,
-	},
-
-	// CockroachDB extension.
-	`allow_unsafe_internals`: {
-		GetStringVal: makePostgresBoolGetStringValFn(`allow_unsafe_internals`),
-		Set: func(_ context.Context, m sessionDataMutator, s string) error {
-			b, err := paramparse.ParseBoolVar("allow_unsafe_internals", s)
-			if err != nil {
-				return err
-			}
-			m.SetAllowUnsafeInternals(b)
-			return nil
-		},
-		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
-			return formatBoolAsPostgresSetting(evalCtx.SessionData().AllowUnsafeInternals), nil
-		},
-		GlobalDefault: globalTrue,
-	},
-
-	`optimizer_use_improved_hoist_join_project`: {
-		GetStringVal: makePostgresBoolGetStringValFn(`optimizer_use_improved_hoist_join_project`),
-		Set: func(_ context.Context, m sessionDataMutator, s string) error {
-			b, err := paramparse.ParseBoolVar("optimizer_use_improved_hoist_join_project", s)
-			if err != nil {
-				return err
-			}
-			m.SetOptimizerUseImprovedHoistJoinProject(b)
-			return nil
-		},
-		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
-			return formatBoolAsPostgresSetting(
-				evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject,
-			), nil
 		},
 		GlobalDefault: globalTrue,
 	},
