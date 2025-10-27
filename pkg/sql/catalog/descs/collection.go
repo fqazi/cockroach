@@ -412,7 +412,7 @@ var allowLeasedDescriptorsInCatalogViews = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"sql.catalog.allow_leased_descriptors.enabled",
 	"if true, catalog views (crdb_internal, information_schema, pg_catalog) can use leased descriptors for improved performance",
-	false,
+	true,
 	settings.WithPublic,
 )
 
@@ -1008,7 +1008,22 @@ func (tc *Collection) GetAllSchemasInDatabase(
 	ctx context.Context, txn *kv.Txn, db catalog.DatabaseDescriptor, opts ...GetAllOption,
 ) (nstree.Catalog, error) {
 	options := applyGetAllOptions(opts)
-	stored, err := tc.cr.ScanNamespaceForDatabaseSchemas(ctx, txn, db)
+	var stored nstree.Catalog
+	var err error
+	if options.allowLeased {
+		allChildren, err := tc.leased.fetchBulkCatalog(ctx, txn, db.GetID())
+		if err != nil {
+			return nstree.Catalog{}, err
+		}
+		newStored := nstree.MutableCatalog{}
+		_ = allChildren.ForEachSchemaNamespaceEntryInDatabase(db.GetID(), func(e nstree.NamespaceEntry) error {
+			newStored.UpsertNamespaceEntry(e, e.GetID(), e.GetMVCCTimestamp())
+			return nil
+		})
+		stored = newStored.Catalog
+	} else {
+		stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
+	}
 	if err != nil {
 		return nstree.Catalog{}, err
 	}
@@ -1080,7 +1095,13 @@ func (tc *Collection) GetAllInDatabase(
 	ctx context.Context, txn *kv.Txn, db catalog.DatabaseDescriptor, opts ...GetAllOption,
 ) (nstree.Catalog, error) {
 	options := applyGetAllOptions(opts)
-	stored, err := tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
+	var stored nstree.Catalog
+	var err error
+	if options.allowLeased {
+		stored, err = tc.leased.fetchBulkCatalog(ctx, txn, db.GetID())
+	} else {
+		stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
+	}
 	if err != nil {
 		return nstree.Catalog{}, err
 	}

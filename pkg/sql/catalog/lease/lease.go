@@ -1574,6 +1574,8 @@ type Manager struct {
 	// Ideally, this would be inside StorageTestingKnobs, but those get copied into
 	// the lease manager.
 	TestingDisableRangeFeedCheckpoint atomic.Bool
+
+	bulkSingleFlight singleflight.Group
 }
 
 const leaseConcurrencyLimit = 5
@@ -1723,6 +1725,7 @@ func NewLeaseManager(
 		lm.boundAccount.Close(ctx)
 		lm.bytesMonitor.Stop(ctx)
 	}))
+	lm.bulkSingleFlight = singleflight.NewGroup("bulk-leasing", singleflight.NoTags)
 	return lm
 }
 
@@ -1927,6 +1930,20 @@ func (m *Manager) resolveName(
 		)
 	}
 	return id, nil
+}
+
+func (m *Manager) GetBulkCatalog(
+	ctx context.Context, timestamp ReadTimestamp, db descpb.ID,
+) (BulkCatalog, error) {
+	// FIXME: Implement a cache...
+	// FIXME: Allow upgrades with timestamps...
+	catalog, _, err := m.bulkSingleFlight.Do(ctx, fmt.Sprintf("%s-%d", timestamp.GetTimestamp().String(), db), func(ctx context.Context) (interface{}, error) {
+		return newBulkCatalog(ctx, db, timestamp.GetTimestamp(), m)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return catalog.(BulkCatalog), nil
 }
 
 // LeasedDescriptor tracks and manages leasing related

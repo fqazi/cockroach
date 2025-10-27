@@ -42,6 +42,10 @@ type LeaseManager interface {
 	GetLeaseGeneration() int64
 
 	GetReadTimestamp(ctx context.Context, timestamp hlc.Timestamp) lease.ReadTimestamp
+
+	GetBulkCatalog(
+		ctx context.Context, timestamp lease.ReadTimestamp, db descpb.ID,
+	) (lease.BulkCatalog, error)
 }
 
 type deadlineHolder interface {
@@ -86,6 +90,12 @@ type leasedDescriptors struct {
 	cache             nstree.NameMap
 	leaseTimestamp    lease.ReadTimestamp
 	leaseTimestampSet bool
+
+	// bulkCatalogNamespaces is a NameMap of all the namespaces in the bulk catalogs
+	// that are cached.
+	bulkCatalogNamespaces nstree.NameMap
+	// bulkCatalog is a map of all the bulk catalogs that are cached by database ID.
+	bulkCatalog map[descpb.ID]lease.BulkCatalog
 }
 
 // mismatchedExternalDataRowTimestamp is generated when the external row data timestamps
@@ -203,6 +213,28 @@ func (ld *leasedDescriptors) maybeInitReadTimestamp(ctx context.Context, txn dea
 	ld.leaseTimestamp = ld.lm.GetReadTimestamp(ctx, readTimestamp)
 }
 
+func (ld *leasedDescriptors) fetchBulkCatalog(
+	ctx context.Context, txn deadlineHolder, id descpb.ID,
+) (nstree.Catalog, error) {
+	ld.maybeInitReadTimestamp(txn)
+	if ld.bulkCatalog == nil {
+		ld.bulkCatalog = make(map[descpb.ID]lease.BulkCatalog)
+	}
+	if c, ok := ld.bulkCatalog[id]; ok {
+		return c.GetNamespaces(), nil
+	}
+	bulkCatalog, err := ld.lm.GetBulkCatalog(ctx, ld.leaseTimestamp, id)
+	if err != nil {
+		return nstree.Catalog{}, err
+	}
+	ld.bulkCatalog[id] = bulkCatalog
+	_ = bulkCatalog.GetNamespaces().ForEachNamespaceEntry(func(e nstree.NamespaceEntry) error {
+		ld.bulkCatalogNamespaces.Upsert(e, false)
+		return nil
+	})
+	return bulkCatalog.GetNamespaces(), nil
+}
+
 // getLeasedDescriptorByName return a leased descriptor valid for the
 // transaction, acquiring one if necessary. Due to a bug in lease acquisition
 // for dropped descriptors, the descriptor may have to be read from the store,
@@ -226,9 +258,18 @@ func (ld *leasedDescriptors) getByName(
 		desc = cached.(lease.LeasedDescriptor).Underlying()
 		return desc, false, nil
 	}
+	// Otherwise, see if a bulk catalog has loaded this value for us.
+	const setTxnDeadline = true
+	if cached := ld.bulkCatalogNamespaces.GetByName(parentID, parentSchemaID, name); cached != nil {
+		if log.V(2) {
+			log.Eventf(ctx, "found descriptor in bulk catalog for (%d, %d, '%s'): %d",
+				parentID, parentSchemaID, name, cached.GetID())
+		}
+		ldesc, err := ld.bulkCatalog[parentID].AcquireByName(ctx, ld.leaseTimestamp, parentID, parentSchemaID, name)
+		return ld.getResult(ctx, txn, setTxnDeadline, ldesc, err)
+	}
 	ld.maybeInitReadTimestamp(ctx, txn)
 	ldesc, err := ld.lm.AcquireByName(ctx, ld.leaseTimestamp, parentID, parentSchemaID, name)
-	const setTxnDeadline = true
 	return ld.getResult(ctx, txn, setTxnDeadline, ldesc, err)
 }
 
@@ -240,6 +281,11 @@ func (ld *leasedDescriptors) getByID(
 	// First, look to see if we already have the table in the shared cache.
 	if cached := ld.getCachedByID(ctx, id); cached != nil {
 		return cached, false, nil
+	}
+	// Otherwise, see if a bulk catalog has loaded this value for us.
+	if cached := ld.bulkCatalogNamespaces.GetByID(id); cached != nil {
+		ldesc, err := ld.bulkCatalog[cached.GetParentID()].Acquire(ctx, ld.leaseTimestamp, id)
+		return ld.getResult(ctx, txn, true, ldesc, err)
 	}
 	ld.maybeInitReadTimestamp(ctx, txn)
 	desc, err := ld.lm.Acquire(ctx, ld.leaseTimestamp, id)
@@ -398,6 +444,11 @@ func (ld *leasedDescriptors) releaseAll(ctx context.Context) {
 		ld.leaseTimestamp.Release(ctx)
 	}
 	ld.leaseTimestampSet = false
+	for _, ldesc := range ld.bulkCatalog {
+		ldesc.Release(ctx)
+	}
+	ld.bulkCatalog = nil
+	ld.bulkCatalogNamespaces.Clear()
 }
 
 func (ld *leasedDescriptors) release(ctx context.Context, descs []lease.IDVersion) {
@@ -412,6 +463,13 @@ func (ld *leasedDescriptors) release(ctx context.Context, descs []lease.IDVersio
 		}
 		ld.leaseTimestampSet = false
 	}
+	// FIXME: Simple hack for now, proper fix is to know which bulk catalog read
+	// what.
+	for _, ldesc := range ld.bulkCatalog {
+		ldesc.Release(ctx)
+	}
+	ld.bulkCatalog = nil
+	ld.bulkCatalogNamespaces.Clear()
 }
 
 func (ld *leasedDescriptors) numDescriptors() int {
