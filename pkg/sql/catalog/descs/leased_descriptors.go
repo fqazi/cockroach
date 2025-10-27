@@ -216,7 +216,7 @@ func (ld *leasedDescriptors) maybeInitReadTimestamp(ctx context.Context, txn dea
 func (ld *leasedDescriptors) fetchBulkCatalog(
 	ctx context.Context, txn deadlineHolder, id descpb.ID,
 ) (nstree.Catalog, error) {
-	ld.maybeInitReadTimestamp(txn)
+	ld.maybeInitReadTimestamp(ctx, txn)
 	if ld.bulkCatalog == nil {
 		ld.bulkCatalog = make(map[descpb.ID]lease.BulkCatalog)
 	}
@@ -228,6 +228,7 @@ func (ld *leasedDescriptors) fetchBulkCatalog(
 		return nstree.Catalog{}, err
 	}
 	ld.bulkCatalog[id] = bulkCatalog
+	// FIXME: we can use a normal catalog...
 	_ = bulkCatalog.GetNamespaces().ForEachNamespaceEntry(func(e nstree.NamespaceEntry) error {
 		ld.bulkCatalogNamespaces.Upsert(e, false)
 		return nil
@@ -444,11 +445,13 @@ func (ld *leasedDescriptors) releaseAll(ctx context.Context) {
 		ld.leaseTimestamp.Release(ctx)
 	}
 	ld.leaseTimestampSet = false
-	for _, ldesc := range ld.bulkCatalog {
-		ldesc.Release(ctx)
+	if ld.bulkCatalog != nil {
+		for _, ldesc := range ld.bulkCatalog {
+			ldesc.Release(ctx)
+		}
+		ld.bulkCatalog = nil
+		ld.bulkCatalogNamespaces.Clear()
 	}
-	ld.bulkCatalog = nil
-	ld.bulkCatalogNamespaces.Clear()
 }
 
 func (ld *leasedDescriptors) release(ctx context.Context, descs []lease.IDVersion) {

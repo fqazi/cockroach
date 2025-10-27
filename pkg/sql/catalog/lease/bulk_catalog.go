@@ -3,6 +3,8 @@ package lease
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
+	"sync/atomic"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -12,6 +14,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
+	"github.com/cockroachdb/errors"
 )
 
 type BulkCatalog interface {
@@ -29,6 +32,7 @@ type BulkCatalog interface {
 		ctx context.Context, timestamp ReadTimestamp, id descpb.ID,
 	) (LeasedDescriptor, error)
 
+	IncrRef()
 	Release(ctx context.Context)
 	GetNamespaces() nstree.Catalog
 }
@@ -38,10 +42,12 @@ type bulkCatalogWithPrefetch struct {
 		syncutil.Mutex
 		leases nstree.NameMap
 	}
+	refCount       atomic.Int32
 	databaseID     descpb.ID
 	leaseTimestamp hlc.Timestamp
 	lm             *Manager
 	namespaces     nstree.Catalog
+	cancelCh       chan struct{}
 }
 
 func newBulkCatalog(
@@ -51,7 +57,9 @@ func newBulkCatalog(
 		databaseID:     databaseID,
 		leaseTimestamp: leaseTimestamp,
 		lm:             lm,
+		cancelCh:       make(chan struct{}),
 	}
+	bc.refCount.Add(1)
 	err := bc.startPrefetch(ctx)
 	if err != nil {
 		return nil, err
@@ -59,11 +67,23 @@ func newBulkCatalog(
 	return bc, nil
 }
 
+func (b *bulkCatalogWithPrefetch) IncrRef() {
+	log.Dev.Infof(context.Background(), "getting ref at: %p %d\n %s\n", b, b.refCount.Load()+1, debug.Stack())
+	b.refCount.Add(1)
+}
 func (b *bulkCatalogWithPrefetch) Release(ctx context.Context) {
+	log.Dev.Infof(context.Background(), "releasing ref at: %p %d\n %s\n", b, b.refCount.Load()-1, debug.Stack())
+	if b.refCount.Add(-1) != 0 {
+		return
+	}
+	log.Dev.Infof(context.Background(), "releasing descriptors %p\n", b)
 	b.releaseLeases(ctx)
 }
 
 func (b *bulkCatalogWithPrefetch) releaseLeases(ctx context.Context) {
+	// Stop any prefetch activity at this point.
+	close(b.cancelCh)
+	// Acquire the lock and release all leases.
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	_ = b.mu.leases.IterateByID(func(entry catalog.NameEntry) error {
@@ -101,24 +121,34 @@ func (b *bulkCatalogWithPrefetch) startPrefetch(ctx context.Context) error {
 
 func (b *bulkCatalogWithPrefetch) runPrefetch(ctx context.Context) {
 	if err := b.namespaces.ForEachSchemaNamespaceEntryInDatabase(b.databaseID, func(e nstree.NamespaceEntry) error {
+		select {
+		case <-b.cancelCh:
+			return context.Canceled
+		case <-ctx.Done():
+			return context.Canceled
+		default:
+		}
 		ld, err := b.Acquire(ctx, TimestampToReadTimestamp(b.leaseTimestamp), e.GetID())
 		if err != nil {
+			if errors.Is(err, catalog.ErrDescriptorNotFound) {
+				return nil
+			}
 			return err
 		}
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		if b.mu.leases.GetByID(ld.GetID()) == nil {
-			b.mu.leases.Upsert(ld, false)
-			return nil
-		}
-		ld.Release(ctx)
+		defer ld.Release(ctx)
 		return nil
 	}); err != nil {
 		log.Dev.Infof(ctx, "failed to prefetch schemas: %v", err)
 	}
 
 	if err := b.namespaces.ForEachNamespaceEntry(func(e nstree.NamespaceEntry) error {
-		// Skip schemas and databases.
+		select {
+		case <-b.cancelCh:
+			return context.Canceled
+		case <-ctx.Done():
+			return context.Canceled
+		default:
+		} // Skip schemas and databases.
 		if e.GetParentSchemaID() == descpb.InvalidID {
 			return nil
 		}
@@ -126,13 +156,7 @@ func (b *bulkCatalogWithPrefetch) runPrefetch(ctx context.Context) {
 		if err != nil {
 			return err
 		}
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		if b.mu.leases.GetByID(ld.GetID()) == nil {
-			b.mu.leases.Upsert(ld, false)
-			return nil
-		}
-		ld.Release(ctx)
+		defer ld.Release(ctx)
 		return nil
 	}); err != nil {
 		log.Dev.Infof(ctx, "failed to prefetch objects: %v", err)
@@ -181,8 +205,10 @@ func (b *bulkCatalogWithPrefetch) AcquireByName(
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.mu.leases.Upsert(ld, false)
-	ld.(*descriptorVersionState).incRefCount(ctx, false)
+	if b.mu.leases.GetByID(ld.GetID()) == nil {
+		b.mu.leases.Upsert(ld, false)
+		ld.(*descriptorVersionState).incRefCount(ctx, false)
+	}
 	return ld, nil
 }
 
@@ -216,8 +242,10 @@ func (b *bulkCatalogWithPrefetch) Acquire(
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.mu.leases.Upsert(ld, false)
-	ld.(*descriptorVersionState).incRefCount(ctx, false)
+	if b.mu.leases.GetByID(id) == nil {
+		b.mu.leases.Upsert(ld, false)
+		ld.(*descriptorVersionState).incRefCount(ctx, false)
+	}
 	return ld, nil
 }
 

@@ -106,7 +106,7 @@ var LockedLeaseTimestamp = settings.RegisterBoolSetting(settings.ApplicationLeve
 	"sql.catalog.descriptor_lease.use_locked_timestamps.enabled",
 	"guarantees transactional version consistency for descriptors used by the lease manager,"+
 		"descriptors used can be intentionally older to support this",
-	false)
+	true)
 
 // WaitForNoVersion returns once there are no unexpired leases left
 // for any version of the descriptor.
@@ -1434,6 +1434,7 @@ type closeTimeStampHandle struct {
 		// leasesToRelease tracks old leases that should be released when the
 		// the reference count hits zero.
 		leasesToRelease map[descpb.ID]LeasedDescriptor
+		bulkCatalogs    map[descpb.ID]BulkCatalog
 	}
 }
 
@@ -1443,6 +1444,7 @@ func newCloseTimeStampHandle(timestamp hlc.Timestamp) *closeTimeStampHandle {
 	ch := &closeTimeStampHandle{
 		timestamp: timestamp,
 	}
+	ch.mu.bulkCatalogs = make(map[descpb.ID]BulkCatalog)
 	ch.mu.leasesToRelease = make(map[descpb.ID]LeasedDescriptor)
 	return ch
 }
@@ -1470,6 +1472,9 @@ func (c *closeTimeStampHandle) cleanupHandle(ctx context.Context) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, v := range c.mu.leasesToRelease {
+		v.Release(ctx)
+	}
+	for _, v := range c.mu.bulkCatalogs {
 		v.Release(ctx)
 	}
 	c.mu.leasesToRelease = nil
@@ -1575,7 +1580,7 @@ type Manager struct {
 	// the lease manager.
 	TestingDisableRangeFeedCheckpoint atomic.Bool
 
-	bulkSingleFlight singleflight.Group
+	bulkSingleFlight *singleflight.Group
 }
 
 const leaseConcurrencyLimit = 5
@@ -1725,7 +1730,7 @@ func NewLeaseManager(
 		lm.boundAccount.Close(ctx)
 		lm.bytesMonitor.Stop(ctx)
 	}))
-	lm.bulkSingleFlight = singleflight.NewGroup("bulk-leasing", singleflight.NoTags)
+	lm.bulkSingleFlight = singleflight.NewGroup("bulk-leasing", "timestamp-descriptorID")
 	return lm
 }
 
@@ -1935,13 +1940,39 @@ func (m *Manager) resolveName(
 func (m *Manager) GetBulkCatalog(
 	ctx context.Context, timestamp ReadTimestamp, db descpb.ID,
 ) (BulkCatalog, error) {
-	// FIXME: Implement a cache...
 	// FIXME: Allow upgrades with timestamps...
+	lts := timestamp.(LeaseTimestamp)
+	hasLTS := lts.handle != nil
+	getCached := func(id descpb.ID) BulkCatalog {
+		if !hasLTS {
+			return nil
+		}
+		lts.handle.mu.Lock()
+		defer lts.handle.mu.Unlock()
+		return lts.handle.mu.bulkCatalogs[id]
+	}
+	if c := getCached(db); c != nil {
+		c.IncrRef()
+		return c, nil
+	}
+	shouldStore := false
 	catalog, _, err := m.bulkSingleFlight.Do(ctx, fmt.Sprintf("%s-%d", timestamp.GetTimestamp().String(), db), func(ctx context.Context) (interface{}, error) {
+		shouldStore = true
 		return newBulkCatalog(ctx, db, timestamp.GetTimestamp(), m)
 	})
 	if err != nil {
 		return nil, err
+	}
+	if shouldStore && hasLTS {
+		lts.handle.mu.Lock()
+		defer lts.handle.mu.Unlock()
+		// Reference count was bumped above.
+		lts.handle.mu.bulkCatalogs[db] = catalog.(BulkCatalog)
+	}
+	// If we don't have a LTS the ref count was already bumped.
+	if !shouldStore || hasLTS {
+		// Bump the refcount for us.
+		catalog.(BulkCatalog).IncrRef()
 	}
 	return catalog.(BulkCatalog), nil
 }
