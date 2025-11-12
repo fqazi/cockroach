@@ -431,7 +431,7 @@ func GetCatalogDescriptorGetter(
 	descriptors *Collection, txn *kv.Txn, sv *settings.Values,
 ) ByIDGetterBuilder {
 	if allowLeasedDescriptorsInCatalogViews.Get(sv) {
-		return descriptors.ByIDWithLeased(txn)
+		return descriptors.ByIDWithLeased(txn).WithMetaData()
 	}
 	return descriptors.ByIDWithoutLeased(txn)
 }
@@ -1038,20 +1038,20 @@ func (tc *Collection) GetAllSchemasInDatabase(
 	var err error
 	if options.allowLeased {
 		// FIXME: Fix this logic...
-		_, err := tc.leased.fetchBulkCatalog(ctx, txn, db.GetID())
+		allChildren, err := tc.leased.fetchBulkCatalog(ctx, txn, db.GetID())
 		if err != nil {
 			fmt.Printf("error fetching leased catalog for %d: %v\n", db.GetID(), err)
 		}
-		//if err != nil {
-		stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
-		/*} else {
+		if err != nil {
+			stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
+		} else {
 			newStored := nstree.MutableCatalog{}
 			_ = allChildren.ForEachSchemaNamespaceEntryInDatabase(db.GetID(), func(e nstree.NamespaceEntry) error {
 				newStored.UpsertNamespaceEntry(e, e.GetID(), e.GetMVCCTimestamp())
 				return nil
 			})
 			stored = newStored.Catalog
-		}*/
+		}
 	} else {
 		stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
 	}
@@ -1129,9 +1129,7 @@ func (tc *Collection) GetAllInDatabase(
 	var stored nstree.Catalog
 	var err error
 	if options.allowLeased {
-		stored, _ = tc.leased.fetchBulkCatalog(ctx, txn, db.GetID())
-		stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
-	} else {
+		stored, err = tc.leased.fetchBulkCatalog(ctx, txn, db.GetID())
 		stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
 	}
 	if err != nil {
