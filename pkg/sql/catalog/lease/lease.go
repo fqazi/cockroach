@@ -1416,8 +1416,9 @@ type descriptorTxnUpdate struct {
 		// presently waiting for.
 		descpb.DescriptorUpdates
 	}
-	timestamp hlc.Timestamp
-	key       roachpb.Key
+	bulkCatalogsToInvalidate catalog.DescriptorIDSet
+	timestamp                hlc.Timestamp
+	key                      roachpb.Key
 }
 
 // closeTimeStampHandle represents a close timestamp tracked by the lease
@@ -1432,7 +1433,7 @@ type closeTimeStampHandle struct {
 	mu            struct {
 		syncutil.Mutex
 		// leasesToRelease tracks old leases that should be released when the
-		// the reference count hits zero.
+		//  reference count hits zero.
 		leasesToRelease map[descpb.ID]LeasedDescriptor
 		bulkCatalogs    map[descpb.ID]BulkCatalog
 	}
@@ -1478,6 +1479,7 @@ func (c *closeTimeStampHandle) cleanupHandle(ctx context.Context) {
 		v.Release(ctx)
 	}
 	c.mu.leasesToRelease = nil
+	c.mu.bulkCatalogs = nil
 }
 
 // Manager manages acquiring and releasing per-descriptor leases. It also
@@ -1753,6 +1755,24 @@ func (m *Manager) findNewest(id descpb.ID) *descriptorVersionState {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.mu.active.findNewest()
+}
+
+// checkIfDescriptorHasNewerVersionOrOffline returns if the target version is accquired
+// or the descriptor is already offline.
+func (m *Manager) checkIfDescriptorHasNewerVersionOrOffline(
+	id descpb.ID, version descpb.DescriptorVersion,
+) bool {
+	t := m.findDescriptorState(id, false /* create */)
+	if t == nil {
+		return true
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if newest := t.mu.active.findNewest(); newest != nil && newest.GetVersion() >= version {
+		return true
+	}
+
+	return t.mu.takenOffline
 }
 
 // SetRegionPrefix sets the prefix this Manager uses to write leases. If val
@@ -2174,20 +2194,28 @@ func (m *Manager) findDescriptorState(id descpb.ID, create bool) *descriptorStat
 // versions that are still missing.
 func (m *Manager) hasDescUpdateBeenApplied(
 	updates descpb.DescriptorUpdates,
-) (allApplied bool, remaining descpb.DescriptorUpdates) {
+) (
+	allApplied bool,
+	remaining descpb.DescriptorUpdates,
+	bulkCatalogToInvalidate catalog.DescriptorIDSet,
+) {
 	allApplied = true
 	for idx, descID := range updates.DescriptorIDs {
-		descVersionState := m.findNewest(descID)
 		requiredVersion := updates.DescriptorVersions[idx]
 		// If a descriptor is missing, we still consider it as applied, since
 		// we will lease a newer version.
-		if descVersionState != nil && descVersionState.GetVersion() < requiredVersion {
-			allApplied = allApplied && descVersionState == nil
+		if !m.checkIfDescriptorHasNewerVersionOrOffline(descID, requiredVersion) {
+			allApplied = false
 			remaining.DescriptorIDs = append(remaining.DescriptorIDs, descID)
 			remaining.DescriptorVersions = append(remaining.DescriptorVersions, requiredVersion)
 		}
 	}
-	return allApplied, remaining
+	remaining.DescriptorDatabaseIDs = updates.DescriptorDatabaseIDs
+	// Track which bulk catalogs should be invalidated.
+	for _, descID := range updates.DescriptorDatabaseIDs {
+		bulkCatalogToInvalidate.Add(descID)
+	}
+	return allApplied, remaining, bulkCatalogToInvalidate
 }
 
 // getDescriptorTxnUpdateEntry returns the descriptorTxnUpdate entry for the given timestamp,
@@ -2213,6 +2241,7 @@ func (m *Manager) processDescriptorUpdate(
 	if entry == nil {
 		return
 	}
+	log.VEventf(ctx, 2, "processing descriptor update for %d@%d, entry: %v", id, version, entry)
 	noEntriesLeft := func() bool {
 		// Lock this specific entry
 		entry.mu.Lock()
@@ -2245,19 +2274,21 @@ func (m *Manager) processDescriptorUpdate(
 	if noEntriesLeft {
 		// If the length is zero by this point, then we can move the timestamp forward
 		// and remove this entry.
-		targetTimestamp := m.markDescriptorUpdatesAsComplete()
+		targetTimestamp, bulkCatalogsToInvalidate := m.markDescriptorUpdatesAsComplete()
 		if !targetTimestamp.IsEmpty() {
-			m.advanceCloseTimestamp(ctx, targetTimestamp)
+			m.advanceCloseTimestamp(ctx, targetTimestamp, bulkCatalogsToInvalidate)
 		}
 	}
 }
 
 // markDescriptorUpdatesAsComplete will move the close timestamp forward if
 // all descriptor updates have been applied.
-func (m *Manager) markDescriptorUpdatesAsComplete() hlc.Timestamp {
+func (m *Manager) markDescriptorUpdatesAsComplete() (hlc.Timestamp, catalog.DescriptorIDSet) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	timestamp := hlc.Timestamp{}
+	bulkCatalogsToInvalidate := catalog.DescriptorIDSet{}
+
 	for {
 		minUpdate, hasMin := m.mu.descriptorTxnUpdatesToProcess.Min()
 		if !hasMin {
@@ -2272,14 +2303,17 @@ func (m *Manager) markDescriptorUpdatesAsComplete() hlc.Timestamp {
 			break
 		}
 		timestamp = minUpdate.timestamp
+		bulkCatalogsToInvalidate = bulkCatalogsToInvalidate.Union(minUpdate.bulkCatalogsToInvalidate)
 		m.mu.descriptorTxnUpdatesToProcess.Delete(minUpdate)
 	}
-	return timestamp
+	return timestamp, bulkCatalogsToInvalidate
 }
 
 // advanceCloseTimestamp advances the close timestamp atomically, if the current
 // close timestamp is smaller.
-func (m *Manager) advanceCloseTimestamp(ctx context.Context, timestamp hlc.Timestamp) {
+func (m *Manager) advanceCloseTimestamp(
+	ctx context.Context, timestamp hlc.Timestamp, bulkCatalogsToInvalidate catalog.DescriptorIDSet,
+) {
 	timestampHandle := newCloseTimeStampHandle(timestamp)
 	for {
 		oldTimestamp := m.closeTimestamp.Load().(*closeTimeStampHandle)
@@ -2290,6 +2324,20 @@ func (m *Manager) advanceCloseTimestamp(ctx context.Context, timestamp hlc.Times
 		// Otherwise, attempt to swap the timestamp, if successful, we
 		// will return.
 		if m.closeTimestamp.CompareAndSwap(oldTimestamp, timestampHandle) {
+			log.Dev.Infof(ctx, "advancing close timestamp to %s and invalidating: %s", timestamp, bulkCatalogsToInvalidate.String())
+			func() {
+				timestampHandle.mu.Lock()
+				defer timestampHandle.mu.Unlock()
+				oldTimestamp.mu.Lock()
+				defer oldTimestamp.mu.Unlock()
+				for id, b := range oldTimestamp.mu.bulkCatalogs {
+					if bulkCatalogsToInvalidate.Contains(id) {
+						continue
+					}
+					timestampHandle.mu.bulkCatalogs[id] = b
+					b.IncrRef()
+				}
+			}()
 			// Insert the new timestamp handle.
 			m.insertNewTimestampHandle(timestampHandle)
 			// Now that the new timestamp is set, we can mark the old one as ready
@@ -2447,6 +2495,11 @@ func (m *Manager) StartRefreshLeasesTask(ctx context.Context, s *stop.Stopper, d
 						log.Dev.Warningf(ctx, "error purging leases for descriptor %d(%s): %s",
 							desc.GetID(), desc.GetName(), err)
 					}
+					// For dropped descriptors process the update after.
+					// FIXME: Super stupid hack...version ==1 might be droppable?
+					if dropped || desc.GetVersion() == 1 {
+						m.processDescriptorUpdate(ctx, desc.GetID(), desc.GetVersion(), desc.GetModificationTime())
+					}
 				}
 				// New descriptors may appear in the future if the descriptor table is
 				// global or if the transaction which performed the schema change wrote
@@ -2477,8 +2530,9 @@ func (m *Manager) StartRefreshLeasesTask(ctx context.Context, s *stop.Stopper, d
 				}
 			case descUpdate := <-m.descMetaDataUpdateCh:
 				// Check if the update has been applied.
-				allApplied, remaining := m.hasDescUpdateBeenApplied(descUpdate.mu.DescriptorUpdates)
+				allApplied, remaining, bulkCatalogToInvalidate := m.hasDescUpdateBeenApplied(descUpdate.mu.DescriptorUpdates)
 				descUpdate.mu.DescriptorUpdates = remaining
+				descUpdate.bulkCatalogsToInvalidate = bulkCatalogToInvalidate
 				advanceTimestamp := func() bool {
 					m.mu.Lock()
 					defer m.mu.Unlock()
@@ -2494,7 +2548,7 @@ func (m *Manager) StartRefreshLeasesTask(ctx context.Context, s *stop.Stopper, d
 					return false
 				}()
 				if advanceTimestamp {
-					m.advanceCloseTimestamp(ctx, descUpdate.timestamp)
+					m.advanceCloseTimestamp(ctx, descUpdate.timestamp, bulkCatalogToInvalidate)
 				}
 			case <-s.ShouldQuiesce():
 				return
@@ -2630,20 +2684,27 @@ func (m *Manager) watchForUpdates(ctx context.Context) {
 		if m.TestingDisableRangeFeedCheckpoint.Load() {
 			return
 		}
+		getBulkCatalogsToInvalidate := func() catalog.DescriptorIDSet {
+			var bulkCatalogsToInvalidate catalog.DescriptorIDSet
+			// Clean up all entries before the resolve timestamp.
+			for {
+				minTS, hasMin := m.mu.descriptorTxnUpdatesToProcess.Min()
+				if !hasMin || !minTS.timestamp.Less(checkpoint.ResolvedTS) {
+					break
+				}
+				m.mu.descriptorTxnUpdatesToProcess.Delete(minTS)
+				// Ensure bulk catalogs linked with these updates are also invalidated.
+				bulkCatalogsToInvalidate = bulkCatalogsToInvalidate.Union(minTS.bulkCatalogsToInvalidate)
+			}
+			return bulkCatalogsToInvalidate
+		}
+
 		// Track checkpoints that occur from the rangefeed to make sure progress
-		// is always made.
-		m.advanceCloseTimestamp(ctx, checkpoint.ResolvedTS)
+		// is always made. FIXME: Generate form below...
+		m.advanceCloseTimestamp(ctx, checkpoint.ResolvedTS, getBulkCatalogsToInvalidate())
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		m.mu.rangeFeedCheckpoints += 1
-		// Clean up all entries before the resolve timestamp.
-		for {
-			minTS, hasMin := m.mu.descriptorTxnUpdatesToProcess.Min()
-			if !hasMin || !minTS.timestamp.Less(checkpoint.ResolvedTS) {
-				break
-			}
-			m.mu.descriptorTxnUpdatesToProcess.Delete(minTS)
-		}
 	}
 
 	// Assert that the range feed is already terminated.

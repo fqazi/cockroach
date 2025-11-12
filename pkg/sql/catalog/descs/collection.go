@@ -465,16 +465,26 @@ func (tc *Collection) EmitDescriptorUpdatesKey(ctx context.Context, txn *kv.Txn)
 	updates := &descpb.DescriptorUpdates{}
 	descUpdateID := descpb.InvalidID
 	// Add all the descriptors that have been modified in this transaction.
+	dbIDs := catalog.DescriptorIDSet{}
 	if err := tc.uncommitted.iterateUncommittedByID(func(desc catalog.Descriptor) error {
+		if desc.GetID() == 168 {
+			log.Dev.Infof(ctx, "MARKED %s %s\n", desc.GetName(), desc.DescriptorType())
+		}
 		updates.DescriptorIDs = append(updates.DescriptorIDs, desc.GetID())
 		updates.DescriptorVersions = append(updates.DescriptorVersions, desc.GetVersion())
 		if descUpdateID < desc.GetID() {
 			descUpdateID = desc.GetID()
 		}
+		if desc.GetParentID() != descpb.InvalidID {
+			dbIDs.Add(desc.GetParentID())
+		} else {
+			dbIDs.Add(desc.GetID())
+		}
 		return nil
 	}); err != nil {
 		return err
 	}
+	updates.DescriptorDatabaseIDs = dbIDs.Ordered()
 	descUpdateKey := catalogkeys.MakeDescUpdateKey(tc.codec(), descUpdateID)
 	return txn.Put(ctx, descUpdateKey, updates)
 }
@@ -909,6 +919,22 @@ func (tc *Collection) GetUncommittedTables() (tables []catalog.TableDescriptor) 
 	return tables
 }
 
+// GetUncommitedNewChildObjects return all new objects that have been created
+// any schema.
+func (tc *Collection) GetUncommitedNewChildObjects() catalog.DescriptorIDSet {
+	ids := catalog.DescriptorIDSet{}
+	_ = tc.uncommitted.iterateUncommittedByID(func(desc catalog.Descriptor) error {
+		log.Dev.Infof(context.Background(), "uncommited desc %s %d@%d", desc.GetName(), desc.GetID(), desc.GetVersion())
+		if desc.GetVersion() != 1 || desc.GetParentID() == descpb.InvalidID || desc.GetParentSchemaID() == descpb.InvalidID {
+			log.Dev.Infof(context.Background(), "skip uncommited desc %s %d@%d", desc.GetName(), desc.GetID(), desc.GetVersion())
+			return nil
+		}
+		ids.Add(desc.GetID())
+		return nil
+	})
+	return ids
+}
+
 // GetUncommittedDatabases returns all the databases updated or created in the
 // transaction.
 func (tc *Collection) GetUncommittedDatabases() (databases []catalog.DatabaseDescriptor) {
@@ -1011,16 +1037,21 @@ func (tc *Collection) GetAllSchemasInDatabase(
 	var stored nstree.Catalog
 	var err error
 	if options.allowLeased {
-		allChildren, err := tc.leased.fetchBulkCatalog(ctx, txn, db.GetID())
+		// FIXME: Fix this logic...
+		_, err := tc.leased.fetchBulkCatalog(ctx, txn, db.GetID())
 		if err != nil {
-			return nstree.Catalog{}, err
+			fmt.Printf("error fetching leased catalog for %d: %v\n", db.GetID(), err)
 		}
-		newStored := nstree.MutableCatalog{}
-		_ = allChildren.ForEachSchemaNamespaceEntryInDatabase(db.GetID(), func(e nstree.NamespaceEntry) error {
-			newStored.UpsertNamespaceEntry(e, e.GetID(), e.GetMVCCTimestamp())
-			return nil
-		})
-		stored = newStored.Catalog
+		//if err != nil {
+		stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
+		/*} else {
+			newStored := nstree.MutableCatalog{}
+			_ = allChildren.ForEachSchemaNamespaceEntryInDatabase(db.GetID(), func(e nstree.NamespaceEntry) error {
+				newStored.UpsertNamespaceEntry(e, e.GetID(), e.GetMVCCTimestamp())
+				return nil
+			})
+			stored = newStored.Catalog
+		}*/
 	} else {
 		stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
 	}
@@ -1098,7 +1129,8 @@ func (tc *Collection) GetAllInDatabase(
 	var stored nstree.Catalog
 	var err error
 	if options.allowLeased {
-		stored, err = tc.leased.fetchBulkCatalog(ctx, txn, db.GetID())
+		stored, _ = tc.leased.fetchBulkCatalog(ctx, txn, db.GetID())
+		stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
 	} else {
 		stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
 	}

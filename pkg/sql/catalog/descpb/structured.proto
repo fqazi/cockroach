@@ -1947,4 +1947,5 @@ message DescriptorUpdates {
 
   repeated uint32 descriptor_ids = 1 [(gogoproto.customname) = "DescriptorIDs", (gogoproto.casttype) = "ID"];
   repeated uint32 descriptor_versions = 2  [(gogoproto.customname) = "DescriptorVersions", (gogoproto.casttype) = "DescriptorVersion"];
+  repeated uint32 descriptor_database_ids = 3 [(gogoproto.customname) = "DescriptorDatabaseIDs", (gogoproto.casttype) = "ID"];
 }

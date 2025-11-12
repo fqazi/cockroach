@@ -3,7 +3,6 @@ package lease
 import (
 	"context"
 	"fmt"
-	"runtime/debug"
 	"sync/atomic"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -14,6 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil/singleflight"
 	"github.com/cockroachdb/errors"
 )
 
@@ -37,27 +37,39 @@ type BulkCatalog interface {
 	GetNamespaces() nstree.Catalog
 }
 
+type bulkCatalogEntry struct {
+	catalog.NameEntry
+	fetchErr error
+}
+
 type bulkCatalogWithPrefetch struct {
 	mu struct {
 		syncutil.Mutex
-		leases nstree.NameMap
+		leases nstree.NameMap // FIXME: Entry type needs to be something else..
 	}
 	refCount       atomic.Int32
 	databaseID     descpb.ID
 	leaseTimestamp hlc.Timestamp
 	lm             *Manager
 	namespaces     nstree.Catalog
-	cancelCh       chan struct{}
+
+	// Tracks if the prefetch is running.
+	prefetchCancel   chan struct{}
+	prefetchComplete chan struct{}
+
+	fetcher *singleflight.Group
 }
 
 func newBulkCatalog(
 	ctx context.Context, databaseID descpb.ID, leaseTimestamp hlc.Timestamp, lm *Manager,
 ) (*bulkCatalogWithPrefetch, error) {
 	bc := &bulkCatalogWithPrefetch{
-		databaseID:     databaseID,
-		leaseTimestamp: leaseTimestamp,
-		lm:             lm,
-		cancelCh:       make(chan struct{}),
+		databaseID:       databaseID,
+		leaseTimestamp:   leaseTimestamp,
+		lm:               lm,
+		prefetchCancel:   make(chan struct{}),
+		prefetchComplete: make(chan struct{}),
+		fetcher:          singleflight.NewGroup("prefetch-bulk=descriptor", singleflight.NoTags),
 	}
 	bc.refCount.Add(1)
 	err := bc.startPrefetch(ctx)
@@ -68,26 +80,28 @@ func newBulkCatalog(
 }
 
 func (b *bulkCatalogWithPrefetch) IncrRef() {
-	log.Dev.Infof(context.Background(), "getting ref at: %p %d\n %s\n", b, b.refCount.Load()+1, debug.Stack())
 	b.refCount.Add(1)
 }
 func (b *bulkCatalogWithPrefetch) Release(ctx context.Context) {
-	log.Dev.Infof(context.Background(), "releasing ref at: %p %d\n %s\n", b, b.refCount.Load()-1, debug.Stack())
 	if b.refCount.Add(-1) != 0 {
 		return
 	}
-	log.Dev.Infof(context.Background(), "releasing descriptors %p\n", b)
 	b.releaseLeases(ctx)
 }
 
 func (b *bulkCatalogWithPrefetch) releaseLeases(ctx context.Context) {
 	// Stop any prefetch activity at this point.
-	close(b.cancelCh)
+	close(b.prefetchCancel)
+	<-b.prefetchComplete
 	// Acquire the lock and release all leases.
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	_ = b.mu.leases.IterateByID(func(entry catalog.NameEntry) error {
-		entry.(LeasedDescriptor).Release(ctx)
+		be := entry.(bulkCatalogEntry)
+		if be.fetchErr != nil {
+			return nil
+		}
+		be.NameEntry.(LeasedDescriptor).Release(ctx)
 		return nil
 	})
 	b.mu.leases.Clear()
@@ -120,9 +134,10 @@ func (b *bulkCatalogWithPrefetch) startPrefetch(ctx context.Context) error {
 }
 
 func (b *bulkCatalogWithPrefetch) runPrefetch(ctx context.Context) {
+	defer close(b.prefetchComplete)
 	if err := b.namespaces.ForEachSchemaNamespaceEntryInDatabase(b.databaseID, func(e nstree.NamespaceEntry) error {
 		select {
-		case <-b.cancelCh:
+		case <-b.prefetchCancel:
 			return context.Canceled
 		case <-ctx.Done():
 			return context.Canceled
@@ -130,7 +145,7 @@ func (b *bulkCatalogWithPrefetch) runPrefetch(ctx context.Context) {
 		}
 		ld, err := b.Acquire(ctx, TimestampToReadTimestamp(b.leaseTimestamp), e.GetID())
 		if err != nil {
-			if errors.Is(err, catalog.ErrDescriptorNotFound) {
+			if errors.Is(err, catalog.ErrDescriptorNotFound) || catalog.HasInactiveDescriptorError(err) {
 				return nil
 			}
 			return err
@@ -143,7 +158,7 @@ func (b *bulkCatalogWithPrefetch) runPrefetch(ctx context.Context) {
 
 	if err := b.namespaces.ForEachNamespaceEntry(func(e nstree.NamespaceEntry) error {
 		select {
-		case <-b.cancelCh:
+		case <-b.prefetchCancel:
 			return context.Canceled
 		case <-ctx.Done():
 			return context.Canceled
@@ -154,6 +169,9 @@ func (b *bulkCatalogWithPrefetch) runPrefetch(ctx context.Context) {
 		}
 		ld, err := b.Acquire(ctx, TimestampToReadTimestamp(b.leaseTimestamp), e.GetID())
 		if err != nil {
+			if errors.Is(err, catalog.ErrDescriptorNotFound) || catalog.HasInactiveDescriptorError(err) {
+				return nil
+			}
 			return err
 		}
 		defer ld.Release(ctx)
@@ -169,7 +187,55 @@ func (b *bulkCatalogWithPrefetch) GetNamespaces() nstree.Catalog {
 }
 
 // FIXME: Support regenerating for a new TS.
-// FIXME: Ref counts?
+type nameID descpb.ID
+
+func (n nameID) GetID() descpb.ID {
+	return descpb.ID(n)
+}
+
+func (n nameID) GetParentID() descpb.ID {
+	return descpb.InvalidID
+}
+
+func (n nameID) GetName() string {
+	return ""
+}
+
+func (n nameID) GetParentSchemaID() descpb.ID {
+	return descpb.InvalidID
+}
+
+func (b *bulkCatalogWithPrefetch) getCachedByName(
+	parentDatabaseID descpb.ID, parentSchemaID descpb.ID, name string,
+) (exists bool, ld LeasedDescriptor, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry := b.mu.leases.GetByName(parentDatabaseID, parentSchemaID, name)
+	if entry != nil {
+		be := entry.(bulkCatalogEntry)
+		if be.fetchErr != nil {
+			return false, nil, be.fetchErr
+		}
+		return true, be.NameEntry.(LeasedDescriptor), nil
+	}
+	return false, nil, nil
+}
+
+func (b *bulkCatalogWithPrefetch) getCachedByID(
+	id descpb.ID,
+) (exists bool, ld LeasedDescriptor, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry := b.mu.leases.GetByID(id)
+	if entry != nil {
+		be := entry.(bulkCatalogEntry)
+		if be.fetchErr != nil {
+			return false, nil, be.fetchErr
+		}
+		return true, be.NameEntry.(LeasedDescriptor), nil
+	}
+	return false, nil, nil
+}
 
 func (b *bulkCatalogWithPrefetch) AcquireByName(
 	ctx context.Context,
@@ -178,75 +244,106 @@ func (b *bulkCatalogWithPrefetch) AcquireByName(
 	parentSchemaID descpb.ID,
 	name string,
 ) (LeasedDescriptor, error) {
-	getFromCache := func() LeasedDescriptor {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-
-		// First do a fast look up in the cache.
-		entry := b.mu.leases.GetByName(parentSchemaID, parentDatabaseID, name)
-		if entry != nil {
-			return entry.(LeasedDescriptor)
-		}
-		return nil
-	}
-
 	// Fast path where the cache already had the entry.
-	if ld := getFromCache(); ld != nil {
-		ld.(*descriptorVersionState).incRefCount(ctx, false)
+	if exists, ld, err := b.getCachedByName(parentDatabaseID, parentSchemaID, name); exists {
+		if err != nil {
+			return nil, err
+		}
 		return ld, nil
 	}
 
 	// Otherwise request the entry from the lease manager.
-	// FIXME: We only want one adder for this part once its
-	// done.
-	ld, err := b.lm.AcquireByName(ctx, timestamp, parentDatabaseID, parentSchemaID, name)
+	ne := b.namespaces.LookupNamespaceEntry(descpb.NameInfo{Name: name, ParentID: parentDatabaseID, ParentSchemaID: parentSchemaID})
+	skipRefCount := false
+	ld, _, err := b.fetcher.Do(ctx, fmt.Sprintf("%d", ne.GetID()), func(ctx context.Context) (interface{}, error) {
+		// We could have cached the value right before the single flight, so check again.
+		if exists, ld, err := b.getCachedByName(parentDatabaseID, parentSchemaID, name); exists {
+			if err != nil {
+				return nil, err
+			}
+			return ld, nil
+		}
+		ld, err := b.lm.AcquireByName(ctx, timestamp, parentDatabaseID, parentSchemaID, name)
+		// If we hit a known error, we will cache the results to help future lookups.
+		if err != nil && !errors.Is(err, catalog.ErrDescriptorNotFound) && !catalog.HasInactiveDescriptorError(err) {
+			return nil, err
+		}
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		skipRefCount = true
+		if b.mu.leases.GetByID(ne.GetID()) == nil {
+			entry := bulkCatalogEntry{NameEntry: ld, fetchErr: err}
+			if err != nil {
+				entry.NameEntry = ne
+			}
+			b.mu.leases.Upsert(entry, false)
+			if err == nil {
+				ld.(*descriptorVersionState).incRefCount(ctx, false)
+			}
+		}
+		return ld, err
+	})
 	if err != nil {
 		return nil, err
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.mu.leases.GetByID(ld.GetID()) == nil {
-		b.mu.leases.Upsert(ld, false)
+	if !skipRefCount {
 		ld.(*descriptorVersionState).incRefCount(ctx, false)
 	}
-	return ld, nil
+	return ld.(LeasedDescriptor), nil
 }
 
 func (b *bulkCatalogWithPrefetch) Acquire(
 	ctx context.Context, timestamp ReadTimestamp, id descpb.ID,
 ) (LeasedDescriptor, error) {
-	getFromCache := func() LeasedDescriptor {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-
-		// First do a fast look up in the cache.
-		entry := b.mu.leases.GetByID(id)
-		if entry != nil {
-			return entry.(LeasedDescriptor)
-		}
-		return nil
-	}
-
 	// Fast path where the cache already had the entry.
-	if ld := getFromCache(); ld != nil {
+	if exists, ld, err := b.getCachedByID(id); exists {
+		if err != nil {
+			return nil, err
+		}
 		ld.(*descriptorVersionState).incRefCount(ctx, false)
 		return ld, nil
 	}
 
 	// Otherwise request the entry from the lease manager.
-	// FIXME: We only want one adder for this part once its
-	// done.
-	ld, err := b.lm.Acquire(ctx, timestamp, id)
+	fetched := false
+	ld, _, err := b.fetcher.Do(ctx, fmt.Sprintf("%d", id), func(ctx context.Context) (interface{}, error) {
+		// We could have cached the value right before the single flight, so check again.
+		if exists, ld, err := b.getCachedByID(id); exists {
+			if err != nil {
+				return nil, err
+			}
+			return ld, nil
+		}
+		ld, err := b.lm.Acquire(ctx, timestamp, id)
+		// If we hit a known error, we will cache the results to help future lookups.
+		if err != nil && !errors.Is(err, catalog.ErrDescriptorNotFound) && !catalog.HasInactiveDescriptorError(err) {
+			return nil, err
+		}
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		fetched = true
+		if b.mu.leases.GetByID(id) == nil {
+			entry := bulkCatalogEntry{NameEntry: ld, fetchErr: err}
+			skipNameMap := false
+			if ld == nil {
+				entry.NameEntry = nameID(id)
+				skipNameMap = true
+			}
+			b.mu.leases.Upsert(entry, skipNameMap)
+			if err == nil {
+				ld.(*descriptorVersionState).incRefCount(ctx, false)
+			}
+		}
+		return ld, err
+	})
 	if err != nil {
 		return nil, err
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.mu.leases.GetByID(id) == nil {
-		b.mu.leases.Upsert(ld, false)
+	if !fetched {
 		ld.(*descriptorVersionState).incRefCount(ctx, false)
 	}
-	return ld, nil
+
+	return ld.(LeasedDescriptor), nil
 }
 
 var _ BulkCatalog = &bulkCatalogWithPrefetch{}

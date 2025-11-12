@@ -223,13 +223,16 @@ func (ld *leasedDescriptors) fetchBulkCatalog(
 	if c, ok := ld.bulkCatalog[id]; ok {
 		return c.GetNamespaces(), nil
 	}
+	// FIXME: Fallback to the real timestamp in here...
 	bulkCatalog, err := ld.lm.GetBulkCatalog(ctx, ld.leaseTimestamp, id)
 	if err != nil {
 		return nstree.Catalog{}, err
 	}
 	ld.bulkCatalog[id] = bulkCatalog
+	log.Dev.Infof(ctx, "New bulk catalog: %p", bulkCatalog)
 	// FIXME: we can use a normal catalog...
 	_ = bulkCatalog.GetNamespaces().ForEachNamespaceEntry(func(e nstree.NamespaceEntry) error {
+		log.Dev.Infof(ctx, "Entry: %s p=%d", e.GetName(), id)
 		ld.bulkCatalogNamespaces.Upsert(e, false)
 		return nil
 	})
@@ -267,7 +270,9 @@ func (ld *leasedDescriptors) getByName(
 				parentID, parentSchemaID, name, cached.GetID())
 		}
 		ldesc, err := ld.bulkCatalog[parentID].AcquireByName(ctx, ld.leaseTimestamp, parentID, parentSchemaID, name)
-		return ld.getResult(ctx, txn, setTxnDeadline, ldesc, err)
+		if err == nil && !ldesc.Expiration(ctx).Less(txn.ReadTimestamp()) {
+			return ld.getResult(ctx, txn, setTxnDeadline, ldesc, err)
+		}
 	}
 	ld.maybeInitReadTimestamp(ctx, txn)
 	ldesc, err := ld.lm.AcquireByName(ctx, ld.leaseTimestamp, parentID, parentSchemaID, name)
@@ -286,7 +291,10 @@ func (ld *leasedDescriptors) getByID(
 	// Otherwise, see if a bulk catalog has loaded this value for us.
 	if cached := ld.bulkCatalogNamespaces.GetByID(id); cached != nil {
 		ldesc, err := ld.bulkCatalog[cached.GetParentID()].Acquire(ctx, ld.leaseTimestamp, id)
-		return ld.getResult(ctx, txn, true, ldesc, err)
+		// FIXME: Move second part into the look up.
+		if err == nil && !ldesc.Expiration(ctx).Less(txn.ReadTimestamp()) {
+			return ld.getResult(ctx, txn, true, ldesc, err)
+		}
 	}
 	ld.maybeInitReadTimestamp(ctx, txn)
 	desc, err := ld.lm.Acquire(ctx, ld.leaseTimestamp, id)
