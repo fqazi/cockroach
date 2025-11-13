@@ -431,7 +431,7 @@ func GetCatalogDescriptorGetter(
 	descriptors *Collection, txn *kv.Txn, sv *settings.Values,
 ) ByIDGetterBuilder {
 	if allowLeasedDescriptorsInCatalogViews.Get(sv) {
-		return descriptors.ByIDWithLeased(txn).WithMetaData()
+		return descriptors.ByIDWithLeased(txn)
 	}
 	return descriptors.ByIDWithoutLeased(txn)
 }
