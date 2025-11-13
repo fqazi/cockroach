@@ -24,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
+	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -1635,6 +1636,42 @@ func BenchmarkDropLargeDatabaseWithGenerateTestObjects(b *testing.B) {
 					tdb.Exec(b, "DROP DATABASE db CASCADE;")
 					b.StopTimer()
 					tdb.Exec(b, "SET use_declarative_schema_changer=off")
+				}
+			})
+		}
+	}
+}
+
+func BenchmarkDropLargeDatabasePgClass(b *testing.B) {
+	defer leaktest.AfterTest(b)()
+	defer log.Scope(b).Close(b)
+
+	for _, useLeasedDescriptors := range []bool{true, false} {
+		for _, tables := range []int{8192, 16384, 32768} {
+			b.Run(fmt.Sprintf("pg_class/leased_descriptors=%t/tables=%d", useLeasedDescriptors, tables), func(b *testing.B) {
+				ctx := context.Background()
+				st := cluster.MakeTestingClusterSettings()
+				s, sqlDB, _ := serverutils.StartServer(b, base.TestServerArgs{
+					Settings: st,
+				})
+				sqlConn, err := sqlDB.Conn(ctx)
+				require.NoError(b, err)
+				defer s.Stopper().Stop(ctx)
+				b.ResetTimer()
+				b.StopTimer()
+				tdb := sqlutils.MakeSQLRunner(sqlConn)
+				if !useLeasedDescriptors {
+					tdb.Exec(b, "SET CLUSTER SETTING sql.catalog.allow_leased_descriptors.enabled = false;")
+				}
+				tdb.Exec(b, "CREATE DATABASE db")
+				tdb.Exec(b, "USE db")
+				tdb.Exec(b, "SELECT crdb_internal.generate_test_objects('test', $1::int)", tables)
+				for i := 0; i < b.N; i++ {
+					// Cold run.
+					tdb.Exec(b, "SELECt * FROM pg_class")
+					b.StartTimer()
+					tdb.Exec(b, "SELECt * FROM pg_class")
+					b.StopTimer()
 				}
 			})
 		}

@@ -229,10 +229,8 @@ func (ld *leasedDescriptors) fetchBulkCatalog(
 		return nstree.Catalog{}, err
 	}
 	ld.bulkCatalog[id] = bulkCatalog
-	log.Dev.Infof(ctx, "New bulk catalog: %p", bulkCatalog)
 	// FIXME: we can use a normal catalog...
 	_ = bulkCatalog.GetNamespaces().ForEachNamespaceEntry(func(e nstree.NamespaceEntry) error {
-		log.Dev.Infof(ctx, "Entry: %s p=%d", e.GetName(), id)
 		ld.bulkCatalogNamespaces.Upsert(e, false)
 		return nil
 	})
@@ -356,11 +354,11 @@ func (ld *leasedDescriptors) getResult(
 	// reduce the deadline. We use ReadTimestamp() that doesn't return the commit
 	// timestamp, so we need to set a deadline on the transaction to prevent it
 	// from committing beyond the version's expiration time.
-	if setDeadline {
+	/*if setDeadline {
 		if err := ld.maybeUpdateDeadline(ctx, txn, nil); err != nil {
 			return nil, false, err
 		}
-	}
+	}*/
 
 	desc := ldesc.Underlying()
 	if err = ld.maybeAssertExternalRowDataTS(desc); err != nil {

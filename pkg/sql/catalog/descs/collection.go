@@ -467,9 +467,6 @@ func (tc *Collection) EmitDescriptorUpdatesKey(ctx context.Context, txn *kv.Txn)
 	// Add all the descriptors that have been modified in this transaction.
 	dbIDs := catalog.DescriptorIDSet{}
 	if err := tc.uncommitted.iterateUncommittedByID(func(desc catalog.Descriptor) error {
-		if desc.GetID() == 168 {
-			log.Dev.Infof(ctx, "MARKED %s %s\n", desc.GetName(), desc.DescriptorType())
-		}
 		updates.DescriptorIDs = append(updates.DescriptorIDs, desc.GetID())
 		updates.DescriptorVersions = append(updates.DescriptorVersions, desc.GetVersion())
 		if descUpdateID < desc.GetID() {
@@ -924,9 +921,7 @@ func (tc *Collection) GetUncommittedTables() (tables []catalog.TableDescriptor) 
 func (tc *Collection) GetUncommitedNewChildObjects() catalog.DescriptorIDSet {
 	ids := catalog.DescriptorIDSet{}
 	_ = tc.uncommitted.iterateUncommittedByID(func(desc catalog.Descriptor) error {
-		log.Dev.Infof(context.Background(), "uncommited desc %s %d@%d", desc.GetName(), desc.GetID(), desc.GetVersion())
 		if desc.GetVersion() != 1 || desc.GetParentID() == descpb.InvalidID || desc.GetParentSchemaID() == descpb.InvalidID {
-			log.Dev.Infof(context.Background(), "skip uncommited desc %s %d@%d", desc.GetName(), desc.GetID(), desc.GetVersion())
 			return nil
 		}
 		ids.Add(desc.GetID())
@@ -1130,6 +1125,9 @@ func (tc *Collection) GetAllInDatabase(
 	var err error
 	if options.allowLeased {
 		stored, err = tc.leased.fetchBulkCatalog(ctx, txn, db.GetID())
+		// FIXME: for logic test to pass
+		// 		stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
+	} else {
 		stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)
 	}
 	if err != nil {

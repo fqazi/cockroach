@@ -3,6 +3,7 @@ package lease
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -55,7 +56,7 @@ type bulkCatalogEntry struct {
 
 type bulkCatalogWithPrefetch struct {
 	mu struct {
-		syncutil.Mutex
+		syncutil.RWMutex
 		leases nstree.NameMap // FIXME: Entry type needs to be something else..
 	}
 	refCount       atomic.Int32
@@ -166,7 +167,6 @@ func (b *bulkCatalogWithPrefetch) runPrefetch(ctx context.Context) {
 	}); err != nil {
 		log.Dev.Infof(ctx, "failed to prefetch schemas: %v", err)
 	}
-
 	if err := b.namespaces.ForEachNamespaceEntry(func(e nstree.NamespaceEntry) error {
 		select {
 		case <-b.prefetchCancel:
@@ -219,8 +219,8 @@ func (n nameID) GetParentSchemaID() descpb.ID {
 func (b *bulkCatalogWithPrefetch) getCachedByName(
 	parentDatabaseID descpb.ID, parentSchemaID descpb.ID, name string,
 ) (exists bool, ld LeasedDescriptor, err error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	entry := b.mu.leases.GetByName(parentDatabaseID, parentSchemaID, name)
 	if entry != nil {
 		be := entry.(bulkCatalogEntry)
@@ -235,8 +235,8 @@ func (b *bulkCatalogWithPrefetch) getCachedByName(
 func (b *bulkCatalogWithPrefetch) getCachedByID(
 	id descpb.ID,
 ) (exists bool, ld LeasedDescriptor, err error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	entry := b.mu.leases.GetByID(id)
 	if entry != nil {
 		be := entry.(bulkCatalogEntry)
@@ -266,7 +266,7 @@ func (b *bulkCatalogWithPrefetch) AcquireByName(
 	// Otherwise request the entry from the lease manager.
 	ne := b.namespaces.LookupNamespaceEntry(descpb.NameInfo{Name: name, ParentID: parentDatabaseID, ParentSchemaID: parentSchemaID})
 	skipRefCount := false
-	ld, _, err := b.fetcher.Do(ctx, fmt.Sprintf("%d", ne.GetID()), func(ctx context.Context) (interface{}, error) {
+	ld, _, err := b.fetcher.Do(ctx, strconv.Itoa(int(ne.GetID())), func(ctx context.Context) (interface{}, error) {
 		// We could have cached the value right before the single flight, so check again.
 		if exists, ld, err := b.getCachedByName(parentDatabaseID, parentSchemaID, name); exists {
 			if err != nil {
@@ -282,15 +282,13 @@ func (b *bulkCatalogWithPrefetch) AcquireByName(
 		b.mu.Lock()
 		defer b.mu.Unlock()
 		skipRefCount = true
-		if b.mu.leases.GetByID(ne.GetID()) == nil {
-			entry := bulkCatalogEntry{NameEntry: ld, fetchErr: err}
-			if err != nil {
-				entry.NameEntry = ne
-			}
-			b.mu.leases.Upsert(entry, false)
-			if err == nil {
-				ld.(*descriptorVersionState).incRefCount(ctx, false)
-			}
+		entry := bulkCatalogEntry{NameEntry: ld, fetchErr: err}
+		if err != nil {
+			entry.NameEntry = ne
+		}
+		b.mu.leases.Upsert(entry, false)
+		if err == nil {
+			ld.(*descriptorVersionState).incRefCount(ctx, false)
 		}
 		return ld, err
 	})
@@ -316,8 +314,8 @@ func (b *bulkCatalogWithPrefetch) Acquire(
 	}
 
 	// Otherwise request the entry from the lease manager.
-	fetched := false
-	ld, _, err := b.fetcher.Do(ctx, fmt.Sprintf("%d", id), func(ctx context.Context) (interface{}, error) {
+	skipRefCount := false
+	ld, _, err := b.fetcher.Do(ctx, strconv.Itoa(int(id)), func(ctx context.Context) (interface{}, error) {
 		// We could have cached the value right before the single flight, so check again.
 		if exists, ld, err := b.getCachedByID(id); exists {
 			if err != nil {
@@ -332,25 +330,23 @@ func (b *bulkCatalogWithPrefetch) Acquire(
 		}
 		b.mu.Lock()
 		defer b.mu.Unlock()
-		fetched = true
-		if b.mu.leases.GetByID(id) == nil {
-			entry := bulkCatalogEntry{NameEntry: ld, fetchErr: err}
-			skipNameMap := false
-			if ld == nil {
-				entry.NameEntry = nameID(id)
-				skipNameMap = true
-			}
-			b.mu.leases.Upsert(entry, skipNameMap)
-			if err == nil {
-				ld.(*descriptorVersionState).incRefCount(ctx, false)
-			}
+		skipRefCount = true
+		entry := bulkCatalogEntry{NameEntry: ld, fetchErr: err}
+		skipNameMap := false
+		if ld == nil {
+			entry.NameEntry = nameID(id)
+			skipNameMap = true
+		}
+		b.mu.leases.Upsert(entry, skipNameMap)
+		if err == nil {
+			ld.(*descriptorVersionState).incRefCount(ctx, false)
 		}
 		return ld, err
 	})
 	if err != nil {
 		return nil, err
 	}
-	if !fetched {
+	if !skipRefCount {
 		ld.(*descriptorVersionState).incRefCount(ctx, false)
 	}
 
