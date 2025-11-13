@@ -1435,7 +1435,7 @@ type closeTimeStampHandle struct {
 		// leasesToRelease tracks old leases that should be released when the
 		//  reference count hits zero.
 		leasesToRelease map[descpb.ID]LeasedDescriptor
-		bulkCatalogs    map[descpb.ID]BulkCatalog
+		bulkCatalogs    *btree.BTreeG[BulkCatalogKey]
 	}
 }
 
@@ -1445,7 +1445,9 @@ func newCloseTimeStampHandle(timestamp hlc.Timestamp) *closeTimeStampHandle {
 	ch := &closeTimeStampHandle{
 		timestamp: timestamp,
 	}
-	ch.mu.bulkCatalogs = make(map[descpb.ID]BulkCatalog)
+	ch.mu.bulkCatalogs = btree.NewG[BulkCatalogKey](8, func(a, b BulkCatalogKey) bool {
+		return a.GetDatabaseID() < b.GetDatabaseID()
+	})
 	ch.mu.leasesToRelease = make(map[descpb.ID]LeasedDescriptor)
 	return ch
 }
@@ -1475,11 +1477,15 @@ func (c *closeTimeStampHandle) cleanupHandle(ctx context.Context) {
 	for _, v := range c.mu.leasesToRelease {
 		v.Release(ctx)
 	}
-	for _, v := range c.mu.bulkCatalogs {
-		v.Release(ctx)
+	if c.mu.bulkCatalogs != nil {
+		c.mu.bulkCatalogs.Ascend(func(item BulkCatalogKey) bool {
+			b := item.(BulkCatalog)
+			b.Release(ctx)
+			return true
+		})
+		c.mu.bulkCatalogs = nil
 	}
 	c.mu.leasesToRelease = nil
-	c.mu.bulkCatalogs = nil
 }
 
 // Manager manages acquiring and releasing per-descriptor leases. It also
@@ -1969,29 +1975,44 @@ func (m *Manager) GetBulkCatalog(
 		}
 		lts.handle.mu.Lock()
 		defer lts.handle.mu.Unlock()
-		return lts.handle.mu.bulkCatalogs[id]
+		b, exists := lts.handle.mu.bulkCatalogs.Get(bulkCatalogByDatabaseID(id))
+		if !exists {
+			return nil
+		}
+		return b.(BulkCatalog)
 	}
 	if c := getCached(db); c != nil {
 		c.IncrRef()
 		return c, nil
 	}
-	shouldStore := false
+	incrRefCount := true
 	catalog, _, err := m.bulkSingleFlight.Do(ctx, fmt.Sprintf("%s-%d", timestamp.GetTimestamp().String(), db), func(ctx context.Context) (interface{}, error) {
-		shouldStore = true
-		return newBulkCatalog(ctx, db, timestamp.GetTimestamp(), m)
+		// Check if it got inserted before starting the one flight.
+		if c := getCached(db); c != nil {
+			return c, nil
+		}
+		// Update and insert into the cache.
+		bc, err := newBulkCatalog(ctx, db, timestamp.GetTimestamp(), m)
+		if err != nil {
+			return nil, err
+		}
+		if hasLTS {
+			lts.handle.mu.Lock()
+			defer lts.handle.mu.Unlock()
+			// The reference count was bumped above.
+			lts.handle.mu.bulkCatalogs.ReplaceOrInsert(bc)
+		} else {
+			// Reference count does not need to be bumped, since this thread
+			// is the single flight launcher.
+			incrRefCount = false
+		}
+		return bc, nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	if shouldStore && hasLTS {
-		lts.handle.mu.Lock()
-		defer lts.handle.mu.Unlock()
-		// Reference count was bumped above.
-		lts.handle.mu.bulkCatalogs[db] = catalog.(BulkCatalog)
-	}
-	// If we don't have a LTS the ref count was already bumped.
-	if !shouldStore || hasLTS {
-		// Bump the refcount for us.
+	// Increment the reference count if we didn't do it above.
+	if incrRefCount {
 		catalog.(BulkCatalog).IncrRef()
 	}
 	return catalog.(BulkCatalog), nil
@@ -2321,25 +2342,26 @@ func (m *Manager) advanceCloseTimestamp(
 		if !oldTimestamp.timestamp.Less(timestamp) {
 			return
 		}
+		// Copy over any bulk catalogs that are compatible and not invalidated.
+		timestampHandle.mu.bulkCatalogs = func() *btree.BTreeG[BulkCatalogKey] {
+			oldTimestamp.mu.Lock()
+			defer oldTimestamp.mu.Unlock()
+			return oldTimestamp.mu.bulkCatalogs.Clone()
+		}()
+		for _, toRemove := range bulkCatalogsToInvalidate.Ordered() {
+			timestampHandle.mu.bulkCatalogs.Delete(bulkCatalogByDatabaseID(toRemove))
+		}
+		refCountsToBump := timestampHandle.mu.bulkCatalogs.Clone()
 		// Otherwise, attempt to swap the timestamp, if successful, we
 		// will return.
 		if m.closeTimestamp.CompareAndSwap(oldTimestamp, timestampHandle) {
-			log.Dev.Infof(ctx, "advancing close timestamp to %s and invalidating: %s", timestamp, bulkCatalogsToInvalidate.String())
-			func() {
-				timestampHandle.mu.Lock()
-				defer timestampHandle.mu.Unlock()
-				oldTimestamp.mu.Lock()
-				defer oldTimestamp.mu.Unlock()
-				for id, b := range oldTimestamp.mu.bulkCatalogs {
-					if bulkCatalogsToInvalidate.Contains(id) {
-						continue
-					}
-					timestampHandle.mu.bulkCatalogs[id] = b
-					b.IncrRef()
-				}
-			}()
 			// Insert the new timestamp handle.
 			m.insertNewTimestampHandle(timestampHandle)
+			// Bump up the reference count on bulk catalogs.
+			refCountsToBump.Ascend(func(item BulkCatalogKey) bool {
+				(item).(BulkCatalog).IncrRef()
+				return true
+			})
 			// Now that the new timestamp is set, we can mark the old one as ready
 			// for removal.
 			oldTimestamp.freeOnRelease.Swap(true)

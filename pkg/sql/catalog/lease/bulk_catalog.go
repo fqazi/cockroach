@@ -17,7 +17,18 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
+type BulkCatalogKey interface {
+	GetDatabaseID() descpb.ID
+}
+
+type bulkCatalogByDatabaseID descpb.ID
+
+func (b bulkCatalogByDatabaseID) GetDatabaseID() descpb.ID {
+	return descpb.ID(b)
+}
+
 type BulkCatalog interface {
+	BulkCatalogKey
 	// FIXME: Read timestamp can be used for the validity interval?
 	// FIXME: no-op / fallback implementation is the lease manager.
 	AcquireByName(
@@ -344,6 +355,10 @@ func (b *bulkCatalogWithPrefetch) Acquire(
 	}
 
 	return ld.(LeasedDescriptor), nil
+}
+
+func (b *bulkCatalogWithPrefetch) GetDatabaseID() descpb.ID {
+	return b.databaseID
 }
 
 var _ BulkCatalog = &bulkCatalogWithPrefetch{}
