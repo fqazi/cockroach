@@ -416,6 +416,14 @@ var allowLeasedDescriptorsInCatalogViews = settings.RegisterBoolSetting(
 	settings.WithPublic,
 )
 
+var useBulkLeasedDescriptorsForGetAll = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"sql.catalog.allow_leased_descriptors.bulk.enabled",
+	"if true, catalog views (crdb_internal, information_schema, pg_catalog) can use bulk leasing",
+	true,
+	settings.WithPublic,
+)
+
 // GetCatalogGetAllOptions returns the functional options for GetAll* methods
 // based on the cluster setting for allowing leased descriptors in catalog views.
 func GetCatalogGetAllOptions(sv *settings.Values) []GetAllOption {
@@ -1031,7 +1039,7 @@ func (tc *Collection) GetAllSchemasInDatabase(
 	options := applyGetAllOptions(opts)
 	var stored nstree.Catalog
 	var err error
-	if options.allowLeased {
+	if options.allowLeased && useBulkLeasedDescriptorsForGetAll.Get(&tc.settings.SV) {
 		// FIXME: Fix this logic...
 		allChildren, err := tc.leased.fetchBulkCatalog(ctx, txn, db.GetID())
 		if err != nil {
@@ -1123,7 +1131,7 @@ func (tc *Collection) GetAllInDatabase(
 	options := applyGetAllOptions(opts)
 	var stored nstree.Catalog
 	var err error
-	if options.allowLeased {
+	if options.allowLeased && useBulkLeasedDescriptorsForGetAll.Get(&tc.settings.SV) {
 		stored, err = tc.leased.fetchBulkCatalog(ctx, txn, db.GetID())
 		// FIXME: for logic test to pass
 		// 		stored, err = tc.cr.ScanNamespaceForDatabaseSchemasAndObjects(ctx, txn, db)

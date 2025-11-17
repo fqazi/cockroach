@@ -1642,38 +1642,90 @@ func BenchmarkDropLargeDatabaseWithGenerateTestObjects(b *testing.B) {
 	}
 }
 
-func BenchmarkDropLargeDatabasePgClass(b *testing.B) {
+func BenchmarkLargeDatabasePgClass(b *testing.B) {
 	defer leaktest.AfterTest(b)()
 	defer log.Scope(b).Close(b)
 
 	for _, useLeasedDescriptors := range []bool{true, false} {
-		for _, tables := range []int{8192, 16384, 32768} {
-			b.Run(fmt.Sprintf("pg_class/leased_descriptors=%t/tables=%d", useLeasedDescriptors, tables), func(b *testing.B) {
-				ctx := context.Background()
-				st := cluster.MakeTestingClusterSettings()
-				s, sqlDB, _ := serverutils.StartServer(b, base.TestServerArgs{
-					Settings: st,
-				})
-				sqlConn, err := sqlDB.Conn(ctx)
-				require.NoError(b, err)
-				defer s.Stopper().Stop(ctx)
-				b.ResetTimer()
-				b.StopTimer()
-				tdb := sqlutils.MakeSQLRunner(sqlConn)
-				if !useLeasedDescriptors {
-					tdb.Exec(b, "SET CLUSTER SETTING sql.catalog.allow_leased_descriptors.enabled = false;")
-				}
-				tdb.Exec(b, "CREATE DATABASE db")
-				tdb.Exec(b, "USE db")
-				tdb.Exec(b, "SELECT crdb_internal.generate_test_objects('test', $1::int)", tables)
-				for i := 0; i < b.N; i++ {
+		for _, useBulkLeases := range []bool{true, false} {
+			// Bulk leasing only works with leased descriptors.
+			if !useLeasedDescriptors && useBulkLeases {
+				continue
+			}
+			for _, tables := range []int{8192, 16384, 32768} {
+				b.Run(fmt.Sprintf("pg_class/leased_descriptors=%t/bulk_leases=%t/tables=%d", useLeasedDescriptors, useBulkLeases, tables), func(b *testing.B) {
+					ctx := context.Background()
+					st := cluster.MakeTestingClusterSettings()
+					s, sqlDB, _ := serverutils.StartServer(b, base.TestServerArgs{
+						Settings: st,
+					})
+					sqlConn, err := sqlDB.Conn(ctx)
+					require.NoError(b, err)
+					defer s.Stopper().Stop(ctx)
+					b.ResetTimer()
+					b.StopTimer()
+					tdb := sqlutils.MakeSQLRunner(sqlConn)
+					if !useLeasedDescriptors {
+						tdb.Exec(b, "SET CLUSTER SETTING sql.catalog.allow_leased_descriptors.enabled = false;")
+					}
+					if !useBulkLeases {
+						tdb.Exec(b, "SET CLUSTER SETTING sql.catalog.allow_leased_descriptors.bulk.enabled=false;")
+					}
+					tdb.Exec(b, "CREATE DATABASE db")
+					tdb.Exec(b, "USE db")
+					tdb.Exec(b, "SELECT crdb_internal.generate_test_objects('test', $1::int)", tables)
 					// Cold run.
 					tdb.Exec(b, "SELECt * FROM pg_class")
 					b.StartTimer()
-					tdb.Exec(b, "SELECt * FROM pg_class")
+					for i := 0; i < b.N; i++ {
+						tdb.Exec(b, "SELECt * FROM pg_class")
+					}
 					b.StopTimer()
-				}
-			})
+				})
+			}
+		}
+	}
+}
+
+// BenchmarkLargeDatabaseColdPgClass measures the cold performance for selecting
+// descriptros for the first time in pg_class.
+func BenchmarkLargeDatabaseColdPgClass(b *testing.B) {
+	defer leaktest.AfterTest(b)()
+	defer log.Scope(b).Close(b)
+
+	for _, useLeasedDescriptors := range []bool{true, false} {
+		for _, useBulkLeases := range []bool{true, false} {
+			// Bulk leasing only works with leased descriptors.
+			if !useLeasedDescriptors && useBulkLeases {
+				continue
+			}
+			for _, tables := range []int{8192} {
+				b.Run(fmt.Sprintf("pg_class/leased_descriptors=%t/bulk_leases=%t/tables=%d", useLeasedDescriptors, useBulkLeases, tables), func(b *testing.B) {
+					ctx := context.Background()
+					st := cluster.MakeTestingClusterSettings()
+					s, sqlDB, _ := serverutils.StartServer(b, base.TestServerArgs{
+						Settings: st,
+					})
+					sqlConn, err := sqlDB.Conn(ctx)
+					require.NoError(b, err)
+					defer s.Stopper().Stop(ctx)
+					b.ResetTimer()
+					b.StopTimer()
+					tdb := sqlutils.MakeSQLRunner(sqlConn)
+					if !useLeasedDescriptors {
+						tdb.Exec(b, "SET CLUSTER SETTING sql.catalog.allow_leased_descriptors.enabled = false;")
+					}
+					if !useBulkLeases {
+						tdb.Exec(b, "SET CLUSTER SETTING sql.catalog.allow_leased_descriptors.bulk.enabled=false;")
+					}
+					tdb.Exec(b, `SELECT crdb_internal.generate_test_objects('{"names":"gen.public.foo","counts":[1,1,8192], "name_gen": {"noise": false}}'::JSONB);`)
+					tdb.Exec(b, "USE gen_1")
+					// Cold run.
+					b.StartTimer()
+					tdb.Exec(b, "SELECT * FROM pg_class")
+					b.StopTimer()
+				})
+			}
 		}
 	}
 }

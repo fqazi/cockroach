@@ -11,6 +11,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/internal/catkv"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/nstree"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
+	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -147,50 +148,93 @@ func (b *bulkCatalogWithPrefetch) startPrefetch(ctx context.Context) error {
 
 func (b *bulkCatalogWithPrefetch) runPrefetch(ctx context.Context) {
 	defer close(b.prefetchComplete)
-	if err := b.namespaces.ForEachSchemaNamespaceEntryInDatabase(b.databaseID, func(e nstree.NamespaceEntry) error {
+	const maxConcurrentRequests = 4
+	workerChan := make(chan descpb.ID)
+
+	// Create a cancellable context that respects both the parent context and prefetchCancel
+	prefetchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Monitor the prefetchCancel channel and cancel the context
+
+	ctxgrp := ctxgroup.WithContext(prefetchCtx)
+
+	// Handle cancellation of the prefetcher.
+	ctxgrp.GoCtx(func(ctx context.Context) error {
 		select {
 		case <-b.prefetchCancel:
-			return context.Canceled
+			cancel()
 		case <-ctx.Done():
-			return context.Canceled
-		default:
 		}
-		ld, err := b.Acquire(ctx, TimestampToReadTimestamp(b.leaseTimestamp), e.GetID())
-		if err != nil {
-			if errors.Is(err, catalog.ErrDescriptorNotFound) || catalog.HasInactiveDescriptorError(err) {
-				return nil
-			}
-			return err
-		}
-		defer ld.Release(ctx)
 		return nil
-	}); err != nil {
-		log.Dev.Infof(ctx, "failed to prefetch schemas: %v", err)
-	}
-	if err := b.namespaces.ForEachNamespaceEntry(func(e nstree.NamespaceEntry) error {
-		select {
-		case <-b.prefetchCancel:
-			return context.Canceled
-		case <-ctx.Done():
-			return context.Canceled
-		default:
-		} // Skip schemas and databases.
-		if e.GetParentSchemaID() == descpb.InvalidID {
+	})
+
+	// Start worker goroutines that will acquire leases on individual descriptors
+	// asynchronously.
+	for i := 0; i < maxConcurrentRequests; i++ {
+		ctxgrp.GoCtx(func(ctx context.Context) error {
+			for id := range workerChan {
+				// Check context before processing
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				_, err := b.acquireInternal(ctx, TimestampToReadTimestamp(b.leaseTimestamp), id, true)
+				if err != nil {
+					// Ignore expected errors
+					if errors.Is(err, catalog.ErrDescriptorNotFound) || catalog.HasInactiveDescriptorError(err) {
+						continue
+					}
+					// Any other error stops prefetching
+					cancel()
+					return err
+				}
+			}
 			return nil
-		}
-		ld, err := b.Acquire(ctx, TimestampToReadTimestamp(b.leaseTimestamp), e.GetID())
-		if err != nil {
-			if errors.Is(err, catalog.ErrDescriptorNotFound) || catalog.HasInactiveDescriptorError(err) {
+		})
+	}
+
+	// Start the producer goroutine that will send IDs to the worker goroutines.
+	ctxgrp.GoCtx(func(ctx context.Context) error {
+		defer close(workerChan)
+		// Prefetch schemas
+		if err := b.namespaces.ForEachSchemaNamespaceEntryInDatabase(b.databaseID, func(e nstree.NamespaceEntry) error {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case workerChan <- e.GetID():
 				return nil
+			}
+		}); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				log.Dev.Infof(ctx, "failed to prefetch schemas: %v", err)
 			}
 			return err
 		}
-		defer ld.Release(ctx)
+
+		// Prefetch objects
+		if err := b.namespaces.ForEachNamespaceEntry(func(e nstree.NamespaceEntry) error {
+			// Skip schemas and databases
+			if e.GetParentSchemaID() == descpb.InvalidID {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case workerChan <- e.GetID():
+				return nil
+			}
+		}); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				log.Dev.Infof(ctx, "failed to prefetch objects: %v", err)
+			}
+			return err
+		}
 		return nil
-	}); err != nil {
-		log.Dev.Infof(ctx, "failed to prefetch objects: %v", err)
+	})
+
+	if err := ctxgrp.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		log.Dev.Infof(ctx, "prefetch completed with error: %v", err)
 	}
-	return
 }
 
 func (b *bulkCatalogWithPrefetch) GetNamespaces() nstree.Catalog {
@@ -301,21 +345,28 @@ func (b *bulkCatalogWithPrefetch) AcquireByName(
 	return ld.(LeasedDescriptor), nil
 }
 
-func (b *bulkCatalogWithPrefetch) Acquire(
-	ctx context.Context, timestamp ReadTimestamp, id descpb.ID,
+func (b *bulkCatalogWithPrefetch) acquireInternal(
+	ctx context.Context, timestamp ReadTimestamp, id descpb.ID, forPrefetch bool,
 ) (LeasedDescriptor, error) {
+	// We only need a reference count on the object, if we are not prefetching.
+	needsRefCount := !forPrefetch
 	// Fast path where the cache already had the entry.
 	if exists, ld, err := b.getCachedByID(id); exists {
 		if err != nil {
 			return nil, err
 		}
-		ld.(*descriptorVersionState).incRefCount(ctx, false)
+		if needsRefCount {
+			ld.(*descriptorVersionState).incRefCount(ctx, false)
+		}
 		return ld, nil
 	}
 
-	// Otherwise request the entry from the lease manager.
 	skipRefCount := false
-	ld, _, err := b.fetcher.Do(ctx, strconv.Itoa(int(id)), func(ctx context.Context) (interface{}, error) {
+	// Otherwise request the entry from the lease manager.
+	future, leader := b.fetcher.DoChan(ctx, strconv.Itoa(int(id)), singleflight.DoOpts{
+		Stop:               b.lm.stopper,
+		InheritCancelation: false,
+	}, func(ctx context.Context) (interface{}, error) {
 		// We could have cached the value right before the single flight, so check again.
 		if exists, ld, err := b.getCachedByID(id); exists {
 			if err != nil {
@@ -338,19 +389,30 @@ func (b *bulkCatalogWithPrefetch) Acquire(
 			skipNameMap = true
 		}
 		b.mu.leases.Upsert(entry, skipNameMap)
-		if err == nil {
+		if err == nil && needsRefCount {
 			ld.(*descriptorVersionState).incRefCount(ctx, false)
 		}
 		return ld, err
 	})
-	if err != nil {
-		return nil, err
+	// When pre-fetching we only wait for the entry if we are the leader.
+	if forPrefetch && !leader {
+		return nil, nil
 	}
-	if !skipRefCount {
-		ld.(*descriptorVersionState).incRefCount(ctx, false)
+	r := future.WaitForResult(ctx)
+	if r.Err != nil {
+		return nil, r.Err
+	}
+	if !skipRefCount && needsRefCount {
+		r.Val.(*descriptorVersionState).incRefCount(ctx, false)
 	}
 
-	return ld.(LeasedDescriptor), nil
+	return r.Val.(LeasedDescriptor), nil
+}
+
+func (b *bulkCatalogWithPrefetch) Acquire(
+	ctx context.Context, timestamp ReadTimestamp, id descpb.ID,
+) (LeasedDescriptor, error) {
+	return b.acquireInternal(ctx, timestamp, id, false)
 }
 
 func (b *bulkCatalogWithPrefetch) GetDatabaseID() descpb.ID {
