@@ -50,13 +50,7 @@ func alterTableAddColumn(
 		RequiredPrivilege:   privilege.CREATE,
 	})
 	_, colTargetStatus, col := scpb.FindColumn(elts)
-	_, colNameTargetStatus, colName := scpb.FindColumnName(elts)
-	// A column name already exists if both the Column and ColumnName elements exist
-	// and are not transitioning to ABSENT. When a column is being renamed, the
-	// Column remains but the old ColumnName transitions to ABSENT, freeing up the
-	// name for reuse.
-	columnAlreadyExists := col != nil && colTargetStatus != scpb.ToAbsent &&
-		colName != nil && colNameTargetStatus != scpb.ToAbsent
+	columnAlreadyExists := col != nil && colTargetStatus != scpb.ToAbsent
 	// If the column exists and IF NOT EXISTS is specified, continue parsing
 	// to ensure there are no other errors before treating the operation as a no-op.
 	if columnAlreadyExists && !t.IfNotExists {
@@ -116,16 +110,14 @@ func alterTableAddColumn(
 	spec := addColumnSpec{
 		tbl: tbl,
 		col: &scpb.Column{
-			TableID:        tbl.TableID,
-			ColumnID:       desc.ID,
-			IsHidden:       desc.Hidden,
-			IsInaccessible: desc.Inaccessible,
+			TableID:                 tbl.TableID,
+			ColumnID:                desc.ID,
+			IsHidden:                desc.Hidden,
+			IsInaccessible:          desc.Inaccessible,
+			GeneratedAsIdentityType: desc.GeneratedAsIdentityType,
 		},
 		unique:  d.Unique.IsUnique,
 		notNull: !desc.Nullable,
-	}
-	if spec.unique {
-		b.IncrementSchemaChangeAddColumnQualificationCounter("unique")
 	}
 
 	idx := cdd.PrimaryKeyOrUniqueIndexDescriptor
@@ -138,6 +130,9 @@ func alterTableAddColumn(
 	if pgAttNum := desc.GetPGAttributeNum(); pgAttNum != catid.PGAttributeNum(desc.ID) {
 		spec.col.PgAttributeNum = pgAttNum
 	}
+	if ptr := desc.GeneratedAsIdentitySequenceOption; ptr != nil {
+		spec.col.GeneratedAsIdentitySequenceOption = *ptr
+	}
 	spec.name = &scpb.ColumnName{
 		TableID:  tbl.TableID,
 		ColumnID: spec.col.ColumnID,
@@ -146,6 +141,7 @@ func alterTableAddColumn(
 	spec.colType = &scpb.ColumnType{
 		TableID:                 tbl.TableID,
 		ColumnID:                spec.col.ColumnID,
+		IsNullable:              desc.Nullable,
 		IsVirtual:               desc.Virtual,
 		ElementCreationMetadata: scdecomp.NewElementCreationMetadata(b.EvalCtx().Settings.Version.ActiveVersion(b)),
 	}
@@ -172,15 +168,7 @@ func alterTableAddColumn(
 		))
 	}
 	if desc.IsComputed() {
-		validExpr, _ := b.ComputedColumnExpression(
-			tbl, d, tree.ComputedColumnExprContext(d.IsVirtual()),
-			func() colinfo.ResultColumns {
-				return getNonDropResultColumns(b, tbl.TableID)
-			},
-			func(columnName tree.Name) (exists, accessible, computed bool, id catid.ColumnID, typ *types.T) {
-				return columnLookupFn(b, tbl.TableID, columnName)
-			},
-		)
+		validExpr, _ := b.ComputedColumnExpression(tbl, d, tree.ComputedColumnExprContext(d.IsVirtual()))
 		expr := b.WrapExpression(tbl.TableID, validExpr)
 		if spec.colType.ElementCreationMetadata.In_24_3OrLater {
 			spec.compute = &scpb.ColumnComputeExpression{
@@ -286,26 +274,6 @@ func alterTableAddColumn(
 		}
 		b.IncrementSchemaChangeAddColumnQualificationCounter("on_update")
 	}
-	if d.GeneratedIdentity.IsGeneratedAsIdentity {
-		generatedAsIdentityType := desc.GeneratedAsIdentityType
-		seqOptions := ""
-		if ptr := desc.GeneratedAsIdentitySequenceOption; ptr != nil {
-			seqOptions = *ptr
-		}
-		// Versions from 26.1 GeneratedAsIdentity will have a separate element for
-		// GeneratedAsIdentity. Older versios store it in the column element.
-		if spec.colType.ElementCreationMetadata.In_26_1OrLater {
-			spec.generatedAsID = &scpb.ColumnGeneratedAsIdentity{
-				TableID:        tbl.TableID,
-				ColumnID:       spec.col.ColumnID,
-				Type:           generatedAsIdentityType,
-				SequenceOption: seqOptions,
-			}
-		} else {
-			spec.col.GeneratedAsIdentityType = generatedAsIdentityType
-			spec.col.GeneratedAsIdentitySequenceOption = seqOptions
-		}
-	}
 	// Add secondary indexes for this column.
 	backing := addColumn(b, spec, t)
 	if idx != nil {
@@ -399,17 +367,27 @@ func alterTableAddColumnSerialOrGeneratedIdentity(
 		return catalog.UseUnorderedRowID(*d), nil
 	}
 
-	return alterTableCreateColumnSequence(b, d, tn, serialNormalizationMode, defType)
-}
+	// Start with a fixed sequence number and find the first one
+	// that is free.
+	nameBase := tree.Name(tn.Table() + "_" + string(d.Name) + "_seq")
+	seqName := tree.NewTableNameWithSchema(
+		tn.CatalogName,
+		tn.SchemaName,
+		nameBase)
 
-func alterTableCreateColumnSequence(
-	b BuildCtx,
-	d *tree.ColumnTableDef,
-	tn *tree.TableName,
-	serialNormalizationMode sessiondatapb.SerialNormalizationMode,
-	defType *types.T,
-) (newDef *tree.ColumnTableDef, colDefaultExpression *scpb.Expression) {
-	seqName := getNextAvailableSeqName(b, d.Name, tn)
+	for idx := 0; ; idx++ {
+		ers := b.ResolveRelation(seqName.ToUnresolvedObjectName(),
+			ResolveParams{
+				IsExistenceOptional: true,
+				RequiredPrivilege:   privilege.USAGE,
+				WithOffline:         true, // We search sequence with provided name, including offline ones.
+				ResolveTypes:        true, // Check for collisions with type names.
+			})
+		if ers.IsEmpty() {
+			break
+		}
+		seqName.ObjectName = tree.Name(fmt.Sprintf("%s%d", nameBase, idx))
+	}
 
 	seqOptions, err := catalog.SequenceOptionsFromNormalizationMode(serialNormalizationMode, b.ClusterSettings(), d, defType)
 	if err != nil {
@@ -442,31 +420,6 @@ func alterTableCreateColumnSequence(
 	}
 }
 
-func getNextAvailableSeqName(b BuildCtx, colName tree.Name, tn *tree.TableName) *tree.TableName {
-	// Start with a fixed sequence number and find the first one
-	// that is free.
-	nameBase := tree.Name(tn.Table() + "_" + string(colName) + "_seq")
-	seqName := tree.NewTableNameWithSchema(
-		tn.CatalogName,
-		tn.SchemaName,
-		nameBase)
-
-	for idx := 0; ; idx++ {
-		ers := b.ResolveRelation(seqName.ToUnresolvedObjectName(),
-			ResolveParams{
-				IsExistenceOptional: true,
-				RequiredPrivilege:   privilege.USAGE,
-				WithOffline:         true, // We search sequence with provided name, including offline ones.
-				ResolveTypes:        true, // Check for collisions with type names.
-			})
-		if ers.IsEmpty() {
-			break
-		}
-		seqName.ObjectName = tree.Name(fmt.Sprintf("%s%d", nameBase, idx))
-	}
-	return seqName
-}
-
 func columnNamesToIDs(b BuildCtx, tbl *scpb.Table) map[string]descpb.ColumnID {
 	tableElts := b.QueryByID(tbl.TableID)
 	namesToIDs := make(map[string]descpb.ColumnID)
@@ -489,7 +442,6 @@ type addColumnSpec struct {
 	compute          *scpb.ColumnComputeExpression
 	transientCompute *scpb.ColumnComputeExpression
 	comment          *scpb.ColumnComment
-	generatedAsID    *scpb.ColumnGeneratedAsIdentity
 	unique           bool
 	notNull          bool
 }
@@ -525,9 +477,6 @@ func addColumn(b BuildCtx, spec addColumnSpec, n tree.NodeFormatter) (backing *s
 		}
 		if spec.comment != nil {
 			b.Add(spec.comment)
-		}
-		if spec.generatedAsID != nil {
-			b.Add(spec.generatedAsID)
 		}
 		// Don't need to modify primary indexes for virtual columns.
 		if spec.colType.IsVirtual {

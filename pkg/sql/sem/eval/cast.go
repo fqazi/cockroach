@@ -961,8 +961,6 @@ func performCastWithoutPrecisionTruncation(
 		}
 	case types.LTreeFamily:
 		switch v := d.(type) {
-		case *tree.DLTree:
-			return d, nil
 		case *tree.DString:
 			ltree, err := tree.ParseDLTree(string(*v))
 			if err != nil {
@@ -1053,7 +1051,7 @@ func performCastWithoutPrecisionTruncation(
 		}
 	case types.VoidFamily:
 		switch d.(type) {
-		case *tree.DString, *tree.DCollatedString, *tree.DVoid:
+		case *tree.DString, *tree.DCollatedString:
 			return tree.DVoidDatum, nil
 		}
 	}

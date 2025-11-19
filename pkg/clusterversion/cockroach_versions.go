@@ -235,12 +235,6 @@ const (
 	// V25_4 is CockroachDB v25.4. It's used for all v25.4.x patch releases.
 	V25_4
 
-	V26_1_Start
-
-	// V26_1_InstallMeta2StaticSplitPoint installs a static split point between
-	// meta1 and meta2.
-	V26_1_InstallMeta2StaticSplitPoint
-
 	// *************************************************
 	// Step (1) Add new versions above this comment.
 	// Do not add new versions to a patch release.
@@ -306,11 +300,6 @@ var versionTable = [numKeys]roachpb.Version{
 
 	V25_4: {Major: 25, Minor: 4, Internal: 0},
 
-	// v26.1 versions. Internal versions must be even.
-	V26_1_Start: {Major: 25, Minor: 4, Internal: 2},
-
-	V26_1_InstallMeta2StaticSplitPoint: {Major: 25, Minor: 4, Internal: 4},
-
 	// *************************************************
 	// Step (2): Add new versions above this comment.
 	// Do not add new versions to a patch release.
@@ -326,15 +315,7 @@ const MinSupported Key = V25_2
 
 // PreviousRelease is the logical cluster version of the previous release (which must
 // have at least an RC build published).
-const PreviousRelease Key = V25_4
-
-// V26_1 is a placeholder that will eventually be replaced by the actual 26.1
-// version Key, but in the meantime it points to the latest Key. The placeholder
-// is defined so that it can be referenced in code that simply wants to check if
-// a cluster is running 26.1 and has completed all associated migrations; most
-// version gates can use this instead of defining their own version key if they
-// only need to check that the cluster has upgraded to 26.1.
-const V26_1 = Latest
+const PreviousRelease Key = V25_3
 
 // DevelopmentBranch must be true on the main development branch but should be
 // set to false on a release branch once the set of versions becomes append-only
@@ -347,13 +328,13 @@ const V26_1 = Latest
 //     binary in a dev cluster.
 //
 // See devOffsetKeyStart for more details.
-const DevelopmentBranch = true
+const DevelopmentBranch = false
 
 // finalVersion should be set on a release branch to the minted final cluster
 // version key, e.g. to V23_2 on the release-23.2 branch once it is minted.
 // Setting it has the effect of ensuring no versions are subsequently added (see
 // TestFinalVersion).
-const finalVersion Key = -1
+const finalVersion Key = V25_4
 
 // TestingExtraVersions may be set to true by packages of tests which will
 // intentionally use Keys greater than Latest, which otherwise would crash

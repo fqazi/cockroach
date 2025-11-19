@@ -76,7 +76,11 @@ func (i *immediateVisitor) addNewColumnType(
 	col *descpb.ColumnDescriptor,
 ) error {
 	col.Type = op.ColumnType.Type
-	col.Nullable = true
+	if op.ColumnType.ElementCreationMetadata.In_23_1OrLater {
+		col.Nullable = true
+	} else {
+		col.Nullable = op.ColumnType.IsNullable
+	}
 	col.Virtual = op.ColumnType.IsVirtual
 	// ComputeExpr is deprecated in favor of a separate element
 	// (ColumnComputeExpression). Any changes in this if block
@@ -160,52 +164,6 @@ func (i *immediateVisitor) updateColumnComputeExpression(
 		return err
 	}
 	return updateColumnExprFunctionsUsage(col)
-}
-
-// AddColumnGeneratedAsIdentity will set generated as identity for a column.
-func (i *immediateVisitor) AddColumnGeneratedAsIdentity(
-	ctx context.Context, op scop.AddColumnGeneratedAsIdentity,
-) error {
-	return i.updateColumnGeneratedAsIdentity(
-		ctx, op.GeneratedAsIdentity.TableID, op.GeneratedAsIdentity.ColumnID,
-		op.GeneratedAsIdentity.Type, &op.GeneratedAsIdentity.SequenceOption)
-}
-
-// RemoveColumnGeneratedAsIdentity will drop generated as identity from a column.
-func (i *immediateVisitor) RemoveColumnGeneratedAsIdentity(
-	ctx context.Context, op scop.RemoveColumnGeneratedAsIdentity,
-) error {
-	return i.updateColumnGeneratedAsIdentity(
-		ctx, op.TableID, op.ColumnID, catpb.GeneratedAsIdentityType_NOT_IDENTITY_COLUMN, nil)
-}
-
-// updateColumnGeneratedAsIdentity will handle add or removal of generated as identity
-func (i *immediateVisitor) updateColumnGeneratedAsIdentity(
-	ctx context.Context,
-	tableID descpb.ID,
-	columnID descpb.ColumnID,
-	genType catpb.GeneratedAsIdentityType,
-	sequenceOption *string,
-) error {
-	tbl, err := i.checkOutTable(ctx, tableID)
-	if err != nil {
-		return err
-	}
-
-	catCol, err := catalog.MustFindColumnByID(tbl, columnID)
-	if err != nil {
-		return err
-	}
-
-	col := catCol.ColumnDesc()
-	col.GeneratedAsIdentityType = genType
-	if sequenceOption != nil && *sequenceOption != "" {
-		so := *sequenceOption
-		col.GeneratedAsIdentitySequenceOption = &so
-	} else {
-		col.GeneratedAsIdentitySequenceOption = nil
-	}
-	return nil
 }
 
 func (i *immediateVisitor) MakeDeleteOnlyColumnWriteOnly(

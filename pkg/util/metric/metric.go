@@ -48,7 +48,6 @@ const (
 	LabelCertificateType = "certificate_type"
 	LabelName            = "name"
 	LabelType            = "type"
-	LabelLevel           = "level"
 )
 
 type LabelConfig uint64

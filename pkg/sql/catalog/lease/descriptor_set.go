@@ -84,25 +84,11 @@ func (l *descriptorSet) findIndex(version descpb.DescriptorVersion) (int, bool) 
 	return i, false
 }
 
-func (l *descriptorSet) findOldest() *descriptorVersionState {
-	if len(l.data) == 0 {
-		return nil
-	}
-	return l.data[0]
-}
-
 func (l *descriptorSet) findNewest() *descriptorVersionState {
 	if len(l.data) == 0 {
 		return nil
 	}
 	return l.data[len(l.data)-1]
-}
-
-func (l *descriptorSet) findPrevious() *descriptorVersionState {
-	if len(l.data) < 2 {
-		return nil
-	}
-	return l.data[len(l.data)-2]
 }
 
 func (l *descriptorSet) findPreviousToExpire(dropped bool) *descriptorVersionState {

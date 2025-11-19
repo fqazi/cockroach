@@ -25,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
-	"github.com/cockroachdb/cockroach/pkg/util/taskpacer"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
@@ -208,7 +207,7 @@ func (qs *raftReceiveQueues) SetEnforceMaxLen(enforceMaxLen bool) {
 }
 
 // raftTickPacerConf is a configuration struct for the raft tick pacer.
-// It implements the taskpacer.Config interface.
+// It implements the taskPacerConfig interface.
 type raftTickPacerConf struct {
 	store *Store
 }
@@ -217,11 +216,11 @@ func newRaftTickPacerConf(s *Store) raftTickPacerConf {
 	return raftTickPacerConf{store: s}
 }
 
-func (r raftTickPacerConf) GetRefresh() time.Duration {
+func (r raftTickPacerConf) getRefresh() time.Duration {
 	return r.store.cfg.RaftTickInterval
 }
 
-func (r raftTickPacerConf) GetSmear() time.Duration {
+func (r raftTickPacerConf) getSmear() time.Duration {
 	return r.store.cfg.RaftTickSmearInterval
 }
 
@@ -932,7 +931,7 @@ func (s *Store) raftTickLoop(ctx context.Context) {
 	// Create a config that will be used by the taskPacer, which allows us to pace
 	// the enqueuing of Raft ticks.
 	conf := newRaftTickPacerConf(s)
-	pacer := taskpacer.New(conf)
+	pacer := NewTaskPacer(conf)
 
 	for {
 		select {

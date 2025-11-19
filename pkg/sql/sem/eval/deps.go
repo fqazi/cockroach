@@ -13,9 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/hintpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
@@ -458,25 +456,12 @@ type Planner interface {
 	// ClearTableStatsCache removes all entries from the node's table stats cache.
 	ClearTableStatsCache()
 
-	// ClearStatementHintsCache removes all entries from the node's statement
-	// hints cache.
-	ClearStatementHintsCache()
-
-	// AwaitStatementHintsCache waits for the node's statement hints cache to
-	// catch up with recent hint injections.
-	AwaitStatementHintsCache(ctx context.Context, st *cluster.Settings)
-
 	// RetryCounter is the number of times this statement has been retried.
 	RetryCounter() int
 
 	// ProcessVectorIndexFixups waits until all outstanding fixups for the vector
 	// index with the given ID have been processed.
 	ProcessVectorIndexFixups(ctx context.Context, tableID descpb.ID, indexID descpb.IndexID) error
-
-	// InsertStatementHint adds a new hint for the given statement fingerprint to
-	// the system.statement_hints table. It returns the hint ID of the newly
-	// created hint.
-	InsertStatementHint(ctx context.Context, statementFingerprint string, hint hintpb.StatementHintUnion) (int64, error)
 }
 
 // InternalRows is an iterator interface that's exposed by the internal

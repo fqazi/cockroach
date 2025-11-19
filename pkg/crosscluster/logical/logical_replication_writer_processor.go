@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdcevent"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster"
-	"github.com/cockroachdb/cockroach/pkg/crosscluster/replicationutils"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/streamclient"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -51,6 +50,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
+	pbtypes "github.com/gogo/protobuf/types"
 )
 
 var logicalReplicationWriterResultType = []*types.T{
@@ -144,10 +144,9 @@ type logicalReplicationWriterProcessor struct {
 
 	purgatory purgatory
 
-	seenKeys   map[uint64]int64
-	dupeCount  int64
-	seenEvery  log.EveryN
-	retryEvery log.EveryN
+	seenKeys  map[uint64]int64
+	dupeCount int64
+	seenEvery log.EveryN
 }
 
 var (
@@ -225,10 +224,9 @@ func newLogicalReplicationWriterProcessor(
 			StreamID:    streampb.StreamID(spec.StreamID),
 			ProcessorID: processorID,
 		},
-		dlqClient:  InitDeadLetterQueueClient(dlqDbExec, destTableBySrcID),
-		metrics:    flowCtx.Cfg.JobRegistry.MetricsStruct().JobSpecificMetrics[jobspb.TypeLogicalReplication].(*Metrics),
-		seenEvery:  log.Every(1 * time.Minute),
-		retryEvery: log.Every(1 * time.Minute),
+		dlqClient: InitDeadLetterQueueClient(dlqDbExec, destTableBySrcID),
+		metrics:   flowCtx.Cfg.JobRegistry.MetricsStruct().JobSpecificMetrics[jobspb.TypeLogicalReplication].(*Metrics),
+		seenEvery: log.Every(1 * time.Minute),
 	}
 	lrw.purgatory = purgatory{
 		deadline:    func() time.Duration { return retryQueueAgeLimit.Get(&flowCtx.Cfg.Settings.SV) },
@@ -274,11 +272,9 @@ func newLogicalReplicationWriterProcessor(
 //
 // Start implements the RowSource interface.
 func (lrw *logicalReplicationWriterProcessor) Start(ctx context.Context) {
-	tags := logtags.BuildBuffer()
-	tags.Add("job", lrw.spec.JobID)
-	tags.Add("src-node", lrw.spec.PartitionSpec.PartitionID)
-	tags.Add("proc", lrw.ProcessorID)
-	ctx = logtags.AddTags(ctx, tags.Finish())
+	ctx = logtags.AddTag(ctx, "job", lrw.spec.JobID)
+	ctx = logtags.AddTag(ctx, "src-node", lrw.spec.PartitionSpec.PartitionID)
+	ctx = logtags.AddTag(ctx, "proc", lrw.ProcessorID)
 	lrw.agg = tracing.TracingAggregatorForContext(ctx)
 	var listeners []tracing.EventListener
 	if lrw.agg != nil {
@@ -378,7 +374,7 @@ func (lrw *logicalReplicationWriterProcessor) Next() (
 				return nil, lrw.DrainHelper()
 			}
 			row := rowenc.EncDatumRow{
-				rowenc.DatumToEncDatumUnsafe(types.Bytes, tree.NewDBytes(tree.DBytes(progressBytes))),
+				rowenc.DatumToEncDatum(types.Bytes, tree.NewDBytes(tree.DBytes(progressBytes))),
 			}
 			return row, nil
 		} else {
@@ -399,9 +395,7 @@ func (lrw *logicalReplicationWriterProcessor) Next() (
 			lrw.FlowCtx.NodeID.SQLInstanceID(), lrw.FlowCtx.ID, lrw.agg)
 
 	case stats := <-lrw.rangeStatsCh:
-		meta, err := replicationutils.StreamRangeStatsToProgressMeta(
-			lrw.FlowCtx, lrw.ProcessorID, stats,
-		)
+		meta, err := lrw.newRangeStatsProgressMeta(stats)
 		if err != nil {
 			lrw.MoveToDrainingAndLogError(err)
 			return nil, lrw.DrainHelper()
@@ -585,6 +579,23 @@ func (lrw *logicalReplicationWriterProcessor) rangeStats(
 	}
 }
 
+func (lrw *logicalReplicationWriterProcessor) newRangeStatsProgressMeta(
+	stats *streampb.StreamEvent_RangeStats,
+) (*execinfrapb.ProducerMetadata, error) {
+	asAny, err := pbtypes.MarshalAny(stats)
+	if err != nil {
+		return nil, errors.Wrap(err, "unable to convert stats into any proto")
+	}
+	return &execinfrapb.ProducerMetadata{
+		BulkProcessorProgress: &execinfrapb.RemoteProducerMetadata_BulkProcessorProgress{
+			NodeID:          lrw.FlowCtx.NodeID.SQLInstanceID(),
+			FlowID:          lrw.FlowCtx.ID,
+			ProcessorID:     lrw.ProcessorID,
+			ProgressDetails: *asAny,
+		},
+	}, nil
+}
+
 func (lrw *logicalReplicationWriterProcessor) checkpoint(
 	ctx context.Context, resolvedSpans []jobspb.ResolvedSpan,
 ) error {
@@ -741,17 +752,11 @@ func (lrw *logicalReplicationWriterProcessor) setupBatchHandlers(ctx context.Con
 func getWriterType(
 	ctx context.Context, mode jobspb.LogicalReplicationDetails_ApplyMode, settings *cluster.Settings,
 ) (sqlclustersettings.LDRWriterType, error) {
-	// TODO(jeffswenson): delete the kv and legacy sql ldr writers
 	switch mode {
 	case jobspb.LogicalReplicationDetails_Immediate:
 		return sqlclustersettings.LDRWriterType(sqlclustersettings.LDRImmediateModeWriter.Get(&settings.SV)), nil
 	case jobspb.LogicalReplicationDetails_Validated:
-		if crosscluster.LogicalReplicationUDFWriterEnabled.Get(&settings.SV) {
-			// If the UDF writer is enabled, fall back to the legacy SQL writer for
-			// validated mode.
-			return sqlclustersettings.LDRWriterTypeSQL, nil
-		}
-		return sqlclustersettings.LDRWriterTypeCRUD, nil
+		return sqlclustersettings.LDRWriterTypeSQL, nil
 	default:
 		return "", errors.Newf("unknown logical replication writer type: %s", mode)
 	}
@@ -1047,9 +1052,6 @@ func (lrw *logicalReplicationWriterProcessor) flushChunk(
 							}
 							stats.processed.dlq++
 						} else {
-							if lrw.retryEvery.ShouldLog() {
-								log.Dev.Warningf(ctx, "retrying failed apply: %+v", err)
-							}
 							stats.notProcessed.count++
 							stats.notProcessed.bytes += int64(batch[i].Size())
 						}

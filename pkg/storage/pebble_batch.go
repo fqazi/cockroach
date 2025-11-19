@@ -713,11 +713,11 @@ func (p *pebbleBatch) PinEngineStateForIterators(readCategory fs.ReadCategory) e
 	var err error
 	if p.iter == nil {
 		var iter *pebble.Iterator
-		o := makeIterOptions(readCategory, StandardDurability)
+		o := &pebble.IterOptions{Category: readCategory.PebbleCategory()}
 		if p.batch.Indexed() {
-			iter, err = p.batch.NewIter(&o)
+			iter, err = p.batch.NewIter(o)
 		} else {
-			iter, err = p.db.NewIter(&o)
+			iter, err = p.db.NewIter(o)
 		}
 		if err != nil {
 			return err

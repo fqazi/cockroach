@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/testutils/dd"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/datadriven"
 	"github.com/stretchr/testify/require"
@@ -77,15 +76,15 @@ func TestConstraintMatcher(t *testing.T) {
 						Value: interner.toString(c.value),
 					}
 					sepStr := ""
-					if len(pl.storeSet) > 0 {
+					if len(pl.storeIDPostingList) > 0 {
 						sepStr = " "
 					}
 					fmt.Fprintf(b, "%s:%s", rc.String(), sepStr)
-					printPostingList(b, pl.storeSet)
+					printPostingList(b, pl.storeIDPostingList)
 					fmt.Fprintf(b, "\n")
 				}
 				fmt.Fprintf(b, "all-stores: ")
-				printPostingList(b, cm.allStores.storeSet)
+				printPostingList(b, cm.allStores.storeIDPostingList)
 				fmt.Fprintf(b, "\n")
 				err := cm.checkConsistency()
 				require.NoError(t, err)
@@ -100,21 +99,23 @@ func TestConstraintMatcher(t *testing.T) {
 				return b.String()
 
 			case "remove-store":
-				storeID := dd.ScanArg[roachpb.StoreID](t, d, "store-id")
-				cm.removeStore(storeID)
+				var storeID int
+				d.ScanArgs(t, "store-id", &storeID)
+				cm.removeStore(roachpb.StoreID(storeID))
 				var b strings.Builder
 				printMatcher(&b)
 				return b.String()
 
 			case "store-matches":
-				storeID := dd.ScanArg[roachpb.StoreID](t, d, "store-id")
+				var storeID int
+				d.ScanArgs(t, "store-id", &storeID)
 				lines := strings.Split(d.Input, "\n")
 				require.Greater(t, 2, len(lines))
 				var cc []roachpb.Constraint
 				if len(lines) == 1 {
 					cc = parseConstraints(t, strings.Fields(strings.TrimSpace(lines[0])))
 				}
-				matches := cm.storeMatches(storeID, interner.internConstraintsConj(cc))
+				matches := cm.storeMatches(roachpb.StoreID(storeID), interner.internConstraintsConj(cc))
 				return fmt.Sprintf("%t", matches)
 
 			case "match-stores":
@@ -129,7 +130,7 @@ func TestConstraintMatcher(t *testing.T) {
 						disj = append(disj, interner.internConstraintsConj(cc))
 					}
 				}
-				var pl storeSet
+				var pl storeIDPostingList
 				if len(disj) <= 1 {
 					if randutil.FastUint32()%2 == 0 {
 						var conj []internedConstraint

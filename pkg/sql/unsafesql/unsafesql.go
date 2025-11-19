@@ -16,7 +16,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
-	"github.com/cockroachdb/crlib/crtime"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/redact"
 )
 
@@ -48,13 +48,7 @@ func CheckInternalsAccess(
 	stmt tree.Statement,
 	ann *tree.Annotations,
 	sv *settings.Values,
-	override func() *bool,
 ) error {
-	allowUnsafe := sd.AllowUnsafeInternals
-	if override != nil && override() != nil {
-		allowUnsafe = *override()
-	}
-
 	// If the querier is internal, we should allow it.
 	if sd.Internal || sd.IsInternalAppName() {
 		return nil
@@ -62,19 +56,18 @@ func CheckInternalsAccess(
 
 	q := SafeFormatQuery(stmt, ann, sv)
 	// If an override is set, allow access to this virtual table.
-	if allowUnsafe {
+	if sd.AllowUnsafeInternals {
 		// Log this access to the SENSITIVE_ACCESS channel since the override condition bypassed normal access controls.
-		if accessedLogLimiter.ShouldProcess(crtime.NowMono()) {
+		if accessedLogLimiter.ShouldProcess(timeutil.Now()) {
 			log.StructuredEvent(ctx, severity.WARNING, &eventpb.UnsafeInternalsAccessed{Query: q})
 		}
 		return nil
 	}
 
 	// Log this access to the SENSITIVE_ACCESS channel to show where failing internals accesses are happening.
-	if deniedLogLimiter.ShouldProcess(crtime.NowMono()) {
+	if deniedLogLimiter.ShouldProcess(timeutil.Now()) {
 		log.StructuredEvent(ctx, severity.WARNING, &eventpb.UnsafeInternalsDenied{Query: q})
 	}
-
 	return sqlerrors.ErrUnsafeTableAccess
 }
 

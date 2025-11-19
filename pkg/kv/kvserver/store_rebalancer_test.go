@@ -582,7 +582,7 @@ func TestChooseLeaseToTransfer(t *testing.T) {
 			// of snapshots, in order to avoid mocking out a fake raft group for the
 			// `replicaMayNeedSnapshot` checks inside `TransferLeaseTarget`.
 			AllowLeaseTransfersToReplicasNeedingSnapshots: true,
-		}, nil, /*allocSyncKnobs*/
+		},
 	)
 	defer stopper.Stop(context.Background())
 	objectiveProvider := &testRebalanceObjectiveProvider{}
@@ -1230,8 +1230,7 @@ func TestChooseRangeToRebalanceAcrossHeterogeneousZones(t *testing.T) {
 		t.Run(tc.name, withQPSCPU(t, objectiveProvider, func(t *testing.T) {
 			// Boilerplate for test setup.
 			testingKnobs := allocator.TestingKnobs{RaftStatusFn: TestingRaftStatusFn}
-			stopper, g, sp, a, _ := allocatorimpl.CreateTestAllocatorWithKnobs(
-				ctx, 10, false /* deterministic */, &testingKnobs, nil /*allocSyncKnobs*/)
+			stopper, g, sp, a, _ := allocatorimpl.CreateTestAllocatorWithKnobs(ctx, 10, false /* deterministic */, &testingKnobs)
 			defer stopper.Stop(context.Background())
 			gossiputil.NewStoreGossiper(g).GossipStores(multiRegionStores, t)
 
@@ -1330,7 +1329,6 @@ func TestChooseRangeToRebalanceIgnoresRangeOnBestStores(t *testing.T) {
 		10,
 		false, /* deterministic */
 		&allocator.TestingKnobs{AllowLeaseTransfersToReplicasNeedingSnapshots: true},
-		nil, /*allocSyncKnobs*/
 	)
 	defer stopper.Stop(context.Background())
 
@@ -1594,7 +1592,6 @@ func TestNoLeaseTransferToBehindReplicas(t *testing.T) {
 			AllowLeaseTransfersToReplicasNeedingSnapshots: false,
 			RaftStatusFn: behindTestingRaftStatusFn,
 		},
-		nil, /*allocSyncKnobs*/
 	)
 	defer stopper.Stop(context.Background())
 

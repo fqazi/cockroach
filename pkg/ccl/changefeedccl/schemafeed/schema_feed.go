@@ -36,7 +36,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 )
@@ -580,13 +579,13 @@ func (tf *schemaFeed) waitForTS(ctx context.Context, ts hlc.Timestamp) error {
 		return tf.mu.ts.wait(ts)
 	}()
 
-	start := crtime.NowMono()
+	start := timeutil.Now()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case err := <-waitCh:
 		if needToWait {
-			waited := start.Elapsed()
+			waited := timeutil.Since(start)
 			if log.V(1) {
 				log.Changefeed.Infof(ctx, "waited %s for frontier to reach %s: err=%v", waited, ts, err)
 			}
@@ -830,7 +829,7 @@ func (tf *schemaFeed) fetchDescriptorVersions(
 		log.Changefeed.Infof(ctx, `fetching table descs (%s,%s]`, startTS, endTS)
 	}
 	codec := tf.leaseMgr.Codec()
-	start := crtime.NowMono()
+	start := timeutil.Now()
 	span := roachpb.Span{Key: codec.IndexPrefix(keys.DescriptorTableID, keys.DescriptorTablePrimaryKeyIndexID)}
 	span.EndKey = span.Key.PrefixEnd()
 
@@ -842,7 +841,7 @@ func (tf *schemaFeed) fetchDescriptorVersions(
 		res, err := sendExportRequestWithPriorityOverride(
 			ctx, tf.settings, tf.db.KV().NonTransactionalSender(), span, startTS, endTS)
 		if log.ExpensiveLogEnabled(ctx, 2) {
-			log.Changefeed.Infof(ctx, `fetched table descs (%s,%s] took %s err=%s`, startTS, endTS, start.Elapsed(), err)
+			log.Changefeed.Infof(ctx, `fetched table descs (%s,%s] took %s err=%s`, startTS, endTS, timeutil.Since(start), err)
 		}
 		if err != nil {
 			return nil, err

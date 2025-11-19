@@ -84,7 +84,6 @@ disable_optimizer_rules                                          ·
 disable_partially_distributed_plans                              off
 disable_plan_gists                                               off
 disable_vec_union_eager_cancellation                             off
-disable_wait_for_jobs_notice                                     off
 disallow_full_table_scans                                        off
 distribute_group_by_row_count_threshold                          1000
 distribute_join_row_count_threshold                              1000
@@ -105,6 +104,7 @@ enable_insert_fast_path                                          on
 enable_inspect_command                                           off
 enable_multiple_modifications_of_table                           off
 enable_multiregion_placement_policy                              off
+enable_scrub_job                                                 off
 enable_seqscan                                                   on
 enable_shared_locking_for_serializable                           off
 enable_super_regions                                             off
@@ -155,8 +155,8 @@ on_update_rehome_row_enabled                                     on
 opt_split_scan_limit                                             2048
 optimizer_always_use_histograms                                  on
 optimizer_check_input_min_row_count                              1
-optimizer_clamp_inequality_selectivity                           on
-optimizer_clamp_low_histogram_selectivity                        on
+optimizer_clamp_inequality_selectivity                           off
+optimizer_clamp_low_histogram_selectivity                        off
 optimizer_disable_cross_region_cascade_fast_path_for_rbr_tables  on
 optimizer_enable_lock_elision                                    on
 optimizer_hoist_uncorrelated_equality_subqueries                 on
@@ -212,7 +212,7 @@ reorder_joins_limit                                              8
 require_explicit_primary_keys                                    off
 results_buffer_size                                              524288
 role                                                             none
-row_security                                                     on
+row_security                                                     off
 search_path                                                      "$user", public
 serial_normalization                                             rowid
 server_encoding                                                  UTF8

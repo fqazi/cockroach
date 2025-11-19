@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/testutils/dd"
 	"github.com/cockroachdb/datadriven"
 	"github.com/stretchr/testify/require"
 )
@@ -76,26 +75,28 @@ func TestMeansMemo(t *testing.T) {
 				return ""
 
 			case "store-load":
-				storeID := dd.ScanArg[roachpb.StoreID](t, d, "store-id")
-				sal, ok := storeMap[storeID]
+				var storeID int
+				d.ScanArgs(t, "store-id", &storeID)
+				sal, ok := storeMap[roachpb.StoreID(storeID)]
 				require.True(t, ok)
 				var cpuLoad, wbLoad, bsLoad int64
 				d.ScanArgs(t, "load", &cpuLoad, &wbLoad, &bsLoad)
 				var cpuCapacity, wbCapacity, bsCapacity int64
 				d.ScanArgs(t, "capacity", &cpuCapacity, &wbCapacity, &bsCapacity)
-				leaseCountLoad := dd.ScanArg[LoadValue](t, d, "secondary-load")
+				var leaseCountLoad int64
+				d.ScanArgs(t, "secondary-load", &leaseCountLoad)
 				sLoad := &storeLoad{
 					reportedLoad: LoadVector{LoadValue(cpuLoad), LoadValue(wbLoad), LoadValue(bsLoad)},
 					capacity: LoadVector{
 						LoadValue(cpuCapacity), LoadValue(wbCapacity), LoadValue(bsCapacity)},
-					reportedSecondaryLoad: SecondaryLoadVector{leaseCountLoad},
+					reportedSecondaryLoad: SecondaryLoadVector{LoadValue(leaseCountLoad)},
 				}
 				for i := range sLoad.capacity {
 					if sLoad.capacity[i] < 0 {
 						sLoad.capacity[i] = UnknownCapacity
 					}
 				}
-				loadProvider.sloads[storeID] = storeLoadAndNodeID{
+				loadProvider.sloads[roachpb.StoreID(storeID)] = storeLoadAndNodeID{
 					nodeID:    sal.NodeID,
 					storeLoad: sLoad,
 				}
@@ -103,10 +104,15 @@ func TestMeansMemo(t *testing.T) {
 				return ""
 
 			case "node-load":
+				var nodeID int
+				d.ScanArgs(t, "node-id", &nodeID)
+				var cpuLoad, cpuCapacity int64
+				d.ScanArgs(t, "cpu-load", &cpuLoad)
+				d.ScanArgs(t, "cpu-capacity", &cpuCapacity)
 				nLoad := &NodeLoad{
-					NodeID:      dd.ScanArg[roachpb.NodeID](t, d, "node-id"),
-					ReportedCPU: dd.ScanArg[LoadValue](t, d, "cpu-load"),
-					CapacityCPU: dd.ScanArg[LoadValue](t, d, "cpu-capacity"),
+					NodeID:      roachpb.NodeID(nodeID),
+					ReportedCPU: LoadValue(cpuLoad),
+					CapacityCPU: LoadValue(cpuCapacity),
 				}
 				loadProvider.nloads[nLoad.NodeID] = nLoad
 				return ""
@@ -151,10 +157,12 @@ func TestMeansMemo(t *testing.T) {
 				return b.String()
 
 			case "get-store-summary":
-				storeID := dd.ScanArg[roachpb.StoreID](t, d, "store-id")
-				loadSeqNum := dd.ScanArg[uint64](t, d, "load-seq-num")
+				var storeID int
+				d.ScanArgs(t, "store-id", &storeID)
+				var loadSeqNum uint64
+				d.ScanArgs(t, "load-seq-num", &loadSeqNum)
 				loadProvider.returnedLoadSeqNum = loadSeqNum
-				_ = mm.getStoreLoadSummary(context.Background(), mss, storeID, loadSeqNum)
+				_ = mm.getStoreLoadSummary(context.Background(), mss, roachpb.StoreID(storeID), loadSeqNum)
 				rv := loadProvider.b.String()
 				loadProvider.b.Reset()
 				return rv

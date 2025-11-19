@@ -16,10 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -244,7 +242,7 @@ func TestPebbleEncryption(t *testing.T) {
 			CurrentKey: "16.key",
 			OldKey:     "plain",
 		},
-		RotationPeriod: time.Hour,
+		DataKeyRotationPeriod: 1000, // arbitrary seconds
 	}
 
 	func() {
@@ -254,7 +252,7 @@ func TestPebbleEncryption(t *testing.T) {
 			ctx,
 			base.StoreSpec{
 				InMemory:          true,
-				Size:              storageconfig.BytesSize(512 << 20),
+				Size:              storageconfig.Size{Bytes: 512 << 20},
 				EncryptionOptions: encOptions,
 				StickyVFSID:       stickyVFSID,
 			},
@@ -296,7 +294,7 @@ func TestPebbleEncryption(t *testing.T) {
 		require.NoError(t, batch.PutUnversioned(roachpb.Key("a"), []byte("a")))
 		require.NoError(t, batch.Commit(true))
 		require.NoError(t, db.Flush())
-		require.Equal(t, []byte("a"), storageutils.MVCCGetRaw(t, db, storageutils.PointKey(keys.SystemSQLCodec, "a", 0)))
+		require.Equal(t, []byte("a"), storageutils.MVCCGetRaw(t, db, storageutils.PointKey("a", 0)))
 	}()
 
 	func() {
@@ -306,7 +304,7 @@ func TestPebbleEncryption(t *testing.T) {
 			ctx,
 			base.StoreSpec{
 				InMemory:          true,
-				Size:              storageconfig.BytesSize(512 << 20),
+				Size:              storageconfig.Size{Bytes: 512 << 20},
 				EncryptionOptions: encOptions,
 				StickyVFSID:       stickyVFSID,
 			},
@@ -321,7 +319,7 @@ func TestPebbleEncryption(t *testing.T) {
 		db, err := storage.Open(ctx, env, settings)
 		require.NoError(t, err)
 		defer db.Close()
-		require.Equal(t, []byte("a"), storageutils.MVCCGetRaw(t, db, storageutils.PointKey(keys.SystemSQLCodec, "a", 0)))
+		require.Equal(t, []byte("a"), storageutils.MVCCGetRaw(t, db, storageutils.PointKey("a", 0)))
 
 		// Flushing should've created a new sstable under the active key.
 		stats, err := db.GetEnvStats()
@@ -387,7 +385,7 @@ func TestPebbleEncryption2(t *testing.T) {
 				CurrentKey: encKeyFile,
 				OldKey:     oldEncFileKey,
 			},
-			RotationPeriod: time.Hour,
+			DataKeyRotationPeriod: 1000,
 		}
 
 		// Initialize the filesystem env.
@@ -397,7 +395,7 @@ func TestPebbleEncryption2(t *testing.T) {
 			ctx,
 			base.StoreSpec{
 				InMemory:          true,
-				Size:              storageconfig.BytesSize(512 << 20),
+				Size:              storageconfig.Size{Bytes: 512 << 20},
 				EncryptionOptions: encOptions,
 				StickyVFSID:       stickyVFSID,
 			},
@@ -472,7 +470,7 @@ type errorInjector struct {
 }
 
 func (i *errorInjector) MaybeError(op errorfs.Op) error {
-	if i.startInjecting && op.Kind.IsWrite() &&
+	if i.startInjecting && op.Kind.ReadOrWrite() == errorfs.OpIsWrite &&
 		!strings.HasPrefix(op.Path, "TEST") && i.rand.Float64() < i.prob {
 		return errors.WithStack(errorfs.ErrInjected)
 	}
@@ -582,7 +580,7 @@ func makeEncryptedTestFS(t *testing.T, errorProb float64, errorRand *rand.Rand) 
 	//
 	// TODO(sumeer): Do deterministic data key rotation. Inject kmTimeNow and
 	// operations that advance time.
-	encOptions.RotationPeriod = 100000 * time.Second
+	encOptions.DataKeyRotationPeriod = 100000
 	etfs := &encryptedTestFS{
 		mem:        mem,
 		encOptions: &encOptions,

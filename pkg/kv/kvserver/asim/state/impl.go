@@ -433,7 +433,7 @@ func (s *state) AddNode(nodeCPUCapacity int64, locality roachpb.Locality) Node {
 		stores:      []StoreID{},
 		mmAllocator: mmAllocator,
 		storepool:   sp,
-		as:          mmaintegration.NewAllocatorSync(sp, mmAllocator, s.settings.ST, nil),
+		as:          mmaintegration.NewAllocatorSync(sp, mmAllocator, s.settings.ST),
 	}
 	s.nodes[nodeID] = node
 	s.SetNodeLiveness(nodeID, livenesspb.NodeLivenessStatus_LIVE)
@@ -568,7 +568,6 @@ func (s *state) AddStore(nodeID NodeID) (Store, bool) {
 	// Old allocator is still needed for other queues.
 	allocator := allocatorimpl.MakeAllocator(
 		s.settings.ST,
-		node.as,
 		sp.IsDeterministic(),
 		func(id roachpb.NodeID) (time.Duration, bool) { return 0, true },
 		&allocator.TestingKnobs{
@@ -1402,8 +1401,6 @@ func (s *state) SetClusterSetting(Key string, Value interface{}) {
 	switch Key {
 	case "LBRebalancingMode":
 		kvserverbase.LoadBasedRebalancingMode.Override(context.Background(), &s.settings.ST.SV, kvserverbase.LBRebalancingMode(Value.(int64)))
-	case "LBRebalancingObjective":
-		kvserver.LoadBasedRebalancingObjective.Override(context.Background(), &s.settings.ST.SV, kvserver.LBRebalancingObjective(Value.(int64)))
 	default:
 		panic("other cluster settings not supported")
 	}

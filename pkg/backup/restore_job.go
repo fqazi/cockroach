@@ -79,7 +79,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 )
@@ -117,10 +116,6 @@ const (
 	// be _exceeded_ before we no longer fast fail the restore job after hitting the
 	// maxRestoreRetryFastFail threshold.
 	restoreRetryProgressThreshold = 0
-
-	// droppedDescsOnFailKey is an info key that is set for a restore job when it
-	// has finished dropping its descriptors on failure.
-	droppedDescsOnFailKey = "dropped_descs_on_fail"
 )
 
 var restoreStatsInsertionConcurrency = settings.RegisterIntSetting(
@@ -216,7 +211,7 @@ func restoreWithRetry(
 	// dying), so if we receive a retryable error, re-plan and retry the restore.
 	retryOpts, progThreshold := getRetryOptionsAndProgressThreshold(execCtx)
 	logRate := restoreRetryLogRate.Get(&execCtx.ExecCfg().Settings.SV)
-	logThrottler := util.EveryMono(logRate)
+	logThrottler := util.Every(logRate)
 	var (
 		res                roachpb.RowCount
 		err                error
@@ -256,7 +251,7 @@ func restoreWithRetry(
 
 		log.Dev.Warningf(ctx, "encountered retryable error: %+v", err)
 
-		if logThrottler.ShouldProcess(crtime.NowMono()) {
+		if logThrottler.ShouldProcess(timeutil.Now()) {
 			// We throttle the logging of errors to the jobs messages table to avoid
 			// flooding the table during the hot loop of a retry.
 			if err := execCtx.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
@@ -2825,13 +2820,6 @@ func (r *restoreResumer) OnFailOrCancel(
 		return err
 	}
 
-	testingKnobs := execCfg.BackupRestoreTestingKnobs
-	if testingKnobs != nil && testingKnobs.AfterRevertRestoreDropDescriptors != nil {
-		if err := testingKnobs.AfterRevertRestoreDropDescriptors(); err != nil {
-			return err
-		}
-	}
-
 	if details.DescriptorCoverage == tree.AllDescriptors {
 		// The temporary system table descriptors should already have been dropped
 		// in `dropDescriptors` but we still need to drop the temporary system db.
@@ -2874,19 +2862,6 @@ func (r *restoreResumer) dropDescriptors(
 	// No need to mark the tables as dropped if they were not even created in the
 	// first place.
 	if !details.PrepareCompleted {
-		return nil
-	}
-
-	jobInfo := jobs.InfoStorageForJob(txn, r.job.ID())
-	_, hasDropped, err := jobInfo.Get(
-		ctx, "get-restore-dropped-descs-on-fail-key", droppedDescsOnFailKey,
-	)
-	if err != nil {
-		return err
-	}
-	if hasDropped {
-		// Descriptors have already been dropped once before, this is a retry of the
-		// cleanup.
 		return nil
 	}
 
@@ -3211,10 +3186,7 @@ func (r *restoreResumer) dropDescriptors(
 		return errors.Wrap(err, "dropping tables created at the start of restore caused by fail/cancel")
 	}
 
-	return errors.Wrap(
-		jobInfo.Write(ctx, droppedDescsOnFailKey, []byte{}),
-		"checkpointing dropped descs on fail",
-	)
+	return nil
 }
 
 // removeExistingTypeBackReferences removes back references from types that

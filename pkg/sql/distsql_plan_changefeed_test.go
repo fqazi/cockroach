@@ -50,9 +50,8 @@ func TestChangefeedLogicalPlan(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	srv, db, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(context.Background())
-	s := srv.ApplicationLayer()
+	s, db, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(context.Background())
 
 	defer tree.TestingEnableFamilyIndexHint()()
 
@@ -73,19 +72,19 @@ CREATE TABLE foo (
 
 	sqlDB.Exec(t, `CREATE TABLE bar (a INT)`)
 	fooDesc := desctestutils.TestingGetTableDescriptor(
-		kvDB, s.Codec(), "defaultdb", "public", "foo")
+		kvDB, keys.SystemSQLCodec, "defaultdb", "public", "foo")
 
 	ctx := context.Background()
 	execCfg := s.ExecutorConfig().(ExecutorConfig)
 	sd := NewInternalSessionData(ctx, execCfg.Settings, "test")
 	sd.Database = "defaultdb"
 
-	p, cleanup := NewInternalPlanner("test", kv.NewTxn(ctx, kvDB, srv.NodeID()),
+	p, cleanup := NewInternalPlanner("test", kv.NewTxn(ctx, kvDB, s.NodeID()),
 		username.NodeUserName(), &MemoryMetrics{}, &execCfg, sd,
 	)
 	defer cleanup()
 
-	primarySpan := fooDesc.PrimaryIndexSpan(s.Codec())
+	primarySpan := fooDesc.PrimaryIndexSpan(keys.SystemSQLCodec)
 	pkStart := primarySpan.Key
 	pkEnd := primarySpan.EndKey
 	fooID := fooDesc.GetID()
@@ -227,65 +226,65 @@ CREATE TABLE foo (
 		},
 		{
 			stmt:        "SELECT * FROM foo WHERE a > 100",
-			expectSpans: roachpb.Spans{{Key: mkPkKey(t, s.Codec(), fooID, 101), EndKey: pkEnd}},
+			expectSpans: roachpb.Spans{{Key: mkPkKey(t, fooID, 101), EndKey: pkEnd}},
 			present:     mainColumns,
 		},
 		{
 			stmt:        "SELECT * FROM foo WHERE a < 100",
-			expectSpans: roachpb.Spans{{Key: pkStart, EndKey: mkPkKey(t, s.Codec(), fooID, 100)}},
+			expectSpans: roachpb.Spans{{Key: pkStart, EndKey: mkPkKey(t, fooID, 100)}},
 			present:     mainColumns,
 		},
 		{
 			stmt:        "SELECT * FROM foo WHERE a > 10 AND a > 5",
-			expectSpans: roachpb.Spans{{Key: mkPkKey(t, s.Codec(), fooID, 11), EndKey: pkEnd}},
+			expectSpans: roachpb.Spans{{Key: mkPkKey(t, fooID, 11), EndKey: pkEnd}},
 			present:     mainColumns,
 		},
 		{
 			stmt:        "SELECT * FROM foo WHERE a > 10 OR a > 5",
-			expectSpans: roachpb.Spans{{Key: mkPkKey(t, s.Codec(), fooID, 6), EndKey: pkEnd}},
+			expectSpans: roachpb.Spans{{Key: mkPkKey(t, fooID, 6), EndKey: pkEnd}},
 			present:     mainColumns,
 		},
 		{
 			stmt:        "SELECT * FROM foo WHERE a > 100 AND a <= 101",
-			expectSpans: roachpb.Spans{{Key: mkPkKey(t, s.Codec(), fooID, 101), EndKey: mkPkKey(t, s.Codec(), fooID, 102)}},
+			expectSpans: roachpb.Spans{{Key: mkPkKey(t, fooID, 101), EndKey: mkPkKey(t, fooID, 102)}},
 			present:     mainColumns,
 		},
 		{
 			stmt:        "SELECT * FROM foo WHERE a > 100 and a < 200",
-			expectSpans: roachpb.Spans{{Key: mkPkKey(t, s.Codec(), fooID, 101), EndKey: mkPkKey(t, s.Codec(), fooID, 200)}},
+			expectSpans: roachpb.Spans{{Key: mkPkKey(t, fooID, 101), EndKey: mkPkKey(t, fooID, 200)}},
 			present:     mainColumns,
 		},
 		{
 			stmt: "SELECT * FROM foo WHERE a > 100 or a <= 99",
 			expectSpans: roachpb.Spans{
-				{Key: pkStart, EndKey: mkPkKey(t, s.Codec(), fooID, 100)},
-				{Key: mkPkKey(t, s.Codec(), fooID, 101), EndKey: pkEnd},
+				{Key: pkStart, EndKey: mkPkKey(t, fooID, 100)},
+				{Key: mkPkKey(t, fooID, 101), EndKey: pkEnd},
 			},
 			present: mainColumns,
 		},
 		{
 			stmt:        "SELECT * FROM foo WHERE a > 100 AND b > 11",
-			expectSpans: roachpb.Spans{{Key: mkPkKey(t, s.Codec(), fooID, 101, 12), EndKey: pkEnd}},
+			expectSpans: roachpb.Spans{{Key: mkPkKey(t, fooID, 101, 12), EndKey: pkEnd}},
 			present:     mainColumns,
 		},
 		{
 			// Same as above, but with table alias -- we expect remaining expression to
 			// preserve the alias.
 			stmt:        "SELECT * FROM foo AS buz WHERE buz.a > 100 AND b > 11",
-			expectSpans: roachpb.Spans{{Key: mkPkKey(t, s.Codec(), fooID, 101, 12), EndKey: pkEnd}},
+			expectSpans: roachpb.Spans{{Key: mkPkKey(t, fooID, 101, 12), EndKey: pkEnd}},
 			present:     mainColumns,
 		},
 		{
 			// Same as above, but w/ silly tautology, which should be removed.
 			stmt:        "SELECT * FROM defaultdb.public.foo WHERE (a > 3 OR a <= 3) AND a > 100 AND b > 11",
-			expectSpans: roachpb.Spans{{Key: mkPkKey(t, s.Codec(), fooID, 101, 12), EndKey: pkEnd}},
+			expectSpans: roachpb.Spans{{Key: mkPkKey(t, fooID, 101, 12), EndKey: pkEnd}},
 			present:     mainColumns,
 		},
 		{
 			stmt: "SELECT * FROM foo WHERE a < 42 OR (a > 100 AND b > 11)",
 			expectSpans: roachpb.Spans{
-				{Key: pkStart, EndKey: mkPkKey(t, s.Codec(), fooID, 42)},
-				{Key: mkPkKey(t, s.Codec(), fooID, 101, 12), EndKey: pkEnd},
+				{Key: pkStart, EndKey: mkPkKey(t, fooID, 42)},
+				{Key: mkPkKey(t, fooID, 101, 12), EndKey: pkEnd},
 			},
 			present: mainColumns,
 		},
@@ -293,31 +292,31 @@ CREATE TABLE foo (
 			// Same as above, but now with tuples.
 			stmt: "SELECT * FROM foo WHERE a < 42 OR ((a, b) > (100, 11))",
 			expectSpans: roachpb.Spans{
-				{Key: pkStart, EndKey: mkPkKey(t, s.Codec(), fooID, 42)},
+				{Key: pkStart, EndKey: mkPkKey(t, fooID, 42)},
 				// Remember: tuples use lexicographical ordering so the start key is
 				// /Table/104/1/100/12 (i.e. a="100" and b="12" (because 100/12 lexicographically follows 100).
-				{Key: mkPkKey(t, s.Codec(), fooID, 100, 12), EndKey: pkEnd},
+				{Key: mkPkKey(t, fooID, 100, 12), EndKey: pkEnd},
 			},
 			present: mainColumns,
 		},
 		{
 			stmt:        "SELECT * FROM foo WHERE (a, b) > (2, 5)",
-			expectSpans: roachpb.Spans{{Key: mkPkKey(t, s.Codec(), fooID, 2, 6), EndKey: pkEnd}},
+			expectSpans: roachpb.Spans{{Key: mkPkKey(t, fooID, 2, 6), EndKey: pkEnd}},
 			present:     mainColumns,
 		},
 		{
 			// Test that aliased table names work.
 			stmt:        "SELECT * FROM foo as buz WHERE (buz.a, buz.b) > (2, 5)",
-			expectSpans: roachpb.Spans{{Key: mkPkKey(t, s.Codec(), fooID, 2, 6), EndKey: pkEnd}},
+			expectSpans: roachpb.Spans{{Key: mkPkKey(t, fooID, 2, 6), EndKey: pkEnd}},
 			present:     mainColumns,
 		},
 		{
 			// This test also uses qualified names for some fields.
 			stmt: "SELECT * FROM foo WHERE foo.a IN (5, 10, 20) AND b < 25",
 			expectSpans: roachpb.Spans{
-				{Key: mkPkKey(t, s.Codec(), fooID, 5), EndKey: mkPkKey(t, s.Codec(), fooID, 5, 25)},
-				{Key: mkPkKey(t, s.Codec(), fooID, 10), EndKey: mkPkKey(t, s.Codec(), fooID, 10, 25)},
-				{Key: mkPkKey(t, s.Codec(), fooID, 20), EndKey: mkPkKey(t, s.Codec(), fooID, 20, 25)},
+				{Key: mkPkKey(t, fooID, 5), EndKey: mkPkKey(t, fooID, 5, 25)},
+				{Key: mkPkKey(t, fooID, 10), EndKey: mkPkKey(t, fooID, 10, 25)},
+				{Key: mkPkKey(t, fooID, 20), EndKey: mkPkKey(t, fooID, 20, 25)},
 			},
 			present: mainColumns,
 		},
@@ -331,7 +330,7 @@ CREATE TABLE foo (
 		{
 			// Point lookup.
 			stmt:        `SELECT a as apple, b as boy, pi()/2 as "halfPie" FROM foo WHERE (a = 5 AND b = 10)`,
-			expectSpans: roachpb.Spans{{Key: mkPkKey(t, s.Codec(), fooID, 5, 10, 0)}},
+			expectSpans: roachpb.Spans{{Key: mkPkKey(t, fooID, 5, 10, 0)}},
 			present: colinfo.ResultColumns{
 				rc("apple", types.Int), rc("boy", types.Int), rc("halfPie", types.Float),
 			},
@@ -448,20 +447,19 @@ func TestChangefeedStreamsResults(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	srv, db, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(context.Background())
-	s := srv.ApplicationLayer()
+	s, db, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(context.Background())
 
 	sqlDB := sqlutils.MakeSQLRunner(db)
 	sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b int)`)
 	fooDesc := desctestutils.TestingGetTableDescriptor(
-		kvDB, s.Codec(), "defaultdb", "public", "foo")
+		kvDB, keys.SystemSQLCodec, "defaultdb", "public", "foo")
 
 	ctx := context.Background()
 	execCfg := s.ExecutorConfig().(ExecutorConfig)
 	sd := NewInternalSessionData(ctx, execCfg.Settings, "test")
 	sd.Database = "defaultdb"
-	p, cleanup := NewInternalPlanner("test", kv.NewTxn(ctx, kvDB, srv.NodeID()),
+	p, cleanup := NewInternalPlanner("test", kv.NewTxn(ctx, kvDB, s.NodeID()),
 		username.NodeUserName(), &MemoryMetrics{}, &execCfg, sd,
 	)
 	defer cleanup()
@@ -659,12 +657,12 @@ func randEncDatumRow(
 	return row
 }
 
-func mkPkKey(t *testing.T, codec keys.SQLCodec, tableID descpb.ID, vals ...int) roachpb.Key {
+func mkPkKey(t *testing.T, tableID descpb.ID, vals ...int) roachpb.Key {
 	t.Helper()
 
 	// Encode index id, then each value.
 	key, err := keyside.Encode(
-		codec.TablePrefix(uint32(tableID)),
+		keys.SystemSQLCodec.TablePrefix(uint32(tableID)),
 		tree.NewDInt(tree.DInt(1)), encoding.Ascending)
 
 	require.NoError(t, err)

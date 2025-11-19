@@ -32,6 +32,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/sqllivenesstestutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
@@ -1740,17 +1741,19 @@ CREATE TABLE t.test (k CHAR PRIMARY KEY, v CHAR);
 func TestLeaseManagerLockedTimestampBasic(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	// Skip until future PRs fix this test.
+	skip.WithIssue(t, 153826)
 
 	var blockUpdates atomic.Bool
+	var blockCheckPoint atomic.Bool
+	var targetTS atomic.Value
+	targetTS.Store(hlc.Timestamp{})
 	updateCh := make(chan struct{})
+	rangeFeedCh := make(chan struct{})
 
 	st := cluster.MakeTestingClusterSettings()
 	ctx := context.Background()
 	LockedLeaseTimestamp.Override(ctx, &st.SV, true)
-	// Intentionally disable WaitForInitialVersion support, so that we can run
-	// historical queries at timestamps before the lease manager is fully caught
-	// up.
-	WaitForInitialVersion.Override(ctx, &st.SV, false)
 	srv, db, _ := serverutils.StartServer(
 		t, base.TestServerArgs{
 			// Avoid using tenants since async tenant migration steps can acquire
@@ -1763,22 +1766,30 @@ func TestLeaseManagerLockedTimestampBasic(t *testing.T) {
 							return
 						}
 						<-updateCh
+						//nolint:descriptormarshal
+						targetTS.Store(descriptor.GetTable().GetModificationTime())
+						blockCheckPoint.Store(true)
+					},
+					TestingOnUpdateReadTimestamp: func(timestamp hlc.Timestamp) {
+						if !blockCheckPoint.Load() {
+							return
+						}
+						ts := targetTS.Load().(hlc.Timestamp)
+						if ts.IsEmpty() || timestamp.Less(ts) {
+							return
+						}
+						<-rangeFeedCh
+						targetTS.Store(hlc.Timestamp{})
 					},
 				},
 			},
 			Settings: st,
 		})
 	defer srv.Stopper().Stop(context.Background())
-	s := srv.ApplicationLayer()
 
 	r := sqlutils.MakeSQLRunner(db)
 
 	r.Exec(t, "CREATE TABLE t1(n int)")
-	// These queries will be intentionally executed before the lease manager is
-	// fully aware of their existence, since WaitForInitialVersion support is
-	// disabled. We should be forced to use a non-locked timestamp to be aware
-	// of the tables existence.
-	r.Exec(t, "SELECT * FROM t1")
 	r.Exec(t, "INSERT INTO t1 VALUES (1)")
 
 	grp := ctxgroup.WithContext(context.Background())
@@ -1791,53 +1802,55 @@ func TestLeaseManagerLockedTimestampBasic(t *testing.T) {
 	}()
 	var id int
 	r.QueryRow(t, "SELECT 't1'::REGCLASS::OID;").Scan(&id)
-	lm := s.LeaseManager().(*Manager)
+	lm := srv.LeaseManager().(*Manager)
 
-	getDescriptorVersion := func(ts ReadTimestamp) descpb.DescriptorVersion {
+	// Note: We only need to hold old leases because the logic for doing this
+	// automatically is not merged yet. Once it is merged, the release of them
+	// will be delayed until the timestamp is updated.
+	var heldDescriptors []LeasedDescriptor
+	releaseHeldDescriptors := func() {
+		for _, ld := range heldDescriptors {
+			ld.Release(ctx)
+		}
+		heldDescriptors = nil
+	}
+	defer releaseHeldDescriptors()
+
+	getDescriptorVersion := func() descpb.DescriptorVersion {
+		ts := lm.GetReadTimestamp(srv.Clock().Now())
 		state := lm.findDescriptorState(descpb.ID(id), false)
 		require.NotNilf(t, state, "the descriptor was not leased yet")
 		ld, _, err := state.findForTimestamp(ctx, ts)
 		require.NoError(t, err)
-		defer ld.Release(ctx)
+		heldDescriptors = append(heldDescriptors, ld)
 		return ld.GetVersion()
 	}
 
-	waitForTimestampChange := func(ts ReadTimestamp) {
+	waitForTimestampChange := func() {
+		initial := lm.GetSafeReplicationTS()
+		rangeFeedCh <- struct{}{}
 		testutils.SucceedsSoon(t, func() error {
-			if lm.GetSafeReplicationTS() == ts.GetTimestamp() {
+			if lm.GetSafeReplicationTS() == initial {
 				return errors.New("timestamp did not change")
 			}
 			return nil
 		})
 	}
-	// Allow one descriptor version to be published.
-	ts := lm.GetReadTimestamp(ctx, srv.Clock().Now())
-	var releaseTS = func() {
-		if ts == nil {
-			return
-		}
-		ts.Release(ctx)
-		ts = nil
-	}
-	defer releaseTS()
+	// Allow one descriptor version to be published and a range feed check point.
 	updateCh <- struct{}{}
-	waitForTimestampChange(ts)
-	releaseTS()
-	ts = lm.GetReadTimestamp(ctx, srv.Clock().Now())
-	initialVersion := getDescriptorVersion(ts)
-	// The old version will still be cached as long as this timestamp is in use.
-	// Even if we released the leases already.
+	waitForTimestampChange()
+	initialVersion := getDescriptorVersion()
+	// A new version is published, but it won't be visible to our transaction yet.
 	updateCh <- struct{}{}
-	nextVersion := getDescriptorVersion(ts)
+	nextVersion := getDescriptorVersion()
 	require.Equalf(t, initialVersion, nextVersion, "new version should not be leased yet")
-	waitForTimestampChange(ts)
-	// If we release the old timestamp, then the old version will be released.
-	releaseTS()
-	ts = lm.GetReadTimestamp(ctx, srv.Clock().Now())
-	nextVersion = getDescriptorVersion(ts)
-	require.Equalf(t, initialVersion+1, nextVersion, "new version should be visible now")
+	waitForTimestampChange()
+	// A new version should show up after the range feed check point.
+	nextVersion = getDescriptorVersion()
+	require.Equalf(t, initialVersion+1, nextVersion, "new version should be leasable now")
+	releaseHeldDescriptors()
 	close(updateCh)
-	releaseTS()
+	close(rangeFeedCh)
 	require.NoError(t, grp.Wait())
 }
 
@@ -1856,12 +1869,12 @@ func TestLeaseManagerLockedTimestampCluster(t *testing.T) {
 	tc := serverutils.StartCluster(
 		t, 3, base.TestClusterArgs{
 			ServerArgs: base.TestServerArgs{
-				Settings: st,
-				// Avoid using tenants since async tenant migration steps can acquire
-				// leases on our user tables.
+				Settings:          st,
 				DefaultTestTenant: base.TestNeedsTightIntegrationBetweenAPIsAndTestingKnobs,
 			},
 			ServerArgsPerNode: map[int]base.TestServerArgs{2: {
+				// Avoid using tenants since async tenant migration steps can acquire
+				// leases on our user tables.
 				Knobs: base.TestingKnobs{
 					SQLLeaseManager: &ManagerTestingKnobs{
 						TestingDescriptorRefreshedEvent: func(descriptor *descpb.Descriptor) {
@@ -1894,10 +1907,12 @@ func TestLeaseManagerLockedTimestampCluster(t *testing.T) {
 		_, err := node1Conn.Exec("ALTER TABLE d1.public.t1 ADD COLUMN n2 int DEFAULT 364")
 		return err
 	})
+	go func() {
+	}()
 	lm := tc.Server(2).LeaseManager().(*Manager)
 	assertDescriptorsCount := func(expectedCount int) {
 		state := lm.findDescriptorState(descpb.ID(id), false)
-		require.NotNilf(t, state, "the descriptor was not leased yet")
+		require.NotNilf(t, state, "descriptor was not leased yet")
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		require.Equal(t, expectedCount, len(state.mu.active.data),

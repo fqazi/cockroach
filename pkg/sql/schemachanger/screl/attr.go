@@ -55,13 +55,8 @@ const (
 	Name
 	// ReferencedDescID is the descriptor ID to which this element refers.
 	ReferencedDescID
-	// Value is a string attribute that can be used in different elements.
-	// Fields referring to the Value attribute cannot be used in rules and
-	// are only used as a part of the key to make an element unique. Current
-	// use includes:
-	//   1. comment metadata on descriptors.
-	//   2. string representation of column generated as identity sequence options
-	Value
+	// Comment is the comment metadata on descriptors.
+	Comment
 	// TemporaryIndexID is the index ID of the temporary index being populated
 	// during this index's backfill.
 	TemporaryIndexID
@@ -119,10 +114,6 @@ const (
 	// PolicyID is an attribute for row-level security policies to uniquely
 	// identify a policy within a table.
 	PolicyID
-
-	// GeneratedAsIdentityType is the type for a generated as identity column.
-	// It's value must be in catpb.GeneratedAsIdentityType.
-	GeneratedAsIdentityType
 
 	// AttrMax is the largest possible Attr value.
 	// Note: add any new enum values before TargetStatus, leave these at the end.
@@ -331,12 +322,6 @@ var elementSchemaOptions = []rel.SchemaOption{
 		rel.EntityAttr(ColumnID, "ColumnID"),
 		rel.EntityAttr(IndexID, "IndexIDForValidation"),
 	),
-	rel.EntityMapping(t((*scpb.ColumnGeneratedAsIdentity)(nil)),
-		rel.EntityAttr(DescID, "TableID"),
-		rel.EntityAttr(ColumnID, "ColumnID"),
-		rel.EntityAttr(GeneratedAsIdentityType, "Type"),
-		rel.EntityAttr(Value, "SequenceOption"),
-	),
 	// Index elements.
 	rel.EntityMapping(t((*scpb.IndexName)(nil)),
 		rel.EntityAttr(DescID, "TableID"),
@@ -454,34 +439,34 @@ var elementSchemaOptions = []rel.SchemaOption{
 	// Comment elements.
 	rel.EntityMapping(t((*scpb.TableComment)(nil)),
 		rel.EntityAttr(DescID, "TableID"),
-		rel.EntityAttr(Value, "Comment"),
+		rel.EntityAttr(Comment, "Comment"),
 	),
 	rel.EntityMapping(t((*scpb.TypeComment)(nil)),
 		rel.EntityAttr(DescID, "TypeID"),
-		rel.EntityAttr(Value, "Comment"),
+		rel.EntityAttr(Comment, "Comment"),
 	),
 	rel.EntityMapping(t((*scpb.DatabaseComment)(nil)),
 		rel.EntityAttr(DescID, "DatabaseID"),
-		rel.EntityAttr(Value, "Comment"),
+		rel.EntityAttr(Comment, "Comment"),
 	),
 	rel.EntityMapping(t((*scpb.SchemaComment)(nil)),
 		rel.EntityAttr(DescID, "SchemaID"),
-		rel.EntityAttr(Value, "Comment"),
+		rel.EntityAttr(Comment, "Comment"),
 	),
 	rel.EntityMapping(t((*scpb.ColumnComment)(nil)),
 		rel.EntityAttr(DescID, "TableID"),
 		rel.EntityAttr(ColumnID, "ColumnID"),
-		rel.EntityAttr(Value, "Comment"),
+		rel.EntityAttr(Comment, "Comment"),
 	),
 	rel.EntityMapping(t((*scpb.IndexComment)(nil)),
 		rel.EntityAttr(DescID, "TableID"),
 		rel.EntityAttr(IndexID, "IndexID"),
-		rel.EntityAttr(Value, "Comment"),
+		rel.EntityAttr(Comment, "Comment"),
 	),
 	rel.EntityMapping(t((*scpb.ConstraintComment)(nil)),
 		rel.EntityAttr(DescID, "TableID"),
 		rel.EntityAttr(ConstraintID, "ConstraintID"),
-		rel.EntityAttr(Value, "Comment"),
+		rel.EntityAttr(Comment, "Comment"),
 	),
 	rel.EntityMapping(t((*scpb.IndexColumn)(nil)),
 		rel.EntityAttr(DescID, "TableID"),

@@ -118,11 +118,7 @@ type Smither struct {
 	// disableUDFCreation indicates whether we're not allowed to create UDFs.
 	// It follows that if we haven't created any UDFs, we have no UDFs to invoke
 	// too.
-	disableUDFCreation bool
-	// disableDoBlock indicates whether we're not allowed to create DO blocks,
-	// both as top level statements and inside plpgsql function body
-	// definition.
-	disableDoBlock         bool
+	disableUDFCreation     bool
 	disableIsolationChange bool
 
 	bulkSrv     *httptest.Server
@@ -192,7 +188,6 @@ var prettyCfg = func() tree.PrettyCfg {
 	cfg := tree.DefaultPrettyCfg()
 	cfg.LineWidth = 120
 	cfg.Simplify = false
-	cfg.FmtFlags = tree.FmtPLpgSQLParen
 	return cfg
 }()
 
@@ -214,10 +209,10 @@ func (s *Smither) Generate() string {
 		i = 0
 
 		printCfg := prettyCfg
-		fl := plpgsqlFlags
+		fl := tree.FmtParsable
 		if s.postgres {
-			printCfg.FmtFlags = tree.FmtPGCatalog | tree.FmtPLpgSQLParen
-			fl = tree.FmtPGCatalog | tree.FmtPLpgSQLParen
+			printCfg.FmtFlags = tree.FmtPGCatalog
+			fl = tree.FmtPGCatalog
 		}
 		p, err := printCfg.Pretty(stmt)
 		if err != nil {
@@ -615,11 +610,6 @@ var DisableOIDs = simpleOption("disable OIDs", func(s *Smither) {
 // DisableUDFs causes the Smither to disable user-defined functions.
 var DisableUDFs = simpleOption("disable udfs", func(s *Smither) {
 	s.disableUDFCreation = true
-})
-
-// DisableDoBlocks causes the Smither to disable DO blocks.
-var DisableDoBlocks = simpleOption("disable do block", func(s *Smither) {
-	s.disableDoBlock = true
 })
 
 // DisableIsolationChange causes the Smither to disable stmts that modify the

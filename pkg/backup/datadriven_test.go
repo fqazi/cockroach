@@ -292,11 +292,6 @@ func (d *datadrivenTestState) getSQLDBForVC(
 		t.Fatal(err)
 	}
 	connector := pq.ConnectorWithNoticeHandler(base, func(notice *pq.Error) {
-		// Skip all "waiting for job(s) to complete" notices, since they include
-		// non-deterministic jobIDs.
-		if strings.HasPrefix(notice.Message, "waiting for job") {
-			return
-		}
 		d.noticeBuffer = append(d.noticeBuffer, notice.Severity+": "+notice.Message)
 		if notice.Detail != "" {
 			d.noticeBuffer = append(d.noticeBuffer, "DETAIL: "+notice.Detail)
@@ -344,8 +339,7 @@ func (d *datadrivenTestState) getSQLDBForVC(
 //   - testingKnobCfg: specifies a key to a hardcoded testingKnob configuration
 //
 //   - disable-tenant : ensures the test is never run in a multitenant environment by
-//     setting testserverargs.DefaultTestTenant to
-//     base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798).
+//     setting testserverargs.DefaultTestTenant to base.TODOTestTenantDisabled.
 //
 //   - "upgrade-cluster version=<version>"
 //     Upgrade the cluster version of the active cluster to the passed in
@@ -609,7 +603,7 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 				d.ScanArgs(t, "testingKnobCfg", &testingKnobCfg)
 			}
 			if d.HasArg("disable-tenant") {
-				defaultTestTenant = base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798)
+				defaultTestTenant = base.TODOTestTenantDisabled
 			}
 
 			// TODO(ssd): Once TestServer starts up reliably enough:

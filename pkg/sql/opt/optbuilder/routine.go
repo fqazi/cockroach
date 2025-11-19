@@ -51,11 +51,6 @@ func (b *Builder) buildUDF(
 		))
 	}
 
-	// builtins should have access to unsafe internals
-	if o.Type == tree.BuiltinRoutine {
-		defer b.DisableUnsafeInternalCheck()()
-	}
-
 	// Check for execution privileges for user-defined overloads. Built-in
 	// overloads do not need to be checked.
 	if o.Type == tree.UDFRoutine {
@@ -450,8 +445,6 @@ func (b *Builder) buildRoutine(
 		bodyTags = make([]string, len(stmts))
 
 		for i := range stmts {
-			// TODO(michae2): We should be checking the statement hints cache here to
-			// find any external statement hints that could apply to this statement.
 			stmtScope := b.buildStmtAtRootWithScope(stmts[i].AST, nil /* desiredTypes */, bodyScope)
 
 			// The last statement produces the output of the UDF.

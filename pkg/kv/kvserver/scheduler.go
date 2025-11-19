@@ -324,7 +324,6 @@ func (s *raftScheduler) Start(stopper *stop.Stopper) {
 				})
 			if err != nil {
 				s.done.Done()
-				continue
 			}
 			go f(ctx, hdl)
 		}

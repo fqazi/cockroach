@@ -143,8 +143,6 @@ Technically this step can happen right after forking, but if there are changes
 to the gates or upgrades in the forked release it might cause issues with
 master-to-master upgrades.
 
-**Claude Prompt**: "Please create a PR to bump master to 26.1 following the M.1 checklist in pkg/clusterversion/README.md and the detailed runbook in pkg/clusterversion/CLAUDE.md"
-
 **Checklist**:
 
 - [ ] Add version key constant for new release (e.g. `V24_2`), equal to `Latest`.
@@ -196,8 +194,6 @@ respective logictest config.
 of the forked release is cut. It can happen earlier, but we don't want it to
 happen while there is a high chance of in-progress changes that affect the
 bootstrap data in a meaningful way.
-
-**Claude Prompt**: "Please create a PR to enable mixed-cluster logic tests for 25.4 following the M.2 checklist in pkg/clusterversion/README.md and the detailed runbook in pkg/clusterversion/CLAUDE.md. Base this on top of the M.1 PR."
 
 **Checklist**:
 

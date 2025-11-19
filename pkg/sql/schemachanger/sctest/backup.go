@@ -694,7 +694,10 @@ func containsUDF(expr tree.Expr) (bool, error) {
 			if err != nil {
 				return false, nil, err
 			}
-			fd := tree.GetBuiltinFuncDefinition(fn, &sessiondata.DefaultSearchPath)
+			fd, err := tree.GetBuiltinFuncDefinition(fn, &sessiondata.DefaultSearchPath)
+			if err != nil {
+				return false, nil, err
+			}
 			if fd == nil {
 				foundUDF = true
 			}

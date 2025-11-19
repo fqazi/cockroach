@@ -74,7 +74,7 @@ state limit=3
 {source=1,target=2}                        protection_policies=[{ts: 2}]
 ...
 
-state offset=52
+state offset=51
 ----
 ...
 /Table/4{7-8}                              ignore_strict_gc=true num_replicas=5 rangefeed_enabled=true exclude_data_from_backup=true
@@ -127,11 +127,10 @@ mutations
 ----
 delete {entire-keyspace}
 
-state limit=3
+state limit=2
 ----
 {source=1,target=1}                        protection_policies=[{ts: 2}]
 {source=1,target=2}                        protection_policies=[{ts: 2}]
-/M{in-eta2}                                ttl_seconds=3600 num_replicas=5
 ...
 
 # Release the tenant records.
@@ -145,15 +144,14 @@ mutations
 delete {source=1,target=1}
 delete {source=1,target=2}
 
-state limit=3
+state limit=2
 ----
-/M{in-eta2}                                ttl_seconds=3600 num_replicas=5
-/{Meta2-System/NodeLiveness}               ttl_seconds=3600 num_replicas=5
+/{Min-System/NodeLiveness}                 ttl_seconds=3600 num_replicas=5
 /System/NodeLiveness{-Max}                 ttl_seconds=600 num_replicas=5
 ...
 
 # Take another look at the remaining protected spans.
-state offset=58
+state offset=57
 ----
 ...
 /Table/5{7-8}                              database system (host)
@@ -187,7 +185,7 @@ release record-id=4
 ----
 
 # Observe that they're no longer protected.
-state offset=58
+state offset=57
 ----
 ...
 /Table/5{7-8}                              database system (host)

@@ -607,26 +607,6 @@ func userIsSuper(
 	return tree.DBool(isSuper), err
 }
 
-func userHasReplicationPrivilegeOrRoleOption(
-	ctx context.Context, p *planner, userName username.SQLUsername,
-) (tree.DBool, error) {
-	replication, err := p.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.REPLICATION, userName)
-	if err != nil {
-		return *tree.DBoolFalse, err
-	}
-
-	replicationDest, err := p.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.REPLICATIONDEST, userName)
-	if err != nil {
-		return *tree.DBoolFalse, err
-	}
-
-	replicationSrc, err := p.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.REPLICATIONSOURCE, userName)
-	if err != nil {
-		return *tree.DBoolFalse, err
-	}
-	return tree.DBool(replication || replicationDest || replicationSrc), nil
-}
-
 var pgCatalogAuthIDTable = virtualSchemaTable{
 	comment: `authorization identifiers - differs from postgres as we do not display passwords, 
 and thus do not require admin privileges for access. 
@@ -669,11 +649,6 @@ https://www.postgresql.org/docs/9.5/catalog-pg-authid.html`,
 				return err
 			}
 
-			replication, err := userHasReplicationPrivilegeOrRoleOption(ctx, p, userName)
-			if err != nil {
-				return err
-			}
-
 			return addRow(
 				h.UserOid(userName),                              // oid
 				tree.NewDName(userName.Normalized()),             // rolname
@@ -682,7 +657,7 @@ https://www.postgresql.org/docs/9.5/catalog-pg-authid.html`,
 				tree.MakeDBool(isRoot || tree.DBool(createRole)), // rolcreaterole
 				tree.MakeDBool(isRoot || tree.DBool(createDB)),   // rolcreatedb
 				tree.MakeDBool(roleCanLogin),                     // rolcanlogin.
-				tree.MakeDBool(replication),                      // rolreplication
+				tree.DBoolFalse,                                  // rolreplication
 				tree.MakeDBool(tree.DBool(bypassRLS)),            // rolbypassrls
 				negOneVal,                                        // rolconnlimit
 				passwdStarString,                                 // rolpassword
@@ -1250,7 +1225,6 @@ func makeAllRelationsVirtualTableWithDescriptorIDIndex(
 				ctx,
 				p,
 				dbContext,
-				false,
 				func(ctx context.Context, _ catalog.DatabaseDescriptor, sc catalog.SchemaDescriptor, typeDesc catalog.TypeDescriptor) error {
 					nspOid := schemaOid(sc.GetID())
 					tn := tree.NewQualifiedTypeName(dbContext.GetName(), sc.GetName(), typeDesc.GetName())
@@ -1686,19 +1660,19 @@ https://www.postgresql.org/docs/9.5/catalog-pg-depend.html`,
 	schema: vtable.PGCatalogDepend,
 	populate: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
 		vt := p.getVirtualTabler()
-		pgConstraintsDesc, err := vt.getVirtualTableDesc(&pgConstraintsTableName)
+		pgConstraintsDesc, err := vt.getVirtualTableDesc(&pgConstraintsTableName, p)
 		if err != nil {
 			return errors.New("could not find pg_catalog.pg_constraint")
 		}
-		pgClassDesc, err := vt.getVirtualTableDesc(&pgClassTableName)
+		pgClassDesc, err := vt.getVirtualTableDesc(&pgClassTableName, p)
 		if err != nil {
 			return errors.New("could not find pg_catalog.pg_class")
 		}
-		pgRewriteDesc, err := vt.getVirtualTableDesc(&pgRewriteTableName)
+		pgRewriteDesc, err := vt.getVirtualTableDesc(&pgRewriteTableName, p)
 		if err != nil {
 			return errors.New("could not find pg_catalog.pg_rewrite")
 		}
-		pgProcDesc, err := vt.getVirtualTableDesc(&pgProcTableName)
+		pgProcDesc, err := vt.getVirtualTableDesc(&pgProcTableName, p)
 		if err != nil {
 			return errors.New("could not find pg_catalog.pg_proc")
 		}
@@ -1803,7 +1777,7 @@ https://www.postgresql.org/docs/9.5/catalog-pg-depend.html`,
 		if err != nil {
 			return err
 		}
-		return forEachSchema(ctx, p, dbContext, true, false /* includeMetadata */, func(ctx context.Context, sc catalog.SchemaDescriptor) error {
+		return forEachSchema(ctx, p, dbContext, true, func(ctx context.Context, sc catalog.SchemaDescriptor) error {
 			pgProcTableOid := tableOid(pgProcDesc.GetID())
 			return sc.ForEachFunctionSignature(func(sig descpb.SchemaDescriptor_FunctionSignature) error {
 				funcDesc, err := descs.GetCatalogDescriptorGetter(p.Descriptors(), p.txn, &p.EvalContext().Settings.SV).Get().Function(ctx, sig.ID)
@@ -1915,7 +1889,7 @@ https://www.postgresql.org/docs/9.5/catalog-pg-enum.html`,
 	populate: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
 		h := makeOidHasher()
 
-		return forEachTypeDesc(ctx, p, dbContext, false /* includeMetadata */, func(ctx context.Context, _ catalog.DatabaseDescriptor, _ catalog.SchemaDescriptor, typDesc catalog.TypeDescriptor) error {
+		return forEachTypeDesc(ctx, p, dbContext, func(ctx context.Context, _ catalog.DatabaseDescriptor, _ catalog.SchemaDescriptor, typDesc catalog.TypeDescriptor) error {
 			e := typDesc.AsEnumTypeDescriptor()
 			if e == nil {
 				// We only want to iterate over ENUM types and multi-region enums.
@@ -2303,7 +2277,7 @@ https://www.postgresql.org/docs/9.5/catalog-pg-namespace.html`,
 	populate: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
 		return forEachDatabaseDesc(ctx, p, dbContext, true, /* requiresPrivileges */
 			func(ctx context.Context, db catalog.DatabaseDescriptor) error {
-				return forEachSchema(ctx, p, db, true, false /* includeMetadata */, func(ctx context.Context, sc catalog.SchemaDescriptor) error {
+				return forEachSchema(ctx, p, db, true /* requiresPrivileges */, func(ctx context.Context, sc catalog.SchemaDescriptor) error {
 					ownerOID := tree.DNull
 					if sc.SchemaKind() == catalog.SchemaUserDefined {
 						var err error
@@ -2348,7 +2322,7 @@ https://www.postgresql.org/docs/9.5/catalog-pg-namespace.html`,
 					}
 					// Fallback to looking for temporary schemas.
 					var tempSchema catalog.SchemaDescriptor
-					if err := forEachSchema(ctx, p, db, false, false /* includeMetadata */, func(ctx context.Context, schema catalog.SchemaDescriptor) error {
+					if err := forEachSchema(ctx, p, db, false /* requiresPrivileges */, func(ctx context.Context, schema catalog.SchemaDescriptor) error {
 						if schema.GetID() != descpb.ID(ooid) {
 							return nil
 						}
@@ -2891,7 +2865,7 @@ https://www.postgresql.org/docs/16/catalog-pg-proc.html`,
 		}
 		return forEachDatabaseDesc(ctx, p, dbContext, false, /* requiresPrivileges */
 			func(ctx context.Context, dbDesc catalog.DatabaseDescriptor) error {
-				return forEachSchema(ctx, p, dbDesc, true, false /* includeMetadata */, func(ctx context.Context, scDesc catalog.SchemaDescriptor) error {
+				return forEachSchema(ctx, p, dbDesc, true /* requiresPrivileges */, func(ctx context.Context, scDesc catalog.SchemaDescriptor) error {
 					return scDesc.ForEachFunctionSignature(func(sig descpb.SchemaDescriptor_FunctionSignature) error {
 						fnDesc, err := descs.GetCatalogDescriptorGetter(p.Descriptors(), p.Txn(), &p.EvalContext().Settings.SV).WithoutNonPublic().Get().Function(ctx, sig.ID)
 						if err != nil {
@@ -3048,11 +3022,6 @@ https://www.postgresql.org/docs/9.5/view-pg-roles.html`,
 					return err
 				}
 
-				replication, err := userHasReplicationPrivilegeOrRoleOption(ctx, p, userName)
-				if err != nil {
-					return err
-				}
-
 				return addRow(
 					h.UserOid(userName),                               // oid
 					tree.NewDName(userName.Normalized()),              // rolname
@@ -3062,7 +3031,7 @@ https://www.postgresql.org/docs/9.5/view-pg-roles.html`,
 					tree.MakeDBool(isSuper || tree.DBool(createDB)),   // rolcreatedb
 					tree.DBoolFalse,                                   // rolcatupdate
 					tree.MakeDBool(roleCanLogin),                      // rolcanlogin.
-					tree.MakeDBool(replication),                       // rolreplication
+					tree.DBoolFalse,                                   // rolreplication
 					negOneVal,                                         // rolconnlimit
 					passwdStarString,                                  // rolpassword
 					rolValidUntil,                                     // rolvaliduntil
@@ -3149,7 +3118,7 @@ https://www.postgresql.org/docs/9.5/catalog-pg-settings.html`,
 				if hasDefault, defVal := getSessionVarDefaultString(
 					vName,
 					gen,
-					p.sessionDataMutatorIterator.SessionDataMutatorBase,
+					p.sessionDataMutatorIterator.sessionDataMutatorBase,
 				); hasDefault {
 					resetDatum = tree.NewDString(defVal)
 				}
@@ -3188,19 +3157,19 @@ https://www.postgresql.org/docs/9.6/catalog-pg-shdepend.html`,
 		vt := p.getVirtualTabler()
 		h := makeOidHasher()
 
-		pgClassDesc, err := vt.getVirtualTableDesc(&pgClassTableName)
+		pgClassDesc, err := vt.getVirtualTableDesc(&pgClassTableName, p)
 		if err != nil {
 			return errors.New("could not find pg_catalog.pg_class")
 		}
 		pgClassOid := tableOid(pgClassDesc.GetID())
 
-		pgAuthIDDesc, err := vt.getVirtualTableDesc(&pgAuthIDTableName)
+		pgAuthIDDesc, err := vt.getVirtualTableDesc(&pgAuthIDTableName, p)
 		if err != nil {
 			return errors.New("could not find pg_catalog.pg_authid")
 		}
 		pgAuthIDOid := tableOid(pgAuthIDDesc.GetID())
 
-		pgDatabaseDesc, err := vt.getVirtualTableDesc(&pgDatabaseTableName)
+		pgDatabaseDesc, err := vt.getVirtualTableDesc(&pgDatabaseTableName, p)
 		if err != nil {
 			return errors.New("could not find pg_catalog.pg_database")
 		}
@@ -3246,7 +3215,7 @@ https://www.postgresql.org/docs/9.6/catalog-pg-shdepend.html`,
 		if err = forEachTableDesc(ctx, p, dbContext, opts,
 			func(ctx context.Context, descCtx tableDescContext) error {
 				db, table := descCtx.database, descCtx.table
-				privDesc, err := p.getImmutablePrivilegeDescriptor(ctx, table)
+				privDesc, err := p.getPrivilegeDescriptor(ctx, table)
 				if err != nil {
 					return err
 				}
@@ -3847,7 +3816,6 @@ https://www.postgresql.org/docs/9.5/catalog-pg-type.html`,
 					ctx,
 					p,
 					db,
-					false, /* includeMetadata */
 					func(ctx context.Context, _ catalog.DatabaseDescriptor, sc catalog.SchemaDescriptor, typDesc catalog.TypeDescriptor) error {
 						nspOid := schemaOid(sc.GetID())
 						tn := tree.NewQualifiedTypeName(db.GetName(), sc.GetName(), typDesc.GetName())
@@ -5672,7 +5640,7 @@ func populateVirtualIndexForTable(
 		// Ideally, the catalog API would be able to return the temporary
 		// schemas from other sessions, but it cannot right now. See
 		// https://github.com/cockroachdb/cockroach/issues/97822.
-		if err := forEachSchema(ctx, p, dbContext, false, false, func(ctx context.Context, schema catalog.SchemaDescriptor) error {
+		if err := forEachSchema(ctx, p, dbContext, false /* requiresPrivileges*/, func(ctx context.Context, schema catalog.SchemaDescriptor) error {
 			if schema.GetID() == tableDesc.GetParentSchemaID() {
 				sc = schema
 			}

@@ -23,20 +23,12 @@ type Pacer struct {
 	cur *ElasticCPUWorkHandle
 }
 
-// Pace will block as needed to pace work that calls it. It is
-// intended to be called in a tight loop, and will attempt to minimize
-// per-call overhead. Non-nil errors are returned only if the context is
-// canceled. The readmitted value is set to true if the call involved the
-// heavier weight work of asking for admission -- this will be true whenever
-// the granted CPU time runs out.
-//
-// It is safe to call Pace() on a nil *Pacer, but it should not be assumed that
-// such a call will always be a no-op: Pace may elect to perform pacing any time
-// it is called, even if the *Pacer on which it is called is nil e.g. by
-// delegating to the Go runtime or other some global pacing.
-func (p *Pacer) Pace(ctx context.Context) (readmitted bool, err error) {
+// Pace will block as needed to pace work that calls it as configured. It is
+// intended to be called in a tight loop, and will attempt to minimize per-call
+// overhead. Non-nil errors are returned only if the context is canceled.
+func (p *Pacer) Pace(ctx context.Context) error {
 	if p == nil {
-		return false, nil
+		return nil
 	}
 
 	if overLimit, _ := p.cur.OverLimit(); overLimit {
@@ -47,11 +39,11 @@ func (p *Pacer) Pace(ctx context.Context) (readmitted bool, err error) {
 	if p.cur == nil {
 		handle, err := p.wq.Admit(ctx, p.unit, p.wi)
 		if err != nil {
-			return false, err
+			return err
 		}
 		p.cur = handle
 	}
-	return true, nil
+	return nil
 }
 
 // Close is part of the Pacer interface.

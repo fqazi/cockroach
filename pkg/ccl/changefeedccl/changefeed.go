@@ -8,19 +8,15 @@ package changefeedccl
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
-	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/protoreflect"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
@@ -62,10 +58,7 @@ func makeChangefeedConfigFromJobDetails(
 // from the statement time name map in old protos
 // or the TargetSpecifications in new ones.
 func AllTargets(
-	ctx context.Context,
-	cd jobspb.ChangefeedDetails,
-	execCfg *sql.ExecutorConfig,
-	timestamp hlc.Timestamp,
+	ctx context.Context, cd jobspb.ChangefeedDetails, execCfg *sql.ExecutorConfig,
 ) (changefeedbase.Targets, error) {
 	targets := changefeedbase.Targets{}
 	var err error
@@ -79,7 +72,7 @@ func AllTargets(
 					if len(cd.TargetSpecifications) > 1 {
 						return changefeedbase.Targets{}, errors.AssertionFailedf("database-level changefeed is not supported with multiple targets")
 					}
-					targets, err = getTargetsFromDatabaseSpec(ctx, ts, execCfg, timestamp)
+					targets, err = getTargetsFromDatabaseSpec(ctx, ts, execCfg)
 					if err != nil {
 						return changefeedbase.Targets{}, err
 					}
@@ -113,116 +106,38 @@ func AllTargets(
 }
 
 func getTargetsFromDatabaseSpec(
-	ctx context.Context,
-	ts jobspb.ChangefeedTargetSpecification,
-	execCfg *sql.ExecutorConfig,
-	timestamp hlc.Timestamp,
+	ctx context.Context, ts jobspb.ChangefeedTargetSpecification, execCfg *sql.ExecutorConfig,
 ) (targets changefeedbase.Targets, err error) {
-	err = sql.DescsTxn(ctx, execCfg, func(
-		ctx context.Context, txn isql.Txn, descs *descs.Collection,
-	) error {
-		if err := txn.KV().SetFixedTimestamp(ctx, timestamp); err != nil {
-			return errors.Wrapf(err, "setting timestamp for table descriptor fetch")
-		}
+	err = sql.DescsTxn(ctx, execCfg, func(ctx context.Context, txn isql.Txn, descs *descs.Collection) error {
 		databaseDescriptor, err := descs.ByIDWithLeased(txn.KV()).Get().Database(ctx, ts.DescID)
 		if err != nil {
 			return err
 		}
-		tableDescToSchemaName := make(map[catalog.TableDescriptor]string)
 		tables, err := descs.GetAllTablesInDatabase(ctx, txn.KV(), databaseDescriptor)
 		if err != nil {
 			return err
 		}
-		dbName := databaseDescriptor.GetName()
-		// DB-level feeds should have a filter list, even if the table list is empty.
-		// By default, it would be an ExcludeFilter with an empty table list.
-		if ts.FilterList == nil {
-			return errors.AssertionFailedf("filter list is nil")
-		}
-		switch ts.FilterList.FilterType {
-		case tree.ExcludeFilter:
-			for _, desc := range tables.OrderedDescriptors() {
-				tableDesc, ok := desc.(catalog.TableDescriptor)
-				if !ok {
-					return errors.AssertionFailedf("expected table descriptor, got %T", desc)
-				}
-				// Skip virtual tables
-				if !tableDesc.IsPhysicalTable() {
-					continue
-				}
-
-				if _, ok := tableDescToSchemaName[tableDesc]; !ok {
-					schemaID := tableDesc.GetParentSchemaID()
-					schema, err := descs.ByIDWithLeased(txn.KV()).Get().Schema(ctx, schemaID)
-					if err != nil {
-						return err
-					}
-					tableDescToSchemaName[tableDesc] = schema.GetName()
-				}
-				fullyQualifiedTableName := fmt.Sprintf(
-					"%s.%s.%s", dbName, tableDescToSchemaName[tableDesc], tableDesc.GetName())
-				if _, ok := ts.FilterList.Tables[fullyQualifiedTableName]; ok {
-					continue
-				}
-
-				var tableType jobspb.ChangefeedTargetSpecification_TargetType
-				if len(tableDesc.GetFamilies()) == 1 {
-					tableType = jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY
-				} else {
-					tableType = jobspb.ChangefeedTargetSpecification_EACH_FAMILY
-				}
-
-				targets.Add(changefeedbase.Target{
-					Type:              tableType,
-					DescID:            desc.GetID(),
-					StatementTimeName: changefeedbase.StatementTimeName(desc.GetName()),
-				})
+		for _, desc := range tables.OrderedDescriptors() {
+			tableDesc, ok := desc.(catalog.TableDescriptor)
+			if !ok {
+				return errors.AssertionFailedf("expected table descriptor, got %T", desc)
 			}
-		case tree.IncludeFilter:
-			for name := range ts.FilterList.Tables {
-				tn, err := parser.ParseTableName(name)
-				if err != nil {
-					return err
-				}
-
-				schemaID, err := descs.LookupSchemaID(ctx, txn.KV(), ts.DescID, tn.Schema())
-				if err != nil {
-					return err
-				}
-				// Schema is not found in the database.
-				if schemaID == descpb.InvalidID {
-					continue
-				}
-
-				tableID, err := descs.LookupObjectID(ctx, txn.KV(), ts.DescID, schemaID, tn.Object())
-				if err != nil {
-					return err
-				}
-				// Table is not found in the database.
-				if tableID == descpb.InvalidID {
-					continue
-				}
-
-				desc, err := descs.ByIDWithLeased(txn.KV()).Get().Table(ctx, tableID)
-				if err != nil {
-					return err
-				}
-
-				var tableType jobspb.ChangefeedTargetSpecification_TargetType
-				if len(desc.GetFamilies()) == 1 {
-					tableType = jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY
-				} else {
-					tableType = jobspb.ChangefeedTargetSpecification_EACH_FAMILY
-				}
-
-				targets.Add(changefeedbase.Target{
-					Type:              tableType,
-					DescID:            tableID,
-					StatementTimeName: changefeedbase.StatementTimeName(desc.GetName()),
-				})
+			// Skip virtual tables
+			if !tableDesc.IsPhysicalTable() {
+				continue
 			}
-		default:
-			return errors.AssertionFailedf("invalid changefeed filter type")
+			var tableType jobspb.ChangefeedTargetSpecification_TargetType
+			if len(tableDesc.GetFamilies()) == 1 {
+				tableType = jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY
+			} else {
+				tableType = jobspb.ChangefeedTargetSpecification_EACH_FAMILY
+			}
+
+			targets.Add(changefeedbase.Target{
+				Type:              tableType,
+				DescID:            desc.GetID(),
+				StatementTimeName: changefeedbase.StatementTimeName(desc.GetName()),
+			})
 		}
 		return nil
 	})

@@ -35,7 +35,6 @@ func TestTableSink(t *testing.T) {
 	var tableLogger inspectLogger = &tableSink{
 		db:    s.InternalDB().(descs.DB),
 		jobID: jobID,
-		sv:    &s.ClusterSettings().SV,
 	}
 
 	issue := inspectIssue{

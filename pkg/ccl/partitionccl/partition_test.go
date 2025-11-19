@@ -31,10 +31,11 @@ func TestRemovePartitioningExpiredLicense(t *testing.T) {
 	defer utilccl.TestingEnableEnterprise()()
 
 	ctx := context.Background()
-	srv, sqlDBRaw, _ := serverutils.StartServer(t, base.TestServerArgs{
-		UseDatabase: "d",
+	s, sqlDBRaw, _ := serverutils.StartServer(t, base.TestServerArgs{
+		UseDatabase:       "d",
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 	})
-	defer srv.Stopper().Stop(ctx)
+	defer s.Stopper().Stop(ctx)
 
 	// Create a partitioned table and index.
 	sqlDB := sqlutils.MakeSQLRunner(sqlDBRaw)

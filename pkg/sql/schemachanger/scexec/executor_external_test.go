@@ -92,7 +92,7 @@ func setupTestInfra(t testing.TB) (_ *testInfra, cleanup func(context.Context)) 
 		nodeID:   s.NodeID(),
 		settings: tt.ClusterSettings(),
 		db:       tt.ExecutorConfig().(sql.ExecutorConfig).InternalDB,
-		lm:       tt.LeaseManager().(*lease.Manager),
+		lm:       s.LeaseManager().(*lease.Manager),
 		cf:       tt.ExecutorConfig().(sql.ExecutorConfig).CollectionFactory,
 		tsql:     sqlutils.MakeSQLRunner(db),
 	}, s.Stopper().Stop
@@ -278,6 +278,7 @@ func TestSchemaChanger(t *testing.T) {
 						TableID:                 fooTable.GetID(),
 						ColumnID:                2,
 						TypeT:                   scpb.TypeT{Type: types.Int},
+						IsNullable:              true,
 						ElementCreationMetadata: scdecomp.NewElementCreationMetadata(clusterversion.TestingClusterVersion),
 					},
 					metadata,

@@ -14,9 +14,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/print"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -76,11 +76,11 @@ func TestPrepareSnapApply(t *testing.T) {
 	createRangeData(t, eng, *descA)
 	createRangeData(t, eng, *descB)
 
-	sl := kvstorage.MakeStateLoader(id.RangeID)
+	sl := stateloader.Make(id.RangeID)
 	ctx := context.Background()
 	require.NoError(t, sl.SetRaftReplicaID(ctx, eng, id.ReplicaID))
 	for _, rID := range []roachpb.RangeID{101, 102} {
-		require.NoError(t, kvstorage.MakeStateLoader(rID).SetRaftReplicaID(ctx, eng, replicaID))
+		require.NoError(t, stateloader.Make(rID).SetRaftReplicaID(ctx, eng, replicaID))
 	}
 
 	swb := snapWriteBuilder{
@@ -93,9 +93,9 @@ func TestPrepareSnapApply(t *testing.T) {
 		hardState:  raftpb.HardState{Term: 20, Commit: 100},
 		desc:       desc(id.RangeID, "a", "k"),
 		origDesc:   desc(id.RangeID, "a", "k"),
-		subsume: []kvstorage.DestroyReplicaInfo{
-			{FullReplicaID: roachpb.FullReplicaID{RangeID: descA.RangeID, ReplicaID: replicaID}, Keys: descA.RSpan()},
-			{FullReplicaID: roachpb.FullReplicaID{RangeID: descB.RangeID, ReplicaID: replicaID}, Keys: descB.RSpan()},
+		subsume: []destroyReplicaInfo{
+			{id: roachpb.FullReplicaID{RangeID: descA.RangeID, ReplicaID: replicaID}, desc: descA},
+			{id: roachpb.FullReplicaID{RangeID: descB.RangeID, ReplicaID: replicaID}, desc: descB},
 		},
 	}
 

@@ -43,7 +43,8 @@ func TestInternalExecutor(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, db, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
 	ie := s.InternalExecutor().(*sql.InternalExecutor)
@@ -125,7 +126,8 @@ func TestInternalFullTableScan(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, db, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
 	_, err := db.Exec("CREATE DATABASE db; SET DATABASE = db;")
@@ -175,7 +177,8 @@ func TestInternalStmtFingerprintLimit(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, db, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
 	_, err := db.Exec("SET CLUSTER SETTING sql.metrics.max_mem_txn_fingerprints = 0;")
@@ -198,7 +201,8 @@ func TestSessionBoundInternalExecutor(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, db, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
 	if _, err := db.Exec("create database foo"); err != nil {
@@ -244,7 +248,7 @@ func TestInternalExecAppNameInitialization(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	params.Insecure = true
 
 	// sem will be fired every time pg_sleep(1337666) is called.
@@ -426,7 +430,8 @@ func TestInternalExecutorPushDetectionInTxn(t *testing.T) {
 			tt.serializable, tt.pushed, tt.refreshable)
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
-			s, _, db := serverutils.StartServer(t, base.TestServerArgs{})
+			params, _ := createTestServerParamsAllowTenants()
+			s, _, db := serverutils.StartServer(t, params)
 			defer s.Stopper().Stop(ctx)
 
 			// Setup a txn.
@@ -613,7 +618,8 @@ func TestInternalExecutorEncountersRetry(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	srv, db, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	srv, db, kvDB := serverutils.StartServer(t, params)
 	defer srv.Stopper().Stop(ctx)
 	s := srv.ApplicationLayer()
 
@@ -713,7 +719,8 @@ func TestInternalExecutorSyntheticDesc(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	s, db, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, db, kvDB := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
 	if _, err := db.Exec("CREATE DATABASE test; CREATE TABLE test.t (c) AS SELECT 1"); err != nil {

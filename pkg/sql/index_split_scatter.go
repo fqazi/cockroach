@@ -8,6 +8,7 @@ package sql
 import (
 	"bytes"
 	"context"
+	"math/rand"
 	"sort"
 	"time"
 
@@ -26,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/rangedesc"
 	"github.com/cockroachdb/errors"
 )
@@ -317,7 +317,6 @@ func (is *indexSplitAndScatter) MaybeSplitIndexSpans(
 	if is.testingKnobs.BeforeIndexSplitAndScatter != nil {
 		is.testingKnobs.BeforeIndexSplitAndScatter(splitPoints)
 	}
-	rng, _ := randutil.NewPseudoRand()
 	for i := 0; i < nSplits; i++ {
 		// Evenly space out the ranges that we select from the ranges that are
 		// returned.
@@ -329,7 +328,7 @@ func (is *indexSplitAndScatter) MaybeSplitIndexSpans(
 
 		// Jitter the expiration time by 20% up or down from the default.
 		maxJitter := backfillSplitExpiration.Nanoseconds() / 5
-		jitter := rng.Int63n(maxJitter*2) - maxJitter
+		jitter := rand.Int63n(maxJitter*2) - maxJitter
 		expirationTime := backfillSplitExpiration.Nanoseconds() + jitter
 
 		b.AddRawRequest(&kvpb.AdminSplitRequest{

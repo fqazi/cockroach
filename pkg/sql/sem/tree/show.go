@@ -557,9 +557,6 @@ var _ NodeFormatter = &ShowJobOptions{}
 type ShowChangefeedJobs struct {
 	// If non-nil, a select statement that provides the job ids to be shown.
 	Jobs *Select
-
-	// If true, include full table names in the output.
-	IncludeWatchedTables bool
 }
 
 // Format implements the NodeFormatter interface.
@@ -568,9 +565,6 @@ func (node *ShowChangefeedJobs) Format(ctx *FmtCtx) {
 	if node.Jobs != nil {
 		ctx.WriteString(" ")
 		ctx.FormatNode(node.Jobs)
-	}
-	if node.IncludeWatchedTables {
-		ctx.WriteString(" WITH WATCHED_TABLES")
 	}
 }
 
@@ -1157,25 +1151,19 @@ func (node *ShowRangeForRow) Format(ctx *FmtCtx) {
 
 // ShowFingerprints represents a SHOW EXPERIMENTAL_FINGERPRINTS statement.
 type ShowFingerprints struct {
-	TenantSpec   *TenantSpec
-	Table        *UnresolvedObjectName
-	Experimental bool
+	TenantSpec *TenantSpec
+	Table      *UnresolvedObjectName
 
 	Options ShowFingerprintOptions
 }
 
 // Format implements the NodeFormatter interface.
 func (node *ShowFingerprints) Format(ctx *FmtCtx) {
-	if node.Experimental {
-		ctx.WriteString("SHOW EXPERIMENTAL_FINGERPRINTS ")
-	} else {
-		ctx.WriteString("SHOW FINGERPRINTS ")
-	}
 	if node.Table != nil {
-		ctx.WriteString("FROM TABLE ")
+		ctx.WriteString("SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE ")
 		ctx.FormatNode(node.Table)
 	} else {
-		ctx.WriteString("FROM VIRTUAL CLUSTER ")
+		ctx.WriteString("SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER ")
 		ctx.FormatNode(node.TenantSpec)
 	}
 

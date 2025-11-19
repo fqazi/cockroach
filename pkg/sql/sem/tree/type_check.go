@@ -2995,9 +2995,7 @@ func typeCheckSameTypedPlaceholders(s typeCheckExprsState, typ *types.T) (*types
 			return nil, err
 		}
 		s.typedExprs[i] = typedExpr
-		if t := typedExpr.ResolvedType(); !t.IsAmbiguous() {
-			typ = t
-		}
+		typ = typedExpr.ResolvedType()
 	}
 	return typ, nil
 }

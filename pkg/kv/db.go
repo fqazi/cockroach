@@ -218,22 +218,13 @@ func (s *CrossRangeTxnWrapperSender) Send(
 	ctx context.Context, ba *kvpb.BatchRequest,
 ) (*kvpb.BatchResponse, *kvpb.Error) {
 	if ba.Txn != nil {
-		log.KvExec.Fatalf(ctx, "CrossRangeTxnWrapperSender can't handle transactional requests")
+		log.Dev.Fatalf(ctx, "CrossRangeTxnWrapperSender can't handle transactional requests")
 	}
 
 	br, pErr := s.wrapped.Send(ctx, ba)
 	if _, ok := pErr.GetDetail().(*kvpb.OpRequiresTxnError); !ok {
 		return br, pErr
 	}
-
-	// Before retrying the batch in a transaction, strip the header's timestamp.
-	// It may have been set to try a follower read, but it's not allowed in a txn
-	// (see comment near Header.Timestamp). Currently, this non-transactional API
-	// is used for follower reads only by KVNemesis.
-	//
-	// We can end up here if the batch contains transactional requests and spans
-	// multiple ranges.
-	ba.Header.Timestamp = hlc.Timestamp{}
 
 	err := s.db.Txn(ctx, func(ctx context.Context, txn *Txn) error {
 		txn.SetDebugName("auto-wrap")
@@ -1176,7 +1167,7 @@ func (db *DB) sendUsingSender(
 	br, pErr := sender.Send(ctx, ba)
 	if pErr != nil {
 		if log.V(1) {
-			log.KvExec.Infof(ctx, "failed batch: %s", pErr)
+			log.Dev.Infof(ctx, "failed batch: %s", pErr)
 		}
 		return nil, pErr
 	}

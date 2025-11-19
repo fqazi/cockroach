@@ -709,7 +709,7 @@ CREATE TABLE crdb_internal.pg_catalog_table_is_implemented (
   name                     STRING NOT NULL,
   implemented              BOOL
 )`,
-	generator: func(ctx context.Context, p *planner, dbDesc catalog.DatabaseDescriptor, _ int64, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
+	generator: func(ctx context.Context, p *planner, dbDesc catalog.DatabaseDescriptor, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
 		row := make(tree.Datums, 2)
 		worker := func(ctx context.Context, pusher rowPusher) error {
 			addDesc := func(table *virtualDefEntry, dbName tree.Datum, scName string) error {
@@ -1035,7 +1035,7 @@ var crdbInternalJobsView = virtualSchemaView{
 		j.created::timestamptz,
 		j.finished,
 		greatest(j.created, j.finished, p.written, s.written)::timestamptz AS modified,
-		coalesce(p.fraction, 0)::FLOAT as fraction_completed,
+		p.fraction as fraction_completed,
 		p.resolved as high_water_timestamp,
 		coalesce(j.error_msg, '') as error,
 		j.claim_instance_id as coordinator_id
@@ -3211,7 +3211,7 @@ CREATE TABLE crdb_internal.create_type_statements (
 )
 `,
 	populate: func(ctx context.Context, p *planner, db catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
-		return forEachTypeDesc(ctx, p, db, true /* includeMetadata */, func(ctx context.Context, db catalog.DatabaseDescriptor, sc catalog.SchemaDescriptor, typeDesc catalog.TypeDescriptor) error {
+		return forEachTypeDesc(ctx, p, db, func(ctx context.Context, db catalog.DatabaseDescriptor, sc catalog.SchemaDescriptor, typeDesc catalog.TypeDescriptor) error {
 			_, err := writeCreateTypeDescRow(ctx, db, sc, p, typeDesc, addRow)
 
 			return err
@@ -3278,7 +3278,7 @@ CREATE TABLE crdb_internal.create_schema_statements (
 			dbDescs = append(dbDescs, db)
 		}
 		for _, db := range dbDescs {
-			return forEachSchema(ctx, p, db, true, true /* includeMetadata */, func(ctx context.Context, schemaDesc catalog.SchemaDescriptor) error {
+			return forEachSchema(ctx, p, db, true /* requiresPrivileges */, func(ctx context.Context, schemaDesc catalog.SchemaDescriptor) error {
 				switch schemaDesc.SchemaKind() {
 				case catalog.SchemaUserDefined:
 					node := &tree.CreateSchema{
@@ -3333,7 +3333,7 @@ func createRoutinePopulate(
 		fnIDToDBName := make(map[descpb.ID]string)
 		fnIDToDBID := make(map[descpb.ID]descpb.ID)
 		for _, curDB := range dbDescs {
-			err := forEachSchema(ctx, p, curDB, true, false, func(ctx context.Context, sc catalog.SchemaDescriptor) error {
+			err := forEachSchema(ctx, p, curDB, true /* requiresPrivileges */, func(ctx context.Context, sc catalog.SchemaDescriptor) error {
 				return sc.ForEachFunctionSignature(func(sig descpb.SchemaDescriptor_FunctionSignature) error {
 					fnIDs = append(fnIDs, sig.ID)
 					fnIDToScName[sig.ID] = sc.GetName()
@@ -3852,7 +3852,7 @@ CREATE TABLE crdb_internal.table_columns (
   hidden           BOOL NOT NULL
 )
 `,
-	generator: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, _ int64, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
+	generator: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
 		const numDatums = 8
 		row := make(tree.Datums, numDatums)
 		worker := func(ctx context.Context, pusher rowPusher) error {
@@ -3921,7 +3921,7 @@ CREATE TABLE crdb_internal.table_indexes (
   create_statement    STRING NOT NULL
 )
 `,
-	generator: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, _ int64, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
+	generator: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
 		primary := tree.NewDString("primary")
 		secondary := tree.NewDString("secondary")
 		const numDatums = 13
@@ -4490,14 +4490,7 @@ CREATE TABLE crdb_internal.ranges_no_leases (
 )
 `,
 	resultColumns: colinfo.RangesNoLeases,
-	generator: func(ctx context.Context, p *planner, _ catalog.DatabaseDescriptor, limit int64, _ *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
-		// We have to disable the unsafe check on execution, because for this table
-		// we may have gotten to it through delegate execution, eg. SHOW RANGES.
-		// Accessing it will still fail if queried directly during planning, eg
-		// `SELECT * FROM crdb_internal.ranges_no_leases`, so it's safe to unblock
-		// here.
-		defer p.DisableUnsafeInternalsCheck()()
-
+	generator: func(ctx context.Context, p *planner, _ catalog.DatabaseDescriptor, _ *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
 		hasAdmin, err := p.HasAdminRole(ctx)
 		if err != nil {
 			return nil, nil, err
@@ -4532,11 +4525,7 @@ CREATE TABLE crdb_internal.ranges_no_leases (
 		}
 
 		execCfg := p.ExecCfg()
-		pageSize := int64(128)
-		if limit > 0 {
-			pageSize = min(limit, pageSize)
-		}
-		rangeDescIterator, err := execCfg.RangeDescIteratorFactory.NewLazyIterator(ctx, execCfg.Codec.TenantSpan(), int(pageSize))
+		rangeDescIterator, err := execCfg.RangeDescIteratorFactory.NewIterator(ctx, execCfg.Codec.TenantSpan())
 		if err != nil {
 			return nil, nil, err
 		}
@@ -5440,7 +5429,7 @@ CREATE TABLE crdb_internal.partitions (
 	subzone_id INT -- references a subzone id in the crdb_internal.zones table
 )
 	`,
-	generator: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, _ int64, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
+	generator: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
 		dbName := ""
 		if dbContext != nil {
 			dbName = dbContext.GetName()
@@ -6868,7 +6857,7 @@ CREATE TABLE crdb_internal.default_privileges (
 					return err
 				}
 
-				return forEachSchema(ctx, p, databaseDesc, true, false /* includeMetadata */, func(ctx context.Context, schema catalog.SchemaDescriptor) error {
+				return forEachSchema(ctx, p, databaseDesc, true /* requiresPrivileges */, func(ctx context.Context, schema catalog.SchemaDescriptor) error {
 					return addRowsForSchema(schema.GetDefaultPrivilegeDescriptor(), tree.NewDString(schema.GetName()))
 				})
 			})
@@ -6886,7 +6875,7 @@ CREATE TABLE crdb_internal.index_usage_statistics (
   total_reads     INT NOT NULL,
   last_read       TIMESTAMPTZ
 );`,
-	generator: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, _ int64, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
+	generator: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
 		// Perform RPC Fanout.
 		stats, err :=
 			p.extendedEvalCtx.SQLStatusServer.IndexUsageStatistics(ctx, &serverpb.IndexUsageStatisticsRequest{})
@@ -6951,7 +6940,7 @@ CREATE TABLE crdb_internal.cluster_statement_statistics (
     aggregation_interval       INTERVAL NOT NULL,
     index_recommendations      STRING[] NOT NULL
 );`,
-	generator: func(ctx context.Context, p *planner, db catalog.DatabaseDescriptor, _ int64, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
+	generator: func(ctx context.Context, p *planner, db catalog.DatabaseDescriptor, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
 		// TODO(azhng): we want to eventually implement memory accounting within the
 		//  RPC handlers. See #69032.
 		acc := p.Mon().MakeBoundAccount()
@@ -7382,7 +7371,7 @@ CREATE TABLE crdb_internal.cluster_transaction_statistics (
     statistics            JSONB NOT NULL,
     aggregation_interval  INTERVAL NOT NULL
 );`,
-	generator: func(ctx context.Context, p *planner, db catalog.DatabaseDescriptor, _ int64, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
+	generator: func(ctx context.Context, p *planner, db catalog.DatabaseDescriptor, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
 		// TODO(azhng): we want to eventually implement memory accounting within the
 		//  RPC handlers. See #69032.
 		acc := p.Mon().MakeBoundAccount()
@@ -7703,7 +7692,7 @@ CREATE TABLE crdb_internal.transaction_contention_events (
     index_name                   STRING,
     contention_type              STRING NOT NULL
 );`,
-	generator: func(ctx context.Context, p *planner, db catalog.DatabaseDescriptor, _ int64, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
+	generator: func(ctx context.Context, p *planner, db catalog.DatabaseDescriptor, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
 		// Check permission first before making RPC fanout.
 		// If a user has VIEWACTIVITYREDACTED role option but the user does not
 		// have the ADMIN role option, then the contending key should be redacted.
@@ -7982,8 +7971,8 @@ type clusterLocksFilters struct {
 
 func genClusterLocksGenerator(
 	filters clusterLocksFilters,
-) func(ctx context.Context, p *planner, db catalog.DatabaseDescriptor, _ int64, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
-	return func(ctx context.Context, p *planner, _ catalog.DatabaseDescriptor, _ int64, _ *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
+) func(ctx context.Context, p *planner, db catalog.DatabaseDescriptor, stopper *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
+	return func(ctx context.Context, p *planner, _ catalog.DatabaseDescriptor, _ *stop.Stopper) (virtualTableGenerator, cleanupFunc, error) {
 		hasAdmin, err := p.HasAdminRole(ctx)
 		if err != nil {
 			return nil, nil, err
@@ -8246,7 +8235,7 @@ func populateClusterLocksWithFilter(
 ) (matched bool, err error) {
 	var rowGenerator virtualTableGenerator
 	generator := genClusterLocksGenerator(filters)
-	rowGenerator, _, err = generator(ctx, p, db, 0 /* limit */, nil /* stopper */)
+	rowGenerator, _, err = generator(ctx, p, db, nil /* stopper */)
 	if err != nil {
 		return false, err
 	}

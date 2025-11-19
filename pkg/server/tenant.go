@@ -636,6 +636,7 @@ func (s *SQLServerWrapper) PreStart(ctx context.Context) error {
 		s.sqlServer.cfg.AmbientCtx,
 		s.rpcContext,
 		s.stopper,
+		s.grpc,
 		s.sqlServer.cfg.AdvertiseAddr,
 	)
 	if err != nil {
@@ -1329,14 +1330,11 @@ func makeTenantSQLServerArgs(
 	externalStorage := esb.makeExternalStorage
 	externalStorageFromURI := esb.makeExternalStorageFromURI
 
-	requestMetrics := rpc.NewRequestMetrics()
-	registry.AddMetricStruct(requestMetrics)
-
-	grpcServer, err := newGRPCServer(startupCtx, rpcContext, requestMetrics)
+	grpcServer, err := newGRPCServer(startupCtx, rpcContext, registry)
 	if err != nil {
 		return sqlServerArgs{}, err
 	}
-	drpcServer, err := newDRPCServer(startupCtx, rpcContext, requestMetrics)
+	drpcServer, err := newDRPCServer(startupCtx, rpcContext)
 	if err != nil {
 		return sqlServerArgs{}, err
 	}

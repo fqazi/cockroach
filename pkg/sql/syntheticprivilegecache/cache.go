@@ -158,21 +158,19 @@ func (c *Cache) readFromStorage(
 	}
 
 	privDesc := privAccumulator.finish()
-	switch spo.GetObjectType() {
-	case privilege.VirtualTable:
-		// To avoid having to insert a row for public for each virtual
-		// table into system.privileges, we assume that if there is
-		// NO entry for public in the PrivilegeDescriptor, Public has
-		// grant. If there is an empty row for Public, then public
-		// does not have grant.
+	// To avoid having to insert a row for public for each virtual
+	// table into system.privileges, we assume that if there is
+	// NO entry for public in the PrivilegeDescriptor, Public has
+	// grant. If there is an empty row for Public, then public
+	// does not have grant.
+	if spo.GetObjectType() == privilege.VirtualTable {
 		if _, found := privDesc.FindUser(username.PublicRoleName()); !found {
 			privDesc.Grant(username.PublicRoleName(), privilege.List{privilege.SELECT}, false)
 		}
-	case privilege.Global:
-		// Admin always has ALL global privileges.
-		privDesc.Grant(username.AdminRoleName(), privilege.List{privilege.ALL}, true)
-	case privilege.ExternalConnection:
-		// Admins should be able to view/use all external connections.
+	}
+
+	// Admin always has ALL global privileges.
+	if spo.GetObjectType() == privilege.Global {
 		privDesc.Grant(username.AdminRoleName(), privilege.List{privilege.ALL}, true)
 	}
 

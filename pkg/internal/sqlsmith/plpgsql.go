@@ -14,8 +14,6 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-var plpgsqlFlags = tree.FmtParsable | tree.FmtPLpgSQLParen
-
 func (s *Smither) makeRoutineBodyPLpgSQL(
 	params tree.ParamTypes, rTyp *types.T, vol tree.RoutineVolatility,
 ) string {
@@ -27,7 +25,7 @@ func (s *Smither) makeRoutineBodyPLpgSQL(
 	// errors.
 	block := s.makePLpgSQLBlock(scope)
 	block.Body = append(block.Body, s.makePLpgSQLReturn(scope))
-	return "\n" + tree.AsStringWithFlags(s.makePLpgSQLBlock(scope), plpgsqlFlags, tree.FmtInPLpgSQL(true /* inPLpgSQL */))
+	return "\n" + tree.AsStringWithFlags(s.makePLpgSQLBlock(scope), tree.FmtParsable)
 }
 
 func (s *Smither) makePLpgSQLBlock(scope plpgsqlBlockScope) *ast.Block {
@@ -143,7 +141,6 @@ var (
 		{2, makePLpgSQLReturn},
 		{2, makePLpgSQLIf},
 		{2, makePLpgSQLWhile},
-		{2, makeDoBlockWithinScope},
 		{2, makePLpgSQLForLoop},
 		{5, makePLpgSQLNull},
 		{10, makePLpgSQLAssign},
@@ -397,21 +394,4 @@ func (s *plpgsqlBlockScope) addVariable(name string, typ *types.T, constant bool
 	if constant {
 		s.constants[name] = struct{}{}
 	}
-}
-
-func (s *Smither) makeDoBlockTreeStmt() (*tree.DoBlock, bool) {
-	scope := makeBlockScope(0, types.Unknown, tree.RoutineVolatile)
-	doBlock, ok := makeDoBlockWithinScope(s, scope)
-	if !ok {
-		return nil, false
-	}
-	return &tree.DoBlock{Code: doBlock.(*ast.DoBlock)}, true
-}
-
-func makeDoBlockWithinScope(s *Smither, scope plpgsqlBlockScope) (ast.Statement, bool) {
-	if s.disableDoBlock {
-		return nil, false
-	}
-	block := s.makePLpgSQLBlock(scope)
-	return &ast.DoBlock{Block: block}, true
 }

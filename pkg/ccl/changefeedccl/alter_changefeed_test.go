@@ -57,7 +57,7 @@ func TestAlterChangefeedAddTargetPrivileges(t *testing.T) {
 	ctx := context.Background()
 
 	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142799),
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 		Knobs: base.TestingKnobs{
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			DistSQL: &execinfra.TestingKnobs{
@@ -336,7 +336,7 @@ func TestAlterChangefeedAddTargetFamily(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "helpers_test=1")
+	require.NoError(t, log.SetVModule("helpers_test=1"))
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
@@ -394,7 +394,7 @@ func TestAlterChangefeedSwitchFamily(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "helpers_test=1")
+	require.NoError(t, log.SetVModule("helpers_test=1"))
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
@@ -1316,7 +1316,7 @@ func TestAlterChangefeedAddTargetsDuringSchemaChangeError(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	// Set verbose log to confirm whether or not we hit the same nil row issue as in #140669
-	testutils.SetVModule(t, "kv_feed=2,changefeed_processors=2")
+	require.NoError(t, log.SetVModule("kv_feed=2,changefeed_processors=2"))
 
 	rnd, seed := randutil.NewPseudoRand()
 	t.Logf("random seed: %d", seed)
@@ -1530,7 +1530,13 @@ func TestAlterChangefeedAddTargetsDuringBackfill(t *testing.T) {
 			}()
 
 			if r.Span.Equal(fooTableSpan) {
-				return true, nil
+				// Do not emit resolved events for the entire table span.
+				// We "simulate" large table by splitting single table span into many parts, so
+				// we want to resolve those sub-spans instead of the entire table span.
+				// However, we have to emit something -- otherwise the entire changefeed
+				// machine would not work.
+				r.Span.EndKey = fooTableSpan.Key.Next()
+				return false, nil
 			}
 			if !allowedOne {
 				allowedOne = true
@@ -1984,7 +1990,7 @@ func TestAlterChangefeedRandomizedTargetChanges(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "helpers_test=1")
+	require.NoError(t, log.SetVModule("helpers_test=1"))
 
 	rnd, _ := randutil.NewPseudoRand()
 

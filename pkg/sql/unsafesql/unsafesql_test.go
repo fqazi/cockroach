@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/unsafesql"
@@ -65,11 +64,6 @@ func TestAccessCheckServer(t *testing.T) {
 	ctx := context.Background()
 	s := serverutils.StartServerOnly(t, base.TestServerArgs{
 		DefaultTestTenant: base.TestControlsTenantsExplicitly,
-		Knobs: base.TestingKnobs{
-			SQLEvalContext: &eval.TestingKnobs{
-				UnsafeOverride: func() *bool { return nil }, // no override
-			},
-		},
 	})
 	defer s.Stopper().Stop(ctx)
 
@@ -236,16 +230,6 @@ func TestAccessCheckServer(t *testing.T) {
 			Query:      "SELECT * FROM crdb_internal.databases",
 			Passes:     false,
 			LogsDenied: true,
-		},
-		{
-			// test nested delegates
-			Query:  "SHOW JOBS WHEN COMPLETE SELECT job_id FROM [SHOW JOBS]",
-			Passes: true,
-		},
-		{
-			// unexpected unsafe builtin access
-			Query:  "SELECT col_description(0, 0)",
-			Passes: true,
 		},
 	} {
 		t.Run(fmt.Sprintf("query=%s,internal=%t,allowUnsafe=%t", test.Query, test.Internal, test.AllowUnsafeInternals), func(t *testing.T) {

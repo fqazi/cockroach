@@ -126,11 +126,11 @@ type simRebalanceObjectiveProvider struct {
 
 // Objective returns the current rebalance objective.
 func (s simRebalanceObjectiveProvider) Objective() kvserver.LBRebalancingObjective {
-	return kvserver.LoadBasedRebalancingObjective.Get(&s.settings.ST.SV)
+	return kvserver.LBRebalancingObjective(s.settings.LBRebalancingObjective)
 }
 
 func (src *storeRebalancerControl) scorerOptions() *allocatorimpl.LoadScorerOptions {
-	dim := kvserver.LoadBasedRebalancingObjective.Get(&src.settings.ST.SV).ToDimension()
+	dim := kvserver.LBRebalancingObjective(src.settings.LBRebalancingObjective).ToDimension()
 	return &allocatorimpl.LoadScorerOptions{
 		BaseScorerOptions: allocatorimpl.BaseScorerOptions{
 			IOOverload:    src.allocator.IOOverloadOptions(),
@@ -191,7 +191,7 @@ func (src *storeRebalancerControl) phasePrologue(
 		ctx, src.scorerOptions(),
 		hottestRanges(
 			s, src.storeID,
-			kvserver.LoadBasedRebalancingObjective.Get(&src.settings.ST.SV).ToDimension(),
+			kvserver.LBRebalancingObjective(src.settings.LBRebalancingObjective).ToDimension(),
 		),
 		kvserverbase.LoadBasedRebalancingMode.Get(&src.settings.ST.SV),
 	)

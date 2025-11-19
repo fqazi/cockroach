@@ -133,7 +133,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	bf := func() kvevent.Buffer {
-		return kvevent.NewMemBuffer(cfg.MM.MakeBoundAccount(), &cfg.Settings.SV, &cfg.Metrics.RangefeedBufferMetrics)
+		return kvevent.NewMemBuffer(cfg.MM.MakeBoundAccount(), &cfg.Settings.SV, &cfg.Metrics.RangefeedBufferMetricsWithCompat)
 	}
 
 	g := ctxgroup.WithContext(ctx)
@@ -740,7 +740,7 @@ func copyFromSourceToDestUntilTableEvent(
 		// from rangefeed) and checks if a table event was encountered at or before
 		// said timestamp. If so, it replaces the copy boundary with the table event.
 		checkForTableEvent = func(ts hlc.Timestamp) error {
-			defer st.KVFeedWaitForTableEvent.Start().End()
+			defer st.KVFeedWaitForTableEvent.Start()()
 			// There's no need to check for table events again if we already found one
 			// since that should already be the earliest one.
 			if _, ok := boundary.(*errTableEventReached); ok {
@@ -837,7 +837,7 @@ func copyFromSourceToDestUntilTableEvent(
 
 		// writeToDest writes an event to the dest.
 		writeToDest = func(e kvevent.Event) error {
-			defer st.KVFeedBuffer.Start().End()
+			defer st.KVFeedBuffer.Start()()
 
 			switch e.Type() {
 			case kvevent.TypeKV, kvevent.TypeFlush:

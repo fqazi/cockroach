@@ -37,7 +37,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/ctpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/policyrefresher"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/sidetransport"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/idalloc"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/intentresolver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvadmission"
@@ -100,7 +99,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil/singleflight"
-	"github.com/cockroachdb/cockroach/pkg/util/taskpacer"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
@@ -1541,7 +1539,6 @@ func NewStore(
 	if cfg.RPCContext != nil {
 		s.allocator = allocatorimpl.MakeAllocator(
 			cfg.Settings,
-			cfg.AllocatorSync,
 			storePoolIsDeterministic,
 			cfg.RPCContext.RemoteClocks.Latency,
 			cfg.TestingKnobs.AllocatorKnobs,
@@ -1549,7 +1546,6 @@ func NewStore(
 	} else {
 		s.allocator = allocatorimpl.MakeAllocator(
 			cfg.Settings,
-			cfg.AllocatorSync,
 			storePoolIsDeterministic,
 			func(id roachpb.NodeID) (time.Duration, bool) {
 				return 0, false
@@ -1743,14 +1739,6 @@ func NewStore(
 		updateSystemConfigUpdateQueueLimits)
 	queueAdditionOnSystemConfigUpdateBurst.SetOnChange(&cfg.Settings.SV,
 		updateSystemConfigUpdateQueueLimits)
-
-	concurrency.DefaultLockTableSize.SetOnChange(&cfg.Settings.SV, func(ctx context.Context) {
-		newSize := concurrency.DefaultLockTableSize.Get(&cfg.Settings.SV)
-		s.VisitReplicas(func(repl *Replica) bool {
-			repl.concMgr.SetMaxLockTableSize(newSize)
-			return true // continue
-		})
-	})
 
 	if s.cfg.Gossip != nil {
 		s.storeGossip = NewStoreGossip(
@@ -2454,9 +2442,7 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 	// Connect rangefeeds to closed timestamp updates.
 	s.startRangefeedUpdater(ctx)
 
-	if err := s.startRangefeedTxnPushNotifier(ctx); err != nil {
-		return err
-	}
+	s.startRangefeedTxnPushNotifier(ctx)
 
 	if s.replicateQueue != nil {
 		s.storeRebalancer = NewStoreRebalancer(
@@ -2591,7 +2577,7 @@ func (s *Store) startRangefeedUpdater(ctx context.Context) {
 		//   the rate of processing in accordance with the time remaining until the
 		//   refresh interval ends.
 		conf := newRangeFeedUpdaterConf(s.cfg.Settings)
-		pacer := taskpacer.New(conf)
+		pacer := NewTaskPacer(conf)
 		for {
 			// Configuration may have changed between runs, load it unconditionally.
 			// This will block until an "active" configuration exists, i.e. a one with
@@ -2664,27 +2650,48 @@ func (s *Store) startRangefeedUpdater(ctx context.Context) {
 // startRangefeedTxnPushNotifier starts a worker that would periodically
 // enqueue txn push event for rangefeed processors to let them push lagging
 // transactions.
-func (s *Store) startRangefeedTxnPushNotifier(ctx context.Context) error {
+func (s *Store) startRangefeedTxnPushNotifier(ctx context.Context) {
 	interval := rangefeed.DefaultPushTxnsInterval
 	if i := s.TestingKnobs().RangeFeedPushTxnsInterval; i > 0 {
 		interval = i
 	}
-	tpn := rangefeed.NewTxnPushNotifier(
-		interval,
-		s.ClusterSettings(),
-		s.rangefeedScheduler,
-		func(f func(int64)) {
+
+	_ /* err */ = s.stopper.RunAsyncTaskEx(ctx, stop.TaskOpts{
+		TaskName: "transaction-rangefeed-push-notifier",
+		SpanOpt:  stop.SterileRootSpan,
+	}, func(ctx context.Context) {
+		ctx, cancel := s.stopper.WithCancelOnQuiesce(ctx)
+		defer cancel()
+
+		makeSchedulerBatch := func() *rangefeed.SchedulerBatch {
+			batch := s.rangefeedScheduler.NewEnqueueBatch()
 			s.rangefeedReplicas.Lock()
-			for _, procID := range s.rangefeedReplicas.m {
-				// Only process ranges that use scheduler.
-				if procID != 0 {
-					f(procID)
+			for _, id := range s.rangefeedReplicas.m {
+				if id != 0 {
+					// Only process ranges that use scheduler.
+					batch.Add(id)
 				}
 			}
 			s.rangefeedReplicas.Unlock()
-		},
-	)
-	return tpn.Start(ctx, s.stopper)
+			return batch
+		}
+
+		ticker := time.NewTicker(interval)
+		for {
+			select {
+			case <-ticker.C:
+				if !rangefeed.PushTxnsEnabled.Get(&s.ClusterSettings().SV) {
+					continue
+				}
+				batch := makeSchedulerBatch()
+				s.rangefeedScheduler.EnqueueBatch(batch, rangefeed.PushTxnQueued)
+				batch.Close()
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			}
+		}
+	})
 }
 
 func (s *Store) addReplicaWithRangefeed(rangeID roachpb.RangeID, schedulerID int64) {

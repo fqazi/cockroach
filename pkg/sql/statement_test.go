@@ -6,7 +6,6 @@
 package sql
 
 import (
-	"context"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
@@ -77,7 +76,6 @@ SELECT 1 /*action='%2Fparam*d',controller='index',framework='spring',
 	}
 
 	var p parser.Parser
-	ctx := context.Background()
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
 
@@ -98,13 +96,9 @@ SELECT 1 /*action='%2Fparam*d',controller='index',framework='spring',
 									Statement: stmts[0],
 								},
 							}
-							stmt = makeStatementFromPrepared(
-								ctx, ps, clusterunique.ID{}, tree.FmtSimple, nil, /* statementHintsCache */
-							)
+							stmt = makeStatementFromPrepared(ps, clusterunique.ID{})
 						} else {
-							stmt = makeStatement(
-								ctx, stmts[0], clusterunique.ID{}, tree.FmtSimple, nil, /* statementHintsCache */
-							)
+							stmt = makeStatement(stmts[0], clusterunique.ID{}, tree.FmtSimple)
 						}
 						if withComments {
 							require.Equal(t, tc.expectedTags, stmt.QueryTags)

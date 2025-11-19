@@ -26,7 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -148,7 +147,7 @@ type raftLogQueue struct {
 	*baseQueue
 	db *kv.DB
 
-	logSnapshots util.EveryN[crtime.Mono]
+	logSnapshots util.EveryN
 }
 
 var _ queueImpl = &raftLogQueue{}
@@ -163,7 +162,7 @@ var _ queueImpl = &raftLogQueue{}
 func newRaftLogQueue(store *Store, db *kv.DB) *raftLogQueue {
 	rlq := &raftLogQueue{
 		db:           db,
-		logSnapshots: util.EveryMono(10 * time.Second),
+		logSnapshots: util.Every(10 * time.Second),
 	}
 	rlq.baseQueue = newBaseQueue(
 		"raftlog", rlq, store,
@@ -690,7 +689,7 @@ func (rlq *raftLogQueue) process(
 		return false, nil
 	}
 
-	if n := decision.NumNewRaftSnapshots(); log.V(1) || n > 0 && rlq.logSnapshots.ShouldProcess(crtime.NowMono()) {
+	if n := decision.NumNewRaftSnapshots(); log.V(1) || n > 0 && rlq.logSnapshots.ShouldProcess(timeutil.Now()) {
 		log.KvExec.Infof(ctx, "%v", redact.Safe(decision.String()))
 		log.KvDistribution.Infof(ctx, "%v", redact.Safe(decision.String()))
 	} else {

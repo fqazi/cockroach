@@ -211,7 +211,6 @@ type Memo struct {
 	useExistsFilterHoistRule                   bool
 	disableSlowCascadeFastPathForRBRTables     bool
 	useImprovedHoistJoinProject                bool
-	rowSecurity                                bool
 	clampLowHistogramSelectivity               bool
 	clampInequalitySelectivity                 bool
 	useMaxFrequencySelectivity                 bool
@@ -326,7 +325,6 @@ func (m *Memo) Init(ctx context.Context, evalCtx *eval.Context) {
 		useExistsFilterHoistRule:                   evalCtx.SessionData().OptimizerUseExistsFilterHoistRule,
 		disableSlowCascadeFastPathForRBRTables:     evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables,
 		useImprovedHoistJoinProject:                evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject,
-		rowSecurity:                                evalCtx.SessionData().RowSecurity,
 		clampLowHistogramSelectivity:               evalCtx.SessionData().OptimizerClampLowHistogramSelectivity,
 		clampInequalitySelectivity:                 evalCtx.SessionData().OptimizerClampInequalitySelectivity,
 		useMaxFrequencySelectivity:                 evalCtx.SessionData().OptimizerUseMaxFrequencySelectivity,
@@ -505,7 +503,6 @@ func (m *Memo) IsStale(
 		m.useExistsFilterHoistRule != evalCtx.SessionData().OptimizerUseExistsFilterHoistRule ||
 		m.disableSlowCascadeFastPathForRBRTables != evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables ||
 		m.useImprovedHoistJoinProject != evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject ||
-		m.rowSecurity != evalCtx.SessionData().RowSecurity ||
 		m.clampLowHistogramSelectivity != evalCtx.SessionData().OptimizerClampLowHistogramSelectivity ||
 		m.clampInequalitySelectivity != evalCtx.SessionData().OptimizerClampInequalitySelectivity ||
 		m.useMaxFrequencySelectivity != evalCtx.SessionData().OptimizerUseMaxFrequencySelectivity ||

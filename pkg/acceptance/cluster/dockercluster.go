@@ -485,9 +485,7 @@ func (l *DockerCluster) startNode(ctx context.Context, node *testNode, singleNod
 	for _, store := range node.stores {
 		storeSpec := base.StoreSpec{
 			Path: store.dir,
-		}
-		if store.config.MaxRanges != 0 {
-			storeSpec.Size = storageconfig.BytesSize(int64(store.config.MaxRanges) * maxRangeBytes)
+			Size: storageconfig.Size{Bytes: int64(store.config.MaxRanges) * maxRangeBytes},
 		}
 		cmd = append(cmd, fmt.Sprintf("--store=%s", base.StoreSpecCmdLineString(storeSpec)))
 	}
@@ -825,9 +823,6 @@ func (l *DockerCluster) PGUrl(ctx context.Context, i int) string {
 	options.Add("sslcert", filepath.Join(certsDir, certnames.EmbeddedRootCert))
 	options.Add("sslkey", filepath.Join(certsDir, certnames.EmbeddedRootKey))
 	options.Add("sslrootcert", filepath.Join(certsDir, certnames.EmbeddedCACert))
-	// Set allow_unsafe_internals=true for acceptance tests to allow access to
-	// crdb_internal and system tables.
-	options.Add("allow_unsafe_internals", "true")
 	pgURL := url.URL{
 		Scheme:   "postgres",
 		User:     url.User(certUser),

@@ -1623,8 +1623,6 @@ func forwardInnerQueryStats(f metadataForwarder, stats topLevelQueryStats) {
 	meta.Metrics.BytesRead = stats.bytesRead
 	meta.Metrics.RowsRead = stats.rowsRead
 	meta.Metrics.RowsWritten = stats.rowsWritten
-	meta.Metrics.IndexRowsWritten = stats.indexRowsWritten
-	meta.Metrics.IndexBytesWritten = stats.indexBytesWritten
 	// stats.networkEgressEstimate and stats.clientTime are ignored since they
 	// only matter at the "true" top-level query (and actually should be zero
 	// here anyway).

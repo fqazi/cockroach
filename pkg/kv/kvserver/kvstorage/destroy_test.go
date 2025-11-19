@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/print"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -67,10 +68,11 @@ func TestDestroyReplica(t *testing.T) {
 		r.createStateMachine(ctx, t, rw)
 	})
 	mutate("destroy", func(rw storage.ReadWriter) {
-		require.NoError(t, DestroyReplica(
-			ctx, TODOReadWriter(rw),
-			DestroyReplicaInfo{FullReplicaID: r.id, Keys: r.keys}, r.id.ReplicaID+1,
-		))
+		require.NoError(t, DestroyReplica(ctx, r.id, rw, rw, r.id.ReplicaID+1, ClearRangeDataOptions{
+			ClearUnreplicatedByRangeID: true,
+			ClearReplicatedByRangeID:   true,
+			ClearReplicatedBySpan:      r.keys,
+		}))
 	})
 
 	str := strings.ReplaceAll(sb.String(), "\n\n", "\n")
@@ -105,7 +107,7 @@ func (r *replicaInfo) createRaftState(ctx context.Context, t *testing.T, w stora
 }
 
 func (r *replicaInfo) createStateMachine(ctx context.Context, t *testing.T, rw storage.ReadWriter) {
-	sl := MakeStateLoader(r.id.RangeID)
+	sl := stateloader.Make(r.id.RangeID)
 	require.NoError(t, sl.SetRangeTombstone(ctx, rw, kvserverpb.RangeTombstone{
 		NextReplicaID: r.id.ReplicaID,
 	}))

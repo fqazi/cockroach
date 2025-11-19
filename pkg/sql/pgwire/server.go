@@ -99,7 +99,7 @@ var maxRepeatedErrorCount = settings.RegisterIntSetting(
 	"sql.pgwire.max_repeated_error_count",
 	"the maximum number of times an error can be received while reading from a "+
 		"network connection before the server aborts the connection",
-	1<<8, // 256
+	1<<15, // 32768
 	settings.PositiveInt,
 )
 
@@ -318,8 +318,6 @@ type Server struct {
 		// destinations tracks the metrics for each destination.
 		destinations map[string]*destinationMetrics
 	}
-	// limit the number of rejectNewConnection errors
-	connectionErrorLogEveryN log.EveryN
 
 	auth struct {
 		syncutil.RWMutex
@@ -501,7 +499,6 @@ func MakeServer(
 	server.mu.drainCh = make(chan struct{})
 	server.mu.destinations = make(map[string]*destinationMetrics)
 	server.mu.Unlock()
-	server.connectionErrorLogEveryN = log.Every(10 * time.Second)
 	executorConfig.CidrLookup.SetOnChange(server.onCidrChange)
 
 	connAuthConf.SetOnChange(&st.SV, func(ctx context.Context) {
@@ -943,9 +940,7 @@ func (s *Server) ServeConn(
 	st := s.execCfg.Settings
 	// If the server is shutting down, terminate the connection early.
 	if rejectNewConnections {
-		if s.connectionErrorLogEveryN.ShouldLog() {
-			log.Ops.Info(ctx, "rejecting new connection while server is draining")
-		}
+		log.Ops.Info(ctx, "rejecting new connection while server is draining")
 		return s.sendErr(ctx, st, conn, newAdminShutdownErr(ErrDrainingNewConn))
 	}
 
@@ -966,10 +961,8 @@ func (s *Server) ServeConn(
 	// been overridden by a status parameter).
 	connDetails.RemoteAddress = sArgs.RemoteAddr.String()
 	sp := tracing.SpanFromContext(ctx)
-	tags := logtags.BuildBuffer()
-	tags.Add("client", log.SafeOperational(connDetails.RemoteAddress))
-	tags.Add(preServeStatus.ConnType.String(), nil)
-	ctx = logtags.AddTags(ctx, tags.Finish())
+	ctx = logtags.AddTag(ctx, "client", log.SafeOperational(connDetails.RemoteAddress))
+	ctx = logtags.AddTag(ctx, preServeStatus.ConnType.String(), nil)
 	sp.SetTag("conn_type", attribute.StringValue(preServeStatus.ConnType.String()))
 	sp.SetTag("client", attribute.StringValue(connDetails.RemoteAddress))
 

@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
@@ -37,11 +36,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
-	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	pbtypes "github.com/gogo/protobuf/types"
@@ -82,7 +79,7 @@ type ttlProgressUpdater interface {
 	// UpdateProgress is called to refresh the TTL processor progress.
 	UpdateProgress(ctx context.Context, output execinfra.RowReceiver) error
 	// OnSpanProcessed is called each time a span has been processed (even partially).
-	OnSpanProcessed(span roachpb.Span, deletedRowCount int64)
+	OnSpanProcessed(spansProcessed, deletedRowCount int64)
 	// FinalizeProgress is the final call to update the progress once all spans have been processed.
 	FinalizeProgress(ctx context.Context, output execinfra.RowReceiver) error
 }
@@ -134,19 +131,12 @@ type coordinatorStreamUpdater struct {
 	// deletedRowCount tracks the cumulative number of rows deleted by this processor.
 	deletedRowCount atomic.Int64
 
+	// processedSpanCount tracks the number of spans this processor has reported as processed.
+	processedSpanCount atomic.Int64
+
 	// progressLogger is used to control how often we log progress updates that
 	// are sent back to the coordinator.
 	progressLogger log.EveryN
-
-	mu struct {
-		syncutil.Mutex
-		// completedSpans tracks all spans that have been processed by this
-		// invocation of the processor.
-		completedSpans []roachpb.Span
-		// completedSpansSinceLastUpdate tracks all spans that have been processed since
-		// the last progress message was sent back to the coordinator.
-		completedSpansSinceLastUpdate []roachpb.Span
-	}
 }
 
 // Start implements the execinfra.RowSource interface.
@@ -329,7 +319,7 @@ func (t *ttlProcessor) work(ctx context.Context, output execinfra.RowReceiver) e
 						deleteBuilder,
 					)
 					// Add to totals even on partial success.
-					t.progressUpdater.OnSpanProcessed(bounds.Span, spanDeletedRowCount)
+					t.progressUpdater.OnSpanProcessed(1 /* spansProcessed */, spanDeletedRowCount)
 					if err != nil {
 						// Continue until channel is fully read.
 						// Otherwise, the keys input will be blocked.
@@ -357,7 +347,6 @@ func (t *ttlProcessor) work(ctx context.Context, output execinfra.RowReceiver) e
 				numFamilies,
 				span,
 				&alloc,
-				hlc.Timestamp{}, // Use current time bounds; TTL only deletes live rows.
 			); err != nil {
 				return errors.Wrapf(err, "SpanToQueryBounds error index=%d span=%s", i, span)
 			} else if hasRows {
@@ -366,7 +355,7 @@ func (t *ttlProcessor) work(ctx context.Context, output execinfra.RowReceiver) e
 			} else {
 				// If the span has no rows, we still need to increment the processed
 				// count.
-				t.progressUpdater.OnSpanProcessed(span, 0 /* deletedRowCount */)
+				t.progressUpdater.OnSpanProcessed(1 /* spansProcessed */, 0 /* deletedRowCount */)
 			}
 
 			if err := t.progressUpdater.UpdateProgress(ctx, output); err != nil {
@@ -547,27 +536,22 @@ func (c *coordinatorStreamUpdater) InitProgress(totalSpanCount int64) {
 }
 
 // OnSpanProcessed implements the ttlProgressUpdater interface.
-func (c *coordinatorStreamUpdater) OnSpanProcessed(span roachpb.Span, deletedRowCount int64) {
+func (c *coordinatorStreamUpdater) OnSpanProcessed(spansProcessed, deletedRowCount int64) {
 	c.deletedRowCount.Add(deletedRowCount)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.mu.completedSpansSinceLastUpdate = append(c.mu.completedSpansSinceLastUpdate, span)
-	c.mu.completedSpans = append(c.mu.completedSpans, span)
+	c.processedSpanCount.Add(spansProcessed)
 }
 
 // UpdateProgress implements the ttlProgressUpdater interface.
 func (c *coordinatorStreamUpdater) UpdateProgress(
 	ctx context.Context, output execinfra.RowReceiver,
 ) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	nodeID := c.proc.FlowCtx.NodeID.SQLInstanceID()
 	progressMsg := &jobspb.RowLevelTTLProcessorProgress{
 		ProcessorID:          c.proc.ProcessorID,
 		SQLInstanceID:        nodeID,
 		ProcessorConcurrency: c.proc.processorConcurrency,
 		DeletedRowCount:      c.deletedRowCount.Load(),
-		ProcessedSpanCount:   int64(len(c.mu.completedSpans)),
+		ProcessedSpanCount:   c.processedSpanCount.Load(),
 		TotalSpanCount:       c.totalSpanCount,
 	}
 	progressAny, err := pbtypes.MarshalAny(progressMsg)
@@ -576,14 +560,11 @@ func (c *coordinatorStreamUpdater) UpdateProgress(
 	}
 	meta := &execinfrapb.ProducerMetadata{
 		BulkProcessorProgress: &execinfrapb.RemoteProducerMetadata_BulkProcessorProgress{
-			// The checkpointProgressTracker will treat CompletedSpans in this message
-			// to be the number of spans completed since the last message.
-			CompletedSpans:  c.mu.completedSpansSinceLastUpdate,
 			ProgressDetails: *progressAny,
 			NodeID:          nodeID,
 			FlowID:          c.proc.FlowCtx.ID,
 			ProcessorID:     c.proc.ProcessorID,
-			Drained:         int64(len(c.mu.completedSpans)) == c.totalSpanCount,
+			Drained:         c.processedSpanCount.Load() == c.totalSpanCount,
 		},
 	}
 	// Push progress after each span. Throttling is now handled by the coordinator.
@@ -594,7 +575,6 @@ func (c *coordinatorStreamUpdater) UpdateProgress(
 	if c.progressLogger.ShouldLog() {
 		log.Dev.Infof(ctx, "TTL processor progress: %v", progressMsg)
 	}
-	c.mu.completedSpansSinceLastUpdate = c.mu.completedSpansSinceLastUpdate[:0]
 	return nil
 }
 
@@ -616,11 +596,11 @@ func (d *directJobProgressUpdater) InitProgress(totalSpanCount int64) {
 }
 
 // OnSpanProcessed implements the ttlProgressUpdater interface.
-func (d *directJobProgressUpdater) OnSpanProcessed(span roachpb.Span, deletedRowCount int64) {
+func (d *directJobProgressUpdater) OnSpanProcessed(spansProcessed, deletedRowCount int64) {
 	d.rowsProcessed.Add(deletedRowCount)
 	d.rowsProcessedSinceLastUpdate.Add(deletedRowCount)
-	d.spansProcessed.Add(1)
-	d.spansProcessedSinceLastUpdate.Add(1)
+	d.spansProcessed.Add(spansProcessed)
+	d.spansProcessedSinceLastUpdate.Add(spansProcessed)
 }
 
 func (d *directJobProgressUpdater) updateFractionCompleted(ctx context.Context) error {

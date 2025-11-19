@@ -92,7 +92,7 @@ const (
 // are considered here. Lease rebalancing will see if there is scope to move
 // some leases between stores that do not have any pending changes and are not
 // overloaded (and will not get overloaded by the movement). This will happen
-// in a separate pass (i.e., not in clusterState.rebalanceStores) -- the
+// in a separate pass (i.e., not in allocatorState.rebalanceStores) -- the
 // current plan is to continue using the leaseQueue and call from it into MMA.
 //
 // Note that lease rebalancing will only move leases and not replicas. Also,
@@ -126,15 +126,6 @@ func (lv *SecondaryLoadVector) subtract(other SecondaryLoadVector) {
 	for i := range other {
 		(*lv)[i] -= other[i]
 	}
-}
-
-func (lv SecondaryLoadVector) String() string {
-	return redact.StringWithoutMarkers(lv)
-}
-
-// SafeFormat implements the redact.SafeFormatter interface.
-func (lv SecondaryLoadVector) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Printf("[lease:%d, replica:%d]", lv[LeaseCount], lv[ReplicaCount])
 }
 
 type RangeLoad struct {
@@ -200,6 +191,30 @@ type meanNodeLoad struct {
 	utilCPU     float64
 }
 
+type storeLoadSummary struct {
+	worstDim                                               LoadDimension // for logging only
+	sls                                                    loadSummary
+	nls                                                    loadSummary
+	dimSummary                                             [NumLoadDimensions]loadSummary
+	highDiskSpaceUtilization                               bool
+	fd                                                     failureDetectionSummary
+	maxFractionPendingIncrease, maxFractionPendingDecrease float64
+
+	loadSeqNum uint64
+}
+
+func (sls storeLoadSummary) String() string {
+	return redact.StringWithoutMarkers(sls)
+}
+
+func (sls storeLoadSummary) SafeFormat(w redact.SafePrinter, _ rune) {
+	w.Printf("(store=%v worst=%v cpu=%v writes=%v bytes=%v node=%v high_disk=%v fd=%v, frac_pending=%.2f,%.2f(%t))",
+		sls.sls, sls.worstDim, sls.dimSummary[CPURate], sls.dimSummary[WriteBandwidth], sls.dimSummary[ByteSize],
+		sls.nls, sls.highDiskSpaceUtilization, sls.fd, sls.maxFractionPendingIncrease,
+		sls.maxFractionPendingDecrease,
+		sls.maxFractionPendingIncrease < epsilon && sls.maxFractionPendingDecrease < epsilon)
+}
+
 // The allocator often needs mean load information for a set of stores. This
 // set is implied by a constraintsDisj. We also want to know the set of stores
 // that satisfy that contraintsDisj. meansForStoreSet encapsulates all of this
@@ -213,14 +228,11 @@ type meanNodeLoad struct {
 // storeLoadSummary no longer matches that of storeState.loadSeqNum.
 type meansForStoreSet struct {
 	constraintsDisj
-	meansLoad
-	stores         storeSet
-	storeSummaries map[roachpb.StoreID]storeLoadSummary
-}
-
-type meansLoad struct {
+	stores    storeIDPostingList
 	storeLoad meanStoreLoad
 	nodeLoad  meanNodeLoad
+
+	storeSummaries map[roachpb.StoreID]storeLoadSummary
 }
 
 var _ mapEntry = &meansForStoreSet{}
@@ -265,8 +277,7 @@ type meansMemo struct {
 	constraintMatcher *constraintMatcher
 	meansMap          *clearableMemoMap[constraintsDisj, *meansForStoreSet]
 
-	scratchNodes  map[roachpb.NodeID]*NodeLoad
-	scratchStores map[roachpb.StoreID]struct{}
+	scratchNodes map[roachpb.NodeID]*NodeLoad
 }
 
 var meansForStoreSetSlicePool = sync.Pool{
@@ -306,8 +317,7 @@ func newMeansMemo(
 		constraintMatcher: constraintMatcher,
 		meansMap: newClearableMapMemo[constraintsDisj, *meansForStoreSet](
 			meansForStoreSetAllocator{}, meansForStoreSetSlicePoolImpl{}),
-		scratchNodes:  map[roachpb.NodeID]*NodeLoad{},
-		scratchStores: map[roachpb.StoreID]struct{}{},
+		scratchNodes: map[roachpb.NodeID]*NodeLoad{},
 	}
 }
 
@@ -329,7 +339,7 @@ func (mm *meansMemo) getMeans(expr constraintsDisj) *meansForStoreSet {
 	}
 	means.constraintsDisj = expr
 	mm.constraintMatcher.constrainStoresForExpr(expr, &means.stores)
-	means.meansLoad = computeMeansForStoreSet(mm.loadInfoProvider, means.stores, mm.scratchNodes, mm.scratchStores)
+	computeMeansForStoreSet(mm.loadInfoProvider, means, mm.scratchNodes)
 	return means
 }
 
@@ -352,32 +362,18 @@ func (mm *meansMemo) getStoreLoadSummary(
 // It does not do any filtering e.g. the stores can include fdDead stores. It
 // is up to the caller to adjust means.stores if it wants to do filtering.
 //
-// stores may contain duplicate storeIDs, in which case computeMeansForStoreSet
-// should deduplicate processing of the stores. stores should be immutable.
-//
 // TODO: fix callers to exclude stores based on node failure detection, from
 // the mean.
 func computeMeansForStoreSet(
-	loadProvider loadInfoProvider,
-	stores []roachpb.StoreID,
-	scratchNodes map[roachpb.NodeID]*NodeLoad,
-	scratchStores map[roachpb.StoreID]struct{},
-) (means meansLoad) {
-	if len(stores) == 0 {
-		panic(fmt.Sprintf("no stores for meansForStoreSet: %v", stores))
+	loadProvider loadInfoProvider, means *meansForStoreSet, scratchNodes map[roachpb.NodeID]*NodeLoad,
+) {
+	n := len(means.stores)
+	if n == 0 {
+		panic(fmt.Sprintf("no stores for meansForStoreSet: %v", *means))
 	}
 	clear(scratchNodes)
-	clear(scratchStores)
-	n := 0
-	for _, storeID := range stores {
-		// NB: using reported load and not adjusted load, so cannot be
-		// negative.
+	for _, storeID := range means.stores {
 		nodeID, sload := loadProvider.getStoreReportedLoad(storeID)
-		if _, ok := scratchStores[storeID]; ok {
-			continue
-		}
-		n++
-		scratchStores[storeID] = struct{}{}
 		for j := range sload.reportedLoad {
 			means.storeLoad.load[j] += sload.reportedLoad[j]
 			if sload.capacity[j] == UnknownCapacity {
@@ -391,8 +387,6 @@ func computeMeansForStoreSet(
 		}
 		nLoad := scratchNodes[nodeID]
 		if nLoad == nil {
-			// NB: using reported load and not adjusted load, so cannot be
-			// negative.
 			scratchNodes[nodeID] = loadProvider.getNodeReportedLoad(nodeID)
 		}
 	}
@@ -419,7 +413,6 @@ func computeMeansForStoreSet(
 		float64(means.nodeLoad.loadCPU) / float64(means.nodeLoad.capacityCPU)
 	means.nodeLoad.loadCPU /= LoadValue(n)
 	means.nodeLoad.capacityCPU /= LoadValue(n)
-	return means
 }
 
 // loadSummary aggregates across all load dimensions for a store, or a node.
@@ -471,8 +464,6 @@ func (ls loadSummary) SafeFormat(w redact.SafePrinter, _ rune) {
 }
 
 // Computes the loadSummary for a particular load dimension.
-//
-// NB: load can be negative since it may be adjusted load.
 func loadSummaryForDimension(
 	ctx context.Context,
 	storeID roachpb.StoreID,
@@ -483,7 +474,7 @@ func loadSummaryForDimension(
 	meanLoad LoadValue,
 	meanUtil float64,
 ) (summary loadSummary) {
-	summ := loadLow
+	loadSummary := loadLow
 	if dim == WriteBandwidth && capacity == UnknownCapacity {
 		// Ignore smaller than 1MiB differences in write bandwidth. This 1MiB
 		// value is somewhat arbitrary, but is based on EBS gp3 having a default
@@ -516,6 +507,17 @@ func loadSummaryForDimension(
 	if capacity != UnknownCapacity {
 		fractionUsed = float64(load) / float64(capacity)
 	}
+	defer func() {
+		if log.V(2) {
+			if storeID == 0 {
+				log.KvDistribution.Infof(ctx, "n%d[%v]: load=%d, mean_load=%d, fraction above=%.2f, load_summary=%v",
+					nodeID, dim, load, meanLoad, fractionAbove, summary)
+			} else {
+				log.KvDistribution.Infof(ctx, "s%d[%v]: load=%d, mean_load=%d, fraction above=%.2f, load_summary=%v",
+					storeID, dim, load, meanLoad, fractionAbove, summary)
+			}
+		}
+	}()
 
 	summaryUpperBound := overloadUrgent
 	// Be less aggressive about the ByteSize dimension when the fractionUsed is
@@ -537,13 +539,13 @@ func loadSummaryForDimension(
 		meanFractionNoChange = 0.05
 	)
 	if fractionAbove > meanFractionSlow {
-		summ = overloadSlow
+		loadSummary = overloadSlow
 	} else if fractionAbove < meanFractionLow {
-		summ = loadLow
+		loadSummary = loadLow
 	} else if fractionAbove >= meanFractionNoChange {
-		summ = loadNoChange
+		loadSummary = loadNoChange
 	} else {
-		summ = loadNormal
+		loadSummary = loadNormal
 	}
 	if capacity != UnknownCapacity && meanUtil*1.1 < fractionUsed {
 		// Further tune the summary based on utilization.
@@ -566,9 +568,9 @@ func loadSummaryForDimension(
 		if meanUtil*1.75 < fractionUsed {
 			return min(summaryUpperBound, overloadSlow)
 		}
-		return min(summaryUpperBound, max(summ, loadNoChange))
+		return min(summaryUpperBound, max(loadSummary, loadNoChange))
 	}
-	return min(summaryUpperBound, summ)
+	return min(summaryUpperBound, loadSummary)
 }
 
 func highDiskSpaceUtilization(load LoadValue, capacity LoadValue) bool {

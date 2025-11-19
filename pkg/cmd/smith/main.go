@@ -66,7 +66,6 @@ var (
 		"DisableCrossJoins":          sqlsmith.DisableCrossJoins(),
 		"DisableDDLs":                sqlsmith.DisableDDLs(),
 		"DisableDecimals":            sqlsmith.DisableDecimals(),
-		"DisableDoBlocks":            sqlsmith.DisableDoBlocks(),
 		"DisableEverything":          sqlsmith.DisableEverything(),
 		"DisableIndexHints":          sqlsmith.DisableIndexHints(),
 		"DisableInsertSelect":        sqlsmith.DisableInsertSelect(),

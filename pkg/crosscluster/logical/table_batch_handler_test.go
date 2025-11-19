@@ -16,6 +16,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
+	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
@@ -32,12 +34,14 @@ func newCrudBatchHandler(
 	ctx := context.Background()
 	desc := cdctest.GetHydratedTableDescriptor(t, s.ExecutorConfig(), tree.Name(tableName))
 	sd := sql.NewInternalSessionData(ctx, s.ClusterSettings(), "" /* opName */)
-
-	executorConfig := s.ExecutorConfig().(sql.ExecutorConfig)
-
 	handler, err := newCrudSqlWriter(
 		ctx,
-		&executorConfig.DistSQLSrv.ServerConfig,
+		&execinfra.ServerConfig{
+			DB:           s.InternalDB().(descs.DB),
+			Codec:        s.Codec(),
+			LeaseManager: s.LeaseManager(),
+			Settings:     s.ClusterSettings(),
+		},
 		&eval.Context{
 			Codec:            s.Codec(),
 			Settings:         s.ClusterSettings(),
@@ -75,7 +79,6 @@ func TestBatchHandlerFastPath(t *testing.T) {
 	`)
 
 	handler, desc := newCrudBatchHandler(t, s, "test_table")
-	defer handler.Close(ctx)
 	defer handler.ReleaseLeases(ctx)
 	eb := newKvEventBuilder(t, desc.TableDesc())
 
@@ -137,7 +140,6 @@ func TestBatchHandlerSlowPath(t *testing.T) {
 	`)
 
 	handler, desc := newCrudBatchHandler(t, s, "test_table")
-	defer handler.Close(ctx)
 	defer handler.ReleaseLeases(ctx)
 	eb := newKvEventBuilder(t, desc.TableDesc())
 
@@ -198,12 +200,11 @@ func TestBatchHandlerDuplicateBatchEntries(t *testing.T) {
 	runner.Exec(t, `
 		CREATE TABLE test_table (
 			id INT PRIMARY KEY,
-			value VARCHAR(100)
+			value STRING
 		)
 	`)
 
 	handler, desc := newCrudBatchHandler(t, s, "test_table")
-	defer handler.Close(ctx)
 	defer handler.ReleaseLeases(ctx)
 	eb := newKvEventBuilder(t, desc.TableDesc())
 

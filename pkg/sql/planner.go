@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/sql/auditlogging"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -35,8 +34,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
 	"github.com/cockroachdb/cockroach/pkg/sql/evalcatalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/exprutil"
-	"github.com/cockroachdb/cockroach/pkg/sql/hintpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/hints"
 	"github.com/cockroachdb/cockroach/pkg/sql/idxusage"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/prep"
@@ -49,7 +46,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessionmutator"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/persistedsqlstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/sslocal"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
@@ -231,7 +227,7 @@ type planner struct {
 
 	// sessionDataMutatorIterator is used to mutate the session variables. Read
 	// access to them is provided through evalCtx.
-	sessionDataMutatorIterator *sessionmutator.SessionDataMutatorIterator
+	sessionDataMutatorIterator *sessionDataMutatorIterator
 
 	// execCfg is used to access the server configuration for the Executor.
 	execCfg *ExecutorConfig
@@ -448,14 +444,17 @@ func newInternalPlanner(
 	p := &planner{execCfg: execCfg, datumAlloc: &tree.DatumAlloc{}}
 	p.resetPlanner(ctx, txn, sd, plannerMon, nil /* sessionMon */)
 
-	smi := sessionmutator.MakeSessionDataMutatorIterator(
-		sds,
-		sessionmutator.SessionDefaults(map[string]string{
-			"application_name": "crdb-internal",
-			"database":         sd.SessionData.Database,
-		}),
-		execCfg.Settings,
-	)
+	smi := &sessionDataMutatorIterator{
+		sds: sds,
+		sessionDataMutatorBase: sessionDataMutatorBase{
+			defaults: SessionDefaults(map[string]string{
+				"application_name": "crdb-internal",
+				"database":         sd.SessionData.Database,
+			}),
+			settings: execCfg.Settings,
+		},
+		sessionDataMutatorCallbacks: sessionDataMutatorCallbacks{},
+	}
 
 	p.extendedEvalCtx = internalExtendedEvalCtx(ctx, sds, params.collection, txn, ts, ts, execCfg)
 	p.extendedEvalCtx.Planner = p
@@ -628,9 +627,9 @@ func (p *planner) ExprEvaluator(op string) exprutil.Evaluator {
 // inside the session data.
 func (p *planner) GetOrInitSequenceCache() sessiondatapb.SequenceCache {
 	if p.SessionData().SequenceCache == nil {
-		p.sessionDataMutatorIterator.ApplyOnEachMutator(
-			func(m sessionmutator.SessionDataMutator) {
-				m.InitSequenceCache()
+		p.sessionDataMutatorIterator.applyOnEachMutator(
+			func(m sessionDataMutator) {
+				m.initSequenceCache()
 			},
 		)
 	}
@@ -675,19 +674,6 @@ func (p *planner) InternalSQLTxn() descs.Txn {
 		p.internalSQLTxn.init(p.txn, ie)
 	}
 	return &p.internalSQLTxn
-}
-
-// DisableUnsafeInternalCheck sets the skipUnsafeInternalsCheck property
-// to true, and returns a function which reverses it to false.
-func (p *planner) DisableUnsafeInternalsCheck() func() {
-	if p.skipUnsafeInternalsCheck {
-		return func() {}
-	}
-
-	p.skipUnsafeInternalsCheck = true
-	return func() {
-		p.skipUnsafeInternalsCheck = false
-	}
 }
 
 func (p *planner) regionsProvider() *regions.Provider {
@@ -825,7 +811,7 @@ func (p *planner) SessionData() *sessiondata.SessionData {
 }
 
 // SessionDataMutatorIterator is part of the PlanHookState interface.
-func (p *planner) SessionDataMutatorIterator() *sessionmutator.SessionDataMutatorIterator {
+func (p *planner) SessionDataMutatorIterator() *sessionDataMutatorIterator {
 	return p.sessionDataMutatorIterator
 }
 
@@ -1091,20 +1077,6 @@ func (p *planner) ClearTableStatsCache() {
 	}
 }
 
-// ClearStatementHintsCache is part of the eval.Planner interface.
-func (p *planner) ClearStatementHintsCache() {
-	if p.execCfg.StatementHintsCache != nil {
-		p.execCfg.StatementHintsCache.Clear()
-	}
-}
-
-// AwaitStatementHintsCache is part of the eval.Planner interface.
-func (p *planner) AwaitStatementHintsCache(ctx context.Context, st *cluster.Settings) {
-	if p.execCfg.StatementHintsCache != nil {
-		p.execCfg.StatementHintsCache.Await(ctx, st)
-	}
-}
-
 // innerPlansMustUseLeafTxn returns true if inner plans must use a leaf
 // transaction.
 func (p *planner) innerPlansMustUseLeafTxn() bool {
@@ -1135,11 +1107,4 @@ func (p *planner) ProcessVectorIndexFixups(
 		return err
 	}
 	return vi.ProcessFixups(ctx)
-}
-
-// InsertStatementHint is part of the eval.Planner interface.
-func (p *planner) InsertStatementHint(
-	ctx context.Context, statementFingerprint string, hint hintpb.StatementHintUnion,
-) (int64, error) {
-	return hints.InsertHintIntoDB(ctx, p.InternalSQLTxn(), statementFingerprint, hint)
 }

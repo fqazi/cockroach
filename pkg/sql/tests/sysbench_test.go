@@ -26,11 +26,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
-	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -167,42 +164,25 @@ func newTestCluster(
 	// also moderately less realistic.
 	disableBackgroundWork(st)
 	const cacheSize = 2 * 1024 * 1024 * 1024 // 2GB
-	knobs := base.TestingKnobs{
-		DialerKnobs: nodedialer.DialerTestingKnobs{
-			TestingNoLocalClientOptimization: !localRPCFastPath,
-		},
-		Server: &server.TestingKnobs{
-			ContextTestingKnobs: rpc.ContextTestingKnobs{
-				NoLoopbackDialer: !localRPCFastPath,
-			},
-		},
-		Store: &kvserver.StoreTestingKnobs{
-			// Disable the lease queue to keep leases on s1 (otherwise, lease
-			// count rebalancing might move one lease, and splits might copy
-			// that lease to a number of additional ranges). Communication
-			// between the gateway node (always n1) and the KV servers always
-			// goes through TCP regardless of whether the gateway node equals
-			// the KV node, but there are still subtle (and not well understood)
-			// performance differences between then n1->n1 and n1->n[23] cases,
-			// which add variance to the results.
-			DisableLeaseQueue: true,
-		},
-	}
-	tc := serverutils.StartCluster(b, nodes, base.TestClusterArgs{
+	return serverutils.StartCluster(b, nodes, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			Settings:  st,
 			CacheSize: cacheSize,
-			Knobs:     knobs,
+			Knobs: base.TestingKnobs{
+				DialerKnobs: nodedialer.DialerTestingKnobs{
+					TestingNoLocalClientOptimization: !localRPCFastPath,
+				},
+			},
 		}},
 	)
-	if nodes > 1 {
-		try0(tc.WaitForFullReplication())
-	}
-	return tc
 }
 
 // sysbenchSQL is SQL-based implementation of sysbenchDriver. It runs SQL
 // statements against a single node cluster.
+//
+// TODO(nvanbenschoten): add a 3-node cluster variant of this driver.
+// TODO(nvanbenschoten): add a variant of this driver which bypasses the gRPC
+// local fast-path optimization.
 type sysbenchSQL struct {
 	ctx     context.Context
 	stopper *stop.Stopper
@@ -215,6 +195,7 @@ func newSysbenchSQL(nodes int, localRPCFastPath bool) sysbenchDriverConstructor 
 		for i := 0; i < nodes; i++ {
 			tc.Server(i).SQLServer().(*sql.Server).GetExecutorConfig().LicenseEnforcer.Disable(ctx)
 		}
+		try0(tc.WaitForFullReplication())
 		pgURL, cleanupURL := tc.ApplicationLayer(0).PGUrl(b, serverutils.DBName(sysbenchDB))
 		cleanup := func() {
 			cleanupURL()
@@ -395,9 +376,12 @@ func (s *sysbenchSQLClient) prepConn() {
 // sysbenchKV is KV-based implementation of sysbenchDriver. It bypasses the SQL
 // layer and runs the workload directly against the KV layer, on a single node
 // cluster.
+//
+// TODO(nvanbenschoten): add a 3-node cluster variant of this driver.
+// TODO(nvanbenschoten): add a variant of this driver which bypasses the gRPC
+// local fast-path optimization.
 type sysbenchKV struct {
 	ctx         context.Context
-	codec       keys.SQLCodec
 	db          *kv.DB
 	pkPrefix    [sysbenchTables]roachpb.Key
 	indexPrefix [sysbenchTables]roachpb.Key
@@ -406,15 +390,13 @@ type sysbenchKV struct {
 func newSysbenchKV(nodes int, localRPCFastPath bool) sysbenchDriverConstructor {
 	return func(ctx context.Context, b *testing.B) (sysbenchDriver, func()) {
 		tc := newTestCluster(b, nodes, localRPCFastPath)
-		s := tc.ApplicationLayer(0)
-		db := s.DB()
+		db := tc.Server(0).DB()
 		cleanup := func() {
 			tc.Stopper().Stop(ctx)
 		}
 		return &sysbenchKV{
-			ctx:   ctx,
-			codec: s.Codec(),
-			db:    db,
+			ctx: ctx,
+			db:  db,
 		}, cleanup
 	}
 }
@@ -639,9 +621,9 @@ func (s *sysbenchKV) prep(rng *rand.Rand) {
 func (s *sysbenchKV) prepKeyPrefixes() {
 	const tableNumOffset = 100
 	for i := range sysbenchTables {
-		s.pkPrefix[i] = s.codec.IndexPrefix(uint32(tableNumOffset+i), 1)
+		s.pkPrefix[i] = keys.SystemSQLCodec.IndexPrefix(uint32(tableNumOffset+i), 1)
 		s.pkPrefix[i] = slices.Clip(s.pkPrefix[i])
-		s.indexPrefix[i] = s.codec.IndexPrefix(uint32(tableNumOffset+i), 2)
+		s.indexPrefix[i] = keys.SystemSQLCodec.IndexPrefix(uint32(tableNumOffset+i), 2)
 		s.indexPrefix[i] = slices.Clip(s.indexPrefix[i])
 	}
 }

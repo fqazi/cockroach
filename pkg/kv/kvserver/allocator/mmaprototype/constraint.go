@@ -24,7 +24,7 @@ import (
 // and constraints conjunctions. The primary ones are normalizedSpanConfig and
 // rangeAnalyzedConstraints.
 //
-// Other misc pieces: storeSet represents a set of stores, and is
+// Other misc pieces: storeIDPostingList represents a set of stores, and is
 // used here and will be used elsewhere for set operations.
 // localityTierInterner is used for interning the tiers to avoid string
 // comparisons, used for diversity computation. It will also be used
@@ -1408,8 +1408,8 @@ func (rac *rangeAnalyzedConstraints) candidatesToConvertFromVoterToNonVoter() (
 	if constraintSetNeeded && !voterConstraintSetNeeded {
 		return constraintSet, nil
 	}
-	cset := makeStoreSet(constraintSet)
-	cset.intersect(makeStoreSet(voterConstraintSet))
+	cset := makeStoreIDPostingList(constraintSet)
+	cset.intersect(makeStoreIDPostingList(voterConstraintSet))
 	return cset, nil
 }
 
@@ -1922,14 +1922,6 @@ func (lti *localityTierInterner) unintern(lt localityTiers) roachpb.Locality {
 	return locality
 }
 
-// localityTiers encodes a locality value hierarchy, represented by codes
-// from an associated stringInterner.
-//
-// Note that CockroachDB operators must use matching *keys*[1] across all nodes
-// in each deployment, so we only need to deal with a slice of locality
-// *values*.
-//
-// [1]: https://www.cockroachlabs.com/docs/stable/cockroach-start#locality
 type localityTiers struct {
 	tiers []stringCode
 	// str is useful as a map key for caching computations.
@@ -1953,10 +1945,156 @@ func (l localityTiers) diversityScore(other localityTiers) float64 {
 	return 0
 }
 
-const notMatchedLeasePreferenceIndex = math.MaxInt32
+// Ordered and de-duped list of storeIDs. Represents a set of stores. Used for
+// fast set operations for constraint satisfaction.
+type storeIDPostingList []roachpb.StoreID
+
+func makeStoreIDPostingList(a []roachpb.StoreID) storeIDPostingList {
+	slices.Sort(a)
+	return a
+}
+
+func (s *storeIDPostingList) union(b storeIDPostingList) {
+	a := *s
+	n := len(a)
+	m := len(b)
+	for i, j := 0, 0; j < m; {
+		if i < n && a[i] < b[j] {
+			i++
+			continue
+		}
+		// i >= n || a[i] >= b[j]
+		if i >= n || a[i] > b[j] {
+			a = append(a, b[j])
+			j++
+			continue
+		}
+		// a[i] == b[j]
+		i++
+		j++
+	}
+	if len(a) > n {
+		slices.Sort(a)
+		*s = a
+	}
+}
+
+func (s *storeIDPostingList) intersect(b storeIDPostingList) {
+	// TODO(sumeer): For larger lists, probe using smaller list.
+	a := *s
+	n := len(a)
+	m := len(b)
+	k := 0
+	for i, j := 0, 0; i < n && j < m; {
+		if a[i] < b[j] {
+			i++
+		} else if a[i] > b[j] {
+			j++
+		} else {
+			a[k] = a[i]
+			i++
+			j++
+			k++
+		}
+	}
+	*s = a[:k]
+}
+
+func (s *storeIDPostingList) isEqual(b storeIDPostingList) bool {
+	a := *s
+	n := len(a)
+	m := len(b)
+	if n != m {
+		return false
+	}
+	for i := range b {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// Returns true iff found (and successfully removed).
+func (s *storeIDPostingList) remove(storeID roachpb.StoreID) bool {
+	a := *s
+	n := len(a)
+	found := false
+	for i := range a {
+		if a[i] == storeID {
+			// INVARIANT: i < n, so i <= n-1 and i+1 <= n.
+			copy(a[i:n-1], a[i+1:n])
+			found = true
+			break
+		}
+	}
+	if !found {
+		return false
+	}
+	*s = a[:n-1]
+	return true
+}
+
+// Returns true iff the storeID was not already in the set.
+func (s *storeIDPostingList) insert(storeID roachpb.StoreID) bool {
+	a := *s
+	n := len(a)
+	var pos int
+	for pos = 0; pos < n; pos++ {
+		if storeID < a[pos] {
+			break
+		} else if storeID == a[pos] {
+			return false
+		}
+	}
+	var b storeIDPostingList
+	if cap(a) > n {
+		b = a[:n+1]
+	} else {
+		m := 2 * cap(a)
+		const minLength = 10
+		if m < minLength {
+			m = minLength
+		}
+		b = make([]roachpb.StoreID, n+1, m)
+		// Insert at pos, so pos-1 is the last element before the insertion.
+		if pos > 0 {
+			copy(b[:pos], a[:pos])
+		}
+	}
+	copy(b[pos+1:n+1], a[pos:n])
+	b[pos] = storeID
+	*s = b
+	return true
+}
+
+func (s *storeIDPostingList) contains(storeID roachpb.StoreID) bool {
+	_, found := slices.BinarySearch(*s, storeID)
+	return found
+}
+
+const (
+	// offset64 is the initial hash value, and is taken from fnv.go
+	offset64 = 14695981039346656037
+
+	// prime64 is a large-ish prime number used in hashing and taken from fnv.go.
+	prime64 = 1099511628211
+)
+
+// FNV-1a hash algorithm.
+func (s *storeIDPostingList) hash() uint64 {
+	h := uint64(offset64)
+	for _, storeID := range *s {
+		h ^= uint64(storeID)
+		h *= prime64
+	}
+	return h
+}
+
+const notMatchedLeasePreferencIndex = math.MaxInt32
 
 // matchedLeasePreferenceIndex returns the index of the lease preference that
-// matches, else notMatchedLeasePreferenceIndex
+// matches, else notMatchedLeasePreferencIndex
 func matchedLeasePreferenceIndex(
 	storeID roachpb.StoreID,
 	leasePreferences []internedLeasePreference,
@@ -1970,7 +2108,7 @@ func matchedLeasePreferenceIndex(
 			return int32(j)
 		}
 	}
-	return notMatchedLeasePreferenceIndex
+	return notMatchedLeasePreferencIndex
 }
 
 // Avoid unused lint errors.
@@ -1986,7 +2124,7 @@ var _ = analyzeConstraintsBuf{}
 var _ = storeAndLocality{}
 var _ = localityTierInterner{}
 var _ = localityTiers{}
-var _ = storeSet{}
+var _ = storeIDPostingList{}
 
 var _ = constraintsDisj{}.hash
 var _ = constraintsDisj{}.isEqual
@@ -2022,7 +2160,7 @@ func init() {
 	var lt localityTiers
 	var _ = lt.diversityScore
 
-	var pl storeSet
+	var pl storeIDPostingList
 	var _ = pl.union
 	var _ = pl.intersect
 	var _ = pl.isEqual

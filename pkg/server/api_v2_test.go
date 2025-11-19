@@ -39,11 +39,7 @@ func TestListSessionsV2(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
-			DefaultDRPCOption: base.TestDRPCDisabled,
-		},
-	})
+	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{})
 	ctx := context.Background()
 	defer testCluster.Stopper().Stop(ctx)
 
@@ -575,12 +571,7 @@ func TestCheckRestartSafe_Integration(t *testing.T) {
 	ctx := context.Background()
 	var err error
 
-	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
-			// TODO(155111): Test is flakey with DRPC enabled.
-			DefaultDRPCOption: base.TestDRPCDisabled,
-		},
-	})
+	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{})
 	defer testCluster.Stopper().Stop(ctx)
 
 	ts0 := testCluster.Server(0)

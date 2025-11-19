@@ -41,10 +41,7 @@ go_library(
 
 go_test(
     name = "azure_test",
-    srcs = [
-        "ids_test.go",
-        "utils_test.go",
-    ],
+    srcs = ["utils_test.go"],
     data = glob(["testdata/**"]),
     embed = [":azure"],
     deps = [

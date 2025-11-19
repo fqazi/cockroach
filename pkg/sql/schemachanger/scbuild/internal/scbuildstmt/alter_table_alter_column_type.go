@@ -10,6 +10,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemaexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
@@ -97,7 +98,7 @@ func alterTableAlterColumnType(
 	var err error
 	newColType.Type, err = schemachange.ValidateAlterColumnTypeChecks(
 		b, t, b.ClusterSettings(), newColType.Type,
-		isColumnGeneratedAsIdentity(b, tbl.TableID, col.ColumnID),
+		col.GeneratedAsIdentityType != catpb.GeneratedAsIdentityType_NOT_IDENTITY_COLUMN,
 		newColType.IsVirtual)
 	if err != nil {
 		panic(err)
@@ -214,7 +215,7 @@ func validateNewTypeForComputedColumn(
 		func() colinfo.ResultColumns {
 			return getNonDropResultColumns(b, tableID)
 		},
-		func(columnName tree.Name) (exists, accessible, computed bool, id catid.ColumnID, typ *types.T) {
+		func(columnName tree.Name) (exists bool, accessible bool, id catid.ColumnID, typ *types.T) {
 			return columnLookupFn(b, tableID, columnName)
 		},
 	)
@@ -530,7 +531,7 @@ func getComputeExpressionForBackfill(
 		func() colinfo.ResultColumns {
 			return getNonDropResultColumns(b, tableID)
 		},
-		func(columnName tree.Name) (exists, accessible, computed bool, id catid.ColumnID, typ *types.T) {
+		func(columnName tree.Name) (exists bool, accessible bool, id catid.ColumnID, typ *types.T) {
 			return columnLookupFn(b, tableID, columnName)
 		},
 	)

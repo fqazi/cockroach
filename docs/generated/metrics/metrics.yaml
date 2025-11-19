@@ -1321,9 +1321,32 @@ layers:
       unit: BYTES
       aggregation: AVG
       derivative: NONE
+    - name: changefeed.buffer_entries.allocated_mem.aggregator
+      exported_name: changefeed_buffer_entries_allocated_mem_aggregator
+      description: Current quota pool memory allocation - between the kvfeed and the sink
+      y_axis_label: Bytes
+      type: GAUGE
+      unit: BYTES
+      aggregation: AVG
+      derivative: NONE
+    - name: changefeed.buffer_entries.allocated_mem.rangefeed
+      exported_name: changefeed_buffer_entries_allocated_mem_rangefeed
+      description: Current quota pool memory allocation - between the rangefeed and the kvfeed
+      y_axis_label: Bytes
+      type: GAUGE
+      unit: BYTES
+      aggregation: AVG
+      derivative: NONE
+    - name: changefeed.buffer_entries.flush
+      exported_name: changefeed_buffer_entries_flush
+      description: Number of flush elements added to the buffer
+      y_axis_label: Events
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_entries.flush.aggregator
       exported_name: changefeed_buffer_entries_flush_aggregator
-      labeled_name: 'changefeed.buffer_entries.flush{buffer_type: aggregator}'
       description: Number of flush elements added to the buffer - between the kvfeed and the sink
       y_axis_label: Events
       type: COUNTER
@@ -1332,16 +1355,22 @@ layers:
       derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_entries.flush.rangefeed
       exported_name: changefeed_buffer_entries_flush_rangefeed
-      labeled_name: 'changefeed.buffer_entries.flush{buffer_type: rangefeed}'
       description: Number of flush elements added to the buffer - between the rangefeed and the kvfeed
       y_axis_label: Events
       type: COUNTER
       unit: COUNT
       aggregation: AVG
       derivative: NON_NEGATIVE_DERIVATIVE
+    - name: changefeed.buffer_entries.in
+      exported_name: changefeed_buffer_entries_in
+      description: Total entries entering the buffer between raft and changefeed sinks
+      y_axis_label: Entries
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_entries.in.aggregator
       exported_name: changefeed_buffer_entries_in_aggregator
-      labeled_name: 'changefeed.buffer_entries.in{buffer_type: aggregator}'
       description: Total entries entering the buffer between raft and changefeed sinks - between the kvfeed and the sink
       y_axis_label: Entries
       type: COUNTER
@@ -1350,16 +1379,22 @@ layers:
       derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_entries.in.rangefeed
       exported_name: changefeed_buffer_entries_in_rangefeed
-      labeled_name: 'changefeed.buffer_entries.in{buffer_type: rangefeed}'
       description: Total entries entering the buffer between raft and changefeed sinks - between the rangefeed and the kvfeed
       y_axis_label: Entries
       type: COUNTER
       unit: COUNT
       aggregation: AVG
       derivative: NON_NEGATIVE_DERIVATIVE
+    - name: changefeed.buffer_entries.kv
+      exported_name: changefeed_buffer_entries_kv
+      description: Number of kv elements added to the buffer
+      y_axis_label: Events
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_entries.kv.aggregator
       exported_name: changefeed_buffer_entries_kv_aggregator
-      labeled_name: 'changefeed.buffer_entries.kv{buffer_type: aggregator}'
       description: Number of kv elements added to the buffer - between the kvfeed and the sink
       y_axis_label: Events
       type: COUNTER
@@ -1368,16 +1403,22 @@ layers:
       derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_entries.kv.rangefeed
       exported_name: changefeed_buffer_entries_kv_rangefeed
-      labeled_name: 'changefeed.buffer_entries.kv{buffer_type: rangefeed}'
       description: Number of kv elements added to the buffer - between the rangefeed and the kvfeed
       y_axis_label: Events
       type: COUNTER
       unit: COUNT
       aggregation: AVG
       derivative: NON_NEGATIVE_DERIVATIVE
+    - name: changefeed.buffer_entries.out
+      exported_name: changefeed_buffer_entries_out
+      description: Total entries leaving the buffer between raft and changefeed sinks
+      y_axis_label: Entries
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_entries.out.aggregator
       exported_name: changefeed_buffer_entries_out_aggregator
-      labeled_name: 'changefeed.buffer_entries.out{buffer_type: aggregator}'
       description: Total entries leaving the buffer between raft and changefeed sinks - between the kvfeed and the sink
       y_axis_label: Entries
       type: COUNTER
@@ -1386,8 +1427,15 @@ layers:
       derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_entries.out.rangefeed
       exported_name: changefeed_buffer_entries_out_rangefeed
-      labeled_name: 'changefeed.buffer_entries.out{buffer_type: rangefeed}'
       description: Total entries leaving the buffer between raft and changefeed sinks - between the rangefeed and the kvfeed
+      y_axis_label: Entries
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: changefeed.buffer_entries.released
+      exported_name: changefeed_buffer_entries_released
+      description: Total entries processed, emitted and acknowledged by the sinks
       y_axis_label: Entries
       type: COUNTER
       unit: COUNT
@@ -1395,7 +1443,6 @@ layers:
       derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_entries.released.aggregator
       exported_name: changefeed_buffer_entries_released_aggregator
-      labeled_name: 'changefeed.buffer_entries.released{buffer_type: aggregator}'
       description: Total entries processed, emitted and acknowledged by the sinks - between the kvfeed and the sink
       y_axis_label: Entries
       type: COUNTER
@@ -1404,16 +1451,22 @@ layers:
       derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_entries.released.rangefeed
       exported_name: changefeed_buffer_entries_released_rangefeed
-      labeled_name: 'changefeed.buffer_entries.released{buffer_type: rangefeed}'
       description: Total entries processed, emitted and acknowledged by the sinks - between the rangefeed and the kvfeed
       y_axis_label: Entries
       type: COUNTER
       unit: COUNT
       aggregation: AVG
       derivative: NON_NEGATIVE_DERIVATIVE
+    - name: changefeed.buffer_entries.resolved
+      exported_name: changefeed_buffer_entries_resolved
+      description: Number of resolved elements added to the buffer
+      y_axis_label: Events
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_entries.resolved.aggregator
       exported_name: changefeed_buffer_entries_resolved_aggregator
-      labeled_name: 'changefeed.buffer_entries.resolved{buffer_type: aggregator}'
       description: Number of resolved elements added to the buffer - between the kvfeed and the sink
       y_axis_label: Events
       type: COUNTER
@@ -1422,7 +1475,6 @@ layers:
       derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_entries.resolved.rangefeed
       exported_name: changefeed_buffer_entries_resolved_rangefeed
-      labeled_name: 'changefeed.buffer_entries.resolved{buffer_type: rangefeed}'
       description: Number of resolved elements added to the buffer - between the rangefeed and the kvfeed
       y_axis_label: Events
       type: COUNTER
@@ -1437,6 +1489,22 @@ layers:
       unit: COUNT
       aggregation: AVG
       derivative: NON_NEGATIVE_DERIVATIVE
+    - name: changefeed.buffer_entries_mem.acquired.aggregator
+      exported_name: changefeed_buffer_entries_mem_acquired_aggregator
+      description: Total amount of memory acquired for entries as they enter the system - between the kvfeed and the sink
+      y_axis_label: Entries
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: changefeed.buffer_entries_mem.acquired.rangefeed
+      exported_name: changefeed_buffer_entries_mem_acquired_rangefeed
+      description: Total amount of memory acquired for entries as they enter the system - between the rangefeed and the kvfeed
+      y_axis_label: Entries
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_entries_mem.released
       exported_name: changefeed_buffer_entries_mem_released
       description: Total amount of memory released by the entries after they have been emitted
@@ -1445,9 +1513,32 @@ layers:
       unit: COUNT
       aggregation: AVG
       derivative: NON_NEGATIVE_DERIVATIVE
+    - name: changefeed.buffer_entries_mem.released.aggregator
+      exported_name: changefeed_buffer_entries_mem_released_aggregator
+      description: Total amount of memory released by the entries after they have been emitted - between the kvfeed and the sink
+      y_axis_label: Entries
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: changefeed.buffer_entries_mem.released.rangefeed
+      exported_name: changefeed_buffer_entries_mem_released_rangefeed
+      description: Total amount of memory released by the entries after they have been emitted - between the rangefeed and the kvfeed
+      y_axis_label: Entries
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: changefeed.buffer_pushback_nanos
+      exported_name: changefeed_buffer_pushback_nanos
+      description: Total time spent waiting while the buffer was full
+      y_axis_label: Nanoseconds
+      type: COUNTER
+      unit: NANOSECONDS
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_pushback_nanos.aggregator
       exported_name: changefeed_buffer_pushback_nanos_aggregator
-      labeled_name: 'changefeed.buffer_pushback_nanos{buffer_type: aggregator}'
       description: Total time spent waiting while the buffer was full - between the kvfeed and the sink
       y_axis_label: Nanoseconds
       type: COUNTER
@@ -1456,7 +1547,6 @@ layers:
       derivative: NON_NEGATIVE_DERIVATIVE
     - name: changefeed.buffer_pushback_nanos.rangefeed
       exported_name: changefeed_buffer_pushback_nanos_rangefeed
-      labeled_name: 'changefeed.buffer_pushback_nanos{buffer_type: rangefeed}'
       description: Total time spent waiting while the buffer was full - between the rangefeed and the kvfeed
       y_axis_label: Nanoseconds
       type: COUNTER
@@ -1690,7 +1780,7 @@ layers:
     - name: changefeed.parallel_io_pending_rows
       exported_name: changefeed_parallel_io_pending_rows
       description: Number of rows which are blocked from being sent due to conflicting in-flight keys
-      y_axis_label: Messages
+      y_axis_label: Keys
       type: GAUGE
       unit: COUNT
       aggregation: AVG
@@ -1709,14 +1799,6 @@ layers:
       y_axis_label: Nanoseconds
       type: HISTOGRAM
       unit: NANOSECONDS
-      aggregation: AVG
-      derivative: NONE
-    - name: changefeed.parallel_io_workers
-      exported_name: changefeed_parallel_io_workers
-      description: The number of workers in the ParallelIO
-      y_axis_label: Workers
-      type: GAUGE
-      unit: COUNT
       aggregation: AVG
       derivative: NONE
     - name: changefeed.progress_skew.span
@@ -2651,6 +2733,146 @@ layers:
       exported_name: distsender_rpc_err_conditionfailederrtype
       description: |
         Number of ConditionFailedErrType errors received replica-bound RPCs
+
+        This counts how often error of the specified type was received back from replicas
+        as part of executing possibly range-spanning requests. Failures to reach the target
+        replica will be accounted for as 'roachpb.CommunicationErrType' and unclassified
+        errors as 'roachpb.InternalErrType'.
+      y_axis_label: Errors
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: distsender.rpc.err.errordetailtype(0)
+      exported_name: distsender_rpc_err_errordetailtype_0_
+      description: |
+        Number of ErrorDetailType(0) errors received replica-bound RPCs
+
+        This counts how often error of the specified type was received back from replicas
+        as part of executing possibly range-spanning requests. Failures to reach the target
+        replica will be accounted for as 'roachpb.CommunicationErrType' and unclassified
+        errors as 'roachpb.InternalErrType'.
+      y_axis_label: Errors
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: distsender.rpc.err.errordetailtype(15)
+      exported_name: distsender_rpc_err_errordetailtype_15_
+      description: |
+        Number of ErrorDetailType(15) errors received replica-bound RPCs
+
+        This counts how often error of the specified type was received back from replicas
+        as part of executing possibly range-spanning requests. Failures to reach the target
+        replica will be accounted for as 'roachpb.CommunicationErrType' and unclassified
+        errors as 'roachpb.InternalErrType'.
+      y_axis_label: Errors
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: distsender.rpc.err.errordetailtype(19)
+      exported_name: distsender_rpc_err_errordetailtype_19_
+      description: |
+        Number of ErrorDetailType(19) errors received replica-bound RPCs
+
+        This counts how often error of the specified type was received back from replicas
+        as part of executing possibly range-spanning requests. Failures to reach the target
+        replica will be accounted for as 'roachpb.CommunicationErrType' and unclassified
+        errors as 'roachpb.InternalErrType'.
+      y_axis_label: Errors
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: distsender.rpc.err.errordetailtype(20)
+      exported_name: distsender_rpc_err_errordetailtype_20_
+      description: |
+        Number of ErrorDetailType(20) errors received replica-bound RPCs
+
+        This counts how often error of the specified type was received back from replicas
+        as part of executing possibly range-spanning requests. Failures to reach the target
+        replica will be accounted for as 'roachpb.CommunicationErrType' and unclassified
+        errors as 'roachpb.InternalErrType'.
+      y_axis_label: Errors
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: distsender.rpc.err.errordetailtype(21)
+      exported_name: distsender_rpc_err_errordetailtype_21_
+      description: |
+        Number of ErrorDetailType(21) errors received replica-bound RPCs
+
+        This counts how often error of the specified type was received back from replicas
+        as part of executing possibly range-spanning requests. Failures to reach the target
+        replica will be accounted for as 'roachpb.CommunicationErrType' and unclassified
+        errors as 'roachpb.InternalErrType'.
+      y_axis_label: Errors
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: distsender.rpc.err.errordetailtype(23)
+      exported_name: distsender_rpc_err_errordetailtype_23_
+      description: |
+        Number of ErrorDetailType(23) errors received replica-bound RPCs
+
+        This counts how often error of the specified type was received back from replicas
+        as part of executing possibly range-spanning requests. Failures to reach the target
+        replica will be accounted for as 'roachpb.CommunicationErrType' and unclassified
+        errors as 'roachpb.InternalErrType'.
+      y_axis_label: Errors
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: distsender.rpc.err.errordetailtype(24)
+      exported_name: distsender_rpc_err_errordetailtype_24_
+      description: |
+        Number of ErrorDetailType(24) errors received replica-bound RPCs
+
+        This counts how often error of the specified type was received back from replicas
+        as part of executing possibly range-spanning requests. Failures to reach the target
+        replica will be accounted for as 'roachpb.CommunicationErrType' and unclassified
+        errors as 'roachpb.InternalErrType'.
+      y_axis_label: Errors
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: distsender.rpc.err.errordetailtype(29)
+      exported_name: distsender_rpc_err_errordetailtype_29_
+      description: |
+        Number of ErrorDetailType(29) errors received replica-bound RPCs
+
+        This counts how often error of the specified type was received back from replicas
+        as part of executing possibly range-spanning requests. Failures to reach the target
+        replica will be accounted for as 'roachpb.CommunicationErrType' and unclassified
+        errors as 'roachpb.InternalErrType'.
+      y_axis_label: Errors
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: distsender.rpc.err.errordetailtype(30)
+      exported_name: distsender_rpc_err_errordetailtype_30_
+      description: |
+        Number of ErrorDetailType(30) errors received replica-bound RPCs
+
+        This counts how often error of the specified type was received back from replicas
+        as part of executing possibly range-spanning requests. Failures to reach the target
+        replica will be accounted for as 'roachpb.CommunicationErrType' and unclassified
+        errors as 'roachpb.InternalErrType'.
+      y_axis_label: Errors
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
+    - name: distsender.rpc.err.errordetailtype(33)
+      exported_name: distsender_rpc_err_errordetailtype_33_
+      description: |
+        Number of ErrorDetailType(33) errors received replica-bound RPCs
 
         This counts how often error of the specified type was received back from replicas
         as part of executing possibly range-spanning requests. Failures to reach the target
@@ -7004,14 +7226,6 @@ layers:
       unit: NANOSECONDS
       aggregation: AVG
       derivative: NONE
-    - name: physical_replication.catchup_ranges
-      exported_name: physical_replication_catchup_ranges
-      description: Source side ranges undergoing catch up scans
-      y_axis_label: Ranges
-      type: GAUGE
-      unit: COUNT
-      aggregation: AVG
-      derivative: NONE
     - name: physical_replication.commit_latency
       exported_name: physical_replication_commit_latency
       description: 'Event commit latency: a difference between event MVCC timestamp and the time it was flushed into disk. If we batch events, then the difference between the oldest event in the batch and flush is recorded'
@@ -7072,14 +7286,6 @@ layers:
       exported_name: physical_replication_running
       description: Number of currently running replication streams
       y_axis_label: Replication Streams
-      type: GAUGE
-      unit: COUNT
-      aggregation: AVG
-      derivative: NONE
-    - name: physical_replication.scanning_ranges
-      exported_name: physical_replication_scanning_ranges
-      description: Source side ranges undergoing an initial scan
-      y_axis_label: Ranges
       type: GAUGE
       unit: COUNT
       aggregation: AVG
@@ -7198,7 +7404,7 @@ layers:
       derivative: NONE
     - name: rpc.server.request.duration.nanos
       exported_name: rpc_server_request_duration_nanos
-      description: Duration of an RPC request in nanoseconds.
+      description: Duration of an grpc request in nanoseconds.
       y_axis_label: Duration
       type: HISTOGRAM
       unit: NANOSECONDS
@@ -10532,16 +10738,6 @@ layers:
       aggregation: AVG
       derivative: NON_NEGATIVE_DERIVATIVE
       how_to_use: This metric reports the number of a node's LSM compactions. If the number of compactions remains elevated while the LSM health does not improve, compactions are not keeping up with the workload. If the condition persists for an extended period, the cluster will initially exhibit performance issues that will eventually escalate into stability issues.
-      essential: true
-    - name: storage.wal.failover.write_and_sync.latency
-      exported_name: storage_wal_failover_write_and_sync_latency
-      description: The observed latency for writing and syncing to the logical Write-Ahead Log.
-      y_axis_label: Nanoseconds
-      type: HISTOGRAM
-      unit: NANOSECONDS
-      aggregation: AVG
-      derivative: NONE
-      how_to_use: Only populated when WAL failover is configured. Without WAL failover, the relevant metric is storage.wal.fsync.latency.
       essential: true
     - name: storage.wal.fsync.latency
       exported_name: storage_wal_fsync_latency
@@ -16126,78 +16322,6 @@ layers:
       unit: COUNT
       aggregation: AVG
       derivative: NON_NEGATIVE_DERIVATIVE
-    - name: storage.bytes-compressed.l5.data
-      exported_name: storage_bytes_compressed_l5_data
-      labeled_name: 'storage.bytes-compressed{level: 5, type: data}'
-      description: Total number of logical bytes compressed for L5 data blocks.
-      y_axis_label: Bytes
-      type: COUNTER
-      unit: BYTES
-      aggregation: AVG
-      derivative: NON_NEGATIVE_DERIVATIVE
-    - name: storage.bytes-compressed.l5.values
-      exported_name: storage_bytes_compressed_l5_values
-      labeled_name: 'storage.bytes-compressed{level: 5, type: values}'
-      description: Total number of logical bytes compressed for L5 value blocks.
-      y_axis_label: Bytes
-      type: COUNTER
-      unit: BYTES
-      aggregation: AVG
-      derivative: NON_NEGATIVE_DERIVATIVE
-    - name: storage.bytes-compressed.l6.data
-      exported_name: storage_bytes_compressed_l6_data
-      labeled_name: 'storage.bytes-compressed{level: 6, type: data}'
-      description: Total number of logical bytes compressed for L6 data blocks.
-      y_axis_label: Bytes
-      type: COUNTER
-      unit: BYTES
-      aggregation: AVG
-      derivative: NON_NEGATIVE_DERIVATIVE
-    - name: storage.bytes-compressed.l6.values
-      exported_name: storage_bytes_compressed_l6_values
-      labeled_name: 'storage.bytes-compressed{level: 6, type: values}'
-      description: Total number of logical bytes compressed for L6 value blocks.
-      y_axis_label: Bytes
-      type: COUNTER
-      unit: BYTES
-      aggregation: AVG
-      derivative: NON_NEGATIVE_DERIVATIVE
-    - name: storage.bytes-decompressed.l5.data
-      exported_name: storage_bytes_decompressed_l5_data
-      labeled_name: 'storage.bytes-decompressed{level: 5, type: data}'
-      description: Total number of logical bytes decompressed for L5 data blocks.
-      y_axis_label: Bytes
-      type: COUNTER
-      unit: BYTES
-      aggregation: AVG
-      derivative: NON_NEGATIVE_DERIVATIVE
-    - name: storage.bytes-decompressed.l5.values
-      exported_name: storage_bytes_decompressed_l5_values
-      labeled_name: 'storage.bytes-decompressed{level: 5, type: values}'
-      description: Total number of logical bytes decompressed for L5 value blocks.
-      y_axis_label: Bytes
-      type: COUNTER
-      unit: BYTES
-      aggregation: AVG
-      derivative: NON_NEGATIVE_DERIVATIVE
-    - name: storage.bytes-decompressed.l6.data
-      exported_name: storage_bytes_decompressed_l6_data
-      labeled_name: 'storage.bytes-decompressed{level: 6, type: data}'
-      description: Total number of logical bytes decompressed for L6 data blocks.
-      y_axis_label: Bytes
-      type: COUNTER
-      unit: BYTES
-      aggregation: AVG
-      derivative: NON_NEGATIVE_DERIVATIVE
-    - name: storage.bytes-decompressed.l6.values
-      exported_name: storage_bytes_decompressed_l6_values
-      labeled_name: 'storage.bytes-decompressed{level: 6, type: values}'
-      description: Total number of logical bytes decompressed for L6 value blocks.
-      y_axis_label: Bytes
-      type: COUNTER
-      unit: BYTES
-      aggregation: AVG
-      derivative: NON_NEGATIVE_DERIVATIVE
     - name: storage.checkpoints
       exported_name: storage_checkpoints
       description: |-
@@ -16547,30 +16671,6 @@ layers:
       exported_name: storage_iterator_block_load_read_duration
       description: Cumulative time storage engine iterators spent loading blocks from durable storage. See storage.AggregatedIteratorStats for details.
       y_axis_label: Nanoseconds
-      type: COUNTER
-      unit: NANOSECONDS
-      aggregation: AVG
-      derivative: NON_NEGATIVE_DERIVATIVE
-    - name: storage.iterator.category-abort-span.block-load.bytes
-      exported_name: storage_iterator_category_abort_span_block_load_bytes
-      description: Bytes loaded by storage sstable iterators (possibly cached).
-      y_axis_label: Bytes
-      type: COUNTER
-      unit: BYTES
-      aggregation: AVG
-      derivative: NON_NEGATIVE_DERIVATIVE
-    - name: storage.iterator.category-abort-span.block-load.cached-bytes
-      exported_name: storage_iterator_category_abort_span_block_load_cached_bytes
-      description: Bytes loaded by storage sstable iterators from the block cache
-      y_axis_label: Bytes
-      type: COUNTER
-      unit: BYTES
-      aggregation: AVG
-      derivative: NON_NEGATIVE_DERIVATIVE
-    - name: storage.iterator.category-abort-span.block-load.latency-sum
-      exported_name: storage_iterator_category_abort_span_block_load_latency_sum
-      description: Cumulative latency for loading bytes not in the block cache, by storage sstable iterators
-      y_axis_label: Latency
       type: COUNTER
       unit: NANOSECONDS
       aggregation: AVG
@@ -17416,6 +17516,15 @@ layers:
       aggregation: AVG
       derivative: NON_NEGATIVE_DERIVATIVE
       how_to_use: Only populated when WAL failover is configured. A high switch count indicates that many disk stalls were encountered.
+    - name: storage.wal.failover.write_and_sync.latency
+      exported_name: storage_wal_failover_write_and_sync_latency
+      description: The observed latency for writing and syncing to the logical Write-Ahead Log.
+      y_axis_label: Nanoseconds
+      type: HISTOGRAM
+      unit: NANOSECONDS
+      aggregation: AVG
+      derivative: NONE
+      how_to_use: Only populated when WAL failover is configured. Without WAL failover, the relevant metric is storage.wal.fsync.latency.
     - name: storage.write-amplification
       exported_name: storage_write_amplification
       description: |-
@@ -17505,22 +17614,6 @@ layers:
       exported_name: storeliveness_support_withdraw_successes
       description: Number of times the Store Liveness Support Manager has successfully withdrawn support for another store
       y_axis_label: Support Withdrawals
-      type: COUNTER
-      unit: COUNT
-      aggregation: AVG
-      derivative: NON_NEGATIVE_DERIVATIVE
-    - name: storeliveness.transport.batches-received
-      exported_name: storeliveness_transport_batches_received
-      description: Number of message batches received by the Store Liveness Transport
-      y_axis_label: Batches
-      type: COUNTER
-      unit: COUNT
-      aggregation: AVG
-      derivative: NON_NEGATIVE_DERIVATIVE
-    - name: storeliveness.transport.batches-sent
-      exported_name: storeliveness_transport_batches_sent
-      description: Number of message batches sent by the Store Liveness Transport
-      y_axis_label: Batches
       type: COUNTER
       unit: COUNT
       aggregation: AVG

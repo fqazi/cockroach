@@ -43,7 +43,7 @@ type matchedConstraints struct {
 }
 
 type matchedSet struct {
-	storeSet
+	storeIDPostingList
 }
 
 func newConstraintMatcher(interner *stringInterner) *constraintMatcher {
@@ -166,21 +166,21 @@ func (cm *constraintMatcher) getMatchedSetForConstraint(c internedConstraint) *m
 // constrainStoresForConjunction populates storeSet with the stores matching
 // the given conjunction of constraints.
 //
-// TODO(sumeer): make storeSet a struct and use a sync.Pool.
+// TODO(sumeer): make storeIDPostingList a struct and use a sync.Pool.
 func (cm *constraintMatcher) constrainStoresForConjunction(
-	constraints []internedConstraint, storeSet *storeSet,
+	constraints []internedConstraint, storeSet *storeIDPostingList,
 ) {
 	*storeSet = (*storeSet)[:0]
 	if len(constraints) == 0 {
-		*storeSet = append(*storeSet, cm.allStores.storeSet...)
+		*storeSet = append(*storeSet, cm.allStores.storeIDPostingList...)
 		return
 	}
 	for i := range constraints {
 		matchedSet := cm.getMatchedSetForConstraint(constraints[i])
 		if i == 0 {
-			*storeSet = append(*storeSet, matchedSet.storeSet...)
+			*storeSet = append(*storeSet, matchedSet.storeIDPostingList...)
 		} else {
-			storeSet.intersect(matchedSet.storeSet)
+			storeSet.intersect(matchedSet.storeIDPostingList)
 		}
 		if len(*storeSet) == 0 {
 			return
@@ -212,24 +212,26 @@ func (cm *constraintMatcher) storeMatches(
 
 // constrainStoresForExpr populates storeSet with the stores matching the
 // given expression.
-func (cm *constraintMatcher) constrainStoresForExpr(expr constraintsDisj, set *storeSet) {
+func (cm *constraintMatcher) constrainStoresForExpr(
+	expr constraintsDisj, storeSet *storeIDPostingList,
+) {
 	if len(expr) == 0 {
-		*set = append(*set, cm.allStores.storeSet...)
+		*storeSet = append(*storeSet, cm.allStores.storeIDPostingList...)
 		return
 	}
-	// Optimize for a single conjunction, by using set directly in the call
+	// Optimize for a single conjunction, by using storeSet directly in the call
 	// to constrainStoresForConjunction.
-	var scratch storeSet
-	scratchPtr := set
+	var scratch storeIDPostingList
+	scratchPtr := storeSet
 	for i := range expr {
 		cm.constrainStoresForConjunction(expr[i], scratchPtr)
 		if len(*scratchPtr) == 0 {
 			continue
 		}
-		if scratchPtr != set {
-			set.union(*scratchPtr)
+		if scratchPtr != storeSet {
+			storeSet.union(*scratchPtr)
 		} else {
-			// The set contains the first non-empty set. Collect the remaining
+			// The storeSet contains the first non-empty set. Collect the remaining
 			// sets in scratch.
 			scratchPtr = &scratch
 		}
@@ -249,7 +251,7 @@ func (cm *constraintMatcher) checkConsistency() error {
 		}
 	}
 	for c, pl := range cm.constraints {
-		for _, storeID := range pl.storeSet {
+		for _, storeID := range pl.storeIDPostingList {
 			store, ok := cm.stores[storeID]
 			if !ok {
 				return errors.AssertionFailedf("constraint set mentions unknown storeID %d", storeID)

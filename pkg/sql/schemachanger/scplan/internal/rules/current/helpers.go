@@ -16,11 +16,11 @@ import (
 
 const (
 	// rulesVersion version of elements that can be appended to rel rule names.
-	rulesVersion = "-26.1"
+	rulesVersion = "-25.4"
 )
 
 // rulesVersionKey version of elements used by this rule set.
-var rulesVersionKey = clusterversion.V26_1
+var rulesVersionKey = clusterversion.V25_4
 
 // descriptorIsNotBeingDropped creates a clause which leads to the outer clause
 // failing to unify if the passed element is part of a descriptor and
@@ -252,8 +252,6 @@ func isColumnDependent(e scpb.Element) bool {
 	case *scpb.ColumnType, *scpb.ColumnNotNull:
 		return true
 	case *scpb.ColumnName, *scpb.ColumnComment, *scpb.IndexColumn:
-		return true
-	case *scpb.ColumnGeneratedAsIdentity:
 		return true
 	}
 	return isColumnTypeDependent(e)

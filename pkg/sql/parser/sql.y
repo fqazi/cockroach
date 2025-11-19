@@ -965,12 +965,12 @@ func (u *sqlSymUnion) doBlockOptions() tree.DoBlockOptions {
 func (u *sqlSymUnion) doBlockOption() tree.DoBlockOption {
     return u.val.(tree.DoBlockOption)
 }
-func (u *sqlSymUnion) changefeedFilterOption() tree.ChangefeedFilterOption {
-    return u.val.(tree.ChangefeedFilterOption)
-}
-func (u *sqlSymUnion) filterType() tree.FilterType {
-    return u.val.(tree.FilterType)
-}
+func (u *sqlSymUnion) changefeedFilterOption() *tree.ChangefeedFilterOption {
+    if filterOption, ok := u.val.(*tree.ChangefeedFilterOption); ok {
+        return filterOption
+    }
+    return nil
+} 
 
 %}
 
@@ -1020,7 +1020,7 @@ func (u *sqlSymUnion) filterType() tree.FilterType {
 %token <str> EXPIRATION EXPLAIN EXPORT EXTENSION EXTERNAL EXTRACT EXTRACT_DURATION EXTREMES
 
 %token <str> FAILURE FALSE FAMILY FETCH FETCHVAL FETCHTEXT FETCHVAL_PATH FETCHTEXT_PATH
-%token <str> FILES FILTER FINGERPRINTS
+%token <str> FILES FILTER
 %token <str> FIRST FIRST_CONTAINED_BY FIRST_CONTAINS FLOAT FLOAT4 FLOAT8 FLOORDIV FOLLOWING FOR FORCE FORCE_INDEX
 %token <str> FORCE_INVERTED_INDEX FORCE_NOT_NULL FORCE_NULL FORCE_QUOTE FORCE_ZIGZAG
 %token <str> FOREIGN FORMAT FORWARD FREEZE FROM FULL FUNCTION FUNCTIONS
@@ -1099,7 +1099,7 @@ func (u *sqlSymUnion) filterType() tree.FilterType {
 %token <str> VIEWCLUSTERSETTING VIRTUAL VISIBLE INVISIBLE VISIBILITY VOLATILE VOTERS
 %token <str> VIRTUAL_CLUSTER_NAME VIRTUAL_CLUSTER
 
-%token <str> WATCHED_TABLES WHEN WHERE WINDOW WITH WITHIN WITHOUT WORK WRITE
+%token <str> WHEN WHERE WINDOW WITH WITHIN WITHOUT WORK WRITE
 
 %token <str> YEAR
 
@@ -1403,7 +1403,6 @@ func (u *sqlSymUnion) filterType() tree.FilterType {
 %type <tree.Statement> show_enums_stmt
 %type <tree.Statement> show_external_connections_stmt
 %type <tree.Statement> show_fingerprints_stmt opt_with_show_fingerprints_options fingerprint_options_list fingerprint_options
-%type <bool> experimental_or_not_fingerprints
 %type <tree.Statement> show_functions_stmt
 %type <tree.Statement> show_procedures_stmt
 %type <tree.Statement> show_grants_stmt
@@ -1611,8 +1610,7 @@ func (u *sqlSymUnion) filterType() tree.FilterType {
 %type <tree.ReturningClause> returning_clause
 %type <tree.TableExprs> opt_using_clause
 %type <tree.RefreshDataOption> opt_clear_data
-%type <tree.ChangefeedFilterOption> db_level_changefeed_filter_option optional_db_level_changefeed_filter_option
-%type <tree.FilterType> include_or_exclude
+%type <*tree.ChangefeedFilterOption> db_level_changefeed_filter_option
 
 %type <tree.BatchParam> batch_param
 %type <[]tree.BatchParam> batch_param_list
@@ -6278,7 +6276,7 @@ create_changefeed_stmt:
       Level: tree.ChangefeedLevelTable,
     }
   }
-| CREATE_CHANGEFEED_FOR_DATABASE CHANGEFEED FOR DATABASE database_name optional_db_level_changefeed_filter_option opt_changefeed_sink opt_with_options
+| CREATE_CHANGEFEED_FOR_DATABASE CHANGEFEED FOR DATABASE database_name db_level_changefeed_filter_option opt_changefeed_sink opt_with_options
   {
     $$.val = &tree.CreateChangefeed{
       DatabaseTarget: tree.ChangefeedDatabaseTarget($5),
@@ -6509,25 +6507,20 @@ opt_using_clause:
     $$.val = tree.TableExprs{}
   }
 
-optional_db_level_changefeed_filter_option:
-  db_level_changefeed_filter_option
-  {
-    $$.val = $1.changefeedFilterOption()
-  }
-| /* EMPTY */
-  {
-    $$.val = tree.ChangefeedFilterOption{}
-  }
-
 db_level_changefeed_filter_option:
   EXCLUDE TABLES table_name_list
   {
-    $$.val = tree.ChangefeedFilterOption{Tables: $3.tableNames(), FilterType: tree.ExcludeFilter}
+    $$.val = &tree.ChangefeedFilterOption{Tables: $3.tableNames(), FilterType: tree.ExcludeFilter}
   }
 | INCLUDE TABLES table_name_list
   {
-    $$.val = tree.ChangefeedFilterOption{Tables: $3.tableNames(), FilterType: tree.IncludeFilter}
+    $$.val = &tree.ChangefeedFilterOption{Tables: $3.tableNames(), FilterType: tree.IncludeFilter}
   }
+| /* EMPTY */ 
+  {
+    $$.val = nil
+  }
+
 
 // %Help: DISCARD - reset the session to its initial state
 // %Category: Cfg
@@ -7053,31 +7046,6 @@ alter_changefeed_cmd:
     $$.val = &tree.AlterChangefeedUnsetOptions{
       Options: $2.nameList(),
     }
-  }
-| SET db_level_changefeed_filter_option
-  {
-    $$.val = &tree.AlterChangefeedSetFilterOption{
-      ChangefeedFilterOption: $2.changefeedFilterOption(),
-    }
-  }
-| UNSET include_or_exclude TABLES
-  {
-    $$.val = &tree.AlterChangefeedUnsetFilterOption{
-      ChangefeedFilterOption: tree.ChangefeedFilterOption{
-        FilterType: $2.filterType(),
-        Tables:     tree.TableNames{},
-      },
-    }
-  }
-
-include_or_exclude:
-  INCLUDE
-  {
-    $$.val = tree.IncludeFilter
-  }
-  | EXCLUDE
-  {
-    $$.val = tree.ExcludeFilter
   }
 
 // %Help: ALTER BACKUP - alter an existing backup's encryption keys
@@ -7974,18 +7942,6 @@ inspect_option:
   {
     $$.val = &tree.InspectOptionIndex{IndexNames: $3.newTableIndexNames()}
   }
-| DETACHED
-  {
-    $$.val = &tree.InspectOptionDetached{Detached: *tree.MakeDBool(true)}
-  }
-| DETACHED '=' TRUE
-  {
-    $$.val = &tree.InspectOptionDetached{Detached: *tree.MakeDBool(true)}
-  }
-| DETACHED '=' FALSE
-  {
-    $$.val = &tree.InspectOptionDetached{Detached: *tree.MakeDBool(false)}
-  }
 
 // %Help: SHOW INSPECT ERRORS - list errors recorded by one INSPECT run
 // %Category: Misc
@@ -7996,7 +7952,7 @@ inspect_option:
 //   [WITH DETAILS]
 //
 // When table is specified errors will be filtered to that table. When job is
-// not set results from the most recent, completed job with errors is reported on.
+// not set results from the most recent, completed job with errors is reported on. 
 // %SeeAlso: INSPECT
 show_inspect_errors_stmt:
   SHOW INSPECT ERRORS opt_for_table_clause opt_for_job_clause opt_with_details
@@ -9542,10 +9498,6 @@ show_jobs_stmt:
   {
     $$.val = &tree.ShowChangefeedJobs{}
   }
-| SHOW CHANGEFEED JOBS WITH WATCHED_TABLES
-  {
-    $$.val = &tree.ShowChangefeedJobs{IncludeWatchedTables: true}
-  }
 | SHOW AUTOMATIC JOBS error // SHOW HELP: SHOW JOBS
 | SHOW JOBS error // SHOW HELP: SHOW JOBS
 | SHOW CHANGEFEED JOBS error // SHOW HELP: SHOW JOBS
@@ -9572,13 +9524,6 @@ show_jobs_stmt:
   {
     $$.val = &tree.ShowChangefeedJobs{Jobs: $4.slct()}
   }
-| SHOW CHANGEFEED JOBS select_stmt WITH WATCHED_TABLES
-  {
-    $$.val = &tree.ShowChangefeedJobs{
-      Jobs: $4.slct(),
-      IncludeWatchedTables: true,
-    }
-  }
 | SHOW JOBS select_stmt error // SHOW HELP: SHOW JOBS
 | SHOW JOB a_expr
   {
@@ -9603,15 +9548,6 @@ show_jobs_stmt:
       Jobs: &tree.Select{
         Select: &tree.ValuesClause{Rows: []tree.Exprs{tree.Exprs{$4.expr()}}},
       },
-    }
-  }
-| SHOW CHANGEFEED JOB a_expr WITH WATCHED_TABLES
-  {
-    $$.val = &tree.ShowChangefeedJobs{
-      Jobs: &tree.Select{
-        Select: &tree.ValuesClause{Rows: []tree.Exprs{tree.Exprs{$4.expr()}}},
-      },
-      IncludeWatchedTables: true,
     }
   }
 | SHOW JOB WHEN COMPLETE a_expr
@@ -10439,33 +10375,15 @@ show_locality_stmt:
   }
 
 show_fingerprints_stmt:
-  SHOW experimental_or_not_fingerprints FROM TABLE table_name opt_with_show_fingerprints_options
+  SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE table_name opt_with_show_fingerprints_options
   {
     /* SKIP DOC */
-    $$.val = &tree.ShowFingerprints{
-                Table: $5.unresolvedObjectName(),
-                Experimental: $2.bool(),
-                Options: *$6.showFingerprintOptions(),
-             }
+    $$.val = &tree.ShowFingerprints{Table: $5.unresolvedObjectName(), Options: *$6.showFingerprintOptions()}
   }
-| SHOW experimental_or_not_fingerprints FROM virtual_cluster virtual_cluster_spec opt_with_show_fingerprints_options
+| SHOW EXPERIMENTAL_FINGERPRINTS FROM virtual_cluster virtual_cluster_spec opt_with_show_fingerprints_options
   {
     /* SKIP DOC */
-    $$.val = &tree.ShowFingerprints{
-                TenantSpec: $5.tenantSpec(),
-                Experimental: $2.bool(),
-                Options: *$6.showFingerprintOptions(),
-             }
-  }
-
-experimental_or_not_fingerprints:
-  EXPERIMENTAL_FINGERPRINTS
-  {
-    $$.val = true
-  }
-| FINGERPRINTS
-  {
-    $$.val = false
+    $$.val = &tree.ShowFingerprints{TenantSpec: $5.tenantSpec(), Options: *$6.showFingerprintOptions()}
   }
 
 opt_with_show_fingerprints_options:
@@ -18657,7 +18575,6 @@ unreserved_keyword:
 | FAILURE
 | FILES
 | FILTER
-| FINGERPRINTS
 | FIRST
 | FOLLOWING
 | FORMAT
@@ -19022,7 +18939,6 @@ unreserved_keyword:
 | VISIBILITY
 | VOLATILE
 | VOTERS
-| WATCHED_TABLES
 | WITHIN
 | WITHOUT
 | WRITE
@@ -19199,7 +19115,6 @@ bare_label_keywords:
 | FALSE
 | FAMILY
 | FILES
-| FINGERPRINTS
 | FIRST
 | FLOAT
 | FOLLOWING
@@ -19638,7 +19553,6 @@ bare_label_keywords:
 | VISIBILITY
 | VOLATILE
 | VOTERS
-| WATCHED_TABLES
 | WHEN
 | WORK
 | WRITE

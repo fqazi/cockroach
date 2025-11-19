@@ -7,7 +7,7 @@ package dumpstore
 
 import (
 	"context"
-	"io/fs"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"time"
@@ -85,19 +85,10 @@ func (s *DumpStore) GetFullPath(fileName string) string {
 func (s *DumpStore) GC(ctx context.Context, now time.Time, dumper Dumper) {
 	// NB: ioutil.ReadDir sorts the file names in ascending order.
 	// This brings the oldest files first.
-	entries, err := os.ReadDir(s.dir)
+	files, err := ioutil.ReadDir(s.dir)
 	if err != nil {
 		log.Dev.Warningf(ctx, "%v", err)
 		return
-	}
-	files := make([]fs.FileInfo, 0, len(entries))
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
-			log.Dev.Warningf(ctx, "%v", err)
-			return
-		}
-		files = append(files, info)
 	}
 
 	maxS := s.maxCombinedFileSizeSetting.Get(&s.st.SV)

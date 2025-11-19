@@ -313,7 +313,9 @@ func TestGCSFaultInjection(t *testing.T) {
 
 	// Enable cloud transport logging.
 	defer log.Scope(t).Close(t)
-	testutils.SetVModule(t, "cloud_logging_transport=1")
+	prevVModule := log.GetVModule()
+	defer func() { _ = log.SetVModule(prevVModule) }()
+	require.NoError(t, log.SetVModule("cloud_logging_transport=1"))
 
 	testID := cloudtestutils.NewTestID()
 	uri := fmt.Sprintf("gs://%s/%d-fault-injection-test?AUTH=implicit", bucket, testID)

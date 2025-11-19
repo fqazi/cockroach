@@ -26,7 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/securitytest"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
@@ -142,7 +141,7 @@ func ShouldStartDefaultTestTenant(
 				t.Logf("cluster virtualization disabled in global scope due to issue: #%d (expected label: %s)", issueNum, label)
 			}
 		} else {
-			t.Log(defaultTestTenantMessage(override.SharedProcessMode()) + "\n(override via TestingSetDefaultTenantSelectionOverride)")
+			t.Log(defaultTestTenantMessage(shared) + "\n(override via TestingSetDefaultTenantSelectionOverride)")
 		}
 		return override
 	}
@@ -178,13 +177,6 @@ const (
 
 	testTenantModeEnabledShared   = "shared"
 	testTenantModeEnabledExternal = "external"
-
-	// COCKROACH_TEST_DRPC controls the DRPC enablement mode for test servers.
-	//
-	// - disabled: disables DRPC; all inter-node connectivity will use gRPC only
-	//
-	// - enabled: enables DRPC for inter-node connectivity
-	testDRPCEnabledEnvVar = "COCKROACH_TEST_DRPC"
 )
 
 func testTenantDecisionFromEnvironment(
@@ -368,21 +360,6 @@ func NewServer(params base.TestServerArgs) (TestServerInterface, error) {
 		params.DefaultTenantName = defaultTestTenantName
 	}
 
-	var evalTestingKnobs *eval.TestingKnobs
-	if params.Knobs.SQLEvalContext != nil {
-		evalTestingKnobs = params.Knobs.SQLEvalContext.(*eval.TestingKnobs)
-	} else {
-		evalTestingKnobs = &eval.TestingKnobs{}
-		params.Knobs.SQLEvalContext = evalTestingKnobs
-	}
-
-	if evalTestingKnobs.UnsafeOverride == nil {
-		v := true
-		evalTestingKnobs.UnsafeOverride = func() *bool {
-			return &v
-		}
-	}
-
 	srv, err := srvFactoryImpl.New(params)
 	if err != nil {
 		return nil, err
@@ -560,24 +537,6 @@ func WaitForTenantCapabilities(
 	}
 }
 
-// parseDefaultTestDRPCOptionFromEnv parses the COCKROACH_TEST_DRPC environment
-// variable and returns the corresponding DefaultTestDRPCOption. If the
-// environment variable is not set it returns TestDRPCUnset. For invalid value,
-// it panic.
-func parseDefaultTestDRPCOptionFromEnv() base.DefaultTestDRPCOption {
-	if str, present := envutil.EnvString(testDRPCEnabledEnvVar, 0); present {
-		switch str {
-		case "disabled", "false":
-			return base.TestDRPCDisabled
-		case "enabled", "true":
-			return base.TestDRPCEnabled
-		default:
-			panic(fmt.Sprintf("invalid value for %s: %s", testDRPCEnabledEnvVar, str))
-		}
-	}
-	return base.TestDRPCUnset
-}
-
 // ShouldEnableDRPC determines the final DRPC option based on the input
 // option and any global overrides, resolving random choices to a concrete
 // enabled/disabled state.
@@ -585,16 +544,10 @@ func ShouldEnableDRPC(
 	ctx context.Context, t TestLogger, option base.DefaultTestDRPCOption,
 ) base.DefaultTestDRPCOption {
 	var logSuffix string
-
-	// Check environment variable first
-	if envOption := parseDefaultTestDRPCOptionFromEnv(); envOption != base.TestDRPCUnset {
-		option = envOption
-		logSuffix = " (override by COCKROACH_TEST_DRPC environment variable)"
-	} else if option == base.TestDRPCUnset && globalDefaultDRPCOptionOverride.isSet {
+	if option == base.TestDRPCUnset && globalDefaultDRPCOptionOverride.isSet {
 		option = globalDefaultDRPCOptionOverride.value
 		logSuffix = " (override by TestingGlobalDRPCOption)"
 	}
-
 	enableDRPC := false
 	switch option {
 	case base.TestDRPCEnabled:
@@ -602,8 +555,6 @@ func ShouldEnableDRPC(
 	case base.TestDRPCEnabledRandomly:
 		rng, _ := randutil.NewTestRand()
 		enableDRPC = rng.Intn(2) == 0
-	case base.TestDRPCUnset:
-		return base.TestDRPCUnset
 	}
 
 	if enableDRPC {

@@ -1428,36 +1428,6 @@ func getLatestPrimaryIndex(b BuildCtx, tableID catid.DescID) *scpb.PrimaryIndex 
 	}
 }
 
-// getNonDropResultColumns returns all public and adding columns, sorted by
-// column ID in ascending order, in the format of ResultColumns.
-func getNonDropResultColumns(b BuildCtx, tableID catid.DescID) (ret colinfo.ResultColumns) {
-	for _, col := range getNonDropColumns(b, tableID) {
-		ret = append(ret, colinfo.ResultColumn{
-			Name:           mustRetrieveColumnNameElem(b, tableID, col.ColumnID).Name,
-			Typ:            mustRetrieveColumnTypeElem(b, tableID, col.ColumnID).Type,
-			Hidden:         col.IsHidden,
-			TableID:        tableID,
-			PGAttributeNum: uint32(col.PgAttributeNum),
-		})
-	}
-	return ret
-}
-
-// columnLookupFn can look up information of a column by name.
-func columnLookupFn(
-	b BuildCtx, tableID catid.DescID, columnName tree.Name,
-) (exists, accessible, computed bool, id catid.ColumnID, typ *types.T) {
-	columnID := getColumnIDFromColumnName(b, tableID, columnName, false /* required */)
-	if columnID == 0 {
-		return false, false, false, 0, nil
-	}
-
-	colElem := mustRetrieveColumnElem(b, tableID, columnID)
-	colTypeElem := mustRetrieveColumnTypeElem(b, tableID, columnID)
-	computeExpr := retrieveColumnComputeExpression(b, tableID, columnID)
-	return true, !colElem.IsInaccessible, computeExpr != nil, columnID, colTypeElem.Type
-}
-
 // addASwapInIndexByCloningFromSource adds a primary index `in` that is going
 // to swap out `out` yet `in`'s columns are cloned from `source`.
 //
@@ -2217,39 +2187,4 @@ func isShardColumn(b BuildCtx, col *scpb.Column) bool {
 	})
 
 	return found
-}
-
-// retrieveColumnGeneratedAsIdentityElem returns the element for GeneratedAsIdentity.
-// Returns nil in versions before 26.1.
-func retrieveColumnGeneratedAsIdentityElem(
-	b BuildCtx, tableID catid.DescID, columnID catid.ColumnID,
-) (generatedAsIdentity *scpb.ColumnGeneratedAsIdentity) {
-	return b.QueryByID(tableID).FilterColumnGeneratedAsIdentity().Filter(
-		func(_ scpb.Status, _ scpb.TargetStatus, e *scpb.ColumnGeneratedAsIdentity) bool {
-			return e.ColumnID == columnID
-		}).MustGetZeroOrOneElement()
-}
-
-// retrieveColumnGeneratedAsIdentityType returns the GeneratedAsIdentityType.
-// Handles versions before 26.1 that store it in Column.GeneratedAsIdentityType.
-func retrieveColumnGeneratedAsIdentityType(
-	b BuildCtx, tableID catid.DescID, columnID catid.ColumnID,
-) (generatedAsIdentityType catpb.GeneratedAsIdentityType) {
-	// First try to retrieve it from ColumnGeneratedAsIdentity. This may be nil
-	// if the column is not a generated identity column or the cluster version is older
-	// than 26.1. In that case, will return Column.GeneratedAsIdentityType.
-	colGeneratedAsID := retrieveColumnGeneratedAsIdentityElem(b, tableID, columnID)
-	if colGeneratedAsID != nil {
-		return colGeneratedAsID.Type
-	}
-	// Check the ColumnType in case this is an older version.
-	col := mustRetrieveColumnElem(b, tableID, columnID)
-	return col.GeneratedAsIdentityType
-}
-
-func isColumnGeneratedAsIdentity(
-	b BuildCtx, tableID catid.DescID, columnID catid.ColumnID,
-) (isGenerated bool) {
-	generatedAsIdentityType := retrieveColumnGeneratedAsIdentityType(b, tableID, columnID)
-	return generatedAsIdentityType != catpb.GeneratedAsIdentityType_NOT_IDENTITY_COLUMN
 }

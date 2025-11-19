@@ -52,7 +52,6 @@ go_test(
     embed = [":cloud"],
     deps = [
         "//pkg/cloud/cloudpb",
-        "//pkg/testutils",
         "//pkg/util/ioctx",
         "//pkg/util/log",
         "@com_github_cockroachdb_errors//:errors",

@@ -125,12 +125,12 @@ func TestKVFeed(t *testing.T) {
 			Settings: settings,
 		})
 		metrics := kvevent.MakeMetrics(time.Minute)
-		buf := kvevent.NewMemBuffer(mm.MakeBoundAccount(), &st.SV, &metrics.AggregatorBufferMetrics)
+		buf := kvevent.NewMemBuffer(mm.MakeBoundAccount(), &st.SV, &metrics.AggregatorBufferMetricsWithCompat)
 
 		// bufferFactory, when called, gives you a memory-monitored
 		// in-memory "buffer" to write to and read from.
 		bufferFactory := func() kvevent.Buffer {
-			return kvevent.NewMemBuffer(mm.MakeBoundAccount(), &st.SV, &metrics.RangefeedBufferMetrics)
+			return kvevent.NewMemBuffer(mm.MakeBoundAccount(), &st.SV, &metrics.RangefeedBufferMetricsWithCompat)
 		}
 		scans := make(chan scanConfig)
 

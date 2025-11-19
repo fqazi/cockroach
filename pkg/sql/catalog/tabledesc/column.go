@@ -334,9 +334,8 @@ func newColumnCache(desc *descpb.TableDescriptor, mutations *mutationCache) *col
 	numMutations := len(mutations.columns)
 	numDeletable := numPublic + numMutations
 	for i := range colinfo.AllSystemColumnDescs {
-		desc := colinfo.AllSystemColumnDescs[i]
 		col := column{
-			desc:    &desc,
+			desc:    &colinfo.AllSystemColumnDescs[i],
 			ordinal: numDeletable + i,
 		}
 		backingStructs = append(backingStructs, col)

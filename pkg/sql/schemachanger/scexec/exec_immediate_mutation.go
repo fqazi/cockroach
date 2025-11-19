@@ -272,9 +272,7 @@ func (s *immediateState) exec(ctx context.Context, c Catalog) error {
 		}
 	}
 	for _, s := range s.sequencesToInit {
-		if err := c.InitializeSequence(ctx, s.id, s.startVal); err != nil {
-			return err
-		}
+		c.InitializeSequence(s.id, s.startVal)
 	}
 	for tempIdxId, tempIdxToRegister := range s.temporarySchemasToRegister {
 		c.InsertTemporarySchema(tempIdxToRegister.schemaName, tempIdxToRegister.parentID, tempIdxId)

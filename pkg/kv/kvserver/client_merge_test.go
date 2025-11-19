@@ -36,8 +36,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/node_rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/txnwait"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvtestutils"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
@@ -1367,9 +1367,9 @@ func TestStoreRangeMergeStats(t *testing.T) {
 	// Get the range stats for both ranges now that we have data.
 	snap := store.TODOEngine().NewSnapshot()
 	defer snap.Close()
-	msA, err := kvstorage.MakeStateLoader(lhsDesc.RangeID).LoadMVCCStats(ctx, snap)
+	msA, err := stateloader.Make(lhsDesc.RangeID).LoadMVCCStats(ctx, snap)
 	require.NoError(t, err)
-	msB, err := kvstorage.MakeStateLoader(rhsDesc.RangeID).LoadMVCCStats(ctx, snap)
+	msB, err := stateloader.Make(rhsDesc.RangeID).LoadMVCCStats(ctx, snap)
 	require.NoError(t, err)
 
 	// Stats should agree with recomputation.
@@ -1385,7 +1385,7 @@ func TestStoreRangeMergeStats(t *testing.T) {
 	// Get the range stats for the merged range and verify.
 	snap = store.TODOEngine().NewSnapshot()
 	defer snap.Close()
-	msMerged, err := kvstorage.MakeStateLoader(replMerged.RangeID).LoadMVCCStats(ctx, snap)
+	msMerged, err := stateloader.Make(replMerged.RangeID).LoadMVCCStats(ctx, snap)
 	require.NoError(t, err)
 
 	// Merged stats should agree with recomputation.
@@ -2550,7 +2550,7 @@ func TestStoreReplicaGCAfterMerge(t *testing.T) {
 
 	// Be extra paranoid and verify the exact value of the replica tombstone.
 	checkTombstone := func(eng storage.Engine) {
-		ts, err := kvstorage.MakeStateLoader(rhsDesc.RangeID).LoadRangeTombstone(ctx, eng)
+		ts, err := stateloader.Make(rhsDesc.RangeID).LoadRangeTombstone(ctx, eng)
 		require.NoError(t, err)
 		require.Equal(t, roachpb.ReplicaID(math.MaxInt32), ts.NextReplicaID)
 	}
@@ -3815,10 +3815,6 @@ func TestStoreRangeMergeRaftSnapshot(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	// The test expects replica destruction paths to use ranged clears rather than
-	// point clears.
-	defer kvstorage.TestingForceClearRange()()
-
 	testutils.RunTrueAndFalse(t, "rebalanceRHSAway", func(t *testing.T, rebalanceRHSAway bool) {
 		// We will be testing the SSTs written on store2's engine.
 		var receivingEng, sendingEng storage.Engine
@@ -3856,7 +3852,11 @@ func TestStoreRangeMergeRaftSnapshot(t *testing.T) {
 			// NOTE: There are no range-local keys or lock table keys, in [d,
 			// /Max) in the store we're sending a snapshot to, so we aren't
 			// expecting SSTs to clear those keys.
-			require.Len(t, sstNames, 9)
+			expectedSSTCount := 9
+			if len(sstNames) != expectedSSTCount {
+				return errors.Errorf("expected to ingest %d SSTs, got %d SSTs",
+					expectedSSTCount, len(sstNames))
+			}
 
 			// Only try to predict SSTs for:
 			// - The user keys in the snapshot
@@ -3900,11 +3900,11 @@ func TestStoreRangeMergeRaftSnapshot(t *testing.T) {
 				file := &storage.MemObject{}
 				writer := storage.MakeIngestionSSTWriter(ctx, st, file)
 				if i < len(keySpans)-1 {
-					// The last span is the MVCC span, and is always cleared via Excise.
-					// See MultiSSTWriter.
-					require.NoError(t, writer.ClearRawRange(
-						span.Key, span.EndKey, true /* pointKeys */, true, /* rangeKeys */
-					))
+					// The last span is the MVCC span, and is always cleared via
+					// Excise. See MultiSSTWriter.
+					if err := writer.ClearRawRange(span.Key, span.EndKey, true /* pointKeys */, true /* rangeKeys */); err != nil {
+						return err
+					}
 				}
 				sstFileWriters[string(span.Key)] = sstFileWriter{
 					span:   span,
@@ -3913,7 +3913,7 @@ func TestStoreRangeMergeRaftSnapshot(t *testing.T) {
 				}
 			}
 
-			require.NoError(t, rditer.IterateReplicaKeySpans(ctx, inSnap.Desc, snapReader, rditer.SelectOpts{
+			if err := rditer.IterateReplicaKeySpans(ctx, inSnap.Desc, snapReader, rditer.SelectOpts{
 				Ranged: rditer.SelectRangedOptions{
 					SystemKeys: true,
 					LockTable:  true,
@@ -3923,27 +3923,43 @@ func TestStoreRangeMergeRaftSnapshot(t *testing.T) {
 				UnreplicatedByRangeID: false,
 			}, func(iter storage.EngineIterator, span roachpb.Span) error {
 				fw, ok := sstFileWriters[string(span.Key)]
-				require.True(t, ok)
-				require.Truef(t, fw.span.Equal(span), "unexpected span %s", span)
+				if !ok || !fw.span.Equal(span) {
+					return errors.Errorf("unexpected span %s", span)
+				}
 				var err error
 				for ok := true; ok && err == nil; ok, err = iter.NextEngineKey() {
-					key, err := iter.UnsafeEngineKey()
-					require.NoError(t, err)
+					var key storage.EngineKey
+					if key, err = iter.UnsafeEngineKey(); err != nil {
+						return err
+					}
 					v, err := iter.UnsafeValue()
-					require.NoError(t, err)
-					require.NoError(t, fw.writer.PutEngineKey(key, v))
+					if err != nil {
+						return err
+					}
+					if err := fw.writer.PutEngineKey(key, v); err != nil {
+						return err
+					}
 				}
-				require.NoError(t, err)
+				if err != nil {
+					return err
+				}
 				return nil
-			}))
+			}); err != nil {
+				return err
+			}
 
 			for _, span := range keySpans {
 				fw := sstFileWriters[string(span.Key)]
-				require.NoError(t, fw.writer.Finish())
+				if err := fw.writer.Finish(); err != nil {
+					return err
+				}
 				expectedSSTs = append(expectedSSTs, fw.file.Data())
 			}
 
-			require.Len(t, expectedSSTs, 5)
+			if len(expectedSSTs) != 5 {
+				return errors.Errorf("len of expectedSSTs should expected to be %d, but got %d",
+					5, len(expectedSSTs))
+			}
 			// Keep the last one which contains the user keys.
 			expectedSSTs = expectedSSTs[len(expectedSSTs)-1:]
 
@@ -3957,35 +3973,40 @@ func TestStoreRangeMergeRaftSnapshot(t *testing.T) {
 				sstFile := &storage.MemObject{}
 				sst := storage.MakeIngestionSSTWriter(ctx, st, sstFile)
 				defer sst.Close()
-				// The snapshot code uses ClearRangeWithHeuristic with a threshold of 1
-				// to clear the range, but it will truncate the range tombstone to the
-				// first key. In this case, the first key is RangeGCThresholdKey, which
-				// doesn't yet exist in the engine, so we set it manually.
-				//
-				// The deletion also extends to the RangeTombstoneKey.
-				sl := kvstorage.MakeStateLoader(rangeID)
-				require.NoError(t, sst.ClearRawRange(
-					keys.RangeGCThresholdKey(rangeID),
-					sl.RangeTombstoneKey(),
-					true, false,
-				))
-				require.NoError(t, sl.SetRangeTombstone(
+				{
+					// The snapshot code will use ClearRangeWithHeuristic with a
+					// threshold of 1 to clear the range, but this will truncate
+					// the range tombstone to the first key. In this case, the
+					// first key is RangeGCThresholdKey, which doesn't yet exist
+					// in the engine, so we write the Pebble range tombstone
+					// manually.
+					sl := rditer.Select(rangeID, rditer.SelectOpts{
+						ReplicatedByRangeID: true,
+					})
+					require.Len(t, sl, 1)
+					s := sl[0]
+					require.NoError(t, sst.ClearRawRange(keys.RangeGCThresholdKey(rangeID), s.EndKey, true, false))
+				}
+				{
+					// Ditto for the unreplicated version, where the first key
+					// happens to be the HardState.
+					sl := rditer.Select(rangeID, rditer.SelectOpts{
+						UnreplicatedByRangeID: true,
+					})
+					require.Len(t, sl, 1)
+					s := sl[0]
+					require.NoError(t, sst.ClearRawRange(keys.RaftHardStateKey(rangeID), s.EndKey, true, false))
+				}
+
+				if err := stateloader.Make(rangeID).SetRangeTombstone(
 					context.Background(), &sst,
 					kvserverpb.RangeTombstone{NextReplicaID: math.MaxInt32},
-				))
-				// Ditto for the unreplicated RangeID keys. Note that it is also split
-				// into two range clears, to work around the RaftReplicaID key.
-				require.NoError(t, sst.ClearRawRange(
-					keys.RaftHardStateKey(rangeID), sl.RaftReplicaIDKey(), true, false,
-				))
-				require.NoError(t, sl.ClearRaftReplicaID(&sst))
-				require.NoError(t, sst.ClearRawRange(
-					sl.RaftTruncatedStateKey(),
-					keys.MakeRangeIDUnreplicatedPrefix(rangeID).PrefixEnd(),
-					true, false,
-				))
-
-				require.NoError(t, sst.Finish())
+				); err != nil {
+					return err
+				}
+				if err := sst.Finish(); err != nil {
+					return err
+				}
 				expectedSSTs = append(expectedSSTs, sstFile.Data())
 			}
 
@@ -3997,12 +4018,13 @@ func TestStoreRangeMergeRaftSnapshot(t *testing.T) {
 				StartKey: roachpb.RKey(keyD),
 				EndKey:   roachpb.RKey(keyEnd),
 			}
-			require.NoError(t, storage.ClearRangeWithHeuristic(
-				ctx, receivingEng, &sst,
-				desc.StartKey.AsRawKey(), desc.EndKey.AsRawKey(),
-				kvstorage.ClearRangeThresholdPointKeys(),
-			))
-			require.NoError(t, sst.Finish())
+			if err := storage.ClearRangeWithHeuristic(
+				ctx, receivingEng, &sst, desc.StartKey.AsRawKey(), desc.EndKey.AsRawKey(), 64,
+			); err != nil {
+				return err
+			} else if err := sst.Finish(); err != nil {
+				return err
+			}
 			expectedSSTs = append(expectedSSTs, sstFile.Data())
 
 			// Iterate over all the tested SSTs and check that they're
@@ -4010,7 +4032,9 @@ func TestStoreRangeMergeRaftSnapshot(t *testing.T) {
 			var dumpDir string
 			for i := range sstNamesSubset {
 				actualSST, err := fs.ReadFile(receivingEng.Env(), sstNamesSubset[i])
-				require.NoError(t, err)
+				if err != nil {
+					return err
+				}
 				if !bytes.Equal(expectedSSTs[i], actualSST) { // intentionally not printing
 					t.Logf("%d=%s", i, sstNamesSubset[i])
 					if dumpDir == "" {

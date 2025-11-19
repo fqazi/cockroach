@@ -11,7 +11,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
@@ -85,7 +84,7 @@ func (ia *Allocator) Allocate(ctx context.Context) (int64, error) {
 	case id := <-ia.ids:
 		// when the channel is closed, the zero value is returned.
 		if id == 0 {
-			return id, &kvpb.NodeUnavailableError{}
+			return id, errors.Errorf("could not allocate ID; system is draining")
 		}
 		return id, nil
 	case <-ctx.Done():

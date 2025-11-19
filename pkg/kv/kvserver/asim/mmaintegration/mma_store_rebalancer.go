@@ -132,15 +132,15 @@ func (msr *MMAStoreRebalancer) Tick(ctx context.Context, tick time.Time, s state
 				msr.pendingTicket = -1
 				success := true
 				if err := op.Errors(); err != nil {
-					log.KvDistribution.Infof(ctx, "operation for pendingChange=%v failed: %v", curChange.change, err)
+					log.KvDistribution.Infof(ctx, "operation for pendingChange=%v failed: %v", curChange, err)
 					success = false
 				} else {
-					log.KvDistribution.VInfof(ctx, 1, "operation for pendingChange=%v completed successfully", curChange.change)
+					log.KvDistribution.VInfof(ctx, 1, "operation for pendingChange=%v completed successfully", curChange)
 				}
 				msr.as.PostApply(curChange.syncChangeID, success)
 				msr.pendingChangeIdx++
 			} else {
-				log.KvDistribution.VInfof(ctx, 1, "operation for pendingChange=%v is still in progress", curChange.change)
+				log.KvDistribution.VInfof(ctx, 1, "operation for pendingChange=%v is still in progress", curChange)
 				// Operation is still in progress, nothing to do this tick.
 				return
 			}
@@ -156,15 +156,14 @@ func (msr *MMAStoreRebalancer) Tick(ctx context.Context, tick time.Time, s state
 			pendingChanges := msr.allocator.ComputeChanges(ctx, &storeLeaseholderMsg, mmaprototype.ChangeOptions{
 				LocalStoreID: roachpb.StoreID(msr.localStoreID),
 			})
-			log.KvDistribution.Infof(ctx, "store %d: computed %d changes", msr.localStoreID, len(pendingChanges))
-			for i, change := range pendingChanges {
+			for _, change := range pendingChanges {
 				usageInfo := s.RangeUsageInfo(state.RangeID(change.RangeID), msr.localStoreID)
 				msr.pendingChanges = append(msr.pendingChanges, pendingChangeAndRangeUsageInfo{
 					change: change,
 					usage:  usageInfo,
 				})
-				log.KvDistribution.Infof(ctx, "%v-th change: %v", i+1, change)
 			}
+			log.KvDistribution.Infof(ctx, "store %d: computed %d changes %v", msr.localStoreID, len(msr.pendingChanges), msr.pendingChanges)
 			if len(msr.pendingChanges) == 0 {
 				// Nothing to do, there were no changes returned.
 				msr.currentlyRebalancing = false
@@ -203,9 +202,9 @@ func (msr *MMAStoreRebalancer) Tick(ctx context.Context, tick time.Time, s state
 		} else {
 			panic(fmt.Sprintf("unexpected pending change type: %v", curChange))
 		}
-		log.KvDistribution.VInfof(ctx, 1, "dispatching operation for pendingChange=%v", curChange.change)
+		log.KvDistribution.VInfof(ctx, 1, "dispatching operation for pendingChange=%v", curChange)
 		msr.pendingChanges[msr.pendingChangeIdx].syncChangeID =
-			msr.as.MMAPreApply(ctx, curChange.usage, curChange.change)
+			msr.as.MMAPreApply(curChange.usage, curChange.change)
 		msr.pendingTicket = msr.controller.Dispatch(ctx, tick, s, curOp)
 	}
 }

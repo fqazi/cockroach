@@ -853,6 +853,7 @@ func maybeCreateAndAddShardCol(
 			ColumnID:                shardColID,
 			TypeT:                   newTypeT(types.Int),
 			IsVirtual:               true,
+			IsNullable:              false,
 			ElementCreationMetadata: scdecomp.NewElementCreationMetadata(b.EvalCtx().Settings.Version.ActiveVersion(b)),
 		},
 		notNull: true,
@@ -978,15 +979,7 @@ func maybeCreateVirtualColumnForIndex(
 	d.Nullable.Nullability = tree.Null
 	// Infer column type from expression.
 	{
-		_, columnType := b.ComputedColumnExpression(
-			tbl, d, tree.ExpressionIndexElementExpr,
-			func() colinfo.ResultColumns {
-				return getNonDropResultColumns(b, tbl.TableID)
-			},
-			func(columnName tree.Name) (exists, accessible, computed bool, id catid.ColumnID, typ *types.T) {
-				return columnLookupFn(b, tbl.TableID, columnName)
-			},
-		)
+		_, columnType := b.ComputedColumnExpression(tbl, d, tree.ExpressionIndexElementExpr)
 		d.Type = columnType
 		validateColumnIndexableType(columnType)
 	}

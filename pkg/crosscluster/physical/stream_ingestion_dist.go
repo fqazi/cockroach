@@ -879,14 +879,13 @@ func constructStreamIngestionPlanSpecs(
 	// Create a spec for the StreamIngestionFrontier processor on the coordinator
 	// node.
 	streamIngestionFrontierSpec := &execinfrapb.StreamIngestionFrontierSpec{
-		ReplicatedTimeAtStart:  previousReplicatedTimestamp,
-		TrackedSpans:           []roachpb.Span{tenantSpan},
-		JobID:                  int64(jobID),
-		StreamID:               uint64(streamID),
-		ConnectionUris:         topology.SerializedClusterUris(),
-		Checkpoint:             checkpoint,
-		PartitionSpecs:         repackagePartitionSpecs(streamIngestionSpecs),
-		NumIngestionProcessors: int32(len(topology.Partitions)),
+		ReplicatedTimeAtStart: previousReplicatedTimestamp,
+		TrackedSpans:          []roachpb.Span{tenantSpan},
+		JobID:                 int64(jobID),
+		StreamID:              uint64(streamID),
+		ConnectionUris:        topology.SerializedClusterUris(),
+		Checkpoint:            checkpoint,
+		PartitionSpecs:        repackagePartitionSpecs(streamIngestionSpecs),
 	}
 
 	return streamIngestionSpecs, streamIngestionFrontierSpec, nil

@@ -397,7 +397,6 @@ func tryTxn(kv storage.MVCCKeyValue) (string, error) {
 	if err := maybeUnmarshalInline(kv.Value, &txn); err != nil {
 		return "", err
 	}
-	// TODO(arul): investigate why we need this new line here.
 	return txn.String() + "\n", nil
 }
 

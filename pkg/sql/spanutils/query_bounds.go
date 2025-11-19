@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/errors"
 )
 
@@ -41,9 +40,6 @@ type QueryBounds struct {
 	// span's end key is exclusive because the end bounds are based on the first
 	// row < Span.EndKey.
 	End tree.Datums
-	// Span is the original span that these query bounds were derived from.
-	// This preserves the source span information for reference.
-	Span roachpb.Span
 }
 
 var (
@@ -85,25 +81,10 @@ func SpanToQueryBounds(
 	numFamilies int,
 	span roachpb.Span,
 	alloc *tree.DatumAlloc,
-	asOf hlc.Timestamp,
 ) (bounds QueryBounds, hasRows bool, _ error) {
 	partialStartKey := span.Key
 	partialEndKey := span.EndKey
-
-	var startKeyValues []kv.KeyValue
-	var err error
-	if asOf.IsEmpty() {
-		startKeyValues, err = kvDB.Scan(ctx, partialStartKey, partialEndKey, int64(numFamilies))
-	} else {
-		err = kvDB.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-			if err := txn.SetFixedTimestamp(ctx, asOf); err != nil {
-				return err
-			}
-			var scanErr error
-			startKeyValues, scanErr = txn.Scan(ctx, partialStartKey, partialEndKey, int64(numFamilies))
-			return scanErr
-		})
-	}
+	startKeyValues, err := kvDB.Scan(ctx, partialStartKey, partialEndKey, int64(numFamilies))
 	if err != nil {
 		return bounds, false, errors.Wrapf(err, "scan error startKey=%x endKey=%x", []byte(partialStartKey), []byte(partialEndKey))
 	}
@@ -111,20 +92,7 @@ func SpanToQueryBounds(
 	if len(startKeyValues) == 0 {
 		return bounds, false, nil
 	}
-
-	var endKeyValues []kv.KeyValue
-	if asOf.IsEmpty() {
-		endKeyValues, err = kvDB.ReverseScan(ctx, partialStartKey, partialEndKey, int64(numFamilies))
-	} else {
-		err = kvDB.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-			if err := txn.SetFixedTimestamp(ctx, asOf); err != nil {
-				return err
-			}
-			var scanErr error
-			endKeyValues, scanErr = txn.ReverseScan(ctx, partialStartKey, partialEndKey, int64(numFamilies))
-			return scanErr
-		})
-	}
+	endKeyValues, err := kvDB.ReverseScan(ctx, partialStartKey, partialEndKey, int64(numFamilies))
 	if err != nil {
 		return bounds, false, errors.Wrapf(err, "reverse scan error startKey=%x endKey=%x", []byte(partialStartKey), []byte(partialEndKey))
 	}
@@ -142,7 +110,6 @@ func SpanToQueryBounds(
 	if err != nil {
 		return bounds, false, errors.Wrapf(err, "decode endKeyValues error on %+v", endKeyValues)
 	}
-	bounds.Span = span
 	return bounds, true, nil
 }
 

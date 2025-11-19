@@ -35,7 +35,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/upgrade/upgradebase"
-	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -483,19 +482,16 @@ func TestTenantCtx(t *testing.T) {
 		_, err = tx1.Exec("insert into t(x) values ($1)", magicKey)
 		require.NoError(t, err)
 
-		g := ctxgroup.WithContext(ctx)
-		g.Go(func() error {
-			tx2, err := tsql.BeginTx(ctx, nil /* opts */)
-			if err != nil {
-				return err
-			}
-			// This SELECT should be blocked by the insert on tx1.
+		var tx2 *gosql.Tx
+		var tx2C = make(chan struct{})
+		go func() {
+			var err error
+			tx2, err = tsql.BeginTx(ctx, nil /* opts */)
+			assert.NoError(t, err)
 			_, err = tx2.Exec("select * from t where x = $1", magicKey)
-			if err != nil {
-				return err
-			}
-			return tx2.Rollback()
-		})
+			assert.NoError(t, err)
+			close(tx2C)
+		}()
 
 		// Wait for tx2 goroutine to send the PushTxn request, and then roll back tx1
 		// to unblock tx2.
@@ -511,7 +507,9 @@ func TestTenantCtx(t *testing.T) {
 		case <-time.After(3 * time.Second):
 			t.Fatal("timed out waiting for PushTxn")
 		}
-		require.NoError(t, tx1.Rollback())
-		require.NoError(t, g.Wait())
+		_ = tx1.Rollback()
+		// Wait for tx2 to be unblocked.
+		<-tx2C
+		_ = tx2.Rollback()
 	})
 }

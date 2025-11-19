@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -140,119 +139,6 @@ const VmLabelTestRunID string = "test_run_id"
 // VmLabelTestOwner is the label used to identify the test owner in the VM metadata
 const VmLabelTestOwner string = "test_owner"
 
-// inspectBlocklistRegex is a compiled regex of test name patterns that should
-// skip INSPECT validation. Tests matching any of these patterns will not run
-// INSPECT.
-// TODO(155704): 155704 is a tracking issue to reduce the number of tests listed here.
-var inspectBlocklistRegex = regexp.MustCompile(
-	`^acceptance|` +
-		`^activerecord|` +
-		`^admission|` +
-		`^allocbench|` +
-		`^asyncpg|` +
-		`^awsdms|` +
-		`^backup|` +
-		`^blobfixture|` +
-		`^buffered|` +
-		`^c2c|` +
-		`^cancel|` +
-		`^cdc|` +
-		`^change|` +
-		`^clearrange|` +
-		`^clock|` +
-		`^connection|` +
-		`^copy|` +
-		`^costfuzz|` +
-		`^db|` +
-		`^declarative|` +
-		`^decommission|` +
-		`^disk|` +
-		`^django|` +
-		`^drain|` +
-		`^drop|` +
-		`^encryption|` +
-		`^export|` +
-		`^failover|` +
-		`^failure|` +
-		`^follower|` +
-		`^generate|` +
-		`^gopg|` +
-		`^gorm|` +
-		`^gossip|` +
-		`^hibernate|` +
-		`^hotspotsplits|` +
-		`^http|` +
-		`^import|` +
-		`^inconsistency|` +
-		`^indexes|` +
-		`^invariant|` +
-		`^jasync|` +
-		`^jepsen|` +
-		`^jobs|` +
-		`^kerberos|` +
-		`^knex|` +
-		`^kv|` +
-		`^ldap|` +
-		`^ldr|` +
-		`^lease|` +
-		`^ledger|` +
-		`^lib|` +
-		`^limit|` +
-		`^liquibase|` +
-		`^loqrecovery|` +
-		`^multi|` +
-		`^mvcc|` +
-		`^network|` +
-		`^node|` +
-		`^npgsql|` +
-		`^pebble|` +
-		`^perturbation|` +
-		`^pg|` +
-		`^point|` +
-		`^pop|` +
-		`^process|` +
-		`^prune|` +
-		`^psycopg|` +
-		`^ptp|` +
-		`^queue|` +
-		`^rebalance|` +
-		`^replicagc|` +
-		`^replicate|` +
-		`^restart|` +
-		`^restore|` +
-		`^roachmart|` +
-		`^roachtest|` +
-		`^ruby|` +
-		`^rust|` +
-		`^sequelize|` +
-		`^slow|` +
-		`^splits|` +
-		`^sql|` +
-		`^stop|` +
-		`^storage|` +
-		`^sysbench|` +
-		`^tlp|` +
-		`^tpcc|` +
-		`^tpcdsvec|` +
-		`^tpce|` +
-		`^tpch|` +
-		`^transfer|` +
-		`^ttl|` +
-		`^typeorm|` +
-		`^unoptimized|` +
-		`^validate|` +
-		`^weekly|` +
-		`^ycsb|` +
-		`^zfs`,
-)
-
-// isInspectSkipped returns true if the test name matches the blocklist
-// and should skip INSPECT validation. Tests NOT matching any pattern will
-// run INSPECT.
-func isInspectSkipped(testName string) bool {
-	return inspectBlocklistRegex.MatchString(testName)
-}
-
 // testRunner runs tests.
 type testRunner struct {
 	stopper *stop.Stopper
@@ -262,8 +148,6 @@ type testRunner struct {
 		skipClusterWipeOnAttach bool
 		// disableIssue disables posting GitHub issues for test failures.
 		disableIssue bool
-		// dryRunIssuePosting enables dry-run mode for GitHub issue posting.
-		dryRunIssuePosting bool
 		// overrideShutdownPromScrapeInterval overrides the default time a test runner waits to
 		// shut down, normally used to ensure a remote prometheus server has scraped the roachtest
 		// endpoint.
@@ -331,7 +215,6 @@ func newTestRunner(cr *clusterRegistry, stopper *stop.Stopper) *testRunner {
 	}
 	r.config.skipClusterWipeOnAttach = !roachtestflags.ClusterWipe
 	r.config.disableIssue = roachtestflags.DisableIssue
-	r.config.dryRunIssuePosting = roachtestflags.DryRunIssuePosting
 	r.workersMu.workers = make(map[string]*workerStatus)
 	return r
 }
@@ -1104,6 +987,7 @@ func (r *testRunner) runWorker(
 						setting string
 						label   string
 					}{
+						{setting: "kv.rangefeed.buffered_sender.enabled", label: "metamorphicBufferedSender"},
 						{setting: "kv.transaction.write_buffering.enabled", label: "metamorphicWriteBuffering"},
 					} {
 						enable := prng.Intn(2) == 0
@@ -1703,15 +1587,6 @@ func (r *testRunner) postTestAssertions(
 	_ = r.stopper.RunAsyncTask(ctx, "test-post-assertions", func(ctx context.Context) {
 		defer close(postAssertCh)
 
-		defer func() {
-			// Unlike the main test goroutine, we _do_ want to log t.Fatal* calls here
-			// to make it clear that the post-test assertions failed. Otherwise, the fatal
-			// will be recorded as a normal test failure.
-			if r := recover(); r != nil {
-				postAssertionErr(fmt.Errorf("post-test assertion panicked: %v", r))
-			}
-		}()
-
 		// We collect all the admin health endpoints in parallel,
 		// and select the first one that succeeds to run the validation queries
 		statuses, err := c.HealthStatus(ctx, t.L(), c.CRDBNodes())
@@ -1777,28 +1652,6 @@ func (r *testRunner) postTestAssertions(
 				defer db.Close()
 				if err := c.assertConsistentReplicas(ctx, db, t); err != nil {
 					postAssertionErr(errors.WithDetail(err, "consistency check failed"))
-				}
-			}()
-		}
-		// Check INSPECT DATABASE for index consistency
-		if t.spec.SkipPostValidations&registry.PostValidationInspect == 0 {
-			func() {
-				if isInspectSkipped(t.Name()) {
-					t.L().Printf("Skipping INSPECT validation (test is on blocklist)")
-					return
-				}
-
-				db := c.Conn(ctx, t.L(), validationNode)
-				defer db.Close()
-
-				// Use 80% of timeout budget for INSPECT
-				inspectTimeout := time.Duration(float64(timeout) * 0.8)
-				t.L().Printf("Running INSPECT validation with %s time budget",
-					inspectTimeout)
-
-				if err := roachtestutil.CheckInspectDatabase(ctx, t.L(), db,
-					inspectTimeout); err != nil {
-					postAssertionErr(errors.WithDetail(err, "INSPECT database check failed"))
 				}
 			}()
 		}

@@ -122,9 +122,8 @@ var sourceAddr = func() net.Addr {
 }()
 
 type serverOpts struct {
-	interceptor                   func(fullMethod string) error
-	metricsInterceptor            RequestMetricsInterceptor
-	drpcRequestMetricsInterceptor DRPCRequestMetricsInterceptor
+	interceptor        func(fullMethod string) error
+	metricsInterceptor RequestMetricsInterceptor
 }
 
 // ServerOption is a configuration option passed to NewServer.
@@ -152,12 +151,5 @@ func WithInterceptor(f func(fullMethod string) error) ServerOption {
 func WithMetricsServerInterceptor(interceptor RequestMetricsInterceptor) ServerOption {
 	return func(opts *serverOpts) {
 		opts.metricsInterceptor = interceptor
-	}
-}
-
-// WithDRPCMetricsServerInterceptor adds a DRPCRequestMetricsInterceptor to the DRPC server.
-func WithDRPCMetricsServerInterceptor(interceptor DRPCRequestMetricsInterceptor) ServerOption {
-	return func(opts *serverOpts) {
-		opts.drpcRequestMetricsInterceptor = interceptor
 	}
 }

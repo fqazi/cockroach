@@ -257,7 +257,6 @@ func makeProcessor(
 	t.Helper()
 	clock := hlc.NewClockForTesting(nil)
 	logger := &testIssueCollector{}
-	loggerBundle := newInspectLoggerBundle(logger)
 
 	// Mock a FlowCtx for test purposes.
 	var c base.NodeIDContainer
@@ -278,7 +277,7 @@ func makeProcessor(
 		cfg:            flowCtx.Cfg,
 		flowCtx:        flowCtx,
 		spanSrc:        src,
-		loggerBundle:   loggerBundle,
+		logger:         logger,
 		concurrency:    concurrency,
 		clock:          clock,
 	}

@@ -10,7 +10,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/metric/aggmetric"
-	"github.com/cockroachdb/crlib/crtime"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -103,29 +103,20 @@ type timer struct {
 	hist *aggmetric.Histogram
 }
 
-func (t *timer) Start() TimerHandle {
+func (t *timer) Start() (end func() time.Duration) {
 	if t == nil {
-		return TimerHandle{}
+		return func() time.Duration { return 0 }
 	}
-	return TimerHandle{start: crtime.NowMono(), hist: t.hist}
-}
 
-type TimerHandle struct {
-	start crtime.Mono
-	hist  *aggmetric.Histogram
-}
-
-// End records the elapsed time and returns the duration.
-func (th TimerHandle) End() time.Duration {
-	if th.hist == nil {
-		return 0
+	start := timeutil.Now()
+	return func() time.Duration {
+		elapsed := timeutil.Since(start)
+		t.hist.RecordValue(elapsed.Nanoseconds())
+		return elapsed
 	}
-	elapsed := th.start.Elapsed()
-	th.hist.RecordValue(elapsed.Nanoseconds())
-	return elapsed
 }
 
 func (t *timer) Time(cb func()) {
-	defer t.Start().End()
+	defer t.Start()()
 	cb()
 }

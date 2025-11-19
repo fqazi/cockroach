@@ -31,7 +31,6 @@ import (
 // be deleted, it'll enable autoCommit for delete range.
 type deleteRangeNode struct {
 	zeroInputPlanNode
-	rowsAffectedOutputHelper
 	// spans are the spans to delete.
 	spans roachpb.Spans
 	// desc is the table descriptor the delete is operating on.
@@ -46,6 +45,9 @@ type deleteRangeNode struct {
 	// batches and will just send one big delete with a commit statement attached.
 	autoCommitEnabled bool
 
+	// rowCount will be set to the count of rows deleted.
+	rowCount int
+
 	// curRowPrefix is the prefix for all KVs (i.e. for all column families) of
 	// the SQL row that increased rowCount last. It is maintained across
 	// different BatchRequests in order to not double count the same SQL row.
@@ -53,26 +55,43 @@ type deleteRangeNode struct {
 }
 
 var _ planNode = &deleteRangeNode{}
+var _ planNodeFastPath = &deleteRangeNode{}
+var _ batchedPlanNode = &deleteRangeNode{}
 var _ mutationPlanNode = &deleteRangeNode{}
 
+// BatchedNext implements the batchedPlanNode interface.
+func (d *deleteRangeNode) BatchedNext(params runParams) (bool, error) {
+	return false, nil
+}
+
+// BatchedCount implements the batchedPlanNode interface.
+func (d *deleteRangeNode) BatchedCount() int {
+	return d.rowCount
+}
+
+// BatchedValues implements the batchedPlanNode interface.
+func (d *deleteRangeNode) BatchedValues(rowIdx int) tree.Datums {
+	panic("invalid")
+}
+
+// FastPathResults implements the planNodeFastPath interface.
+func (d *deleteRangeNode) FastPathResults() (int, bool) {
+	return d.rowCount, true
+}
+
 func (d *deleteRangeNode) rowsWritten() int64 {
-	return d.rowsAffected()
+	return int64(d.rowCount)
 }
 
 func (d *deleteRangeNode) indexRowsWritten() int64 {
 	// Same as rowsWritten, because deleteRangeNode only applies to primary index
 	// rows (it is not used if there's a secondary index on the table).
-	return d.rowsAffected()
+	return int64(d.rowCount)
 }
 
 func (d *deleteRangeNode) indexBytesWritten() int64 {
 	// No bytes counted as written for a deletion.
 	return 0
-}
-
-func (d *deleteRangeNode) returnsRowsAffected() bool {
-	// DeleteRange always returns the number of rows deleted.
-	return true
 }
 
 // startExec implements the planNode interface.
@@ -220,7 +239,7 @@ func (d *deleteRangeNode) processResults(
 			k := keyBytes[:len(keyBytes)-len(after)]
 			if !bytes.Equal(k, d.curRowPrefix) {
 				d.curRowPrefix = k
-				d.incAffectedRows()
+				d.rowCount++
 			}
 		}
 		if r.ResumeSpan != nil && r.ResumeSpan.Valid() {
@@ -231,13 +250,15 @@ func (d *deleteRangeNode) processResults(
 }
 
 // Next implements the planNode interface.
-func (d *deleteRangeNode) Next(params runParams) (bool, error) {
-	return d.next(), nil
+func (*deleteRangeNode) Next(params runParams) (bool, error) {
+	// TODO(radu): this shouldn't be used, but it gets called when a cascade uses
+	// delete-range. Investigate this.
+	return false, nil
 }
 
 // Values implements the planNode interface.
-func (d *deleteRangeNode) Values() tree.Datums {
-	return d.values()
+func (*deleteRangeNode) Values() tree.Datums {
+	panic("invalid")
 }
 
 // Close implements the planNode interface.

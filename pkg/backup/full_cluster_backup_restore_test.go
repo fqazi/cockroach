@@ -393,8 +393,9 @@ func TestSingletonSpanConfigJobPostRestore(t *testing.T) {
 		ServerArgs: base.TestServerArgs{
 			// Disabled only because backupRestoreTestSetupEmpty, another DR test
 			// helper function, is not yet enabled to set up tenants within
-			// clusters by default.
-			DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
+			// clusters by default. Tracking issue
+			// https://github.com/cockroachdb/cockroach/issues/76378
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 			Knobs: base.TestingKnobs{
 				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			},
@@ -1013,8 +1014,9 @@ func TestReintroduceOfflineSpans(t *testing.T) {
 	params.ServerArgs.Knobs = knobs
 	// Disabled only because backupRestoreTestSetupEmpty, another DR test
 	// helper function, is not yet enabled to set up tenants within
-	// clusters by default.
-	params.ServerArgs.DefaultTestTenant = base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798)
+	// clusters by default. Tracking issue
+	// https://github.com/cockroachdb/cockroach/issues/76378
+	params.ServerArgs.DefaultTestTenant = base.TODOTestTenantDisabled
 
 	const numAccounts = 1000
 	ctx := context.Background()
@@ -1119,10 +1121,8 @@ func TestRestoreWithRecreatedDefaultDB(t *testing.T) {
 	_, sqlDB, tempDir, cleanupFn := backuptestutils.StartBackupRestoreTestCluster(t, singleNode)
 	_, sqlDBRestore, cleanupEmptyCluster := backupRestoreTestSetupEmpty(t, singleNode, tempDir, InitManualReplication,
 		// Disabling the default test tenant due to test failures. More
-		// investigation is required.
-		base.TestClusterArgs{ServerArgs: base.TestServerArgs{
-			DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
-		}})
+		// investigation is required. Tracked with #76378.
+		base.TestClusterArgs{ServerArgs: base.TestServerArgs{DefaultTestTenant: base.TODOTestTenantDisabled}})
 	defer cleanupFn()
 	defer cleanupEmptyCluster()
 
@@ -1146,10 +1146,8 @@ func TestRestoreWithDroppedDefaultDB(t *testing.T) {
 	_, sqlDB, tempDir, cleanupFn := backuptestutils.StartBackupRestoreTestCluster(t, singleNode)
 	_, sqlDBRestore, cleanupEmptyCluster := backupRestoreTestSetupEmpty(t, singleNode, tempDir, InitManualReplication,
 		// Disabling the default test tenant due to test failures. More
-		// investigation is required.
-		base.TestClusterArgs{ServerArgs: base.TestServerArgs{
-			DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
-		}})
+		// investigation is required. Tracked with #76378.
+		base.TestClusterArgs{ServerArgs: base.TestServerArgs{DefaultTestTenant: base.TODOTestTenantDisabled}})
 	defer cleanupFn()
 	defer cleanupEmptyCluster()
 
@@ -1173,8 +1171,9 @@ func TestFullClusterRestoreWithUserIDs(t *testing.T) {
 		ServerArgs: base.TestServerArgs{
 			// Disabled only because backupRestoreTestSetupEmpty, another DR test
 			// helper function, that is not yet enabled to set up tenants within
-			// clusters by default.
-			DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
+			// clusters by default. Tracking issue
+			// https://github.com/cockroachdb/cockroach/issues/76378
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 			Knobs: base.TestingKnobs{
 				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			},
@@ -1190,29 +1189,29 @@ func TestFullClusterRestoreWithUserIDs(t *testing.T) {
 	sqlDB.Exec(t, `CREATE USER test2`)
 	sqlDB.Exec(t, `BACKUP INTO $1`, localFoo)
 
-	sqlDB.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole" FROM system.users ORDER BY user_id`, [][]string{
-		{"root", "", "false"},
-		{"admin", "", "true"},
-		{"test1", "NULL", "false"},
-		{"test2", "NULL", "false"},
+	sqlDB.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole", user_id FROM system.users ORDER BY user_id`, [][]string{
+		{"root", "", "false", "1"},
+		{"admin", "", "true", "2"},
+		{"test1", "NULL", "false", "100"},
+		{"test2", "NULL", "false", "101"},
 	})
 	// Ensure that the new backup succeeds.
 	sqlDBRestore.Exec(t, `RESTORE FROM LATEST IN $1`, localFoo)
 
-	sqlDBRestore.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole" FROM system.users ORDER BY user_id`, [][]string{
-		{"root", "", "false"},
-		{"admin", "", "true"},
-		{"test1", "NULL", "false"},
-		{"test2", "NULL", "false"},
+	sqlDBRestore.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole", user_id FROM system.users ORDER BY user_id`, [][]string{
+		{"root", "", "false", "1"},
+		{"admin", "", "true", "2"},
+		{"test1", "NULL", "false", "100"},
+		{"test2", "NULL", "false", "101"},
 	})
 
 	sqlDBRestore.Exec(t, `CREATE USER test3`)
 
-	sqlDBRestore.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole" FROM system.users ORDER BY user_id`, [][]string{
-		{"root", "", "false"},
-		{"admin", "", "true"},
-		{"test1", "NULL", "false"},
-		{"test2", "NULL", "false"},
-		{"test3", "NULL", "false"},
+	sqlDBRestore.CheckQueryResults(t, `SELECT username, "hashedPassword", "isRole", user_id FROM system.users ORDER BY user_id`, [][]string{
+		{"root", "", "false", "1"},
+		{"admin", "", "true", "2"},
+		{"test1", "NULL", "false", "100"},
+		{"test2", "NULL", "false", "101"},
+		{"test3", "NULL", "false", "102"},
 	})
 }

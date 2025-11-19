@@ -688,18 +688,7 @@ func TestMemoIsStale(t *testing.T) {
 	stale()
 	evalCtx.SessionData().UserProto = oldUser
 	notStale()
-
-	// User changes (after RLS was reinitialized)
 	o.Memo().Metadata().ClearRLSEnabled()
-	evalCtx.SessionData().UserProto = newUser
-	notStale()
-	evalCtx.SessionData().UserProto = oldUser
-	notStale()
-
-	// Stale row_security.
-	evalCtx.SessionData().RowSecurity = true
-	stale()
-	evalCtx.SessionData().RowSecurity = false
 	notStale()
 }
 

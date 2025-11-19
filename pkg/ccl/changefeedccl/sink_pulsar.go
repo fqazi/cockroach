@@ -262,7 +262,7 @@ func (p *pulsarSink) msgCallback(
 	oneMsgCb := p.metrics.recordOneMessage()
 
 	return func(id pulsar.MessageID, message *pulsar.ProducerMessage, err error) {
-		sendCb.End()
+		sendCb()
 		if err == nil {
 			oneMsgCb(mvcc, len(message.Payload), len(message.Payload))
 		} else {

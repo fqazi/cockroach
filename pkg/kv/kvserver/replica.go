@@ -31,12 +31,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/replica_rac2"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rafttrace"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rangefeed"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/split"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/tenantrate"
 	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
@@ -59,7 +59,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 	"github.com/kr/pretty"
@@ -448,7 +447,7 @@ type Replica struct {
 	raftMu struct {
 		syncutil.Mutex
 
-		stateLoader kvstorage.StateLoader
+		stateLoader stateloader.StateLoader
 
 		// stateMachine is used to apply committed raft entries.
 		stateMachine replicaStateMachine
@@ -1057,7 +1056,7 @@ type Replica struct {
 	// information and without explicit throttling some replicas will offer once
 	// per applied Raft command, which is silly and also clogs up the queues'
 	// semaphores.
-	splitQueueThrottle, mergeQueueThrottle util.EveryN[crtime.Mono]
+	splitQueueThrottle, mergeQueueThrottle util.EveryN
 
 	// loadBasedSplitter keeps information about load-based splitting.
 	loadBasedSplitter split.Decider
@@ -1483,7 +1482,7 @@ func entireSpanExcludedFromBackup(
 			return false, errors.Newf("replica's span configuration bounds not set")
 		}
 		if !confSpan.Contains(sp) {
-			log.KvExec.Warningf(ctx, "ExcludeDataFromBackup set but span %q not contained by span config bounds %q",
+			log.KvExec.Warningf(ctx, "ExcludeDataFromBackup set but span %q not containd by span config bounds %q",
 				sp,
 				confSpan)
 
@@ -2462,18 +2461,44 @@ func shouldWaitForPendingMerge(
 	return &kvpb.MergeInProgressError{}
 }
 
-// isNewerThanSplit is a helper used in split(Pre|Post)Apply to determine
-// whether the RHS replica of the split must have been removed from this store
-// after the split, and the given Replica has a higher ID.
+// isNewerThanSplit is a helper used in split(Pre|Post)Apply to
+// determine whether the Replica on the right hand side of the split must
+// have been removed from this store after the split.
 //
-// NB: from v22.2, we persist any Replica's ID under RaftReplicaIDKey. A
-// complementary mechanism, RangeTombstone, ensures that replica deletions are
-// persistent as well. As a result, the ReplicaID existence and non-existence is
-// monotonic and survives restarts.
+// TODO(tbg): the below is true as of 22.2: we persist any Replica's ReplicaID
+// under RaftReplicaIDKey, so the below caveats should be addressed now.
+//
+// TODO(ajwerner):  There is one false negative where false will be returned but
+// the hard state may be due to a newer replica which is outlined below. It
+// should be safe.
+// Ideally if this store had ever learned that the replica created by the split
+// were removed it would not forget that fact. There exists one edge case where
+// the store may learn that it should house a replica of the same range with a
+// higher replica ID and then forget. If the first raft message this store ever
+// receives for the this range contains a replica ID higher than the replica ID
+// in the split trigger then an in-memory replica at that higher replica ID will
+// be created and no tombstone at a lower replica ID will be written. If the
+// server then crashes it will forget that it had ever been the higher replica
+// ID. The server may then proceed to process the split and initialize a replica
+// at the replica ID implied by the split. This is potentially problematic as
+// the replica may have voted as this higher replica ID and when it rediscovers
+// the higher replica ID it will delete all of the state corresponding to the
+// older replica ID including its hard state which may have been synthesized
+// with votes as the newer replica ID. This case tends to be handled safely in
+// practice because the replica should only be receiving messages as the newer
+// replica ID after it has been added to the range as a learner.
+//
+// Despite the safety due to the change replicas protocol explained above it'd
+// be good to know for sure that a replica ID for a range on a store is always
+// monotonically increasing, even across restarts.
 //
 // See TestProcessSplitAfterRightHandSideHasBeenRemoved.
 func (r *Replica) isNewerThanSplit(split *roachpb.SplitTrigger) bool {
 	rightDesc, _ := split.RightDesc.GetReplicaDescriptor(r.StoreID())
+	// If the first raft message we received for the RHS range was for a replica
+	// ID which is above the replica ID of the split then we would not have
+	// written a tombstone but we will have a replica ID that will exceed the
+	// split replica ID.
 	return r.replicaID > rightDesc.ReplicaID
 }
 

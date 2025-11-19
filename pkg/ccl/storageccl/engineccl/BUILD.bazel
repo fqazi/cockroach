@@ -40,6 +40,7 @@ go_test(
     embed = [":engineccl"],
     deps = [
         "//pkg/base",
+        "//pkg/ccl/securityccl/fipsccl",
         "//pkg/clusterversion",
         "//pkg/keys",
         "//pkg/roachpb",

@@ -15,7 +15,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/backup/backupbase"
 	"github.com/cockroachdb/cockroach/pkg/backup/backupdest"
-	"github.com/cockroachdb/cockroach/pkg/backup/backupinfo"
 	"github.com/cockroachdb/cockroach/pkg/backup/backuptestutils"
 	"github.com/cockroachdb/cockroach/pkg/backup/backuputils"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
@@ -251,7 +250,7 @@ func TestFindAllIncrementalPaths(t *testing.T) {
 
 			var expectedPaths []string
 			for _, b := range targetChain[1:] {
-				expectedPaths = append(expectedPaths, backupinfo.ConstructDateBasedIncrementalFolderName(
+				expectedPaths = append(expectedPaths, backupdest.ConstructDateBasedIncrementalFolderName(
 					toTime(b.start), toTime(b.end),
 				))
 			}
@@ -440,7 +439,7 @@ func writeEmptyBackupManifest(
 		}
 		backupPath = backuputils.JoinURLPath(
 			subdir,
-			backupinfo.ConstructDateBasedIncrementalFolderName(start, end),
+			backupdest.ConstructDateBasedIncrementalFolderName(start, end),
 		)
 	}
 
@@ -487,7 +486,7 @@ func writeEmptyBackupManifest(
 
 	require.NoError(
 		t,
-		backupinfo.WriteBackupIndexMetadata(
+		backupdest.WriteBackupIndexMetadata(
 			context.Background(), execCfg, username.RootUserName(),
 			execCfg.DistSQLSrv.ExternalStorageFromURI, backupDetails, hlc.Timestamp{},
 		),

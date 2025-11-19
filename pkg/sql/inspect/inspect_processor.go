@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowexec"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -35,8 +34,6 @@ var (
 	// errInspectFoundInconsistencies is a sentinel error used to mark errors
 	// returned when INSPECT jobs find data inconsistencies.
 	errInspectFoundInconsistencies = pgerror.New(pgcode.DataException, "INSPECT found inconsistencies")
-	// errInspectInternalErrors marks jobs that only encountered internal errors while running.
-	errInspectInternalErrors = pgerror.New(pgcode.Internal, "INSPECT encountered internal errors")
 
 	processorConcurrencyOverride = settings.RegisterIntSetting(
 		settings.ApplicationLevel,
@@ -62,24 +59,7 @@ var (
 		30*time.Second,
 		settings.DurationWithMinimum(1*time.Millisecond),
 	)
-
-	admissionControlEnabled = settings.RegisterBoolSetting(
-		settings.ApplicationLevel,
-		"sql.inspect.admission_control.enabled",
-		"when enabled, INSPECT operations are throttled to minimize impact on foreground query performance; "+
-			"when disabled, INSPECT runs faster but may slow down foreground queries",
-		true,
-	)
 )
-
-// getInspectQoS returns the QoS level to use for INSPECT operations based on
-// the cluster setting sql.inspect.admission_control.enabled.
-func getInspectQoS(sv *settings.Values) sessiondatapb.QoSLevel {
-	if admissionControlEnabled.Get(sv) {
-		return sessiondatapb.BulkLowQoS
-	}
-	return sessiondatapb.Normal
-}
 
 type inspectCheckFactory func(asOf hlc.Timestamp) inspectCheck
 
@@ -90,7 +70,7 @@ type inspectProcessor struct {
 	cfg               *execinfra.ServerConfig
 	checkFactories    []inspectCheckFactory
 	spanSrc           spanSource
-	loggerBundle      *inspectLoggerBundle
+	logger            inspectLogger
 	concurrency       int
 	clock             *hlc.Clock
 	spansProcessedCtr *metric.Counter
@@ -207,17 +187,9 @@ func (p *inspectProcessor) runInspect(ctx context.Context, output execinfra.RowR
 		return err
 	}
 
-	log.Dev.Infof(ctx, "INSPECT processor completed processorID=%d issuesFound=%t", p.processorID, p.loggerBundle.hasIssues())
-	if p.loggerBundle.hasIssues() {
-		errToReturn := errInspectFoundInconsistencies
-		if p.loggerBundle.sawOnlyInternalIssues() {
-			errToReturn = errInspectInternalErrors
-		}
-		return errors.WithHintf(
-			errToReturn,
-			"Run 'SHOW INSPECT ERRORS FOR JOB %d WITH DETAILS' for more information.",
-			p.spec.JobID,
-		)
+	log.Dev.Infof(ctx, "INSPECT processor completed processorID=%d issuesFound=%t", p.processorID, p.logger.hasIssues())
+	if p.logger.hasIssues() {
+		return errInspectFoundInconsistencies
 	}
 	return nil
 }
@@ -233,17 +205,16 @@ func getProcessorConcurrency(flowCtx *execinfra.FlowCtx) int {
 	return runtime.GOMAXPROCS(0)
 }
 
-// getInspectLogger returns a logger bundle for the inspect processor.
-func getInspectLogger(flowCtx *execinfra.FlowCtx, jobID jobspb.JobID) *inspectLoggerBundle {
+// getInspectLogger returns a logger for the inspect processor.
+func getInspectLogger(flowCtx *execinfra.FlowCtx, jobID jobspb.JobID) inspectLogger {
 	execCfg := flowCtx.Cfg.ExecutorConfig.(*sql.ExecutorConfig)
 	metrics := execCfg.JobRegistry.MetricsStruct().Inspect.(*InspectMetrics)
 
-	loggers := []inspectLogger{
+	loggers := inspectLoggers{
 		&logSink{},
 		&tableSink{
 			db:    flowCtx.Cfg.DB,
 			jobID: jobID,
-			sv:    &flowCtx.Cfg.Settings.SV,
 		},
 		&metricsLogger{
 			issuesFoundCtr: metrics.IssuesFound,
@@ -255,7 +226,7 @@ func getInspectLogger(flowCtx *execinfra.FlowCtx, jobID jobspb.JobID) *inspectLo
 		loggers = append(loggers, knobs.InspectIssueLogger.(inspectLogger))
 	}
 
-	return newInspectLoggerBundle(loggers...)
+	return loggers
 }
 
 // processSpan executes all configured inspect checks against a single span.
@@ -282,7 +253,7 @@ func (p *inspectProcessor) processSpan(
 
 	runner := inspectRunner{
 		checks: checks,
-		logger: p.loggerBundle,
+		logger: p.logger,
 	}
 	defer func() {
 		if closeErr := runner.Close(ctx); closeErr != nil {
@@ -432,7 +403,7 @@ func newInspectProcessor(
 		checkFactories:    checkFactories,
 		cfg:               flowCtx.Cfg,
 		spanSrc:           newSliceSpanSource(spec.Spans),
-		loggerBundle:      getInspectLogger(flowCtx, spec.JobID),
+		logger:            getInspectLogger(flowCtx, spec.JobID),
 		concurrency:       getProcessorConcurrency(flowCtx),
 		clock:             flowCtx.Cfg.DB.KV().Clock(),
 		spansProcessedCtr: spansProcessedCtr,

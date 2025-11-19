@@ -60,7 +60,7 @@ type installFixturesStep struct {
 
 func (s installFixturesStep) Background() shouldStop { return nil }
 
-func (s installFixturesStep) Description(debug bool) string {
+func (s installFixturesStep) Description() string {
 	return fmt.Sprintf("install fixtures for version %q", s.version.String())
 }
 
@@ -88,7 +88,7 @@ type startStep struct {
 
 func (s startStep) Background() shouldStop { return nil }
 
-func (s startStep) Description(debug bool) string {
+func (s startStep) Description() string {
 	return fmt.Sprintf("start cluster at version %q", s.version)
 }
 
@@ -136,7 +136,7 @@ type startSharedProcessVirtualClusterStep struct {
 
 func (s startSharedProcessVirtualClusterStep) Background() shouldStop { return nil }
 
-func (s startSharedProcessVirtualClusterStep) Description(debug bool) string {
+func (s startSharedProcessVirtualClusterStep) Description() string {
 	return fmt.Sprintf("start shared-process tenant %q", s.name)
 }
 
@@ -173,7 +173,7 @@ type startSeparateProcessVirtualClusterStep struct {
 
 func (s startSeparateProcessVirtualClusterStep) Background() shouldStop { return nil }
 
-func (s startSeparateProcessVirtualClusterStep) Description(debug bool) string {
+func (s startSeparateProcessVirtualClusterStep) Description() string {
 	return fmt.Sprintf(
 		"start separate process virtual cluster %s with binary version %s",
 		s.name, s.version,
@@ -215,7 +215,7 @@ type restartVirtualClusterStep struct {
 
 func (s restartVirtualClusterStep) Background() shouldStop { return nil }
 
-func (s restartVirtualClusterStep) Description(debug bool) string {
+func (s restartVirtualClusterStep) Description() string {
 	return fmt.Sprintf(
 		"restart %s server on node %d with binary version %s",
 		s.virtualCluster, s.node, s.version,
@@ -265,7 +265,7 @@ type waitForStableClusterVersionStep struct {
 
 func (s waitForStableClusterVersionStep) Background() shouldStop { return nil }
 
-func (s waitForStableClusterVersionStep) Description(debug bool) string {
+func (s waitForStableClusterVersionStep) Description() string {
 	return fmt.Sprintf(
 		"wait for all nodes (%v) to acknowledge cluster version %s on %s tenant",
 		s.nodes, quoteVersionForPresentation(s.desiredVersion), s.virtualClusterName,
@@ -293,7 +293,7 @@ type preserveDowngradeOptionStep struct {
 
 func (s preserveDowngradeOptionStep) Background() shouldStop { return nil }
 
-func (s preserveDowngradeOptionStep) Description(debug bool) string {
+func (s preserveDowngradeOptionStep) Description() string {
 	return fmt.Sprintf(
 		"prevent auto-upgrades on %s tenant by setting `preserve_downgrade_option`",
 		s.virtualClusterName,
@@ -339,7 +339,7 @@ type restartWithNewBinaryStep struct {
 
 func (s restartWithNewBinaryStep) Background() shouldStop { return nil }
 
-func (s restartWithNewBinaryStep) Description(debug bool) string {
+func (s restartWithNewBinaryStep) Description() string {
 	var systemDesc string
 	if s.deploymentMode == SeparateProcessDeployment {
 		systemDesc = " system server on"
@@ -400,7 +400,7 @@ type allowUpgradeStep struct {
 
 func (s allowUpgradeStep) Background() shouldStop { return nil }
 
-func (s allowUpgradeStep) Description(debug bool) string {
+func (s allowUpgradeStep) Description() string {
 	return fmt.Sprintf(
 		"allow upgrade to happen on %s tenant by resetting `preserve_downgrade_option`",
 		s.virtualClusterName,
@@ -430,7 +430,7 @@ type waitStep struct {
 
 func (s waitStep) Background() shouldStop { return nil }
 
-func (s waitStep) Description(debug bool) string {
+func (s waitStep) Description() string {
 	return fmt.Sprintf("wait for %s", s.dur)
 }
 
@@ -457,10 +457,7 @@ type runHookStep struct {
 
 func (s runHookStep) Background() shouldStop { return s.stopChan }
 
-func (s runHookStep) Description(debug bool) string {
-	if debug {
-		return fmt.Sprintf("run %q hookId=%q", s.hook.name, s.hook.id)
-	}
+func (s runHookStep) Description() string {
 	return fmt.Sprintf("run %q", s.hook.name)
 }
 
@@ -483,7 +480,7 @@ type setClusterSettingStep struct {
 
 func (s setClusterSettingStep) Background() shouldStop { return nil }
 
-func (s setClusterSettingStep) Description(debug bool) string {
+func (s setClusterSettingStep) Description() string {
 	return fmt.Sprintf(
 		"set cluster setting %q to '%v' on %s tenant",
 		s.name, s.value, s.virtualClusterName,
@@ -540,7 +537,7 @@ type setClusterVersionStep struct {
 
 func (s setClusterVersionStep) Background() shouldStop { return nil }
 
-func (s setClusterVersionStep) Description(debug bool) string {
+func (s setClusterVersionStep) Description() string {
 	value := versionToClusterVersion(s.v)
 	if !s.v.IsCurrent() {
 		value = fmt.Sprintf("'%s'", value)
@@ -588,7 +585,7 @@ type resetClusterSettingStep struct {
 
 func (s resetClusterSettingStep) Background() shouldStop { return nil }
 
-func (s resetClusterSettingStep) Description(debug bool) string {
+func (s resetClusterSettingStep) Description() string {
 	return fmt.Sprintf("reset cluster setting %q on %s tenant", s.name, s.virtualClusterName)
 }
 
@@ -616,7 +613,7 @@ type deleteAllTenantsVersionOverrideStep struct{}
 
 func (s deleteAllTenantsVersionOverrideStep) Background() shouldStop { return nil }
 
-func (s deleteAllTenantsVersionOverrideStep) Description(debug bool) string {
+func (s deleteAllTenantsVersionOverrideStep) Description() string {
 	return "delete all-tenants override for the `version` key"
 }
 
@@ -647,7 +644,7 @@ type disableRateLimitersStep struct {
 
 func (s disableRateLimitersStep) Background() shouldStop { return nil }
 
-func (s disableRateLimitersStep) Description(debug bool) string {
+func (s disableRateLimitersStep) Description() string {
 	return fmt.Sprintf("disable KV and tenant(SQL) rate limiter on %s tenant", s.virtualClusterName)
 }
 
@@ -785,12 +782,9 @@ func quoteVersionForPresentation(v string) string {
 // we should change the default and add an API for tests to opt-out of
 // the default scheduled backup if necessary.
 func startOpts(opts ...option.StartStopOption) option.StartOpts {
-	startOpts := option.NewStartOpts(
+	return option.NewStartOpts(
 		startStopOpts(opts...)...,
 	)
-	// Enable verbose logging for auto_upgrade to help debug upgrade-related issues.
-	startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs, "--vmodule=auto_upgrade=2")
-	return startOpts
 }
 
 // startStopOpts does the same as `startOpts` but returns StartStopOptions
@@ -809,7 +803,7 @@ type panicNodeStep struct {
 
 func (s panicNodeStep) Background() shouldStop { return nil }
 
-func (s panicNodeStep) Description(debug bool) string {
+func (s panicNodeStep) Description() string {
 	return fmt.Sprintf("panicking system interface on node %d", s.targetNode[0])
 }
 
@@ -853,7 +847,7 @@ type restartNodeStep struct {
 
 func (restartNodeStep) Background() shouldStop { return nil }
 
-func (s restartNodeStep) Description(debug bool) string {
+func (s restartNodeStep) Description() string {
 	return s.description
 }
 
@@ -900,7 +894,7 @@ type networkPartitionInjectStep struct {
 
 func (s networkPartitionInjectStep) Background() shouldStop { return nil }
 
-func (s networkPartitionInjectStep) Description(debug bool) string {
+func (s networkPartitionInjectStep) Description() string {
 	var desc string
 	switch s.partition.Type {
 	case failures.Bidirectional:
@@ -947,7 +941,7 @@ type networkPartitionRecoveryStep struct {
 
 func (s networkPartitionRecoveryStep) Background() shouldStop { return nil }
 
-func (s networkPartitionRecoveryStep) Description(debug bool) string {
+func (s networkPartitionRecoveryStep) Description() string {
 	var desc string
 	switch s.partition.Type {
 	case failures.Bidirectional:
@@ -991,7 +985,7 @@ type alterReplicationFactorStep struct {
 
 func (s alterReplicationFactorStep) Background() shouldStop { return nil }
 
-func (s alterReplicationFactorStep) Description(debug bool) string {
+func (s alterReplicationFactorStep) Description() string {
 	return fmt.Sprintf("alter replication factor to %d", s.replicationFactor)
 }
 
@@ -1031,7 +1025,7 @@ type stageAllWorkloadBinariesStep struct {
 }
 
 func (s stageAllWorkloadBinariesStep) Background() shouldStop { return nil }
-func (s stageAllWorkloadBinariesStep) Description(debug bool) string {
+func (s stageAllWorkloadBinariesStep) Description() string {
 	versionStrings := make([]string, len(s.versions))
 	for i, v := range s.versions {
 		versionStrings[i] = v.String()

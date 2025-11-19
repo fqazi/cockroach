@@ -377,6 +377,12 @@ WHERE stat->>'name' = '__forecast__';
         },
         {
             "distinct_range": 0,
+            "num_eq": 0,
+            "num_range": 0,
+            "upper_bound": "10"
+        },
+        {
+            "distinct_range": 0,
             "num_eq": 2,
             "num_range": 0,
             "upper_bound": "11"
@@ -407,6 +413,12 @@ WHERE stat->>'name' = '__forecast__';
         },
         {
             "distinct_range": 0,
+            "num_eq": 0,
+            "num_range": 0,
+            "upper_bound": "16"
+        },
+        {
+            "distinct_range": 0,
             "num_eq": 1,
             "num_range": 0,
             "upper_bound": "17"
@@ -418,18 +430,6 @@ WHERE stat->>'name' = '__forecast__';
     "null_count": 0,
     "row_count": 18
 }
-
-# Verify that we display forecasted stats even when we don't show merged stats
-# that it is based on.
-query TTTIIII
-SELECT statistics_name, column_names, created, row_count, distinct_count, null_count, avg_size
-FROM [SHOW STATISTICS FOR TABLE g WITH FORECAST]
-ORDER BY created
-----
-__auto__      {b}  1988-08-05 00:00:00 +0000 UTC  3   3   0  1
-__auto__      {b}  1988-08-07 00:00:00 +0000 UTC  9   9   0  1
-partial       {b}  1988-08-08 00:00:00 +0000 UTC  3   3   0  2
-__forecast__  {b}  1988-08-10 00:00:00 +0000 UTC  18  18  0  1
 
 # Verify that when the partial histogram is empty
 # the returned statistic is the latest full statistic

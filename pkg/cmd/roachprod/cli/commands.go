@@ -166,7 +166,7 @@ be fairly distributed across the zones of the cluster).
 `,
 		Args: cobra.ExactArgs(2),
 		Run: Wrap(func(cmd *cobra.Command, args []string) error {
-			count, err := strconv.ParseInt(args[1], 10, 16)
+			count, err := strconv.ParseInt(args[1], 10, 8)
 			if err != nil || count < 1 {
 				return errors.Wrapf(err, "invalid num-nodes argument")
 			}
@@ -2143,32 +2143,6 @@ func (cr *commandRegistry) buildOpentelemetryStopCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Run: Wrap(func(cmd *cobra.Command, args []string) error {
 			return roachprod.StopOpenTelemetry(context.Background(), config.Logger, args[0])
-		}),
-	}
-}
-
-func (cr *commandRegistry) buildParcaAgentStartCmd() *cobra.Command {
-	parcaAgentStartCmd := &cobra.Command{
-		Use:   "parca-agent-start <cluster>",
-		Short: "Install and start the Parca Agent",
-		Long:  "Install and start the Parca Agent",
-		Args:  cobra.ExactArgs(1),
-		Run: Wrap(func(cmd *cobra.Command, args []string) error {
-			return roachprod.StartParcaAgent(context.Background(), config.Logger, args[0], parcaAgentConfig)
-		}),
-	}
-	initParcaAgentStartCmdFlags(parcaAgentStartCmd)
-	return parcaAgentStartCmd
-}
-
-func (cr *commandRegistry) buildParcaAgentStopCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "parca-agent-stop <cluster>",
-		Short: "Stop the Parca Agent",
-		Long:  "Stop the Parca Agent",
-		Args:  cobra.ExactArgs(1),
-		Run: Wrap(func(cmd *cobra.Command, args []string) error {
-			return roachprod.StopParcaAgent(context.Background(), config.Logger, args[0])
 		}),
 	}
 }

@@ -31,14 +31,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/cli/exit"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachprod/grafana"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/agents/fluentbit"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/agents/opentelemetry"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/agents/parca"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/cloud"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
+	"github.com/cockroachdb/cockroach/pkg/roachprod/fluentbit"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
+	"github.com/cockroachdb/cockroach/pkg/roachprod/opentelemetry"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/prometheus"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/promhelperclient"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
@@ -1131,13 +1130,12 @@ func Get(ctx context.Context, l *logger.Logger, clusterName, src, dest string) e
 }
 
 type PGURLOptions struct {
-	Database                string
-	Secure                  install.SecureOption
-	External                bool
-	VirtualClusterName      string
-	SQLInstance             int
-	Auth                    install.PGAuthMode
-	DisallowUnsafeInternals bool
+	Database           string
+	Secure             install.SecureOption
+	External           bool
+	VirtualClusterName string
+	SQLInstance        int
+	Auth               install.PGAuthMode
 }
 
 // PgURL generates pgurls for the nodes in a cluster.
@@ -1172,7 +1170,7 @@ func PgURL(
 		if ip == "" {
 			return nil, errors.Errorf("empty ip: %v", ips)
 		}
-		urls = append(urls, c.NodeURL(ip, desc.Port, opts.VirtualClusterName, desc.ServiceMode, opts.Auth, opts.Database, opts.DisallowUnsafeInternals))
+		urls = append(urls, c.NodeURL(ip, desc.Port, opts.VirtualClusterName, desc.ServiceMode, opts.Auth, opts.Database))
 	}
 	if len(urls) != len(nodes) {
 		return nil, errors.Errorf("have nodes %v, but urls %v from ips %v", nodes, urls, ips)
@@ -1774,11 +1772,6 @@ func Create(
 		// No need for ssh for local clusters.
 		return LoadClusters()
 	}
-
-	if err := CreatePublicDNS(ctx, l, clusterName); err != nil {
-		l.Printf("Failed to create DNS for cluster %s: %v", clusterName, err)
-	}
-
 	l.Printf("Created cluster %s; setting up SSH...", clusterName)
 	return SetupSSH(ctx, l, clusterName, false /* sync */)
 }
@@ -2584,7 +2577,7 @@ func StartOpenTelemetry(
 	return opentelemetry.Install(ctx, l, c, config)
 }
 
-// StopOpenTelemetry stops the OpenTelemetry Collector on the cluster identified by clusterName.
+// Stop stops the OpenTelemetry Collector on the cluster identified by clusterName.
 func StopOpenTelemetry(ctx context.Context, l *logger.Logger, clusterName string) error {
 	if err := LoadClusters(); err != nil {
 		return err
@@ -2598,74 +2591,14 @@ func StopOpenTelemetry(ctx context.Context, l *logger.Logger, clusterName string
 	return opentelemetry.Stop(ctx, l, c)
 }
 
-// StartParcaAgent starts a Parca Agent on the cluster.
-func StartParcaAgent(
-	ctx context.Context, l *logger.Logger, clusterName string, config parca.Config,
-) error {
-	if config.Token == "" {
-		return errors.New("Token cannot be empty")
-	}
-
-	if err := LoadClusters(); err != nil {
-		return err
-	}
-
-	c, err := newCluster(l, clusterName)
-	if err != nil {
-		return err
-	}
-
-	return parca.Install(ctx, l, c, config)
-}
-
-// StopParcaAgent stops the Parca Agent on the cluster.
-func StopParcaAgent(ctx context.Context, l *logger.Logger, clusterName string) error {
-	if err := LoadClusters(); err != nil {
-		return err
-	}
-
-	c, err := newCluster(l, clusterName)
-	if err != nil {
-		return err
-	}
-
-	return parca.Stop(ctx, l, c)
-}
-
 // DestroyDNS destroys the DNS records for the given cluster.
 func DestroyDNS(ctx context.Context, l *logger.Logger, clusterName string) error {
 	c, err := GetClusterFromCache(l, clusterName)
 	if err != nil {
 		return err
 	}
-	publicRecords := make([]string, 0, len(c.VMs))
-	for _, v := range c.VMs {
-		publicRecords = append(publicRecords, v.PublicDNS)
-	}
-
 	return vm.FanOutDNS(c.VMs, func(p vm.DNSProvider, vms vm.List) error {
-		return errors.CombineErrors(
-			p.DeleteSRVRecordsBySubdomain(ctx, c.Name),
-			p.DeletePublicRecordsByName(ctx, publicRecords...),
-		)
-	})
-}
-
-// CreatePublicDNS creates or updates the public A records for the given cluster.
-func CreatePublicDNS(ctx context.Context, l *logger.Logger, clusterName string) error {
-	c, err := GetClusterFromCache(l, clusterName)
-	if err != nil {
-		return err
-	}
-
-	return vm.FanOutDNS(c.VMs, func(p vm.DNSProvider, vms vm.List) error {
-		recs := make([]vm.DNSRecord, 0, len(c.VMs))
-		for _, v := range c.VMs {
-			rec := vm.CreateDNSRecord(v.PublicDNS, vm.A, v.PublicIP, 60)
-			rec.Public = true
-			recs = append(recs, rec)
-		}
-		return p.CreateRecords(ctx, recs...)
+		return p.DeleteRecordsBySubdomain(ctx, c.Name)
 	})
 }
 
@@ -2952,7 +2885,7 @@ func LoadBalancerPgURL(
 	if err != nil {
 		return "", err
 	}
-	return c.NodeURL(addr.IP, port, opts.VirtualClusterName, serviceMode, opts.Auth, opts.Database, opts.DisallowUnsafeInternals), nil
+	return c.NodeURL(addr.IP, port, opts.VirtualClusterName, serviceMode, opts.Auth, opts.Database), nil
 }
 
 // LoadBalancerIP resolves the IP of a load balancer serving the

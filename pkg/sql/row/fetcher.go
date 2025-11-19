@@ -39,7 +39,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/lib/pq/oid"
 )
@@ -340,7 +339,7 @@ type FetcherInitArgs struct {
 	TraceKV bool
 	// TraceKVEvery controls how often KVs are sampled for logging with traceKV
 	// enabled.
-	TraceKVEvery               *util.EveryN[crtime.Mono]
+	TraceKVEvery               *util.EveryN
 	ForceProductionKVBatchSize bool
 	// SpansCanOverlap indicates whether the spans in a given batch can overlap
 	// with one another. If it is true, spans that correspond to the same row must
@@ -1132,10 +1131,7 @@ func (rf *Fetcher) processValueSingle(
 	if rf.args.TraceKV {
 		prettyValue = value.String()
 	}
-	table.row[idx], err = rowenc.DatumToEncDatum(typ, value)
-	if err != nil {
-		return "", "", err
-	}
+	table.row[idx] = rowenc.DatumToEncDatum(typ, value)
 	return prettyKey, prettyValue, nil
 }
 
@@ -1197,7 +1193,7 @@ func (rf *Fetcher) NextRow(ctx context.Context) (row rowenc.EncDatumRow, spanID 
 		// log.EveryN will always print under verbosity level 2.
 		// The caller may choose to set it to avoid logging
 		// too many rows. If unset, we log every KV.
-		if rf.args.TraceKV && (rf.args.TraceKVEvery == nil || rf.args.TraceKVEvery.ShouldProcess(crtime.NowMono())) {
+		if rf.args.TraceKV && (rf.args.TraceKVEvery == nil || rf.args.TraceKVEvery.ShouldProcess(timeutil.Now())) {
 			log.VEventf(ctx, TraceKVVerbosity, "fetched: %s -> %s", prettyKey, prettyVal)
 		}
 

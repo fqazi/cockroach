@@ -13,11 +13,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -635,13 +635,16 @@ func TestDiagnosticsRequestDifferentNode(t *testing.T) {
 func TestChangePollInterval(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	skip.UnderDuress(t, "no point in running this test under heavy configs")
 	ctx := context.Background()
 
 	// We'll inject a request filter to detect scans due to the polling.
-	var tableSpanSet atomic.Bool
-	var tableSpan roachpb.Span
+	// TODO(yuzefovich): it is suspicious that we're using the system codec, yet
+	// the test passes with the test tenant. Investigate this.
+	tableStart := keys.SystemSQLCodec.TablePrefix(uint32(systemschema.StatementDiagnosticsRequestsTable.GetID()))
+	tableSpan := roachpb.Span{
+		Key:    tableStart,
+		EndKey: tableStart.PrefixEnd(),
+	}
 	var scanState = struct {
 		syncutil.Mutex
 		m map[uuid.UUID]struct{}
@@ -667,12 +670,17 @@ func TestChangePollInterval(t *testing.T) {
 		})
 		return seen
 	}
+	settings := cluster.MakeTestingClusterSettings()
 
+	// Set an extremely long initial polling interval to not hit flakes due to
+	// server startup taking more than 10s.
+	stmtdiagnostics.PollingInterval.Override(ctx, &settings.SV, time.Hour)
 	args := base.TestServerArgs{
+		Settings: settings,
 		Knobs: base.TestingKnobs{
 			Store: &kvserver.StoreTestingKnobs{
 				TestingRequestFilter: func(ctx context.Context, request *kvpb.BatchRequest) *kvpb.Error {
-					if !tableSpanSet.Load() || request.Txn == nil {
+					if request.Txn == nil {
 						return nil
 					}
 					for _, req := range request.Requests {
@@ -688,21 +696,11 @@ func TestChangePollInterval(t *testing.T) {
 	}
 	srv := serverutils.StartServerOnly(t, args)
 	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
 
-	tableStart := s.Codec().TablePrefix(uint32(systemschema.StatementDiagnosticsRequestsTable.GetID()))
-	tableSpan = roachpb.Span{
-		Key:    tableStart,
-		EndKey: tableStart.PrefixEnd(),
-	}
-	tableSpanSet.Store(true)
-
-	// Update the polling interval so that the scan occurs roughly after 2s.
-	stmtdiagnostics.PollingInterval.Override(ctx, &s.ClusterSettings().SV, 2*time.Second)
 	require.Equal(t, 1, waitForScans(1))
 	time.Sleep(time.Millisecond) // ensure no unexpected scan occur
 	require.Equal(t, 1, waitForScans(1))
-	stmtdiagnostics.PollingInterval.Override(ctx, &s.ClusterSettings().SV, 200*time.Microsecond)
+	stmtdiagnostics.PollingInterval.Override(ctx, &settings.SV, 200*time.Microsecond)
 	waitForScans(10) // ensure several scans occur
 }
 

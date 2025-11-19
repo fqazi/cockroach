@@ -22,7 +22,6 @@ import "clusterversion/cluster_version.proto";
 import "google/protobuf/timestamp.proto";
 import "util/tracing/tracingpb/recorded_span.proto";
 import "sql/catalog/externalcatalog/externalpb/external.proto";
-import "google/protobuf/empty.proto";
 
 enum EncryptionMode {
   Passphrase = 0;
@@ -691,10 +690,9 @@ message ImportDetails {
   message Type {
     sqlbase.TypeDescriptor desc = 1;
   }
-  Table table = 28 [(gogoproto.nullable) = false];
-  // TODO(yuzefovich): remove Tables field once compatibility with 25.3 is no
-  // longer needed.
-  repeated Table tables = 1 [(gogoproto.nullable) = false, deprecated = true];
+  // TODO(yuzefovich): we now can only support importing into a single table via
+  // a single IMPORT job, so we could change this field.
+  repeated Table tables = 1 [(gogoproto.nullable) = false];
   repeated Type types = 26 [(gogoproto.nullable) = false];
 
   repeated string uris = 2 [(gogoproto.customname) = "URIs"];
@@ -708,7 +706,7 @@ message ImportDetails {
   ];
 
   bool prepare_complete = 12;
-  bool table_published = 13;
+  bool tables_published = 13;
 
   // If the database being imported into is a multi-region database, then this
   // field stores the databases' primary region.
@@ -718,7 +716,7 @@ message ImportDetails {
 
   reserved 4, 7, 8, 9, 10, 11, 14, 22, 23, 24, 25;
 
-  // next val: 29
+  // next val: 28
 }
 
 // SequenceValChunks represents a single chunk of sequence values allocated
@@ -1109,12 +1107,7 @@ message ChangefeedTargetSpecification {
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb.ID"];
   string family_name = 3;
   string statement_time_name = 4;
-  FilterList filter_list = 5;
-}
 
-message FilterList {
-  uint32 filter_type = 1 [(gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/sem/tree.FilterType"];
-  map<string, google.protobuf.Empty> tables = 2 [(gogoproto.nullable) = false];
 }
 
 message ChangefeedDetails {
@@ -1328,10 +1321,8 @@ message RowLevelTTLDetails {
 }
 
 message RowLevelTTLProgress {
-  // JobDeletedRowCount is the number of rows deleted by TTL job so far. If
-  // UseCheckpointing is true, then this is the deleted row count across all
-  // restarts of the job. If that is false, this is the delete row count in
-  // the current running of the job.
+
+  // JobDeletedRowCount is the number of rows deleted by TTL job so far.
   int64 job_deleted_row_count = 1;
 
   // ProcessorProgresses is the progress per DistSQL processor.
@@ -1340,18 +1331,12 @@ message RowLevelTTLProgress {
   // UseDistSQL is no longer used in v23.1+ as all TTL jobs are using DistSQL.
   reserved 3;
 
-  // JobTotalSpanCount is the number of spans for the entire TTL job. This is
-  // deprecated and not used if UseCheckpointing is true.
-  int64 job_total_span_count = 4 [deprecated = true];
+  // JobTotalSpanCount is the number of spans for the entire TTL job.
+  int64 job_total_span_count = 4;
 
   // JobProcessedSpanCount is the number of spans that have been processed by
-  // the TTL job so far. This is deprecated and not used if UseCheckpointing is
-  // true.
-  int64 job_processed_span_count = 5 [deprecated = true];
-
-  // UseCheckpointing is true if the TTL job will use checkpointing for progress
-  // tracking.
-  bool use_checkpointing = 6;
+  // the TTL job so far.
+  int64 job_processed_span_count = 5;
 }
 
 message RowLevelTTLProcessorProgress {
@@ -1369,13 +1354,11 @@ message RowLevelTTLProcessorProgress {
   // DeletedRowCount is the number of rows deleted by this DistSQL processor.
   int64 deleted_row_count = 3;
 
-  // TotalSpanCount is the total number of spans assigned to the DistSQL
-  // processor. This is deprecated and not used if using checkpointing.
-  int64 total_span_count = 4 [deprecated = true];
+  // TotalSpanCount is the total number of spans assigned to the DistSQL processor.
+  int64 total_span_count = 4;
 
-  // ProcessedSpanCount is the number of spans already processed. This is
-  // deprecated when using checkpointing.
-  int64 processed_span_count = 6 [deprecated = true];
+  // ProcessedSpanCount is the number of spans already processed.
+  int64 processed_span_count = 6;
 
   // ProcessorConcurrency is the number parallel tasks the processor will do at once.
   int64 processor_concurrency = 5;

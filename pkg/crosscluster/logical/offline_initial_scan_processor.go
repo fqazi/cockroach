@@ -13,7 +13,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/backup"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster"
-	"github.com/cockroachdb/cockroach/pkg/crosscluster/replicationutils"
 	"github.com/cockroachdb/cockroach/pkg/crosscluster/streamclient"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/bulk"
@@ -66,8 +65,6 @@ type offlineInitialScanProcessor struct {
 
 	checkpointCh chan offlineCheckpoint
 
-	rangeStatsCh chan *streampb.StreamEvent_RangeStats
-
 	rekey *backup.KeyRewriter
 
 	batcher              *bulk.SSTBatcher
@@ -107,7 +104,6 @@ func newNewOfflineInitialScanProcessor(
 		processorID:  processorID,
 		stopCh:       make(chan struct{}),
 		checkpointCh: make(chan offlineCheckpoint),
-		rangeStatsCh: make(chan *streampb.StreamEvent_RangeStats),
 		errCh:        make(chan error, 1),
 		rekey:        rekeyer,
 		lastKeyAdded: roachpb.Key{},
@@ -193,11 +189,11 @@ func (o *offlineInitialScanProcessor) setup(ctx context.Context) error {
 }
 
 func (o *offlineInitialScanProcessor) Start(ctx context.Context) {
-	tags := logtags.BuildBuffer()
-	tags.Add("job", o.spec.JobID)
-	tags.Add("src-node", o.spec.PartitionSpec.PartitionID)
-	tags.Add("proc", o.ProcessorID)
-	ctx = logtags.AddTags(ctx, tags.Finish())
+	tags := &logtags.Buffer{}
+	tags = tags.Add("job", o.spec.JobID)
+	tags = tags.Add("src-node", o.spec.PartitionSpec.PartitionID)
+	tags = tags.Add("proc", o.ProcessorID)
+	ctx = logtags.AddTags(ctx, tags)
 
 	ctx = o.StartInternal(ctx, offlineInitialScanProcessorName)
 
@@ -224,7 +220,6 @@ func (o *offlineInitialScanProcessor) Start(ctx context.Context) {
 	})
 	o.workerGroup.GoCtx(func(ctx context.Context) error {
 		defer close(o.checkpointCh)
-		defer close(o.rangeStatsCh)
 		pprof.Do(ctx, pprof.Labels("proc", fmt.Sprintf("%d", o.ProcessorID)), func(ctx context.Context) {
 			for event := range o.subscription.Events() {
 				if err := o.handleEvent(ctx, event); err != nil {
@@ -250,8 +245,16 @@ func (o *offlineInitialScanProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.P
 	case checkpoint, ok := <-o.checkpointCh:
 		switch {
 		case !ok:
-			o.MoveToDrainingAndLogError(o.waitForErr())
-			return nil, o.DrainHelper()
+			select {
+			case err := <-o.errCh:
+				o.MoveToDrainingAndLogError(err)
+				return nil, o.DrainHelper()
+			case <-time.After(10 * time.Second):
+				logcrash.ReportOrPanic(o.Ctx(), &o.FlowCtx.Cfg.Settings.SV,
+					"event channel closed but no error found on err channel after 10 seconds")
+				o.MoveToDrainingAndLogError(nil /* error */)
+				return nil, o.DrainHelper()
+			}
 		case checkpoint.afterInitialScanCompletion:
 			// The previous checkpoint completed the initial scan and was already
 			// ingested by the coordinator, so we can gracefully shut down the
@@ -266,22 +269,10 @@ func (o *offlineInitialScanProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.P
 				return nil, o.DrainHelper()
 			}
 			row := rowenc.EncDatumRow{
-				rowenc.DatumToEncDatumUnsafe(types.Bytes, tree.NewDBytes(tree.DBytes(progressBytes))),
+				rowenc.DatumToEncDatum(types.Bytes, tree.NewDBytes(tree.DBytes(progressBytes))),
 			}
 			return row, nil
 		}
-	case stats, ok := <-o.rangeStatsCh:
-		if !ok {
-			o.MoveToDrainingAndLogError(o.waitForErr())
-			return nil, o.DrainHelper()
-		}
-
-		meta, err := replicationutils.StreamRangeStatsToProgressMeta(o.FlowCtx, o.ProcessorID, stats)
-		if err != nil {
-			o.MoveToDrainingAndLogError(err)
-			return nil, o.DrainHelper()
-		}
-		return nil, meta
 	case err := <-o.errCh:
 		o.MoveToDrainingAndLogError(err)
 		return nil, o.DrainHelper()
@@ -354,7 +345,7 @@ func (o *offlineInitialScanProcessor) handleEvent(
 			return err
 		}
 	case crosscluster.CheckpointEvent:
-		if err := o.checkpoint(ctx, event.GetCheckpoint()); err != nil {
+		if err := o.checkpoint(ctx, event.GetCheckpoint().ResolvedSpans); err != nil {
 			return err
 		}
 	case crosscluster.SSTableEvent, crosscluster.DeleteRangeEvent:
@@ -367,26 +358,9 @@ func (o *offlineInitialScanProcessor) handleEvent(
 	return nil
 }
 
-// waitForErr waits for an error to be sent on the error channel and returns the
-// error if one is found within the timeout.
-func (o *offlineInitialScanProcessor) waitForErr() error {
-	select {
-	case err := <-o.errCh:
-		return err
-	case <-time.After(10 * time.Second):
-		logcrash.ReportOrPanic(o.Ctx(), &o.FlowCtx.Cfg.Settings.SV,
-			"event channel closed but no error found on err channel after 10 seconds")
-		return nil
-	}
-}
-
 func (o *offlineInitialScanProcessor) checkpoint(
-	ctx context.Context, checkpoint *streampb.StreamEvent_StreamCheckpoint,
+	ctx context.Context, resolvedSpans []jobspb.ResolvedSpan,
 ) error {
-	if checkpoint == nil {
-		return errors.New("nil checkpoint event")
-	}
-	resolvedSpans := checkpoint.ResolvedSpans
 	if resolvedSpans == nil {
 		return errors.New("checkpoint event expected to have resolved spans")
 	}
@@ -431,15 +405,6 @@ func (o *offlineInitialScanProcessor) checkpoint(
 		// `afterInitialScanCompletion` will be set, causing Next to gracefully
 		// shutdown the processor.
 		o.initialScanCompleted = true
-	}
-
-	if checkpoint.RangeStats != nil {
-		select {
-		case o.rangeStatsCh <- checkpoint.RangeStats:
-		case <-o.stopCh:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
 	}
 	return nil
 }

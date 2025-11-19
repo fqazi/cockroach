@@ -252,6 +252,9 @@ func (p *planner) maybeLogStatementInternal(
 		// Is the query actually slow?
 		queryDuration > slowLogThreshold) {
 		commonSQLEventDetails := p.getCommonSQLEventDetails()
+		migrator := log.NewStructuredEventMigrator(func() bool {
+			return !log.ChannelCompatibilityModeEnabled.Get(p.ExecCfg().SV())
+		}, logpb.Channel_SQL_EXEC)
 		switch {
 		case execType == executorTypeExec:
 			// Non-internal queries are always logged to the slow query log.
@@ -259,9 +262,6 @@ func (p *planner) maybeLogStatementInternal(
 				CommonSQLEventDetails: commonSQLEventDetails,
 				CommonSQLExecDetails:  execDetails,
 			}
-			migrator := log.NewStructuredEventMigrator(func() bool {
-				return log.ShouldMigrateEvent(p.ExecCfg().SV())
-			}, logpb.Channel_SQL_PERF)
 			migrator.StructuredEvent(ctx, severity.INFO, event)
 		case execType == executorTypeInternal && slowInternalQueryLogEnabled:
 			// Internal queries that surpass the slow query log threshold should only
@@ -270,9 +270,6 @@ func (p *planner) maybeLogStatementInternal(
 				CommonSQLEventDetails: commonSQLEventDetails,
 				CommonSQLExecDetails:  execDetails,
 			}
-			migrator := log.NewStructuredEventMigrator(func() bool {
-				return log.ShouldMigrateEvent(p.ExecCfg().SV())
-			}, logpb.Channel_SQL_INTERNAL_PERF)
 			migrator.StructuredEvent(ctx, severity.INFO,
 				event)
 		}
@@ -438,7 +435,7 @@ func (p *planner) maybeLogStatementInternal(
 
 		migrator := log.NewStructuredEventMigrator(func() bool {
 			return log.ShouldMigrateEvent(p.ExecCfg().SV())
-		}, logpb.Channel_TELEMETRY)
+		}, logpb.Channel_SQL_EXEC)
 
 		migrator.StructuredEvent(ctx, severity.INFO, sampledQuery)
 	}
@@ -527,7 +524,7 @@ func (p *planner) logTransaction(
 
 	migrator := log.NewStructuredEventMigrator(func() bool {
 		return log.ShouldMigrateEvent(p.ExecCfg().SV())
-	}, logpb.Channel_TELEMETRY)
+	}, logpb.Channel_SQL_EXEC)
 
 	migrator.StructuredEvent(ctx, severity.INFO, sampledTxn)
 }

@@ -101,7 +101,6 @@ import (
 	_ "github.com/cockroachdb/cockroach/pkg/sql/gcjob"    // register jobs declared outside of pkg/sql
 	_ "github.com/cockroachdb/cockroach/pkg/sql/importer" // register jobs/planHooks declared outside of pkg/sql
 	_ "github.com/cockroachdb/cockroach/pkg/sql/inspect"  // register job and planHook declared outside of pkg/sql
-	_ "github.com/cockroachdb/cockroach/pkg/sql/isession" // register isession constructor hook
 	"github.com/cockroachdb/cockroach/pkg/sql/optionalnodeliveness"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire"
 	_ "github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scjob" // register jobs declared outside of pkg/sql
@@ -406,15 +405,12 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 	// and after ValidateAddrs().
 	rpcContext.CheckCertificateAddrs(ctx)
 
-	requestMetrics := rpc.NewRequestMetrics()
-	appRegistry.AddMetricStruct(requestMetrics)
-
-	grpcServer, err := newGRPCServer(ctx, rpcContext, requestMetrics)
+	grpcServer, err := newGRPCServer(ctx, rpcContext, appRegistry)
 	if err != nil {
 		return nil, err
 	}
 
-	drpcServer, err := newDRPCServer(ctx, rpcContext, requestMetrics)
+	drpcServer, err := newDRPCServer(ctx, rpcContext)
 	if err != nil {
 		return nil, err
 	}
@@ -674,7 +670,7 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 		options := storeliveness.NewOptions(livenessInterval, heartbeatInterval, supportGracePeriod)
 		transport, err := storeliveness.NewTransport(
 			cfg.AmbientCtx, stopper, clock, kvNodeDialer,
-			grpcServer.Server, drpcServer.DRPCServer, st, nil, /* knobs */
+			grpcServer.Server, drpcServer.DRPCServer, nil, /* knobs */
 		)
 		if err != nil {
 			return nil, err
@@ -906,16 +902,9 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 			uint64(kvserver.EagerLeaseAcquisitionConcurrency.Get(&cfg.Settings.SV)))
 	})
 
-	mmaAlloc, mmaAllocSync := func() (mmaprototype.Allocator, *mmaintegration.AllocatorSync) {
-		mmaAllocState := mmaprototype.NewAllocatorState(timeutil.DefaultTimeSource{},
-			rand.New(rand.NewSource(timeutil.Now().UnixNano())))
-		allocatorSync := mmaintegration.NewAllocatorSync(storePool, mmaAllocState, st, nil)
-		// We make sure that mmaAllocState is returned through the `Allocator`
-		// interface so that when looking up callers to the interface, we see this
-		// call site.
-		return mmaAllocState, allocatorSync
-	}()
-
+	mmaAllocator := mmaprototype.NewAllocatorState(timeutil.DefaultTimeSource{},
+		rand.New(rand.NewSource(timeutil.Now().UnixNano())))
+	allocatorSync := mmaintegration.NewAllocatorSync(storePool, mmaAllocator, st)
 	g.RegisterCallback(
 		gossip.MakePrefixPattern(gossip.KeyStoreDescPrefix),
 		func(_ string, content roachpb.Value, origTimestampNanos int64) {
@@ -925,8 +914,8 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 				return
 			}
 			storeLoadMsg := mmaintegration.MakeStoreLoadMsg(storeDesc, origTimestampNanos)
-			mmaAlloc.SetStore(state.StoreAttrAndLocFromDesc(storeDesc))
-			mmaAlloc.ProcessStoreLoadMsg(context.TODO(), &storeLoadMsg)
+			mmaAllocator.SetStore(state.StoreAttrAndLocFromDesc(storeDesc))
+			mmaAllocator.ProcessStoreLoadMsg(context.TODO(), &storeLoadMsg)
 		},
 	)
 
@@ -941,8 +930,8 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 		NodeLiveness:                 nodeLiveness,
 		StoreLiveness:                storeLiveness,
 		StorePool:                    storePool,
-		MMAllocator:                  mmaAlloc,
-		AllocatorSync:                mmaAllocSync,
+		MMAllocator:                  mmaAllocator,
+		AllocatorSync:                allocatorSync,
 		Transport:                    raftTransport,
 		NodeDialer:                   kvNodeDialer,
 		RPCContext:                   rpcContext,
@@ -1718,6 +1707,7 @@ func (s *topLevelServer) PreStart(ctx context.Context) error {
 		s.cfg.AmbientCtx,
 		s.rpcContext,
 		s.stopper,
+		s.grpc,
 		s.cfg.AdvertiseAddr,
 	)
 	if err != nil {

@@ -451,11 +451,8 @@ func (sc *SchemaChanger) backfillQueryIntoTable(
 
 		localPlanner.MaybeReallocateAnnotations(stmt.NumAnnotations)
 		// Construct an optimized logical plan of the AS source stmt.
-		localPlanner.stmt = makeStatement(
-			ctx, stmt, clusterunique.ID{}, /* queryID */
-			tree.FmtFlags(tree.QueryFormattingForFingerprintsMask.Get(&localPlanner.execCfg.Settings.SV)),
-			nil, /* statementHintsCache */
-		)
+		localPlanner.stmt = makeStatement(stmt, clusterunique.ID{}, /* queryID */
+			tree.FmtFlags(tree.QueryFormattingForFingerprintsMask.Get(&localPlanner.execCfg.Settings.SV)))
 		localPlanner.optPlanningCtx.init(localPlanner)
 
 		localPlanner.runWithOptions(resolveFlags{skipCache: true}, func() {
@@ -730,19 +727,19 @@ func startGCJob(
 }
 
 func (sc *SchemaChanger) execLogTags() *logtags.Buffer {
-	buf := logtags.BuildBuffer()
-	buf.Add("scExec", nil)
+	buf := &logtags.Buffer{}
+	buf = buf.Add("scExec", nil)
 
-	buf.Add("id", sc.descID)
+	buf = buf.Add("id", sc.descID)
 	if sc.mutationID != descpb.InvalidMutationID {
-		buf.Add("mutation", sc.mutationID)
+		buf = buf.Add("mutation", sc.mutationID)
 	}
 	if sc.droppedDatabaseID != descpb.InvalidID {
-		buf.Add("db", sc.droppedDatabaseID)
+		buf = buf.Add("db", sc.droppedDatabaseID)
 	} else if !sc.droppedSchemaIDs.Empty() {
-		buf.Add("schema", sc.droppedSchemaIDs)
+		buf = buf.Add("schema", sc.droppedSchemaIDs)
 	}
-	return buf.Finish()
+	return buf
 }
 
 // notFirstInLine checks if that this schema changer is at the front of the line
@@ -2259,7 +2256,7 @@ func maybeUpdateZoneConfigsForPKChange(
 
 	// Write the zone back. This call regenerates the index spans that apply
 	// to each partition in the index.
-	err = writeZoneConfig(
+	_, err = writeZoneConfig(
 		ctx, txn, table.ID, table,
 		zoneWithRaw.ZoneConfigProto(), zoneWithRaw.GetRawBytesInStorage(),
 		execCfg, false, kvTrace,

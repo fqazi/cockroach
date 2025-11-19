@@ -40,7 +40,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -186,7 +185,6 @@ func (r *Reporter) PeriodicallyReportDiagnostics(ctx context.Context, stopper *s
 		ctx, cancel = stopper.WithCancelOnQuiesce(ctx)
 		defer cancel()
 		defer logcrash.RecoverAndReportNonfatalPanic(ctx, &r.Settings.SV)
-		rng, _ := randutil.NewPseudoRand()
 		nextReport := r.StartTime
 
 		var timer timeutil.Timer
@@ -201,7 +199,7 @@ func (r *Reporter) PeriodicallyReportDiagnostics(ctx context.Context, stopper *s
 
 			nextReport = nextReport.Add(reportFrequency.Get(&r.Settings.SV))
 
-			timer.Reset(addJitter(nextReport.Sub(timeutil.Now()), rng))
+			timer.Reset(addJitter(nextReport.Sub(timeutil.Now())))
 			select {
 			case <-stopper.ShouldQuiesce():
 				return

@@ -168,11 +168,7 @@ func runCopyFromCRDB(ctx context.Context, t test.Test, c cluster.Cluster, sf int
 			t.Fatal(err)
 		}
 	}
-	// psql doesn't support the CRDB specific "allow_unsafe_internals" parameter.
-	urls, err := c.InternalPGUrl(ctx, t.L(), c.Node(1), roachprod.PGURLOptions{
-		Auth:                    install.AuthUserPassword,
-		DisallowUnsafeInternals: true,
-	})
+	urls, err := c.InternalPGUrl(ctx, t.L(), c.Node(1), roachprod.PGURLOptions{Auth: install.AuthUserPassword})
 	require.NoError(t, err)
 	m := c.NewDeprecatedMonitor(ctx, c.All())
 	m.Go(func(ctx context.Context) error {

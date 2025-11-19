@@ -57,13 +57,6 @@ ColumnFamily :  TableID
 ColumnFamily :  FamilyID
 ColumnFamily :  Name
 
-object ColumnGeneratedAsIdentity
-
-ColumnGeneratedAsIdentity :  TableID
-ColumnGeneratedAsIdentity :  ColumnID
-ColumnGeneratedAsIdentity :  Type
-ColumnGeneratedAsIdentity :  SequenceOption
-
 object ColumnName
 
 ColumnName :  TableID
@@ -88,6 +81,7 @@ ColumnType :  TableID
 ColumnType :  FamilyID
 ColumnType :  ColumnID
 ColumnType :  TypeT
+ColumnType :  IsNullable
 ColumnType :  ComputeExpr
 ColumnType :  IsVirtual
 ColumnType :  ElementCreationMetadata
@@ -575,7 +569,6 @@ Column <|-- ColumnComment
 Column <|-- ColumnComputeExpression
 Column <|-- ColumnDefaultExpression
 Table <|-- ColumnFamily
-Column <|-- ColumnGeneratedAsIdentity
 Column <|-- ColumnName
 Column <|-- ColumnNotNull
 Column <|-- ColumnOnUpdateExpression

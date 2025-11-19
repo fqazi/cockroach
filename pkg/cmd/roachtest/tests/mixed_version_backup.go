@@ -633,7 +633,7 @@ func (fc *fingerprintContents) Load(
 ) error {
 	l.Printf("computing fingerprints for table %s", fc.table)
 	query := fmt.Sprintf(
-		"SELECT index_name, COALESCE(fingerprint, '') FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE %s]%s ORDER BY index_name",
+		"SELECT index_name, fingerprint FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE %s]%s ORDER BY index_name",
 		fc.table, aostFor(timestamp),
 	)
 	rows, err := fc.db.QueryContext(ctx, query)
@@ -2147,10 +2147,7 @@ func (d *BackupRestoreTestDriver) runBackup(
 			backupErr <- err
 		}
 		return nil
-	},
-		task.Logger(l),
-		task.Name(fmt.Sprintf("backup %s", collection.name)),
-	)
+	}, task.Name(fmt.Sprintf("backup %s", collection.name)))
 
 	var numPauses int
 	for {

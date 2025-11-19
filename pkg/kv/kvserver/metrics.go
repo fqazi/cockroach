@@ -1236,70 +1236,6 @@ storage.initial_stats_complete becomes true.
 		Measurement: "Ratio",
 		Unit:        metric.Unit_CONST,
 	}
-	metaBytesCompressedL5Data = metric.Metadata{
-		Name:         "storage.bytes-compressed.l5.data",
-		Help:         "Total number of logical bytes compressed for L5 data blocks.",
-		Measurement:  "Bytes",
-		Unit:         metric.Unit_BYTES,
-		LabeledName:  "storage.bytes-compressed",
-		StaticLabels: metric.MakeLabelPairs(metric.LabelLevel, "5", metric.LabelType, "data"),
-	}
-	metaBytesDecompressedL5Data = metric.Metadata{
-		Name:         "storage.bytes-decompressed.l5.data",
-		Help:         "Total number of logical bytes decompressed for L5 data blocks.",
-		Measurement:  "Bytes",
-		Unit:         metric.Unit_BYTES,
-		LabeledName:  "storage.bytes-decompressed",
-		StaticLabels: metric.MakeLabelPairs(metric.LabelLevel, "5", metric.LabelType, "data"),
-	}
-	metaBytesCompressedL5Values = metric.Metadata{
-		Name:         "storage.bytes-compressed.l5.values",
-		Help:         "Total number of logical bytes compressed for L5 value blocks.",
-		Measurement:  "Bytes",
-		Unit:         metric.Unit_BYTES,
-		LabeledName:  "storage.bytes-compressed",
-		StaticLabels: metric.MakeLabelPairs(metric.LabelLevel, "5", metric.LabelType, "values"),
-	}
-	metaBytesDecompressedL5Values = metric.Metadata{
-		Name:         "storage.bytes-decompressed.l5.values",
-		Help:         "Total number of logical bytes decompressed for L5 value blocks.",
-		Measurement:  "Bytes",
-		Unit:         metric.Unit_BYTES,
-		LabeledName:  "storage.bytes-decompressed",
-		StaticLabels: metric.MakeLabelPairs(metric.LabelLevel, "5", metric.LabelType, "values"),
-	}
-	metaBytesCompressedL6Data = metric.Metadata{
-		Name:         "storage.bytes-compressed.l6.data",
-		Help:         "Total number of logical bytes compressed for L6 data blocks.",
-		Measurement:  "Bytes",
-		Unit:         metric.Unit_BYTES,
-		LabeledName:  "storage.bytes-compressed",
-		StaticLabels: metric.MakeLabelPairs(metric.LabelLevel, "6", metric.LabelType, "data"),
-	}
-	metaBytesDecompressedL6Data = metric.Metadata{
-		Name:         "storage.bytes-decompressed.l6.data",
-		Help:         "Total number of logical bytes decompressed for L6 data blocks.",
-		Measurement:  "Bytes",
-		Unit:         metric.Unit_BYTES,
-		LabeledName:  "storage.bytes-decompressed",
-		StaticLabels: metric.MakeLabelPairs(metric.LabelLevel, "6", metric.LabelType, "data"),
-	}
-	metaBytesCompressedL6Values = metric.Metadata{
-		Name:         "storage.bytes-compressed.l6.values",
-		Help:         "Total number of logical bytes compressed for L6 value blocks.",
-		Measurement:  "Bytes",
-		Unit:         metric.Unit_BYTES,
-		LabeledName:  "storage.bytes-compressed",
-		StaticLabels: metric.MakeLabelPairs(metric.LabelLevel, "6", metric.LabelType, "values"),
-	}
-	metaBytesDecompressedL6Values = metric.Metadata{
-		Name:         "storage.bytes-decompressed.l6.values",
-		Help:         "Total number of logical bytes decompressed for L6 value blocks.",
-		Measurement:  "Bytes",
-		Unit:         metric.Unit_BYTES,
-		LabeledName:  "storage.bytes-decompressed",
-		StaticLabels: metric.MakeLabelPairs(metric.LabelLevel, "6", metric.LabelType, "values"),
-	}
 )
 
 var (
@@ -2887,8 +2823,6 @@ Note that the measurement does not include the duration for replicating the eval
 		Name:        "storage.wal.failover.write_and_sync.latency",
 		Help:        "The observed latency for writing and syncing to the logical Write-Ahead Log.",
 		Measurement: "Nanoseconds",
-		Category:    metric.Metadata_STORAGE,
-		Essential:   true,
 		Unit:        metric.Unit_NANOSECONDS,
 		HowToUse: "Only populated when WAL failover is configured. Without WAL failover, the relevant " +
 			"metric is storage.wal.fsync.latency.",
@@ -2999,9 +2933,6 @@ Note that the measurement does not include the duration for replicating the eval
 )
 
 // StoreMetrics is the set of metrics for a given store.
-//
-// Note: any non-embedded struct fields must implement the metric.Struct
-// interface.
 type StoreMetrics struct {
 	registry *metric.Registry
 
@@ -3172,7 +3103,6 @@ type StoreMetrics struct {
 	SSTableRemoteBytes                *metric.Gauge
 	SSTableRemoteCount                *metric.Gauge
 
-	// Compression metrics for currently live sstables and blob files.
 	CompressionSnappyBytes  *metric.Gauge
 	CompressionSnappyCR     *metric.GaugeFloat64
 	CompressionMinLZBytes   *metric.Gauge
@@ -3182,16 +3112,6 @@ type StoreMetrics struct {
 	CompressionNoneBytes    *metric.Gauge
 	CompressionUnknownBytes *metric.Gauge
 	CompressionOverallCR    *metric.GaugeFloat64
-
-	// Runtime metrics for compression.
-	BytesCompressedL5Values   *metric.Counter
-	BytesCompressedL5Data     *metric.Counter
-	BytesCompressedL6Values   *metric.Counter
-	BytesCompressedL6Data     *metric.Counter
-	BytesDecompressedL5Values *metric.Counter
-	BytesDecompressedL5Data   *metric.Counter
-	BytesDecompressedL6Values *metric.Counter
-	BytesDecompressedL6Data   *metric.Counter
 
 	categoryIterMetrics                pebbleCategoryIterMetricsContainer
 	categoryDiskWriteMetrics           pebbleCategoryDiskWriteMetricsContainer
@@ -3950,15 +3870,6 @@ func newStoreMetrics(histogramWindow time.Duration) *StoreMetrics {
 		CompressionUnknownBytes: metric.NewGauge(metaCompressionUnknownBytes),
 		CompressionOverallCR:    metric.NewGaugeFloat64(metaCompressionOverallCR),
 
-		BytesCompressedL5Data:     metric.NewCounter(metaBytesCompressedL5Data),
-		BytesCompressedL5Values:   metric.NewCounter(metaBytesCompressedL5Values),
-		BytesCompressedL6Data:     metric.NewCounter(metaBytesCompressedL6Data),
-		BytesCompressedL6Values:   metric.NewCounter(metaBytesCompressedL6Values),
-		BytesDecompressedL5Data:   metric.NewCounter(metaBytesDecompressedL5Data),
-		BytesDecompressedL5Values: metric.NewCounter(metaBytesDecompressedL5Values),
-		BytesDecompressedL6Data:   metric.NewCounter(metaBytesDecompressedL6Data),
-		BytesDecompressedL6Values: metric.NewCounter(metaBytesDecompressedL6Values),
-
 		categoryDiskWriteMetrics: pebbleCategoryDiskWriteMetricsContainer{
 			registry: storeRegistry,
 		},
@@ -4299,7 +4210,6 @@ func newStoreMetrics(histogramWindow time.Duration) *StoreMetrics {
 		ClosedTimestampPolicyChange:       metric.NewCounter(metaClosedTimestampPolicyChange),
 		ClosedTimestampLatencyInfoMissing: metric.NewCounter(metaClosedTimestampLatencyInfoMissing),
 	}
-
 	sm.categoryIterMetrics.init(storeRegistry)
 
 	storeRegistry.AddMetricStruct(sm)
@@ -4364,7 +4274,7 @@ func (sm *StoreMetrics) updateEngineMetrics(m storage.Metrics) {
 	sm.RdbBloomFilterPrefixChecked.Update(m.Filter.Hits + m.Filter.Misses)
 	sm.RdbMemtableTotalSize.Update(int64(m.MemTable.Size))
 	sm.RdbFlushes.Update(m.Flush.Count)
-	sm.RdbFlushedBytes.Update(int64(m.Levels[0].TablesFlushed.Bytes + m.Levels[0].BlobBytesFlushed))
+	sm.RdbFlushedBytes.Update(int64(m.Levels[0].TableBytesFlushed + m.Levels[0].BlobBytesFlushed))
 	sm.RdbCompactions.Update(m.Compact.Count)
 	sm.RdbIngestedBytes.Update(int64(m.IngestedBytes()))
 	compactedRead, compactedWritten := m.CompactedBytes()
@@ -4411,17 +4321,16 @@ func (sm *StoreMetrics) updateEngineMetrics(m storage.Metrics) {
 	sm.SecondaryCacheEvictions.Update(m.SecondaryCacheMetrics.Evictions)
 	sm.SecondaryCacheWriteBackFails.Update(m.SecondaryCacheMetrics.WriteBackFailures)
 	sm.RdbL0Sublevels.Update(int64(m.Levels[0].Sublevels))
-	sm.RdbL0NumFiles.Update(int64(m.Levels[0].Tables.Count))
-	sm.RdbL0BytesFlushed.Update(int64(m.Levels[0].TablesFlushed.Bytes + m.Levels[0].BlobBytesFlushed))
+	sm.RdbL0NumFiles.Update(m.Levels[0].TablesCount)
+	sm.RdbL0BytesFlushed.Update(int64(m.Levels[0].TableBytesFlushed + m.Levels[0].BlobBytesFlushed))
 	sm.FlushableIngestCount.Update(int64(m.Flush.AsIngestCount))
 	sm.FlushableIngestTableCount.Update(int64(m.Flush.AsIngestTableCount))
 	sm.FlushableIngestTableSize.Update(int64(m.Flush.AsIngestBytes))
 	sm.IngestCount.Update(int64(m.Ingest.Count))
 	sm.ValueSeparationBytesReferenced.Update(int64(m.BlobFiles.ReferencedValueSize))
 	sm.ValueSeparationBytesUnreferenced.Update(int64(m.BlobFiles.ValueSize - m.BlobFiles.ReferencedValueSize))
-	liveBlobFiles := m.BlobFiles.Live.Total()
-	sm.ValueSeparationBlobFileCount.Update(int64(liveBlobFiles.Count))
-	sm.ValueSeparationBlobFileSize.Update(int64(liveBlobFiles.Bytes))
+	sm.ValueSeparationBlobFileCount.Update(int64(m.BlobFiles.LiveCount))
+	sm.ValueSeparationBlobFileSize.Update(int64(m.BlobFiles.LiveSize))
 	sm.ValueSeparationValueRetrievalCount.Update(int64(m.Iterator.ValueRetrievalCount))
 	// NB: `UpdateIfHigher` is used here since there is a race in pebble where
 	// sometimes the WAL is rotated but metrics are retrieved prior to the update
@@ -4439,10 +4348,10 @@ func (sm *StoreMetrics) updateEngineMetrics(m storage.Metrics) {
 	sm.BatchCommitL0StallDuration.Update(int64(m.BatchCommitStats.L0ReadAmpWriteStallDuration))
 	sm.BatchCommitWALRotWaitDuration.Update(int64(m.BatchCommitStats.WALRotationDuration))
 	sm.BatchCommitCommitWaitDuration.Update(int64(m.BatchCommitStats.CommitWaitDuration))
-	sm.SSTableZombieBytes.Update(int64(m.Table.Physical.Zombie.Total().Bytes))
-	remoteTables := m.RemoteTablesTotal()
-	sm.SSTableRemoteBytes.Update(int64(remoteTables.Bytes))
-	sm.SSTableRemoteCount.Update(int64(remoteTables.Count))
+	sm.SSTableZombieBytes.Update(int64(m.Table.ZombieSize))
+	count, size := m.RemoteTablesTotal()
+	sm.SSTableRemoteBytes.Update(int64(size))
+	sm.SSTableRemoteCount.Update(int64(count))
 
 	c := m.Table.Compression
 	c.MergeWith(&m.BlobFiles.Compression)
@@ -4466,21 +4375,12 @@ func (sm *StoreMetrics) updateEngineMetrics(m storage.Metrics) {
 	// ratio; we estimate it from the data we do have.
 	sm.CompressionOverallCR.Update(overall.CompressionRatio())
 
-	sm.BytesCompressedL5Values.Update(int64(m.CompressionCounters.LogicalBytesCompressed.L5.ValueBlocks))
-	sm.BytesCompressedL5Data.Update(int64(m.CompressionCounters.LogicalBytesCompressed.L5.DataBlocks))
-	sm.BytesCompressedL6Values.Update(int64(m.CompressionCounters.LogicalBytesCompressed.L6.ValueBlocks))
-	sm.BytesCompressedL6Data.Update(int64(m.CompressionCounters.LogicalBytesCompressed.L6.DataBlocks))
-	sm.BytesDecompressedL5Values.Update(int64(m.CompressionCounters.LogicalBytesDecompressed.L5.ValueBlocks))
-	sm.BytesDecompressedL5Data.Update(int64(m.CompressionCounters.LogicalBytesDecompressed.L5.DataBlocks))
-	sm.BytesDecompressedL6Values.Update(int64(m.CompressionCounters.LogicalBytesDecompressed.L6.ValueBlocks))
-	sm.BytesDecompressedL6Data.Update(int64(m.CompressionCounters.LogicalBytesDecompressed.L6.DataBlocks))
-
 	sm.categoryIterMetrics.update(m.CategoryStats)
 	sm.categoryDiskWriteMetrics.update(m.DiskWriteStats)
 
 	for level, stats := range m.Levels {
-		sm.RdbBytesIngested[level].Update(int64(stats.TablesIngested.Bytes))
-		sm.RdbLevelSize[level].Update(int64(stats.Tables.Bytes))
+		sm.RdbBytesIngested[level].Update(int64(stats.TableBytesIngested))
+		sm.RdbLevelSize[level].Update(stats.TablesSize)
 		sm.RdbLevelScore[level].Update(stats.Score)
 	}
 	tot := m.Total()

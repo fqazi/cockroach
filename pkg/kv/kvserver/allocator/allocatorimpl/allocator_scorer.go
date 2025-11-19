@@ -14,10 +14,8 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/load"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/mmaprototype"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/constraint"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/mmaintegration"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
@@ -70,18 +68,18 @@ const (
 	minRangeRebalanceThreshold = 2
 
 	// DefaultReplicaIOOverloadThreshold is used to avoid allocating to stores with an
-	// IO overload score greater than or equal to what's set. This is typically
-	// used in conjunction with IOOverloadMeanThreshold below.
+	// IO overload score greater than what's set. This is typically used in
+	// conjunction with IOOverloadMeanThreshold below.
 	DefaultReplicaIOOverloadThreshold = 0.3
 
 	// DefaultLeaseIOOverloadThreshold is used to block lease transfers to stores
-	// with an IO overload score greater than or equal to this threshold. This
-	// is typically used in conjunction with IOOverloadMeanThreshold below.
+	// with an IO overload score greater than this threshold. This is typically
+	// used in conjunction with IOOverloadMeanThreshold below.
 	DefaultLeaseIOOverloadThreshold = 0.3
 
 	// DefaultLeaseIOOverloadShedThreshold is used to shed leases from stores
-	// with an IO overload score greater than or equal to this threshold. This
-	// is typically used in conjunction with IOOverloadMeanThreshold below.
+	// with an IO overload score greater than the this threshold. This is
+	// typically used in conjunction with IOOverloadMeanThreshold below.
 	DefaultLeaseIOOverloadShedThreshold = 0.4
 
 	// IOOverloadMeanThreshold is the percentage above the mean after which a
@@ -144,14 +142,14 @@ var RangeRebalanceThreshold = settings.RegisterFloatSetting(
 	settings.WithPublic,
 )
 
-// ReplicaIOOverloadThreshold is the IO overload score at or above which a
-// candidate store is excluded as a candidate for rebalancing replicas or
+// ReplicaIOOverloadThreshold is the maximum IO overload score of a candidate
+// store before being excluded as a candidate for rebalancing replicas or
 // allocation. This is only acted upon if ReplicaIOOverloadThreshold is set to
 // `block_all` or `block_rebalance_to`.
 var ReplicaIOOverloadThreshold = settings.RegisterFloatSetting(
 	settings.SystemOnly,
 	"kv.allocator.replica_io_overload_threshold",
-	"the threshold store io overload at or above which the enforcement defined by "+
+	"the maximum store io overload before the enforcement defined by "+
 		"`kv.allocator.io_overload_threshold_enforce` is taken on a store "+
 		"for allocation decisions",
 	DefaultReplicaIOOverloadThreshold,
@@ -184,28 +182,28 @@ var ReplicaIOOverloadThresholdEnforcement = settings.RegisterEnumSetting(
 	},
 )
 
-// LeaseIOOverloadThreshold is the IO overload score at or above which a store
-// will be excluded as a candidate for lease transfers. This threshold is only
-// acted upon if LeaseIOOverloadThresholdEnforcement is set to 'shed' or
+// LeaseIOOverloadThreshold is the maximum IO overload score a store may have
+// before being excluded as a candidate for lease transfers. This threshold is
+// only acted upon if LeaseIOOverloadThresholdEnforcement is set to 'shed' or
 // `block`.
 var LeaseIOOverloadThreshold = settings.RegisterFloatSetting(
 	settings.SystemOnly,
 	"kv.allocator.lease_io_overload_threshold",
-	"a store will not receive new leases when its IO overload score is at or above this "+
+	"a store will not receive new leases when its IO overload score is above this "+
 		"value and `kv.allocator.io_overload_threshold` is "+
 		"`shed` or `block_transfer_to`",
 	DefaultLeaseIOOverloadThreshold,
 )
 
-// LeaseIOOverloadShedThreshold is the IO overload score at or above which the
-// current leaseholder store for a range will shed its leases and no longer
-// receive new leases. This threshold is acted upon only if
+// LeaseIOOverloadShedThreshold is the maximum IO overload score the current
+// leaseholder store for a range may have before shedding its leases and no
+// longer receiving new leases. This threhsold is acted upon only If
 // LeaseIOOverloadThresholdEnforcement is set to 'shed'.
 var LeaseIOOverloadShedThreshold = settings.RegisterFloatSetting(
 	settings.SystemOnly,
 	"kv.allocator.lease_shed_io_overload_threshold",
 	"a store will shed its leases and receive no new leases when its "+
-		"IO overload score is at or above this value and "+
+		"IO overload score is above this value and "+
 		"`kv.allocator.lease_io_overload_threshold_enforcement` is `shed`",
 	DefaultLeaseIOOverloadShedThreshold,
 )
@@ -238,16 +236,12 @@ var LeaseIOOverloadThresholdEnforcement = settings.RegisterEnumSetting(
 // {ReplicaIOOverloadThreshold, ReplicaIOOverloadThresholdEnforcement}, when
 // transferring replicas.
 //
-// The default is set to DefaultLeaseIOOverloadShedThreshold, which is greater
-// than DefaultLeaseIOOverloadThreshold and DefaultReplicaIOOverloadThreshold.
-// Hence, if those settings are left at their defaults, and the enforcement
-// enum settings are at their default, a store with an unhealthy disk will
-// shed leases, and have no new leases or replicas transferred to it.
+// TODO(sumeer): change to DefaultLeaseIOOverloadShedThreshold after discussion.
 var DiskUnhealthyIOOverloadScore = settings.RegisterFloatSetting(
 	settings.SystemOnly,
 	"kv.allocator.disk_unhealthy_io_overload_score",
 	"the IO overload score to assign to a store when its disk is unhealthy",
-	DefaultLeaseIOOverloadShedThreshold)
+	0)
 
 // maxDiskUtilizationThreshold controls the point at which the store cedes
 // having room for new replicas. If the fraction used of a store descriptor
@@ -855,35 +849,6 @@ func (c candidate) less(o candidate) bool {
 	return c.compare(o) < 0
 }
 
-// isCriticalRebalance returns true if the rebalance from source to target is
-// considered as a critical rebalance to repair constraints, disk fullness, or
-// diversity improvements.
-func (source candidate) isCriticalRebalance(target *candidate) bool {
-	// valid is better.
-	if !source.valid && target.valid {
-		return true
-	}
-	// !fullDisk is better.
-	if source.fullDisk && !target.fullDisk {
-		return true
-	}
-	// necessary is better.
-	if !source.necessary && target.necessary {
-		return true
-	}
-	// voterNecessary is better.
-	if !source.voterNecessary && target.voterNecessary {
-		return true
-	}
-	// higher diversityScore is better.
-	if !scoresAlmostEqual(source.diversityScore, target.diversityScore) {
-		if target.diversityScore > source.diversityScore {
-			return true
-		}
-	}
-	return false
-}
-
 // compare is analogous to strcmp in C or string::compare in C++ -- it returns
 // a positive result if c is a better fit for the range than o, 0 if they're
 // equivalent, or a negative result if o is a better fit than c. The magnitude
@@ -1420,11 +1385,6 @@ func candidateListForRemoval(
 type rebalanceOptions struct {
 	existing   candidate
 	candidates candidateList
-	// advisor is lazily initialized by bestRebalanceTarget when this option is
-	// selected as best rebalance target. It is used to determine if a candidate
-	// is in conflict with mma's goals when LBRebalancingMultiMetricAndCount mode
-	// is enabled.
-	advisor *mmaprototype.MMARebalanceAdvisor
 }
 
 // equivalenceClass captures the set of "equivalent" replacement candidates
@@ -1928,22 +1888,18 @@ func rankedCandidateListForRebalancing(
 // bestRebalanceTarget returns the best target to try to rebalance to out of
 // the provided options, and removes it from the relevant candidate list.
 // Also returns the existing replicas that the chosen candidate was compared to.
-// Also returns the index of the best target in the options slice.
 // Returns nil if there are no more targets worth rebalancing to.
-//
-// Contract: responsible for making sure that the returned bestIdx has the
-// corresponding MMA advisor in advisors.
 func bestRebalanceTarget(
-	randGen allocatorRand, options []rebalanceOptions, as *mmaintegration.AllocatorSync,
-) (target, existingCandidate *candidate, bestIdx int) {
-	bestIdx = -1
+	randGen allocatorRand, options []rebalanceOptions,
+) (target, existingCandidate *candidate) {
+	bestIdx := -1
 	var bestTarget *candidate
 	var replaces candidate
 	for i, option := range options {
 		if len(option.candidates) == 0 {
 			continue
 		}
-		target = option.candidates.selectBest(randGen)
+		target := option.candidates.selectBest(randGen)
 		if target == nil {
 			continue
 		}
@@ -1955,24 +1911,14 @@ func bestRebalanceTarget(
 		}
 	}
 	if bestIdx == -1 {
-		return nil, nil, -1 /*bestIdx*/
+		return nil, nil
 	}
-	// For the first time an option in options is selected, build and cache the
-	// corresponding MMA advisor in advisors[bestIdx].
-	if options[bestIdx].advisor == nil {
-		stores := make([]roachpb.StoreID, 0, len(options[bestIdx].candidates))
-		for _, cand := range options[bestIdx].candidates {
-			stores = append(stores, cand.store.StoreID)
-		}
-		options[bestIdx].advisor = as.BuildMMARebalanceAdvisor(options[bestIdx].existing.store.StoreID, stores)
-	}
-
 	// Copy the selected target out of the candidates slice before modifying
 	// the slice. Without this, the returned pointer likely will be pointing
 	// to a different candidate than intended due to movement within the slice.
 	copiedTarget := *bestTarget
 	options[bestIdx].candidates = options[bestIdx].candidates.removeCandidate(copiedTarget)
-	return &copiedTarget, &options[bestIdx].existing, bestIdx
+	return &copiedTarget, &options[bestIdx].existing
 }
 
 // betterRebalanceTarget returns whichever of target1 or target2 is a larger

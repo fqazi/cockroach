@@ -13,11 +13,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage/snaprecv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/readsummary"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -44,10 +44,9 @@ var snapshotIngestAsWriteThreshold = settings.RegisterByteSizeSetting(
 	"size below which a range snapshot ingestion will be performed as a normal write",
 	metamorphic.ConstantWithTestChoice[int64](
 		"kv.snapshot.ingest_as_write_threshold",
-		100<<10, // default value is 100KiB
-		1<<30,   // 1GiB causes everything to be a normal write
-		0,       // 0B causes everything to be an ingest
-	),
+		100<<10, /* default value is 100KiB */
+		1<<30,   /* 1GiB causes everything to be a normal write */
+		0 /* 0B causes everything to be an ingest */),
 )
 
 // replicaRaftStorage implements the raft.Storage interface.
@@ -249,7 +248,7 @@ func (r *Replica) GetSnapshot(
 	// NB: we don't hold either of locks, so can't use Replica.mu.stateLoader or
 	// Replica.raftMu.stateLoader. This call is not performance sensitive, so
 	// create a new state loader.
-	snapData, err := snapshot(ctx, snapUUID, kvstorage.MakeStateLoader(rangeID), snap, startKey)
+	snapData, err := snapshot(ctx, snapUUID, stateloader.Make(rangeID), snap, startKey)
 	if err != nil {
 		log.KvExec.Errorf(ctx, "error generating snapshot: %+v", err)
 		return nil, err
@@ -335,7 +334,7 @@ func (s IncomingSnapshot) SafeFormat(w redact.SafePrinter, _ rune) {
 func snapshot(
 	ctx context.Context,
 	snapUUID uuid.UUID,
-	rsl kvstorage.StateLoader,
+	rsl stateloader.StateLoader,
 	snap storage.Reader,
 	startKey roachpb.RKey,
 ) (OutgoingSnapshot, error) {
@@ -569,7 +568,7 @@ func (r *Replica) applySnapshotRaftMuLocked(
 		Term:  kvpb.RaftTerm(nonemptySnap.Metadata.Term),
 	}
 
-	subsume := make([]kvstorage.DestroyReplicaInfo, 0, len(subsumedRepls))
+	subsume := make([]destroyReplicaInfo, 0, len(subsumedRepls))
 	for _, sr := range subsumedRepls {
 		// We mark the replica as destroyed so that new commands are not
 		// accepted. This destroy status will be detected after the batch
@@ -583,18 +582,19 @@ func (r *Replica) applySnapshotRaftMuLocked(
 		sr.shMu.destroyStatus.Set(
 			kvpb.NewRangeNotFoundError(sr.RangeID, sr.store.StoreID()),
 			destroyReasonRemoved)
+		srDesc := sr.descRLocked()
 		sr.mu.Unlock()
 		sr.readOnlyCmdMu.Unlock()
 
-		subsume = append(subsume, sr.destroyInfoRaftMuLocked())
+		subsume = append(subsume, destroyReplicaInfo{id: sr.ID(), desc: srDesc})
 	}
 
-	// NB: subsumed replicas in snapWriteBuilder must be sorted by start key. This
+	// NB: subsumedDescs in snapWriteBuilder must be sorted by start key. This
 	// should be the case, by construction, but add a test-only assertion just in
 	// case this ever changes.
-	testingAssert(slices.IsSortedFunc(subsume, func(a, b kvstorage.DestroyReplicaInfo) int {
-		return a.Keys.Key.Compare(b.Keys.Key)
-	}), "subsumed replicas must be sorted by start key")
+	testingAssert(slices.IsSortedFunc(subsume, func(a, b destroyReplicaInfo) int {
+		return a.desc.StartKey.Compare(b.desc.StartKey)
+	}), "subsumedDescs must be sorted by start key")
 
 	sb := snapWriteBuilder{
 		id: r.ID(),
@@ -677,7 +677,7 @@ func (r *Replica) applySnapshotRaftMuLocked(
 	// has not yet been updated. Any errors past this point must therefore be
 	// treated as fatal.
 
-	sl := kvstorage.MakeStateLoader(desc.RangeID)
+	sl := stateloader.Make(desc.RangeID)
 	state, err := sl.Load(ctx, r.store.TODOEngine(), desc)
 	if err != nil {
 		log.KvExec.Fatalf(ctx, "unable to load replica state: %s", err)
@@ -818,7 +818,7 @@ func (r *Replica) clearSubsumedReplicaInMemoryData(
 		// allowed in (perhaps not involving any of the RangeIDs known to the merge
 		// but still touching its keyspace) and causing corruption.
 		ph, err := r.store.removeInitializedReplicaRaftMuLocked(
-			ctx, sr, kvstorage.MergedTombstoneReplicaID, "subsumed by snapshot",
+			ctx, sr, mergedTombstoneReplicaID, "subsumed by snapshot",
 			RemoveOptions{
 				// The data was already destroyed by clearSubsumedReplicaDiskData.
 				DestroyData:       false,
@@ -840,19 +840,5 @@ func (r *Replica) clearSubsumedReplicaInMemoryData(
 func testingAssert(cond bool, msg string) {
 	if buildutil.CrdbTestBuild && !cond {
 		panic(msg)
-	}
-}
-
-// destroyInfoRaftMuLocked returns the information necessary for constructing a
-// storage write destroying this replica.
-//
-// NB: since raftMu is locked, there is no concurrent write that would be able
-// to change this replica. In particular, no concurrent log truncations. The
-// caller must make sure to complete the destruction before raftMu is released.
-func (r *Replica) destroyInfoRaftMuLocked() kvstorage.DestroyReplicaInfo {
-	r.raftMu.AssertHeld()
-	return kvstorage.DestroyReplicaInfo{
-		FullReplicaID: r.ID(),
-		Keys:          r.shMu.state.Desc.RSpan(),
 	}
 }

@@ -468,12 +468,12 @@ func EvalAddSSTable(
 func computeSSTStatsDiffWithFallback(
 	ctx context.Context,
 	sst []byte,
-	reader storage.Reader,
+	readWriter storage.ReadWriter,
 	nowNanos int64,
 	start, end storage.MVCCKey,
 ) (enginepb.MVCCStats, error) {
 	stats, err := storage.ComputeSSTStatsDiff(
-		ctx, sst, reader, nowNanos, start, end)
+		ctx, sst, readWriter, nowNanos, start, end)
 	if errors.IsAny(err, storage.ComputeSSTStatsDiffReaderHasRangeKeys, storage.ComputeStatsDiffViolation) {
 		log.KvExec.Warningf(ctx, "computing SST stats as estimates because of ComputeSSTStatsDiff error: %s", err)
 		sstStats, err := computeSSTStats(ctx, sst, nowNanos)

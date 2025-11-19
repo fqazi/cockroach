@@ -461,10 +461,6 @@ type layerFilters struct {
 	// the hydration of another descriptor which depends on it.
 	// TODO(postamar): untangle the hydration mess
 	withoutHydration bool
-	// withMetadata will read zone configs and comments for lease descriptors.
-	// This is always acquired for descriptors from storage, and may need an extra
-	// round trip.
-	withMetadata bool
 }
 
 type descFilters struct {

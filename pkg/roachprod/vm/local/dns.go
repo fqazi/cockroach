@@ -58,17 +58,15 @@ func (n *dnsProvider) CreateRecords(_ context.Context, records ...vm.DNSRecord) 
 	return n.saveRecords(entries)
 }
 
-// LookupRecords is part of the vm.DNSProvider interface.
-func (n *dnsProvider) LookupRecords(
-	_ context.Context, recordType vm.DNSType, name string,
-) ([]vm.DNSRecord, error) {
+// LookupSRVRecords is part of the vm.DNSProvider interface.
+func (n *dnsProvider) LookupSRVRecords(_ context.Context, name string) ([]vm.DNSRecord, error) {
 	records, err := n.loadRecords()
 	if err != nil {
 		return nil, err
 	}
 	var matchingRecords []vm.DNSRecord
 	for _, record := range records {
-		if record.Name == name && record.Type == recordType {
+		if record.Name == name && record.Type == vm.SRV {
 			matchingRecords = append(matchingRecords, record)
 		}
 	}
@@ -84,12 +82,8 @@ func (n *dnsProvider) ListRecords(_ context.Context) ([]vm.DNSRecord, error) {
 	return maps.Values(records), nil
 }
 
-func (n *dnsProvider) DeletePublicRecordsByName(ctx context.Context, names ...string) error {
-	return n.DeleteSRVRecordsByName(ctx, names...)
-}
-
 // DeleteRecordsByName is part of the vm.DNSProvider interface.
-func (n *dnsProvider) DeleteSRVRecordsByName(_ context.Context, names ...string) error {
+func (n *dnsProvider) DeleteRecordsByName(_ context.Context, names ...string) error {
 	unlock, err := lock.AcquireFilesystemLock(n.lockFilePath)
 	if err != nil {
 		return err
@@ -106,8 +100,8 @@ func (n *dnsProvider) DeleteSRVRecordsByName(_ context.Context, names ...string)
 	return n.saveRecords(entries)
 }
 
-// DeleteSRVRecordsBySubdomain is part of the vm.DNSProvider interface.
-func (n *dnsProvider) DeleteSRVRecordsBySubdomain(_ context.Context, subdomain string) error {
+// DeleteRecordsBySubdomain is part of the vm.DNSProvider interface.
+func (n *dnsProvider) DeleteRecordsBySubdomain(_ context.Context, subdomain string) error {
 	unlock, err := lock.AcquireFilesystemLock(n.lockFilePath)
 	if err != nil {
 		return err

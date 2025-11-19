@@ -26,7 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/span"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
-	"github.com/cockroachdb/crlib/crtime"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
@@ -361,7 +361,7 @@ func (f *RangeFeed) run(ctx context.Context, frontier span.Frontier, resumeWithF
 			log.Eventf(ctx, "starting rangefeed from %v on %v", ts, f.spansDebugStr)
 		}
 
-		start := crtime.NowMono()
+		start := timeutil.Now()
 
 		rangeFeedTask := func(ctx context.Context) error {
 			if f.invoker == nil {
@@ -396,10 +396,9 @@ func (f *RangeFeed) run(ctx context.Context, frontier span.Frontier, resumeWithF
 			errors.HasType(err, &kvpb.MVCCHistoryMutationError{}) {
 			if errCallback := f.onUnrecoverableError; errCallback != nil {
 				errCallback(ctx, err)
-				log.VEventf(ctx, 1, "exiting rangefeed due to internal error: %v", err)
-			} else {
-				log.Dev.Warningf(ctx, "exiting rangefeed because of internal error with no OnInternalError callback: %s", err.Error())
 			}
+
+			log.VEventf(ctx, 1, "exiting rangefeed due to internal error: %v", err)
 			return
 		}
 		if err != nil && ctx.Err() == nil && restartLogEvery.ShouldLog() {
@@ -411,7 +410,7 @@ func (f *RangeFeed) run(ctx context.Context, frontier span.Frontier, resumeWithF
 			return
 		}
 
-		ranFor := start.Elapsed()
+		ranFor := timeutil.Since(start)
 		log.VEventf(ctx, 1, "restarting rangefeed for %v after %v",
 			f.spansDebugStr, ranFor)
 		if f.knobs != nil && f.knobs.OnRangefeedRestart != nil {

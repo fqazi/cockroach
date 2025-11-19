@@ -50,7 +50,6 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/bloom"
 	"github.com/cockroachdb/pebble/cockroachkvs"
-	"github.com/cockroachdb/pebble/metrics"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/objstorage/remote"
 	"github.com/cockroachdb/pebble/rangekey"
@@ -214,32 +213,6 @@ var useDeprecatedCompensatedScore = settings.RegisterBoolSetting(
 	"if enabled, this setting reverts the storage engine's compaction picking heuristic",
 	false,
 )
-
-const defaultRecreateDuration = int(20 * time.Second)
-
-// SnapshotRecreateIterDuration controls how often a storage iterator over a
-// snapshot should be recreated. An iterator pins the memtables it references,
-// and if those memtables are subsequently flushed, but the iterator is still
-// open, they cannot be discarded and are considered zombie memtables. Memory
-// usage via zombie memtables steals capacity from the block cache, and in
-// extreme cases can cause OOMs (see
-// https://github.com/cockroachdb/cockroach/issues/133851). Closing and
-// creating a new iterator over the snapshot prevents accumulation of zombie
-// memtable memory. There is a small cost to recreating the iterator, which
-// should be amortized over the duration (default 20s).
-//
-// An alternative to using a duration would be to query the zombie memtable
-// bytes pinned by the iterator, and recreate when it exceeds some byte
-// threshold. However, the local knowledge of zombie bytes due to an iterator
-// is insufficient, since there can be 100s of iterators each only pinning
-// disjoint sets of 2 memtables each, but resulting in a high aggregate
-// memory. The simpler duration based approach does not have this limitation.
-var SnapshotRecreateIterDuration = settings.RegisterDurationSetting(settings.SystemOnly,
-	"storage.snapshot.recreate_iter_duration",
-	"the interval after which a storage iterator over a snapshot should be recreated, "+
-		"to reduce memory usage caused by zombie memtables",
-	time.Duration(metamorphic.ConstantWithTestRange("storage.snapshot.recreate_iter_duration",
-		defaultRecreateDuration, 1, defaultRecreateDuration)))
 
 // SSTableCompressionProfile is an enumeration of compression algorithms
 // available for compressing SSTables (e.g. for backup or transport).
@@ -538,6 +511,15 @@ var (
 			1 /* min */, 80 /* max */)),
 		settings.IntInRange(1, 100),
 	)
+	valueSeparationLatencyTolerantMinimumSize = settings.RegisterIntSetting(
+		settings.SystemVisible,
+		"storage.value_separation.latency_tolerant_minimum_size",
+		"the minimum size of a value that will be separated into a blob file given the value is "+
+			"latency tolerant (in the range local keyspace) or likely MVCC garbage",
+		int64(metamorphic.ConstantWithTestRange("storage.value_separation.latency_tolerant_minimum_size",
+			32 /* 32 bytes (default) */, 25 /* 25 bytes (minimum) */, 512 /* 512 bytes (maximum) */)),
+		settings.IntWithMinimum(1),
+	)
 )
 
 // This setting controls deletion pacing. This helps prevent disk slowness
@@ -645,10 +627,6 @@ func DefaultPebbleOptions() *pebble.Options {
 	opts.Experimental.SpanPolicyFunc = spanPolicyFunc
 	opts.Experimental.UserKeyCategories = userKeyCategories
 
-	// Every 5 minutes, log iterators that have been open for more than 1 minute.
-	opts.Experimental.IteratorTracking.PollInterval = 5 * time.Minute
-	opts.Experimental.IteratorTracking.MaxAge = time.Minute
-
 	opts.Levels[0] = pebble.LevelOptions{
 		BlockSize:      32 << 10,  // 32 KB
 		IndexBlockSize: 256 << 10, // 256 KB
@@ -727,6 +705,7 @@ func spanPolicyFunc(startKey []byte) (policy pebble.SpanPolicy, endKey []byte, _
 		return policy, spanPolicyLockTableStartKey, nil
 	}
 	// Lock key. Disable value separation.
+	policy.DisableValueSeparationBySuffix = true
 	policy.ValueStoragePolicy = pebble.ValueStorageLowReadLatency
 	return policy, spanPolicyLockTableEndKey, nil
 }
@@ -993,8 +972,8 @@ func newPebble(ctx context.Context, cfg engineConfig) (p *Pebble, err error) {
 			return int(concurrentDownloadCompactions.Get(&cfg.settings.SV))
 		}
 	}
-	cfg.opts.DeletionPacing.BaselineRate = func() uint64 {
-		return uint64(baselineDeletionRate.Get(&cfg.settings.SV))
+	cfg.opts.TargetByteDeletionRate = func() int {
+		return int(baselineDeletionRate.Get(&cfg.settings.SV))
 	}
 	cfg.opts.Experimental.TombstoneDenseCompactionThreshold = func() float64 {
 		return 0.01 * float64(tombstoneDenseCompactionThreshold.Get(&cfg.settings.SV))
@@ -1012,11 +991,9 @@ func newPebble(ctx context.Context, cfg engineConfig) (p *Pebble, err error) {
 	logCtx := logtags.WithTags(context.Background(), logtags.FromContext(ctx))
 	// The store id, could not necessarily be determined when this function
 	// is called. Therefore, we use a container for the store id.
-	tags := logtags.BuildBuffer()
 	storeIDContainer := &base.StoreIDContainer{}
-	tags.Add("s", storeIDContainer)
-	tags.Add("pebble", nil)
-	logCtx = logtags.AddTags(logCtx, tags.Finish())
+	logCtx = logtags.AddTag(logCtx, "s", storeIDContainer)
+	logCtx = logtags.AddTag(logCtx, "pebble", nil)
 
 	cfg.opts.Local.ReadaheadConfig = objstorageprovider.NewReadaheadConfig()
 	updateReadaheadFn := func(ctx context.Context) {
@@ -1056,12 +1033,13 @@ func newPebble(ctx context.Context, cfg engineConfig) (p *Pebble, err error) {
 		highPri := float64(valueSeparationCompactionGarbageThresholdHighPriority.Get(&cfg.settings.SV)) / 100.0
 		highPri = max(highPri, lowPri)
 		return pebble.ValueSeparationPolicy{
-			Enabled:                  true,
-			MinimumSize:              int(valueSeparationMinimumSize.Get(&cfg.settings.SV)),
-			MaxBlobReferenceDepth:    int(valueSeparationMaxReferenceDepth.Get(&cfg.settings.SV)),
-			RewriteMinimumAge:        valueSeparationRewriteMinimumAge.Get(&cfg.settings.SV),
-			GarbageRatioLowPriority:  lowPri,
-			GarbageRatioHighPriority: highPri,
+			Enabled:                    true,
+			MinimumSize:                int(valueSeparationMinimumSize.Get(&cfg.settings.SV)),
+			MinimumLatencyTolerantSize: int(valueSeparationLatencyTolerantMinimumSize.Get(&cfg.settings.SV)),
+			MaxBlobReferenceDepth:      int(valueSeparationMaxReferenceDepth.Get(&cfg.settings.SV)),
+			RewriteMinimumAge:          valueSeparationRewriteMinimumAge.Get(&cfg.settings.SV),
+			GarbageRatioLowPriority:    lowPri,
+			GarbageRatioHighPriority:   highPri,
 		}
 	}
 	cfg.opts.Experimental.MultiLevelCompactionHeuristic = func() pebble.MultiLevelHeuristic {
@@ -2074,18 +2052,13 @@ func (p *Pebble) GetEnvStats() (*fs.EnvStats, error) {
 	}
 
 	m := p.db.Metrics()
-	var cs metrics.CountAndSize
-	cs.Count += 3 /* CURRENT, MANIFEST, OPTIONS */
-	cs.Count += uint64(m.WAL.Files + m.WAL.ObsoleteFiles)
-	cs.Bytes += m.WAL.Size
-	cs.Accumulate(m.Table.Physical.Live.Total())
-	cs.Accumulate(m.Table.Physical.Zombie.Total())
-	cs.Accumulate(m.Table.Physical.Obsolete.Total())
-	cs.Accumulate(m.BlobFiles.Live.Total())
-	cs.Accumulate(m.BlobFiles.Zombie.Total())
-	cs.Accumulate(m.BlobFiles.Obsolete.Total())
-	stats.TotalFiles = cs.Count
-	stats.TotalBytes = cs.Bytes
+	stats.TotalFiles = 3 /* CURRENT, MANIFEST, OPTIONS */
+	stats.TotalFiles += uint64(m.WAL.Files + m.Table.ZombieCount + m.WAL.ObsoleteFiles + m.Table.ObsoleteCount)
+	stats.TotalBytes = m.WAL.Size + m.Table.ZombieSize + m.Table.ObsoleteSize
+	for _, l := range m.Levels {
+		stats.TotalFiles += uint64(l.TablesCount)
+		stats.TotalBytes += uint64(l.TablesSize)
+	}
 
 	sstSizes := make(map[pebble.TableNum]uint64)
 	sstInfos, err := p.db.SSTables()
@@ -2864,8 +2837,11 @@ func (p *pebbleReadOnly) ConsistentIterators() bool {
 // PinEngineStateForIterators implements the Engine interface.
 func (p *pebbleReadOnly) PinEngineStateForIterators(readCategory fs.ReadCategory) error {
 	if p.iter == nil {
-		o := makeIterOptions(readCategory, p.durability)
-		iter, err := p.parent.db.NewIter(&o)
+		o := &pebble.IterOptions{Category: readCategory.PebbleCategory()}
+		if p.durability == GuaranteedDurability {
+			o.OnlyReadGuaranteedDurable = true
+		}
+		iter, err := p.parent.db.NewIter(o)
 		if err != nil {
 			return err
 		}

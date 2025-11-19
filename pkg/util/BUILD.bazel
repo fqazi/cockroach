@@ -27,7 +27,6 @@ go_library(
     deps = [
         "//pkg/util/netutil/addr",
         "//pkg/util/syncutil",
-        "@com_github_cockroachdb_crlib//crtime",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_redact//:redact",
     ] + select({
@@ -47,7 +46,6 @@ go_test(
     srcs = [
         "every_n_test.go",
         "fast_int_map_test.go",
-        "hash_test.go",
         "slices_test.go",
         "smalltrace_test.go",
         "strings_test.go",
@@ -58,7 +56,6 @@ go_test(
     deps = [
         "//pkg/util/randutil",
         "//pkg/util/timeutil",
-        "@com_github_cockroachdb_crlib//crtime",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_stretchr_testify//require",
     ],
