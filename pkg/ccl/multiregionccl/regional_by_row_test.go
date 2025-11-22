@@ -26,14 +26,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec"
-	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scop"
-	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltestutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -172,11 +170,15 @@ func TestAlterTableLocalityRegionalByRowCorrectZoneConfigBeforeBackfill(t *testi
 func TestAlterTableLocalityRegionalByRowError(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	skip.UnderDuress(t, "too slow")
+	skip.UnderRace(t, "takes >400s under race")
 
 	var chunkSize int64 = 100
 	var maxValue = 4000
+	if util.RaceEnabled {
+		// Race builds are a lot slower, so use a smaller number of rows.
+		maxValue = 200
+		chunkSize = 5
+	}
 	// BulkInsertIntoTable adds testCase 0 to maxValue inclusive, so
 	// we round (maxValue + 1) / chunkSize to the nearest int.
 	// To round up x / y using integers, we do (x + y - 1) / y.
@@ -322,7 +324,7 @@ func TestAlterTableLocalityRegionalByRowError(t *testing.T) {
 						job_type = 'SCHEMA CHANGE' AND
 						status = $1 AND
 						description NOT LIKE 'ROLL BACK%'
-				)`, jobs.StateRunning)
+				)`, jobs.StatusRunning)
 								return err
 							},
 							errorContains: "job canceled by user",
@@ -344,6 +346,11 @@ func TestAlterTableLocalityRegionalByRowError(t *testing.T) {
 							params.Locality.Tiers = []roachpb.Tier{
 								{Key: "region", Value: "ajstorm-1"},
 							}
+							// Need to disable the test tenant here because
+							// when running inside a tenant, for some reason
+							// this test doesn't error when expected. More
+							// investigation is required. Tracked with #76378.
+							params.DefaultTestTenant = base.TODOTestTenantDisabled
 							var sqlDB *gosql.DB
 							params.Knobs = base.TestingKnobs{
 								SQLSchemaChanger: &sql.SchemaChangerTestingKnobs{
@@ -367,19 +374,17 @@ func TestAlterTableLocalityRegionalByRowError(t *testing.T) {
 								// Decrease the adopt loop interval so that retries happen quickly.
 								JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 							}
-							var srv serverutils.TestServerInterface
+							var s serverutils.TestServerInterface
 							var kvDB *kv.DB
-							srv, sqlDB, kvDB = serverutils.StartServer(t, params)
+							s, sqlDB, kvDB = serverutils.StartServer(t, params)
 							db = sqlDB
-							defer srv.Stopper().Stop(ctx)
-							s := srv.ApplicationLayer()
+							defer s.Stopper().Stop(ctx)
 
 							// Disable strict GC TTL enforcement because we're going to shove a zero-value
 							// TTL into the system with AddImmediateGCZoneConfig.
 							defer sqltestutils.DisableGCTTLStrictEnforcement(t, sqlDB)()
 
 							if _, err := sqlDB.Exec(fmt.Sprintf(`
-SET create_table_with_schema_locked=false;
 CREATE DATABASE t PRIMARY REGION "ajstorm-1";
 USE t;
 %s;
@@ -427,7 +432,7 @@ USE t;
 							// that the job did not succeed even though it was canceled.
 							testutils.SucceedsSoon(t, func() error {
 								tableDesc := desctestutils.TestingGetPublicTableDescriptor(
-									kvDB, s.Codec(), "t", "test",
+									kvDB, keys.SystemSQLCodec, "t", "test",
 								)
 								if len(tableDesc.AllMutations()) != 0 {
 									return errors.Errorf(
@@ -483,13 +488,13 @@ USE t;
 								return nil
 							})
 
-							tableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, s.Codec(), "t", "test")
+							tableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, keys.SystemSQLCodec, "t", "test")
 							if _, err := sqltestutils.AddImmediateGCZoneConfig(db, tableDesc.GetID()); err != nil {
 								t.Fatal(err)
 							}
 							// Ensure that the writes from the partial new indexes are cleaned up.
 							testutils.SucceedsSoon(t, func() error {
-								return sqltestutils.CheckTableKeyCount(ctx, kvDB, s.Codec(), 1, maxValue)
+								return sqltestutils.CheckTableKeyCount(ctx, kvDB, keys.SystemSQLCodec, 1, maxValue)
 							})
 						})
 					}
@@ -537,10 +542,6 @@ CREATE TABLE db.t(k INT PRIMARY KEY) LOCALITY REGIONAL BY ROW`)
 	if err != nil {
 		t.Error(err)
 	}
-
-	sqlDB.SetMaxOpenConns(1)
-	_, err = sqlDB.Exec(`SET autocommit_before_ddl = false`)
-	require.NoError(t, err)
 
 	_, err = sqlDB.Exec(`BEGIN;
 ALTER DATABASE db ADD REGION "us-east3";
@@ -605,7 +606,6 @@ func TestIndexCleanupAfterAlterFromRegionalByRow(t *testing.T) {
 			defer cleanup()
 
 			sqlRunner := sqlutils.MakeSQLRunner(sqlDB)
-			sqlRunner.Exec(t, "SET create_table_with_schema_locked=false")
 			sqlRunner.Exec(t, `CREATE DATABASE "mr-zone-configs" WITH PRIMARY REGION "us-east1" REGIONS "us-east2","us-east3";`)
 			sqlRunner.Exec(t, `USE "mr-zone-configs";`)
 			sqlRunner.Exec(t, `
@@ -748,19 +748,19 @@ func TestRegionChangeRacingRegionalByRowChange(t *testing.T) {
 			setup:                          `CREATE TABLE t.test (k INT NOT NULL, v INT) LOCALITY REGIONAL BY ROW`,
 			cmd:                            `ALTER TABLE t.test ADD CONSTRAINT v_uniq UNIQUE (v)`,
 			errorOnAddOrDropRegionSandwich: "pq: cannot perform database region changes while an index is being created or dropped on a REGIONAL BY ROW table",
-			errorOnTableChangeSandwich:     "pq: cannot CREATE INDEX on a REGIONAL BY ROW table while a region is being added or dropped on the database",
+			errorOnTableChangeSandwich:     "pq: cannot create an UNIQUE CONSTRAINT on a REGIONAL BY ROW table while a region is being added or dropped on the database",
 		},
 		{
 			setup:                          `CREATE TABLE t.test (k INT NOT NULL, v INT) LOCALITY REGIONAL BY ROW`,
 			cmd:                            `ALTER TABLE t.test ADD COLUMN z INT UNIQUE`,
 			errorOnAddOrDropRegionSandwich: "pq: cannot perform database region changes while an index is being created or dropped on a REGIONAL BY ROW table",
-			errorOnTableChangeSandwich:     "pq: cannot add a UNIQUE COLUMN on a REGIONAL BY ROW table while a region is being added or dropped on the database",
+			errorOnTableChangeSandwich:     "pq: cannot add an UNIQUE COLUMN on a REGIONAL BY ROW table while a region is being added or dropped on the database",
 		},
 		{
 			setup:                          `CREATE TABLE t.test (k INT NOT NULL, v INT NOT NULL) LOCALITY REGIONAL BY ROW`,
 			cmd:                            `ALTER TABLE t.test ALTER PRIMARY KEY USING COLUMNS (v)`,
 			errorOnAddOrDropRegionSandwich: "pq: cannot perform database region changes while a ALTER PRIMARY KEY is underway",
-			errorOnTableChangeSandwich:     "pq: cannot ALTER PRIMARY KEY on a REGIONAL BY ROW table while a region is being added or dropped on the database",
+			errorOnTableChangeSandwich:     "pq: cannot perform a primary key change on a REGIONAL BY ROW table while a region is being added or dropped on the database",
 		},
 	}
 
@@ -783,7 +783,6 @@ func TestRegionChangeRacingRegionalByRowChange(t *testing.T) {
 		require.NoError(t, err)
 
 		_, err = sqlDB.Exec(fmt.Sprintf(`
-SET create_table_with_schema_locked=false;
 DROP DATABASE IF EXISTS t;
 CREATE DATABASE t PRIMARY REGION "us-east1" REGION "us-east2";
 USE t;
@@ -808,16 +807,6 @@ USE t;
 						SQLSchemaChanger: &sql.SchemaChangerTestingKnobs{
 							RunBeforeBackfill: func() error {
 								if performInterrupt {
-									performInterrupt = false
-									close(interruptStartCh)
-									<-interruptEndCh
-								}
-								return nil
-							},
-						},
-						SQLDeclarativeSchemaChanger: &scexec.TestingKnobs{
-							BeforeStage: func(p scplan.Plan, stageIdx int) error {
-								if p.Params.ExecutionPhase == scop.PostCommitPhase && performInterrupt {
 									performInterrupt = false
 									close(interruptStartCh)
 									<-interruptEndCh
@@ -871,9 +860,6 @@ USE t;
 					t,
 					3, /* numServers */
 					base.TestingKnobs{
-						// When ADD/DROP region is implemented in the declarative schema
-						// changer, we will need to use SQLDeclarativeSchemaChanger testing
-						// knobs here instead.
 						SQLTypeSchemaChanger: &sql.TypeSchemaChangerTestingKnobs{
 							RunBeforeExec: func() error {
 								if performInterrupt {
@@ -930,7 +916,6 @@ func TestIndexDescriptorUpdateForImplicitColumns(t *testing.T) {
 	defer cleanup()
 
 	tdb := sqlutils.MakeSQLRunner(sqlDB)
-	tdb.Exec(t, "SET create_table_with_schema_locked=false")
 	tdb.Exec(t, `CREATE DATABASE test PRIMARY REGION "us-east1" REGIONS "us-east2"`)
 
 	fetchIndexes := func(tableName string) []catalog.Index {

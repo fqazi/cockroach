@@ -58,7 +58,7 @@ func setupRouter(
 		memoryMonitors[i] = evalCtx.TestingMon
 		diskMonitors[i] = diskMonitor
 	}
-	r, err := makeRouter(&spec, streams, memoryMonitors, memoryMonitors, diskMonitors)
+	r, err := makeRouter(&spec, streams, memoryMonitors, diskMonitors)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,9 +355,9 @@ func TestConsumerStatus(t *testing.T) {
 			case *rangeRouter:
 				// Use 0 and MaxInt32 to route rows based on testRangeRouterSpec's spans.
 				d := tree.NewDInt(0)
-				row0 = rowenc.EncDatumRow{rowenc.DatumToEncDatumUnsafe(colTypes[0], d)}
+				row0 = rowenc.EncDatumRow{rowenc.DatumToEncDatum(colTypes[0], d)}
 				d = tree.NewDInt(math.MaxInt32)
-				row1 = rowenc.EncDatumRow{rowenc.DatumToEncDatumUnsafe(colTypes[0], d)}
+				row1 = rowenc.EncDatumRow{rowenc.DatumToEncDatum(colTypes[0], d)}
 			default:
 				rng, _ := randutil.NewTestRand()
 				vals := randgen.RandEncDatumRowsOfTypes(rng, 1 /* numRows */, colTypes)
@@ -682,7 +682,6 @@ func TestRouterBlocks(t *testing.T) {
 				&tc.spec,
 				recvs,
 				[]*mon.BytesMonitor{evalCtx.TestingMon, evalCtx.TestingMon},
-				[]*mon.BytesMonitor{evalCtx.TestingMon, evalCtx.TestingMon},
 				[]*mon.BytesMonitor{diskMonitor, diskMonitor},
 			)
 			if err != nil {
@@ -773,7 +772,7 @@ func TestRouterDiskSpill(t *testing.T) {
 	st := cluster.MakeTestingClusterSettings()
 	diskMonitor := execinfra.NewTestDiskMonitor(ctx, st)
 	defer diskMonitor.Stop(ctx)
-	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), nil /* statsCollector */)
+	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec, nil /* statsCollector */)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -784,12 +783,12 @@ func TestRouterDiskSpill(t *testing.T) {
 	// rowContainer. This is a bytes value that will ensure we fall back to disk
 	// but use memory for at least a couple of rows.
 	monitor := mon.NewMonitor(mon.Options{
-		Name:      mon.MakeName("test-monitor"),
+		Name:      "test-monitor",
 		Limit:     (numRows - routerRowBufSize) / 2,
 		Increment: 1,
 		Settings:  st,
 	})
-	evalCtx := eval.MakeTestingEvalContextWithMon(keys.SystemSQLCodec, st, monitor)
+	evalCtx := eval.MakeTestingEvalContextWithMon(st, monitor)
 	defer evalCtx.Stop(ctx)
 	flowCtx := execinfra.FlowCtx{
 		EvalCtx: &evalCtx,
@@ -822,10 +821,7 @@ func TestRouterDiskSpill(t *testing.T) {
 		// Initialize the RowChannel with the minimal buffer size so as to block
 		// writes to the channel (after the first one).
 		rowChan.InitWithBufSizeAndNumSenders(types.OneIntCol, 1 /* chanBufSize */, 1 /* numSenders */)
-		rb.setupStreams(
-			&spec, []execinfra.RowReceiver{&rowChan}, []*mon.BytesMonitor{monitor},
-			[]*mon.BytesMonitor{extraMemMonitor}, []*mon.BytesMonitor{diskMonitor},
-		)
+		rb.setupStreams(&spec, []execinfra.RowReceiver{&rowChan}, []*mon.BytesMonitor{monitor}, []*mon.BytesMonitor{diskMonitor})
 		rb.init(ctx, &flowCtx, 0 /* processorID */, types.OneIntCol)
 		// output is the sole router output in this test.
 		output := &rb.outputs[0]
@@ -1001,7 +997,7 @@ func TestRangeRouterInit(t *testing.T) {
 				recvs[i] = &chans[i]
 				spec.Streams[i] = execinfrapb.StreamEndpointSpec{StreamID: execinfrapb.StreamID(i)}
 			}
-			_, err := makeRouter(&spec, recvs, []*mon.BytesMonitor{nil, nil}, []*mon.BytesMonitor{nil, nil}, []*mon.BytesMonitor{nil, nil})
+			_, err := makeRouter(&spec, recvs, []*mon.BytesMonitor{nil, nil}, []*mon.BytesMonitor{nil, nil})
 			if !testutils.IsError(err, tc.err) {
 				t.Fatalf("got %v, expected %v", err, tc.err)
 			}

@@ -66,7 +66,6 @@ verify_docker_image(){
   local expected_sha=$3
   local expected_build_tag=$4
   local fips_build=$5
-  local telemetry_disabled=$6
   local error=0
 
   docker rmi "$img" || true
@@ -76,7 +75,7 @@ verify_docker_image(){
   build_type=$(grep "^Build Type:" <<< "$output" | cut -d: -f2 | sed 's/ //g')
   sha=$(grep "^Build Commit ID:" <<< "$output" | cut -d: -f2 | sed 's/ //g')
   build_tag=$(grep "^Build Tag:" <<< "$output" | cut -d: -f2 | sed 's/ //g')
-  fips_enabled=$(grep '^FIPS enabled:\s*true' <<< "$output")
+  go_version=$(grep "^Go Version:" <<< "$output" | cut -d: -f2 | sed 's/ //g')
 
   # Build Type should always be "release"
   if [ "$build_type" != "release" ]; then
@@ -97,19 +96,14 @@ verify_docker_image(){
     echo "ERROR: Build tag from 'cockroach version --build-tag' mismatch, expected '$expected_build_tag', got '$build_tag_output'"
     error=1
   fi
-  if [[ $fips_build == true  && -z $fips_enabled ]]; then
-    echo "ERROR: FIPS is not enabled"
-    error=1
-  fi
-  if [[ $docker_platform == "linux/amd64" ]]; then
-    # Running arm64 `cockroach demo` on amd64 times out.
-    telemetry_setting="$(docker run -t --platform="$docker_platform" "$img" demo --no-example-database -e 'SHOW CLUSTER SETTING diagnostics.reporting.enabled;' --format json | grep "diagnostics.reporting.enabled" | cut -d: -f2 | cut -d'"' -f2)"
-    if [[ $telemetry_disabled == true && $telemetry_setting != "f" ]]; then
-      echo "ERROR: expected telemetry to be disabled, but it is enabled"
+  if [[ $fips_build == true ]]; then
+    if [[ "$go_version" != *"fips"* ]]; then
+      echo "ERROR: Go version '$go_version' does not contain 'fips'"
       error=1
     fi
-    if [[ $telemetry_disabled == false && $telemetry_setting != "t" ]]; then
-      echo "ERROR: expected telemetry to be enabled, but it is disabled"
+    openssl_version_output=$(docker run --platform="$docker_platform" "$img" shell -c "openssl version -f")
+    if [[ $openssl_version_output != *"FIPS_VERSION"* ]]; then
+      echo "ERROR: openssl version '$openssl_version_output' does not contain 'FIPS_VERSION'"
       error=1
     fi
   fi

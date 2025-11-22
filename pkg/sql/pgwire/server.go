@@ -22,7 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
-	"github.com/cockroachdb/cockroach/pkg/sql/parserutils"
+	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/hba"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/identmap"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -45,7 +45,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
@@ -94,15 +93,6 @@ var logVerboseSessionAuth = settings.RegisterBoolSetting(
 	false,
 	settings.WithPublic)
 
-var maxRepeatedErrorCount = settings.RegisterIntSetting(
-	settings.ApplicationLevel,
-	"sql.pgwire.max_repeated_error_count",
-	"the maximum number of times an error can be received while reading from a "+
-		"network connection before the server aborts the connection",
-	1<<8, // 256
-	settings.PositiveInt,
-)
-
 const (
 	// ErrSSLRequired is returned when a client attempts to connect to a
 	// secure server in cleartext.
@@ -123,18 +113,12 @@ var (
 		Help:        "Number of open SQL connections",
 		Measurement: "Connections",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_SQL,
-		HowToUse:    `This metric shows the number of connections as well as the distribution, or balancing, of connections across cluster nodes. An imbalance can lead to nodes becoming overloaded. Review Connection Pooling.`,
 	}
 	MetaNewConns = metric.Metadata{
 		Name:        "sql.new_conns",
 		Help:        "Number of SQL connections created",
 		Measurement: "Connections",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_SQL,
-		HowToUse:    `The rate of this metric shows how frequently new connections are being established. This can be useful in determining if a high rate of incoming new connections is causing additional load on the server due to a misconfigured application.`,
 	}
 	MetaConnsWaitingToHash = metric.Metadata{
 		Name:        "sql.conns_waiting_to_hash",
@@ -159,18 +143,12 @@ var (
 		Help:        "Latency to establish and authenticate a SQL connection",
 		Measurement: "Nanoseconds",
 		Unit:        metric.Unit_NANOSECONDS,
-		Essential:   true,
-		Category:    metric.Metadata_SQL,
-		HowToUse:    "These metrics characterize the database connection latency which can affect the application performance, for example, by having slow startup times. Connection failures are not recorded in these metrics.",
 	}
 	MetaConnFailures = metric.Metadata{
 		Name:        "sql.conn.failures",
 		Help:        "Number of SQL connection failures",
 		Measurement: "Connections",
 		Unit:        metric.Unit_COUNT,
-		Essential:   true,
-		Category:    metric.Metadata_SQL,
-		HowToUse:    "This metric is incremented whenever a connection attempt fails for any reason, including timeouts.",
 	}
 	MetaPGWireCancelTotal = metric.Metadata{
 		Name:        "sql.pgwire_cancel.total",
@@ -233,12 +211,6 @@ var (
 		Measurement: "Nanoseconds",
 		Unit:        metric.Unit_NANOSECONDS,
 	}
-	AuthLDAPConnLatencyInternal = metric.Metadata{
-		Name:        "auth.ldap.conn.latency.internal",
-		Help:        "Internal Auth Latency to establish and authenticate a SQL connection using LDAP(excludes external LDAP calls)",
-		Measurement: "Nanoseconds",
-		Unit:        metric.Unit_NANOSECONDS,
-	}
 )
 
 const (
@@ -291,10 +263,6 @@ type Server struct {
 
 	destinationMetrics destinationAggMetrics
 
-	// lastLoginUpdater handles updating the last login time for SQL users
-	// with deduplication to reduce concurrent updates for the same user.
-	lastLoginUpdater *lastLoginUpdater
-
 	mu struct {
 		syncutil.Mutex
 		// connCancelMap entries represent connections started when the server
@@ -318,8 +286,6 @@ type Server struct {
 		// destinations tracks the metrics for each destination.
 		destinations map[string]*destinationMetrics
 	}
-	// limit the number of rejectNewConnection errors
-	connectionErrorLogEveryN log.EveryN
 
 	auth struct {
 		syncutil.RWMutex
@@ -394,7 +360,6 @@ type tenantSpecificMetrics struct {
 	AuthLDAPConnLatency         metric.IHistogram
 	AuthGSSConnLatency          metric.IHistogram
 	AuthScramConnLatency        metric.IHistogram
-	AuthLDAPConnLatencyInternal metric.IHistogram
 }
 
 func newTenantSpecificMetrics(
@@ -429,8 +394,6 @@ func newTenantSpecificMetrics(
 			getHistogramOptionsForIOLatency(AuthGSSConnLatency, histogramWindow)),
 		AuthScramConnLatency: metric.NewHistogram(
 			getHistogramOptionsForIOLatency(AuthScramConnLatency, histogramWindow)),
-		AuthLDAPConnLatencyInternal: metric.NewHistogram(
-			getHistogramOptionsForIOLatency(AuthLDAPConnLatencyInternal, histogramWindow)),
 	}
 }
 
@@ -468,10 +431,9 @@ func MakeServer(
 			BytesInCount:  aggmetric.NewCounter(MetaBytesIn, "remote"),
 			BytesOutCount: aggmetric.NewCounter(MetaBytesOut, "remote"),
 		},
-		lastLoginUpdater: newLastLoginUpdater(executorConfig),
 	}
 	server.sqlMemoryPool = mon.NewMonitor(mon.Options{
-		Name: mon.MakeName("sql"),
+		Name: "sql",
 		// Note that we don't report metrics on this monitor. The reason for this is
 		// that we report metrics on the sum of all the child monitors of this pool.
 		// This monitor is the "main sql" monitor. It's a child of the root memory
@@ -487,7 +449,7 @@ func MakeServer(
 	server.SQLServer = sql.NewServer(executorConfig, server.sqlMemoryPool)
 
 	server.tenantSpecificConnMonitor = mon.NewMonitor(mon.Options{
-		Name:       mon.MakeName("conn"),
+		Name:       "conn",
 		CurCount:   server.tenantMetrics.ConnMemMetrics.CurBytesCount,
 		MaxHist:    server.tenantMetrics.ConnMemMetrics.MaxBytesHist,
 		Increment:  int64(connReservationBatchSize) * baseSQLMemoryBudget,
@@ -501,7 +463,6 @@ func MakeServer(
 	server.mu.drainCh = make(chan struct{})
 	server.mu.destinations = make(map[string]*destinationMetrics)
 	server.mu.Unlock()
-	server.connectionErrorLogEveryN = log.Every(10 * time.Second)
 	executorConfig.CidrLookup.SetOnChange(server.onCidrChange)
 
 	connAuthConf.SetOnChange(&st.SV, func(ctx context.Context) {
@@ -562,7 +523,6 @@ func (s *Server) Metrics() []interface{} {
 		&s.SQLServer.ServerMetrics.StatsMetrics,
 		&s.SQLServer.ServerMetrics.ContentionSubsystemMetrics,
 		&s.SQLServer.ServerMetrics.InsightsMetrics,
-		&s.SQLServer.ServerMetrics.IngesterMetrics,
 	}
 }
 
@@ -943,9 +903,7 @@ func (s *Server) ServeConn(
 	st := s.execCfg.Settings
 	// If the server is shutting down, terminate the connection early.
 	if rejectNewConnections {
-		if s.connectionErrorLogEveryN.ShouldLog() {
-			log.Ops.Info(ctx, "rejecting new connection while server is draining")
-		}
+		log.Ops.Info(ctx, "rejecting new connection while server is draining")
 		return s.sendErr(ctx, st, conn, newAdminShutdownErr(ErrDrainingNewConn))
 	}
 
@@ -966,10 +924,8 @@ func (s *Server) ServeConn(
 	// been overridden by a status parameter).
 	connDetails.RemoteAddress = sArgs.RemoteAddr.String()
 	sp := tracing.SpanFromContext(ctx)
-	tags := logtags.BuildBuffer()
-	tags.Add("client", log.SafeOperational(connDetails.RemoteAddress))
-	tags.Add(preServeStatus.ConnType.String(), nil)
-	ctx = logtags.AddTags(ctx, tags.Finish())
+	ctx = logtags.AddTag(ctx, "client", log.SafeOperational(connDetails.RemoteAddress))
+	ctx = logtags.AddTag(ctx, preServeStatus.ConnType.String(), nil)
 	sp.SetTag("conn_type", attribute.StringValue(preServeStatus.ConnType.String()))
 	sp.SetTag("client", attribute.StringValue(connDetails.RemoteAddress))
 
@@ -984,7 +940,7 @@ func (s *Server) ServeConn(
 	// Defer the rest of the processing to the connection handler.
 	// This includes authentication.
 	if log.V(2) {
-		log.Dev.Infof(ctx, "new connection with options: %+v", sArgs)
+		log.Infof(ctx, "new connection with options: %+v", sArgs)
 	}
 
 	ctx, cancelConn := context.WithCancel(ctx)
@@ -1087,6 +1043,11 @@ func (s *Server) newConn(
 	c.errWriter.msgBuilder = &c.msgBuilder
 	return c
 }
+
+// maxRepeatedErrorCount is the number of times an error can be received
+// while reading from the network connection before the server decides to give
+// up and abort the connection.
+const maxRepeatedErrorCount = 1 << 15
 
 // serveImpl continuously reads from the network connection and pushes execution
 // instructions into a sql.StmtBuf, from where they'll be processed by a command
@@ -1236,7 +1197,7 @@ func (s *Server) serveImpl(
 				ctx,
 				authOpt,
 				authPipe,
-				s,
+				sqlServer,
 				reserved,
 				onDefaultIntSizeChange,
 				sessionID,
@@ -1286,7 +1247,7 @@ func (s *Server) serveImpl(
 			isSimpleQuery := typ == pgwirebase.ClientMsgSimpleQuery
 			if err != nil {
 				if pgwirebase.IsMessageTooBigError(err) {
-					log.Dev.VInfof(ctx, 1, "pgwire: found big error message; attempting to slurp bytes and return error: %s", err)
+					log.VInfof(ctx, 1, "pgwire: found big error message; attempting to slurp bytes and return error: %s", err)
 
 					// Slurp the remaining bytes.
 					slurpN, slurpErr := c.readBuf.SlurpBytes(&c.rd, pgwirebase.GetMessageTooBigSize(err))
@@ -1321,12 +1282,12 @@ func (s *Server) serveImpl(
 				// packet) and instead return a broken pipe or io.EOF error message.
 				return false, isSimpleQuery, errors.Wrap(err, "pgwire: error reading input")
 			}
-			timeReceived := crtime.NowMono()
+			timeReceived := timeutil.Now()
 			log.VEventf(ctx, 2, "pgwire: processing %s", typ)
 
 			if ignoreUntilSync {
 				if typ != pgwirebase.ClientMsgSync {
-					log.Dev.VInfof(ctx, 1, "pgwire: skipping non-sync message after encountering error")
+					log.VInfof(ctx, 1, "pgwire: skipping non-sync message after encountering error")
 					return false, isSimpleQuery, nil
 				}
 				ignoreUntilSync = false
@@ -1361,7 +1322,7 @@ func (s *Server) serveImpl(
 				return true, isSimpleQuery, c.writeErr(ctx, err, &c.writerState.buf)
 			case pgwirebase.ClientMsgSimpleQuery:
 				if err = c.handleSimpleQuery(
-					ctx, &c.readBuf, timeReceived, parserutils.NakedIntTypeFromDefaultIntSize(atomic.LoadInt32(atomicUnqualifiedIntSize)),
+					ctx, &c.readBuf, timeReceived, parser.NakedIntTypeFromDefaultIntSize(atomic.LoadInt32(atomicUnqualifiedIntSize)),
 				); err != nil {
 					return false, isSimpleQuery, err
 				}
@@ -1392,7 +1353,7 @@ func (s *Server) serveImpl(
 				if err := c.prohibitUnderReplicationMode(ctx); err != nil {
 					return false, isSimpleQuery, err
 				}
-				return false, isSimpleQuery, c.handleParse(ctx, parserutils.NakedIntTypeFromDefaultIntSize(atomic.LoadInt32(atomicUnqualifiedIntSize)))
+				return false, isSimpleQuery, c.handleParse(ctx, parser.NakedIntTypeFromDefaultIntSize(atomic.LoadInt32(atomicUnqualifiedIntSize)))
 
 			case pgwirebase.ClientMsgDescribe:
 				if err := c.prohibitUnderReplicationMode(ctx); err != nil {
@@ -1459,7 +1420,7 @@ func (s *Server) serveImpl(
 			// 3. we reached an arbitrary threshold of repeated errors.
 			if netutil.IsClosedConnection(err) ||
 				errors.Is(err, context.Canceled) ||
-				repeatedErrorCount > int(maxRepeatedErrorCount.Get(&s.execCfg.Settings.SV)) {
+				repeatedErrorCount > maxRepeatedErrorCount {
 				break
 			}
 		} else {

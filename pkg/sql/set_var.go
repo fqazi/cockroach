@@ -20,19 +20,16 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessionmutator"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
-	"github.com/dustin/go-humanize"
 )
 
 // setVarNode represents a SET {SESSION | LOCAL} statement.
 type setVarNode struct {
-	zeroInputPlanNode
 	name  string
 	local bool
 	v     sessionVar
@@ -41,9 +38,7 @@ type setVarNode struct {
 }
 
 // resetAllNode represents a RESET ALL statement.
-type resetAllNode struct {
-	zeroInputPlanNode
-}
+type resetAllNode struct{}
 
 // SetVar sets session variables.
 // Privileges: None.
@@ -111,7 +106,7 @@ func (p *planner) SetVar(ctx context.Context, n *tree.SetVar) (planNode, error) 
 		// Statement is RESET. Do we have a default available?
 		// We do not use getDefaultString here because we need to delay
 		// the computation of the default to the execute phase.
-		if _, ok := p.sessionDataMutatorIterator.Defaults[name]; !ok && v.GlobalDefault == nil {
+		if _, ok := p.sessionDataMutatorIterator.defaults[name]; !ok && v.GlobalDefault == nil {
 			return nil, newCannotChangeParameterError(name)
 		}
 	}
@@ -152,7 +147,7 @@ func (n *setVarNode) startExec(params runParams) error {
 		_, strVal = getSessionVarDefaultString(
 			n.name,
 			n.v,
-			params.p.sessionDataMutatorIterator.SessionDataMutatorBase,
+			params.p.sessionDataMutatorIterator.sessionDataMutatorBase,
 		)
 	}
 
@@ -160,9 +155,9 @@ func (n *setVarNode) startExec(params runParams) error {
 }
 
 // applyOnSessionDataMutators applies the given function on the relevant
-// sessionmutator.SessionDataMutators.
+// sessionDataMutators.
 func (p *planner) applyOnSessionDataMutators(
-	ctx context.Context, local bool, applyFunc func(m sessionmutator.SessionDataMutator) error,
+	ctx context.Context, local bool, applyFunc func(m sessionDataMutator) error,
 ) error {
 	if local {
 		// We don't allocate a new SessionData object on implicit transactions.
@@ -177,22 +172,22 @@ func (p *planner) applyOnSessionDataMutators(
 			)
 			return nil
 		}
-		return p.sessionDataMutatorIterator.ApplyOnTopMutator(applyFunc)
+		return p.sessionDataMutatorIterator.applyOnTopMutator(applyFunc)
 	}
-	return p.sessionDataMutatorIterator.ApplyOnEachMutatorError(applyFunc)
+	return p.sessionDataMutatorIterator.applyOnEachMutatorError(applyFunc)
 }
 
 // getSessionVarDefaultString retrieves a string suitable to pass to a
 // session var's Set() method. First return value is false if there is
 // no default.
 func getSessionVarDefaultString(
-	varName string, v sessionVar, m sessionmutator.SessionDataMutatorBase,
+	varName string, v sessionVar, m sessionDataMutatorBase,
 ) (bool, string) {
-	if defVal, ok := m.Defaults[varName]; ok {
+	if defVal, ok := m.defaults[varName]; ok {
 		return true, defVal
 	}
 	if v.GlobalDefault != nil {
-		return true, v.GlobalDefault(&m.Settings.SV)
+		return true, v.GlobalDefault(&m.settings.SV)
 	}
 	return false, ""
 }
@@ -213,7 +208,7 @@ func (p *planner) resetAllSessionVars(ctx context.Context) error {
 		hasDefault, defVal := getSessionVarDefaultString(
 			varName,
 			v,
-			p.sessionDataMutatorIterator.SessionDataMutatorBase,
+			p.sessionDataMutatorIterator.sessionDataMutatorBase,
 		)
 		if !hasDefault {
 			continue
@@ -230,7 +225,7 @@ func (p *planner) resetAllSessionVars(ctx context.Context) error {
 		_, defVal := getSessionVarDefaultString(
 			varName,
 			v,
-			p.sessionDataMutatorIterator.SessionDataMutatorBase,
+			p.sessionDataMutatorIterator.sessionDataMutatorBase,
 		)
 		if err := p.SetSessionVar(ctx, varName, defVal, false /* isLocal */); err != nil {
 			return err
@@ -331,7 +326,7 @@ func timeZoneVarGetStringVal(
 	return loc.String(), nil
 }
 
-func timeZoneVarSet(_ context.Context, m sessionmutator.SessionDataMutator, s string) error {
+func timeZoneVarSet(_ context.Context, m sessionDataMutator, s string) error {
 	loc, err := timeutil.TimeZoneStringToLocation(
 		s,
 		timeutil.TimeZoneStringToLocationISO8601Standard,
@@ -370,8 +365,6 @@ func makeTimeoutVarGetter(
 			}
 		case *tree.DInt:
 			timeout = time.Duration(*v) * time.Millisecond
-		default:
-			return "", newVarValueError(varName, values[0].String())
 		}
 		return timeout.String(), nil
 	}
@@ -404,9 +397,9 @@ func validateTimeoutVar(
 	return timeout, nil
 }
 
-func stmtTimeoutVarSet(ctx context.Context, m sessionmutator.SessionDataMutator, s string) error {
+func stmtTimeoutVarSet(ctx context.Context, m sessionDataMutator, s string) error {
 	timeout, err := validateTimeoutVar(
-		m.Data.GetIntervalStyle(),
+		m.data.GetIntervalStyle(),
 		s,
 		"statement_timeout",
 	)
@@ -418,9 +411,9 @@ func stmtTimeoutVarSet(ctx context.Context, m sessionmutator.SessionDataMutator,
 	return nil
 }
 
-func lockTimeoutVarSet(ctx context.Context, m sessionmutator.SessionDataMutator, s string) error {
+func lockTimeoutVarSet(ctx context.Context, m sessionDataMutator, s string) error {
 	timeout, err := validateTimeoutVar(
-		m.Data.GetIntervalStyle(),
+		m.data.GetIntervalStyle(),
 		s,
 		"lock_timeout",
 	)
@@ -432,11 +425,9 @@ func lockTimeoutVarSet(ctx context.Context, m sessionmutator.SessionDataMutator,
 	return nil
 }
 
-func deadlockTimeoutVarSet(
-	ctx context.Context, m sessionmutator.SessionDataMutator, s string,
-) error {
+func deadlockTimeoutVarSet(ctx context.Context, m sessionDataMutator, s string) error {
 	timeout, err := validateTimeoutVar(
-		m.Data.GetIntervalStyle(),
+		m.data.GetIntervalStyle(),
 		s,
 		"deadlock_timeout",
 	)
@@ -448,11 +439,9 @@ func deadlockTimeoutVarSet(
 	return nil
 }
 
-func idleInSessionTimeoutVarSet(
-	ctx context.Context, m sessionmutator.SessionDataMutator, s string,
-) error {
+func idleInSessionTimeoutVarSet(ctx context.Context, m sessionDataMutator, s string) error {
 	timeout, err := validateTimeoutVar(
-		m.Data.GetIntervalStyle(),
+		m.data.GetIntervalStyle(),
 		s,
 		"idle_in_session_timeout",
 	)
@@ -464,11 +453,9 @@ func idleInSessionTimeoutVarSet(
 	return nil
 }
 
-func transactionTimeoutVarSet(
-	ctx context.Context, m sessionmutator.SessionDataMutator, s string,
-) error {
+func transactionTimeoutVarSet(ctx context.Context, m sessionDataMutator, s string) error {
 	timeout, err := validateTimeoutVar(
-		m.Data.GetIntervalStyle(),
+		m.data.GetIntervalStyle(),
 		s,
 		"transaction_timeout",
 	)
@@ -481,10 +468,10 @@ func transactionTimeoutVarSet(
 }
 
 func idleInTransactionSessionTimeoutVarSet(
-	ctx context.Context, m sessionmutator.SessionDataMutator, s string,
+	ctx context.Context, m sessionDataMutator, s string,
 ) error {
 	timeout, err := validateTimeoutVar(
-		m.Data.GetIntervalStyle(),
+		m.data.GetIntervalStyle(),
 		s,
 		"idle_in_transaction_session_timeout",
 	)
@@ -531,34 +518,4 @@ func newVarValueError(varName, actualVal string, allowedVals ...string) (err err
 func newCannotChangeParameterError(varName string) error {
 	return pgerror.Newf(pgcode.CantChangeRuntimeParam,
 		"parameter %q cannot be changed", varName)
-}
-
-func makeByteSizeVarGetter(
-	varName string,
-) func(
-	ctx context.Context, evalCtx *extendedEvalContext, values []tree.TypedExpr, txn *kv.Txn) (string, error) {
-	return func(
-		ctx context.Context, evalCtx *extendedEvalContext, values []tree.TypedExpr, txn *kv.Txn,
-	) (string, error) {
-		if len(values) != 1 {
-			return "", newSingleArgVarError(varName)
-		}
-		d, err := eval.Expr(ctx, &evalCtx.Context, values[0])
-		if err != nil {
-			return "", err
-		}
-
-		switch v := eval.UnwrapDatum(ctx, &evalCtx.Context, d).(type) {
-		case *tree.DString:
-			return string(*v), nil
-		case *tree.DInt:
-			size := int64(*v)
-			if size < 0 {
-				return "", errors.Newf("%s cannot be set to a negative value", varName)
-			}
-			return humanize.IBytes(uint64(size)), nil
-		default:
-			return "", newVarValueError(varName, values[0].String())
-		}
-	}
 }

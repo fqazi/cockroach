@@ -36,7 +36,6 @@ go_library(
         "//pkg/util/log",
         "//pkg/util/log/logcrash",
         "//pkg/util/protoutil",
-        "//pkg/util/randutil",
         "//pkg/util/stop",
         "//pkg/util/syncutil",
         "//pkg/util/system",
@@ -88,5 +87,4 @@ disallowed_imports_test(
     "diagnostics",
     # TODO(#81378): This should be flipped to "true".
     disallow_cdeps = False,
-    disallowed_list = [],
 )

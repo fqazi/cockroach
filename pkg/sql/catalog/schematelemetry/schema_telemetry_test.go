@@ -97,9 +97,8 @@ func TestSchemaTelemetryJob(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	srv, db, _ := serverutils.StartServer(t, makeTestServerArgs())
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	s, db, _ := serverutils.StartServer(t, makeTestServerArgs())
+	defer s.Stopper().Stop(ctx)
 	tdb := sqlutils.MakeSQLRunner(db)
 	tdb.Exec(t, `SET CLUSTER SETTING server.eventlog.enabled = true`)
 
@@ -135,7 +134,7 @@ CREATE TABLE nojob (k INT8);
 
 	// Now introduce some inconsistencies.
 	tdb.Exec(t, fmt.Sprintf(`
-INSERT INTO system.users VALUES ('node', NULL, true, 3, NULL);
+INSERT INTO system.users VALUES ('node', NULL, true, 3);
 GRANT node TO root;
 DELETE FROM system.descriptor WHERE id = %d;
 DELETE FROM system.descriptor WHERE id = %d;

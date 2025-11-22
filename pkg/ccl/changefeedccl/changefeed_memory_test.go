@@ -46,17 +46,10 @@ func TestChangefeedUnwatchedFamilyMemoryMonitoring(t *testing.T) {
 		// Insert initial data.
 		sqlDB.Exec(t, `INSERT INTO foo VALUES (1, 'a', 'b')`)
 
-		var args []any
-		if _, ok := f.(*webhookFeedFactory); ok {
-			args = append(args, optOutOfMetamorphicEnrichedEnvelope{
-				reason: "enriched envelopes do not support column families for webhook sinks",
-			})
-		}
-
 		// Start changefeed watching only f1 with diff enabled.
 		// Events from f2 should trigger ErrUnwatchedFamily.
 		feed := feed(t, f,
-			`CREATE CHANGEFEED FOR foo FAMILY f1 WITH diff, initial_scan='no', resolved`, args...)
+			`CREATE CHANGEFEED FOR foo FAMILY f1 WITH diff, initial_scan='no', resolved`)
 		defer closeFeed(t, feed)
 
 		// Update a watched column to generate an event.

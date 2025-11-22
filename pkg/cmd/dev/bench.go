@@ -140,10 +140,7 @@ func (d *dev) bench(cmd *cobra.Command, commandLine []string) error {
 	if runSepProcessTenant {
 		args = append(args, "--test_arg", "-run-sep-process-tenant")
 	}
-	// The `crdb_test` flag enables metamorphic variables and various "extra" debug
-	// checking code paths that can interfere with performance testing, hence
-	// it should disabled for benchmarks.
-	args = append(args, "--crdb_test_off", "--crdb_bench")
+	args = append(args, "--crdb_test_off")
 	if testArgs != "" {
 		goTestArgs, err := d.getGoTestArgs(ctx, testArgs)
 		if err != nil {

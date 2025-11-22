@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
-	"github.com/cockroachdb/cockroach/pkg/sql/prep"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/errors"
 )
@@ -41,17 +40,17 @@ func expect(t *testing.T, c *C, exp string) {
 }
 
 func data(sql string, mem *memo.Memo, memEstimate int64) *CachedData {
-	cd := &CachedData{SQL: sql, Memo: mem, Metadata: &prep.Metadata{}}
+	cd := &CachedData{SQL: sql, Memo: mem, PrepareMetadata: &PrepareMetadata{}}
 	n := memEstimate - cd.memoryEstimate()
 	if n < 0 {
-		panic(errors.AssertionFailedf("size %d too small %d", memEstimate, cd.memoryEstimate()))
+		panic(errors.AssertionFailedf("size %d too small", memEstimate))
 	}
 	// Add characters to AnonymizedStr which should increase the estimate.
 	s := make([]byte, n)
 	for i := range s {
 		s[i] = 'x'
 	}
-	cd.Metadata.StatementNoConstants = string(s)
+	cd.PrepareMetadata.StatementNoConstants = string(s)
 	if cd.memoryEstimate() != memEstimate {
 		panic(errors.AssertionFailedf("failed to create CachedData of size %d", memEstimate))
 	}
@@ -202,7 +201,7 @@ func TestSynchronization(t *testing.T) {
 					c.Purge(sql)
 				case r <= 35:
 					// 25% of the time, add an entry.
-					c.Add(&s, data(sql, &memo.Memo{}, int64(288+rng.Intn(10*avgCachedSize))))
+					c.Add(&s, data(sql, &memo.Memo{}, int64(256+rng.Intn(10*avgCachedSize))))
 				default:
 					// The rest of the time, find an entry.
 					_, _ = c.Find(&s, sql)

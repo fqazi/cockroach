@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/jobs"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
@@ -71,7 +69,6 @@ func (r *Registry) RunExpectations(t *testing.T) {
 // assigned to the specific shard will be run, enabling parallel execution.
 // Test groups are distributed across shards using round-robin assignment.
 func (r *Registry) RunExpectationsSharded(t *testing.T, shard, totalShards int) {
-	defer jobs.TestingSetIDsToIgnore(map[jobspb.JobID]struct{}{3001: {}, 3002: {}})()
 	skip.UnderDuress(t)
 	skip.UnderShort(t)
 	if runtime.GOARCH == "s390x" {

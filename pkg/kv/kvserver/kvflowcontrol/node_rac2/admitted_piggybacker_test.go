@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowcontrolpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/dd"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/datadriven"
@@ -33,15 +32,19 @@ func TestPiggybacker(t *testing.T) {
 		func(t *testing.T, d *datadriven.TestData) string {
 			switch d.Cmd {
 			case "add":
-				nodeID := dd.ScanArg[roachpb.NodeID](t, d, "node-id")
-				p.Add(nodeID, kvflowcontrolpb.PiggybackedAdmittedState{
-					RangeID:       dd.ScanArg[roachpb.RangeID](t, d, "range-id"),
-					ToStoreID:     dd.ScanArg[roachpb.StoreID](t, d, "store-id"),
-					FromReplicaID: dd.ScanArg[roachpb.ReplicaID](t, d, "from"),
-					ToReplicaID:   dd.ScanArg[roachpb.ReplicaID](t, d, "to"),
-					Admitted: kvflowcontrolpb.AdmittedState{
-						Term: dd.ScanArg[uint64](t, d, "term"),
-					},
+				var nodeID, storeID, rangeID, from, to, term int
+				d.ScanArgs(t, "node-id", &nodeID)
+				d.ScanArgs(t, "store-id", &storeID)
+				d.ScanArgs(t, "range-id", &rangeID)
+				d.ScanArgs(t, "from", &from)
+				d.ScanArgs(t, "to", &to)
+				d.ScanArgs(t, "term", &term)
+				p.Add(roachpb.NodeID(nodeID), kvflowcontrolpb.PiggybackedAdmittedState{
+					RangeID:       roachpb.RangeID(rangeID),
+					ToStoreID:     roachpb.StoreID(storeID),
+					FromReplicaID: roachpb.ReplicaID(from),
+					ToReplicaID:   roachpb.ReplicaID(to),
+					Admitted:      kvflowcontrolpb.AdmittedState{Term: uint64(term)},
 				})
 				return ""
 
@@ -65,8 +68,9 @@ func TestPiggybacker(t *testing.T) {
 
 			case "pop":
 				ts := parseTime(t, d)
-				nodeID := dd.ScanArg[roachpb.NodeID](t, d, "node-id")
-				msgs, remaining := p.PopMsgsForNode(ts, nodeID, math.MaxInt64)
+				var nodeID int
+				d.ScanArgs(t, "node-id", &nodeID)
+				msgs, remaining := p.PopMsgsForNode(ts, roachpb.NodeID(nodeID), math.MaxInt64)
 				slices.SortFunc(msgs, func(a, b kvflowcontrolpb.PiggybackedAdmittedState) int {
 					return cmp.Compare(a.RangeID, b.RangeID)
 				})
@@ -85,7 +89,8 @@ func TestPiggybacker(t *testing.T) {
 }
 
 func parseTime(t *testing.T, d *datadriven.TestData) time.Time {
-	timeSec := dd.ScanArg[int64](t, d, "time-sec")
+	var timeSec int64
+	d.ScanArgs(t, "time-sec", &timeSec)
 	return time.UnixMilli(timeSec * 1000)
 }
 

@@ -8,12 +8,12 @@ package spanset
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/util/debugutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -212,17 +212,11 @@ func (s *SpanSet) Merge(s2 *SpanSet) {
 	s.SortAndDedup()
 }
 
-// SortAndDedup sorts the spans in the SpanSet by key and removes duplicate or
-// overlapping / redundant spans. The SpanSet represents the same subset of the
-// {keys}x{timestamps} space before and after this call, but is not guaranteed
-// to have a minimal number of spans in a general case (see mergeSpans comment).
-//
-// TODO(pav-kv): does this make CheckAllowed falsely fail in some cases? Maybe
-// it's fine: importantly, it should not falsely succeed.
+// SortAndDedup sorts the spans in the SpanSet and removes any duplicates.
 func (s *SpanSet) SortAndDedup() {
 	for sa := SpanAccess(0); sa < NumSpanAccess; sa++ {
 		for ss := SpanScope(0); ss < NumSpanScope; ss++ {
-			s.spans[sa][ss] = mergeSpans(s.spans[sa][ss])
+			s.spans[sa][ss], _ /* distinct */ = mergeSpans(&s.spans[sa][ss])
 		}
 	}
 }
@@ -230,6 +224,21 @@ func (s *SpanSet) SortAndDedup() {
 // GetSpans returns a slice of spans with the given parameters.
 func (s *SpanSet) GetSpans(access SpanAccess, scope SpanScope) []Span {
 	return s.spans[access][scope]
+}
+
+// BoundarySpan returns a span containing all the spans with the given params.
+func (s *SpanSet) BoundarySpan(scope SpanScope) roachpb.Span {
+	var boundary roachpb.Span
+	for sa := SpanAccess(0); sa < NumSpanAccess; sa++ {
+		for _, cur := range s.GetSpans(sa, scope) {
+			if !boundary.Valid() {
+				boundary = cur.Span
+				continue
+			}
+			boundary = boundary.Combine(cur.Span)
+		}
+	}
+	return boundary
 }
 
 // Intersects returns true iff the span set denoted by `other` has any
@@ -256,7 +265,7 @@ func (s *SpanSet) Intersects(other *SpanSet) bool {
 // only the span boundaries are checked.
 func (s *SpanSet) AssertAllowed(access SpanAccess, span roachpb.Span) {
 	if err := s.CheckAllowed(access, span); err != nil {
-		log.KvExec.Fatalf(context.TODO(), "%v", err)
+		log.Fatalf(context.TODO(), "%v", err)
 	}
 }
 
@@ -351,7 +360,7 @@ func (s *SpanSet) checkAllowed(
 		}
 	}
 
-	return errors.Errorf("cannot %s undeclared span %s\ndeclared:\n%s\nstack:\n%s", access, span, s, debugutil.Stack())
+	return errors.Errorf("cannot %s undeclared span %s\ndeclared:\n%s\nstack:\n%s", access, span, s, debug.Stack())
 }
 
 // contains returns whether s1 contains s2. Unlike Span.Contains, this function

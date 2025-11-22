@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/tablemetadatacache"
@@ -388,23 +389,6 @@ func TestGetTableMetadataWithDetails(t *testing.T) {
 			t, userClient, ts.AdminURL().WithPath(uri).String(), http.MethodGet)
 		require.NotEmpty(t, resp.Metadata)
 		require.Contains(t, resp.CreateStatement, table.tableName)
-
-		// Test with dedicated admin user (user named 'admin').
-		adminUsername := username.AdminRoleName()
-		adminClient, _, err := ts.GetAuthenticatedHTTPClientAndCookie(adminUsername, false, 1)
-		require.NoError(t, err)
-
-		// Admin user should be able to access the table even without explicit CONNECT grants.
-		resp = makeApiRequest[tableMetadataWithDetailsResponse](
-			t, adminClient, ts.AdminURL().WithPath(uri).String(), http.MethodGet)
-		require.NotEmpty(t, resp.Metadata)
-		require.Contains(t, resp.CreateStatement, table.tableName)
-
-		// Admin user should still have access even after revoking public access was already done above.
-		resp = makeApiRequest[tableMetadataWithDetailsResponse](
-			t, adminClient, ts.AdminURL().WithPath(uri).String(), http.MethodGet)
-		require.NotEmpty(t, resp.Metadata)
-		require.Contains(t, resp.CreateStatement, table.tableName)
 	})
 
 	t.Run("non GET method 405 error", func(t *testing.T) {
@@ -525,14 +509,14 @@ func TestGetDbMetadata(t *testing.T) {
 
 		// All databases grant CONNECT to public by default, so the user should see all databases.
 		// There should be 4: defaultdb, postgres, new_test_db_1, and new_test_db_2.
-		// The system db should not be included, since it does not have CONNECT granted to public.
+		// The system db should not be included, since it doe snot have CONNECT granted to public.
 		uri := "/api/v2/database_metadata/?sortBy=name"
 		mdResp := makeApiRequest[PaginatedResponse[[]dbMetadata]](t, userClient, ts.AdminURL().WithPath(uri).String(), http.MethodGet)
 		verifyDatabases([]string{"defaultdb", "new_test_db_1", "new_test_db_2", "postgres"}, mdResp.Results)
 
 		// Revoke connect access for public from db1.
 		conn.Exec(t, fmt.Sprintf("REVOKE CONNECT ON DATABASE %s FROM %s", db1Name, "public"))
-		// Assert that user no longer sees db1.
+		// Asser that user no longer sees db1.
 		mdResp = makeApiRequest[PaginatedResponse[[]dbMetadata]](t, userClient, ts.AdminURL().WithPath(uri).String(), http.MethodGet)
 		verifyDatabases([]string{"defaultdb", "new_test_db_2", "postgres"}, mdResp.Results)
 
@@ -551,23 +535,6 @@ func TestGetDbMetadata(t *testing.T) {
 		// Make user admin. The admin user should see all databases, including system.
 		conn.Exec(t, fmt.Sprintf("GRANT admin TO %s", sessionUsername.Normalized()))
 		mdResp = makeApiRequest[PaginatedResponse[[]dbMetadata]](t, userClient, ts.AdminURL().WithPath(uri).String(), http.MethodGet)
-		verifyDatabases([]string{"defaultdb", "new_test_db_1", "new_test_db_2", "postgres", "system"}, mdResp.Results)
-
-		// Test with dedicated admin user (user named 'admin').
-		adminUsername := username.AdminRoleName()
-		adminClient, _, err := ts.GetAuthenticatedHTTPClientAndCookie(adminUsername, false, 1)
-		require.NoError(t, err)
-
-		// The admin user should see all databases even without explicit CONNECT grants.
-		// There should be 5: defaultdb, postgres, new_test_db_1, and new_test_db_2, system.
-		mdResp = makeApiRequest[PaginatedResponse[[]dbMetadata]](t, adminClient, ts.AdminURL().WithPath(uri).String(), http.MethodGet)
-		verifyDatabases([]string{"defaultdb", "new_test_db_1", "new_test_db_2", "postgres", "system"}, mdResp.Results)
-
-		// Revoke CONNECT on public from both test databases to ensure the admin user
-		// can still see them.
-		conn.Exec(t, fmt.Sprintf("REVOKE CONNECT ON DATABASE %s FROM %s", db1Name, "public"))
-		conn.Exec(t, fmt.Sprintf("REVOKE CONNECT ON DATABASE %s FROM %s", db2Name, "public"))
-		mdResp = makeApiRequest[PaginatedResponse[[]dbMetadata]](t, adminClient, ts.AdminURL().WithPath(uri).String(), http.MethodGet)
 		verifyDatabases([]string{"defaultdb", "new_test_db_1", "new_test_db_2", "postgres", "system"}, mdResp.Results)
 	})
 
@@ -734,26 +701,6 @@ func TestGetDbMetadataWithDetails(t *testing.T) {
 		// Assert that user can see system db.
 		resp = makeApiRequest[dbMetadataWithDetailsResponse](t, userClient, ts.AdminURL().WithPath(systemUri).String(), http.MethodGet)
 		require.Equal(t, int64(1), resp.Metadata.DbId)
-
-		// Test with dedicated admin user (user named 'admin').
-		adminUsername := username.AdminRoleName()
-		adminClient, _, err := ts.GetAuthenticatedHTTPClientAndCookie(adminUsername, false, 1)
-		require.NoError(t, err)
-
-		// Admin user should be able to access the database even without explicit CONNECT grants.
-		resp = makeApiRequest[dbMetadataWithDetailsResponse](
-			t, adminClient, ts.AdminURL().WithPath(uri).String(), http.MethodGet)
-		require.Equal(t, int64(db1Id), resp.Metadata.DbId)
-
-		// Admin user should also see the system database.
-		resp = makeApiRequest[dbMetadataWithDetailsResponse](
-			t, adminClient, ts.AdminURL().WithPath(systemUri).String(), http.MethodGet)
-		require.Equal(t, int64(1), resp.Metadata.DbId)
-
-		// Admin user should still have access even after public access was already revoked above.
-		resp = makeApiRequest[dbMetadataWithDetailsResponse](
-			t, adminClient, ts.AdminURL().WithPath(uri).String(), http.MethodGet)
-		require.Equal(t, int64(db1Id), resp.Metadata.DbId)
 	})
 
 	t.Run("non GET method 405 error", func(t *testing.T) {
@@ -918,7 +865,6 @@ func TestTriggerMetadataUpdateJobTriggerFailed(t *testing.T) {
 	// won't be adopted in this test run.
 	adoptDuration := time.Hour
 	ts := serverutils.StartServerOnly(t, base.TestServerArgs{
-		DefaultDRPCOption: base.TestDRPCDisabled,
 		Knobs: base.TestingKnobs{
 			JobsTestingKnobs: &jobs.TestingKnobs{
 				IntervalOverrides: jobs.TestingIntervalOverrides{
@@ -951,6 +897,42 @@ func TestTriggerMetadataUpdateJobTriggerFailed(t *testing.T) {
 		require.False(t, resp.JobTriggered)
 		require.Contains(t, resp.Message, JobRunning)
 	})
+}
+
+func TestVersionGating(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	ts := serverutils.StartServerOnly(t, base.TestServerArgs{
+		Knobs: base.TestingKnobs{
+			Server: &TestingKnobs{
+				DisableAutomaticVersionUpgrade: make(chan struct{}),
+				ClusterVersionOverride:         clusterversion.MinSupported.Version(),
+			},
+		},
+	})
+	defer ts.Stopper().Stop(context.Background())
+	client, err := ts.GetAdminHTTPClient()
+	require.NoError(t, err)
+	var testCases = []struct {
+		name   string
+		url    string
+		method string
+	}{
+		{"table metadata", "/api/v2/table_metadata/?dbId=1", http.MethodGet},
+		{"table metadata details", "/api/v2/table_metadata/1/", http.MethodGet},
+		{"database metadata", "/api/v2/database_metadata/", http.MethodGet},
+		{"database metadata details", "/api/v2/database_metadata/1/", http.MethodGet},
+		{"table metadata update job info", "/api/v2/table_metadata/updatejob/", http.MethodGet},
+		{"table metadata update job trigger", "/api/v2/table_metadata/updatejob/", http.MethodPost},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			resp := makeApiRequest[versionConflictResponse](t, client, ts.AdminURL().WithPath(testCase.url).String(), testCase.method)
+			require.Equal(t, clusterversion.MinSupported.Version().String(), resp.Version)
+		})
+
+	}
 }
 
 func makeApiRequest[T any](

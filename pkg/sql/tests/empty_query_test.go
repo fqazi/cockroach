@@ -7,14 +7,16 @@ package tests
 
 import (
 	"context"
+	"net/url"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,12 +26,11 @@ func TestEmptyQuery(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{Insecure: false, UseDatabase: "defaultdb"})
-	defer srv.Stopper().Stop(context.Background())
-	s := srv.ApplicationLayer()
+	s := serverutils.StartServerOnly(t, base.TestServerArgs{Insecure: false, UseDatabase: "defaultdb"})
+	defer s.Stopper().Stop(context.Background())
 
-	pgURL, cleanupFunc := s.PGUrl(
-		t, serverutils.CertsDirPrefix("testConnClose"), serverutils.User(username.RootUser),
+	pgURL, cleanupFunc := sqlutils.PGUrl(
+		t, s.ApplicationLayer().AdvSQLAddr(), "testConnClose" /* prefix */, url.User(username.RootUser),
 	)
 	defer cleanupFunc()
 

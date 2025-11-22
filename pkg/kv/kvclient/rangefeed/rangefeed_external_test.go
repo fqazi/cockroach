@@ -8,7 +8,6 @@ package rangefeed_test
 import (
 	"context"
 	"fmt"
-	"maps"
 	"runtime/pprof"
 	"slices"
 	"sort"
@@ -61,20 +60,20 @@ var (
 
 type kvs = storageutils.KVs
 
-type rangefeedTestType struct {
-	useBufferedSender bool
+type feedProcessorType struct {
+	useScheduler bool
 }
 
-func (t rangefeedTestType) String() string {
-	return fmt.Sprintf("mux/buffered_sender=%t", t.useBufferedSender)
+func (t feedProcessorType) String() string {
+	return fmt.Sprintf("mux/scheduler=%t", t.useScheduler)
 }
 
-var feedTypes = []rangefeedTestType{
+var procTypes = []feedProcessorType{
 	{
-		useBufferedSender: false,
+		useScheduler: false,
 	},
 	{
-		useBufferedSender: true,
+		useScheduler: true,
 	},
 }
 
@@ -84,13 +83,13 @@ func TestRangeFeedIntegration(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "feed type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+	testutils.RunValues(t, "feed_type", procTypes, func(t *testing.T, s feedProcessorType) {
 		ctx := context.Background()
 		settings := cluster.MakeTestingClusterSettings()
 		// We must enable desired scheduler settings before we start cluster,
 		// otherwise we will trigger processor restarts later and this test can't
 		// handle duplicated events.
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
+		kvserver.RangeFeedUseScheduler.Override(ctx, &settings.SV, s.useScheduler)
 		srv, _, db := serverutils.StartServer(t, base.TestServerArgs{
 			Settings: settings,
 		})
@@ -186,13 +185,13 @@ func TestWithOnFrontierAdvance(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+	testutils.RunValues(t, "feed_type", procTypes, func(t *testing.T, s feedProcessorType) {
 		ctx := context.Background()
 		settings := cluster.MakeTestingClusterSettings()
 		// We must enable desired scheduler settings before we start cluster,
 		// otherwise we will trigger processor restarts later and this test can't
 		// handle duplicated events.
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
+		kvserver.RangeFeedUseScheduler.Override(ctx, &settings.SV, s.useScheduler)
 		tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{
 			ReplicationMode: base.ReplicationManual,
 			ServerArgs:      base.TestServerArgs{Settings: settings},
@@ -326,13 +325,13 @@ func TestWithOnCheckpoint(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+	testutils.RunValues(t, "feed_type", procTypes, func(t *testing.T, s feedProcessorType) {
 		ctx := context.Background()
 		settings := cluster.MakeTestingClusterSettings()
 		// We must enable desired scheduler settings before we start cluster,
 		// otherwise we will trigger processor restarts later and this test can't
 		// handle duplicated events.
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
+		kvserver.RangeFeedUseScheduler.Override(ctx, &settings.SV, s.useScheduler)
 		srv, _, db := serverutils.StartServer(t, base.TestServerArgs{
 			Settings: settings,
 		})
@@ -432,13 +431,13 @@ func TestRangefeedValueTimestamps(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+	testutils.RunValues(t, "feed_type", procTypes, func(t *testing.T, s feedProcessorType) {
 		ctx := context.Background()
 		settings := cluster.MakeTestingClusterSettings()
 		// We must enable desired scheduler settings before we start cluster,
 		// otherwise we will trigger processor restarts later and this test can't
 		// handle duplicated events.
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
+		kvserver.RangeFeedUseScheduler.Override(ctx, &settings.SV, s.useScheduler)
 		srv, _, db := serverutils.StartServer(t, base.TestServerArgs{
 			Settings: settings,
 		})
@@ -552,27 +551,21 @@ func TestWithOnSSTable(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+	testutils.RunValues(t, "feed_type", procTypes, func(t *testing.T, s feedProcessorType) {
 		ctx := context.Background()
 		settings := cluster.MakeTestingClusterSettings()
 		// We must enable desired scheduler settings before we start cluster,
 		// otherwise we will trigger processor restarts later and this test can't
 		// handle duplicated events.
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
+		kvserver.RangeFeedUseScheduler.Override(ctx, &settings.SV, s.useScheduler)
 		srv, _, db := serverutils.StartServer(t, base.TestServerArgs{
-			Settings: settings,
+			Settings:          settings,
+			DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(109473),
 		})
 		defer srv.Stopper().Stop(ctx)
 		tsrv := srv.ApplicationLayer()
 
-		scratchKey := append(tsrv.Codec().TenantPrefix(), keys.ScratchRangeMin...)
-		_, _, err := srv.SplitRange(scratchKey)
-		require.NoError(t, err)
-		scratchKey = scratchKey[:len(scratchKey):len(scratchKey)]
-		mkKey := func(k string) roachpb.Key {
-			return encoding.EncodeStringAscending(scratchKey, k)
-		}
-		_, _, err = srv.SplitRange(mkKey("a"))
+		_, _, err := srv.SplitRange(roachpb.Key("a"))
 		require.NoError(t, err)
 
 		for _, l := range []serverutils.ApplicationLayerInterface{tsrv, srv.SystemLayer()} {
@@ -589,7 +582,7 @@ func TestWithOnSSTable(t *testing.T) {
 		var once sync.Once
 		checkpointC := make(chan struct{})
 		sstC := make(chan kvcoord.RangeFeedMessage)
-		spans := []roachpb.Span{{Key: mkKey("c"), EndKey: mkKey("e")}}
+		spans := []roachpb.Span{{Key: roachpb.Key("c"), EndKey: roachpb.Key("e")}}
 		r, err := f.RangeFeed(ctx, "test", spans, db.Clock().Now(),
 			func(ctx context.Context, value *kvpb.RangeFeedValue) {},
 			rangefeed.WithOnCheckpoint(func(ctx context.Context, checkpoint *kvpb.RangeFeedCheckpoint) {
@@ -626,14 +619,14 @@ func TestWithOnSSTable(t *testing.T) {
 		now.Logical = 0
 		ts := int(now.WallTime)
 		sstKVs := kvs{
-			pointKV(string(mkKey("a")), ts, "1"),
-			pointKV(string(mkKey("b")), ts, "2"),
-			pointKV(string(mkKey("c")), ts, "3"),
-			rangeKV(string(mkKey("d")), string(mkKey("e")), ts, ""),
+			pointKV("a", ts, "1"),
+			pointKV("b", ts, "2"),
+			pointKV("c", ts, "3"),
+			rangeKV("d", "e", ts, ""),
 		}
 		sst, sstStart, sstEnd := storageutils.MakeSST(t, tsrv.ClusterSettings(), sstKVs)
 		_, _, _, pErr := db.AddSSTableAtBatchTimestamp(ctx, sstStart, sstEnd, sst,
-			false /* disallowConflicts */, hlc.Timestamp{},
+			false /* disallowConflicts */, false /* disallowShadowing */, hlc.Timestamp{},
 			nil, /* stats */
 			false /* ingestAsWrites */, now)
 		require.Nil(t, pErr)
@@ -661,16 +654,18 @@ func TestWithOnSSTableCatchesUpIfNotSet(t *testing.T) {
 
 	storage.DisableMetamorphicSimpleValueEncoding(t)
 
-	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+	testutils.RunValues(t, "feed_type", procTypes, func(t *testing.T, s feedProcessorType) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+
 		settings := cluster.MakeTestingClusterSettings()
 		// We must enable desired scheduler settings before we start cluster,
 		// otherwise we will trigger processor restarts later and this test can't
 		// handle duplicated events.
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
+		kvserver.RangeFeedUseScheduler.Override(ctx, &settings.SV, s.useScheduler)
 		tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{
 			ServerArgs: base.TestServerArgs{
+				DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(109473),
 				Knobs: base.TestingKnobs{
 					Store: &kvserver.StoreTestingKnobs{
 						SmallEngineBlocks: smallEngineBlocks,
@@ -684,7 +679,7 @@ func TestWithOnSSTableCatchesUpIfNotSet(t *testing.T) {
 		srv := tsrv.ApplicationLayer()
 		db := srv.DB()
 
-		_, _, err := tc.SplitRange(makeKey(srv.Codec(), "a"))
+		_, _, err := tc.SplitRange(roachpb.Key("a"))
 		require.NoError(t, err)
 		require.NoError(t, tc.WaitForFullReplication())
 
@@ -701,7 +696,7 @@ func TestWithOnSSTableCatchesUpIfNotSet(t *testing.T) {
 		var once sync.Once
 		checkpointC := make(chan struct{})
 		rowC := make(chan *kvpb.RangeFeedValue)
-		spans := []roachpb.Span{{Key: makeKey(srv.Codec(), "c"), EndKey: makeKey(srv.Codec(), "e")}}
+		spans := []roachpb.Span{{Key: roachpb.Key("c"), EndKey: roachpb.Key("e")}}
 		r, err := f.RangeFeed(ctx, "test", spans, db.Clock().Now(),
 			func(ctx context.Context, value *kvpb.RangeFeedValue) {
 				select {
@@ -736,13 +731,10 @@ func TestWithOnSSTableCatchesUpIfNotSet(t *testing.T) {
 			pointKV("d", ts, "4"),
 			pointKV("e", ts, "5"),
 		}
-		mkKey := func(s string) string {
-			return string(makeKey(srv.Codec(), s))
-		}
-		expectKVs := kvs{pointKV(mkKey("c"), ts, "3"), pointKV(mkKey("d"), ts, "4")}
-		sst, sstStart, sstEnd := storageutils.MakeSSTWithPrefix(t, srv.ClusterSettings(), srv.Codec().TenantPrefix(), sstKVs)
+		expectKVs := kvs{pointKV("c", ts, "3"), pointKV("d", ts, "4")}
+		sst, sstStart, sstEnd := storageutils.MakeSST(t, srv.ClusterSettings(), sstKVs)
 		_, _, _, pErr := db.AddSSTableAtBatchTimestamp(ctx, sstStart, sstEnd, sst,
-			false /* disallowConflicts */, hlc.Timestamp{},
+			false /* disallowConflicts */, false /* disallowShadowing */, hlc.Timestamp{},
 			nil, /* stats */
 			false /* ingestAsWrites */, now)
 		require.Nil(t, pErr)
@@ -768,10 +760,6 @@ func TestWithOnSSTableCatchesUpIfNotSet(t *testing.T) {
 	})
 }
 
-func makeKey(codec keys.SQLCodec, s string) roachpb.Key {
-	return append(codec.TenantPrefix(), roachpb.Key(s)...)
-}
-
 // TestWithOnDeleteRange tests that the rangefeed emits MVCC range tombstones.
 //
 // TODO(erikgrinaker): These kinds of tests should really use a data-driven test
@@ -780,13 +768,13 @@ func TestWithOnDeleteRange(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+	testutils.RunValues(t, "feed_type", procTypes, func(t *testing.T, s feedProcessorType) {
 		ctx := context.Background()
 		settings := cluster.MakeTestingClusterSettings()
 		// We must enable desired scheduler settings before we start cluster,
 		// otherwise we will trigger processor restarts later and this test can't
 		// handle duplicated events.
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
+		kvserver.RangeFeedUseScheduler.Override(ctx, &settings.SV, s.useScheduler)
 		kvserver.RangefeedEnabled.Override(ctx, &settings.SV, true)
 		closedts.TargetDuration.Override(ctx, &settings.SV, 100*time.Millisecond)
 
@@ -802,8 +790,12 @@ func TestWithOnDeleteRange(t *testing.T) {
 		srv := tsrv.ApplicationLayer()
 		db := srv.DB()
 
-		_, _, err := tsrv.SplitRange(makeKey(srv.Codec(), "a"))
+		_, _, err := tsrv.SplitRange(roachpb.Key("a"))
 		require.NoError(t, err)
+
+		mkKey := func(s string) string {
+			return string(append(srv.Codec().TenantPrefix(), roachpb.Key(s)...))
+		}
 
 		// events tracks the observed events during a test run.
 		events := &testEvents{
@@ -814,8 +806,8 @@ func TestWithOnDeleteRange(t *testing.T) {
 		// We start the rangefeed over a narrower span than the DeleteRanges (c-g),
 		// to ensure the DeleteRange event is truncated to the registration span.
 		spans := []roachpb.Span{{
-			Key:    makeKey(srv.Codec(), "c"),
-			EndKey: makeKey(srv.Codec(), "g"),
+			Key:    append(srv.Codec().TenantPrefix(), roachpb.Key("c")...),
+			EndKey: append(srv.Codec().TenantPrefix(), roachpb.Key("g")...),
 		}}
 
 		// To coordinate updates that occur after the rangefeed starts, we track a
@@ -841,19 +833,14 @@ func TestWithOnDeleteRange(t *testing.T) {
 		// should be visible, because catchup scans do emit tombstones. The range
 		// tombstone should be ordered after the initial point, but before the foo
 		// catchup point, and the previous values should respect the range tombstones.
-		//
-		// NB: When RaceEnabled=true, the range key will be emitted multiple
-		// times, since CatchUpSnapshot.CatchUpScan recreates the iterator at
-		// every step. These duplications are harmless and are de-duped by
-		// testEvents when printing.
-		require.NoError(t, db.Put(ctx, makeKey(srv.Codec(), "covered"), "covered"))
-		require.NoError(t, db.Put(ctx, makeKey(srv.Codec(), "foo"), "covered"))
-		require.NoError(t, db.DelRangeUsingTombstone(ctx, makeKey(srv.Codec(), "a"), makeKey(srv.Codec(), "z")))
-		require.NoError(t, db.Put(ctx, makeKey(srv.Codec(), "foo"), "initial"))
+		require.NoError(t, db.Put(ctx, mkKey("covered"), "covered"))
+		require.NoError(t, db.Put(ctx, mkKey("foo"), "covered"))
+		require.NoError(t, db.DelRangeUsingTombstone(ctx, mkKey("a"), mkKey("z")))
+		require.NoError(t, db.Put(ctx, mkKey("foo"), "initial"))
 		rangeFeedTS0 := db.Clock().Now()
-		require.NoError(t, db.Put(ctx, makeKey(srv.Codec(), "covered"), "catchup"))
-		require.NoError(t, db.DelRangeUsingTombstone(ctx, makeKey(srv.Codec(), "a"), makeKey(srv.Codec(), "z")))
-		require.NoError(t, db.Put(ctx, makeKey(srv.Codec(), "foo"), "catchup"))
+		require.NoError(t, db.Put(ctx, mkKey("covered"), "catchup"))
+		require.NoError(t, db.DelRangeUsingTombstone(ctx, mkKey("a"), mkKey("z")))
+		require.NoError(t, db.Put(ctx, mkKey("foo"), "catchup"))
 		rangeFeedTS1 := db.Clock().Now()
 		f, err := rangefeed.NewFactory(srv.AppStopper(), db, srv.ClusterSettings(), nil)
 		require.NoError(t, err)
@@ -876,7 +863,7 @@ func TestWithOnDeleteRange(t *testing.T) {
 
 		// Wait for checkpoint after catchup scan.
 		waitForFrontier(rangeFeedTS1)
-		require.NoError(t, db.DelRangeUsingTombstone(ctx, makeKey(srv.Codec(), "a"), makeKey(srv.Codec(), "z")))
+		require.NoError(t, db.DelRangeUsingTombstone(ctx, mkKey("a"), mkKey("z")))
 		waitForFrontier(db.Clock().Now())
 		r.Close()
 
@@ -932,7 +919,11 @@ func (events *testEvents) String() string {
 	defer events.Unlock()
 	var buf strings.Builder
 
-	timestamps := slices.SortedFunc(maps.Keys(events.events), func(a hlc.Timestamp, b hlc.Timestamp) int {
+	timestamps := make([]hlc.Timestamp, 0, len(events.events))
+	for key := range events.events {
+		timestamps = append(timestamps, key)
+	}
+	slices.SortFunc(timestamps, func(a hlc.Timestamp, b hlc.Timestamp) int {
 		return a.Compare(b)
 	})
 	fmt.Fprint(&buf, "\n")
@@ -957,14 +948,15 @@ func TestUnrecoverableErrors(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+	testutils.RunValues(t, "feed_type", procTypes, func(t *testing.T, s feedProcessorType) {
 		ctx := context.Background()
 		settings := cluster.MakeTestingClusterSettings()
 		// We must enable desired scheduler settings before we start cluster,
 		// otherwise we will trigger processor restarts later and this test can't
 		// handle duplicated events.
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
+		kvserver.RangeFeedUseScheduler.Override(ctx, &settings.SV, s.useScheduler)
 		srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{
+			DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(109472),
 			Knobs: base.TestingKnobs{
 				SpanConfig: &spanconfig.TestingKnobs{
 					ConfigureScratchRange: true,
@@ -1004,7 +996,7 @@ func TestUnrecoverableErrors(t *testing.T) {
 
 			ptsReader := store.GetStoreConfig().ProtectedTimestampReader
 			require.NoError(t,
-				spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, srv.SystemLayer().Clock().Now()))
+				spanconfigptsreader.TestingRefreshPTSState(ctx, t, ptsReader, srv.SystemLayer().Clock().Now()))
 		}
 
 		f, err := rangefeed.NewFactory(ts.AppStopper(), kvDB, ts.ClusterSettings(), nil)
@@ -1021,7 +1013,7 @@ func TestUnrecoverableErrors(t *testing.T) {
 			if conf, err := repl.LoadSpanConfig(ctx); err != nil || conf.GCPolicy.IgnoreStrictEnforcement {
 				return errors.New("waiting for span config to apply")
 			}
-			require.NoError(t, repl.TestingReadProtectedTimestamps(ctx))
+			require.NoError(t, repl.ReadProtectedTimestampsForTesting(ctx))
 			return nil
 		})
 
@@ -1056,14 +1048,15 @@ func TestMVCCHistoryMutationError(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+	testutils.RunValues(t, "feed_type", procTypes, func(t *testing.T, s feedProcessorType) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+
 		settings := cluster.MakeTestingClusterSettings()
 		// We must enable desired scheduler settings before we start cluster,
 		// otherwise we will trigger processor restarts later and this test can't
 		// handle duplicated events.
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
+		kvserver.RangeFeedUseScheduler.Override(ctx, &settings.SV, s.useScheduler)
 		srv, _, db := serverutils.StartServer(t, base.TestServerArgs{
 			Settings: settings,
 		})
@@ -1145,13 +1138,13 @@ func TestRangefeedWithLabelsOption(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+	testutils.RunValues(t, "feed_type", procTypes, func(t *testing.T, s feedProcessorType) {
 		ctx := context.Background()
 		settings := cluster.MakeTestingClusterSettings()
 		// We must enable desired scheduler settings before we start cluster,
 		// otherwise we will trigger processor restarts later and this test can't
 		// handle duplicated events.
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
+		kvserver.RangeFeedUseScheduler.Override(ctx, &settings.SV, s.useScheduler)
 		srv, _, db := serverutils.StartServer(t, base.TestServerArgs{
 			Settings: settings,
 		})
@@ -1264,13 +1257,13 @@ func TestRangeFeedStartTimeExclusive(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+	testutils.RunValues(t, "feed_type", procTypes, func(t *testing.T, s feedProcessorType) {
 		ctx := context.Background()
 		settings := cluster.MakeTestingClusterSettings()
 		// We must enable desired scheduler settings before we start cluster,
 		// otherwise we will trigger processor restarts later and this test can't
 		// handle duplicated events.
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
+		kvserver.RangeFeedUseScheduler.Override(ctx, &settings.SV, s.useScheduler)
 		srv, _, db := serverutils.StartServer(t, base.TestServerArgs{
 			Settings: settings,
 		})
@@ -1460,8 +1453,7 @@ func TestRangeFeedIntentResolutionRace(t *testing.T) {
 	}
 	eventC := make(chan *kvpb.RangeFeedEvent)
 	sink := newChannelSink(ctx, eventC)
-	_, rErr := s3.RangeFeed(sink.ctx, &req, sink, nil)
-	require.NoError(t, rErr) // check if we've errored yet
+	require.NoError(t, s3.RangeFeed(&req, sink)) // check if we've errored yet
 	require.NoError(t, sink.Error())
 	t.Logf("started rangefeed on %s", repl3)
 
@@ -1594,7 +1586,7 @@ func TestRangeFeedIntentResolutionRace(t *testing.T) {
 			require.False(t, commitTS.LessEq(c.ResolvedTS),
 				"repl %s emitted checkpoint %s beyond write timestamp %s", repl3, c.ResolvedTS, commitTS)
 		case v := <-valueC:
-			require.Failf(t, "repl3 emitted premature value", "value: %#+v", v)
+			require.Fail(t, "repl3 emitted premature value %s", v)
 		case <-waitC:
 			done = true
 		}
@@ -1633,6 +1625,10 @@ func newChannelSink(ctx context.Context, ch chan<- *kvpb.RangeFeedEvent) *channe
 	return &channelSink{ctx: ctx, ch: ch, done: make(chan *kvpb.Error, 1)}
 }
 
+func (c *channelSink) Context() context.Context {
+	return c.ctx
+}
+
 func (c *channelSink) SendUnbufferedIsThreadSafe() {}
 
 func (c *channelSink) SendUnbuffered(e *kvpb.RangeFeedEvent) error {
@@ -1655,9 +1651,9 @@ func (c *channelSink) Error() error {
 	}
 }
 
-// SendError implements the Stream interface. It mocks the disconnect behavior
+// Disconnect implements the Stream interface. It mocks the disconnect behavior
 // by sending the error to the done channel.
-func (c *channelSink) SendError(err *kvpb.Error) {
+func (c *channelSink) Disconnect(err *kvpb.Error) {
 	c.done <- err
 }
 
@@ -1671,13 +1667,13 @@ func TestRangeFeedMetadataManualSplit(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+	testutils.RunValues(t, "feed_type", procTypes, func(t *testing.T, s feedProcessorType) {
 		ctx := context.Background()
 		settings := cluster.MakeTestingClusterSettings()
 		// We must enable desired scheduler settings before we start cluster,
 		// otherwise we will trigger processor restarts later and this test can't
 		// handle duplicated events.
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
+		kvserver.RangeFeedUseScheduler.Override(ctx, &settings.SV, s.useScheduler)
 		kvserver.RangefeedEnabled.Override(ctx, &settings.SV, true)
 		srv, _, db := serverutils.StartServer(t, base.TestServerArgs{
 			Settings: settings,
@@ -1795,13 +1791,13 @@ func TestRangeFeedMetadataAutoSplit(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
+	testutils.RunValues(t, "feed_type", procTypes, func(t *testing.T, s feedProcessorType) {
 		ctx := context.Background()
 		settings := cluster.MakeTestingClusterSettings()
 		// We must enable desired scheduler settings before we start cluster,
 		// otherwise we will trigger processor restarts later and this test can't
 		// handle duplicated events.
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
+		kvserver.RangeFeedUseScheduler.Override(ctx, &settings.SV, s.useScheduler)
 		kvserver.RangefeedEnabled.Override(ctx, &settings.SV, true)
 		// Lower the closed timestamp target duration to speed up the test.
 		closedts.TargetDuration.Override(ctx, &settings.SV, 100*time.Millisecond)
@@ -1883,106 +1879,6 @@ func TestRangeFeedMetadataAutoSplit(t *testing.T) {
 			require.NotEqual(t, sp.Key, meta.Span.Key)
 			require.Equal(t, sp.EndKey, meta.Span.EndKey)
 			require.Equal(t, sp.Key, meta.ParentStartKey)
-		}
-	})
-}
-
-// TestRangefeedCatchupStarvation tests that a single MuxRangefeed
-// call cannot starve other users. Note that starvation is still
-// possible if there are more than 2 consumers of a given range.
-func TestRangefeedCatchupStarvation(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	testutils.RunValues(t, "feed_type", feedTypes, func(t *testing.T, rt rangefeedTestType) {
-		ctx := context.Background()
-		settings := cluster.MakeTestingClusterSettings()
-		kvserver.RangefeedUseBufferedSender.Override(ctx, &settings.SV, rt.useBufferedSender)
-		kvserver.RangefeedEnabled.Override(ctx, &settings.SV, true)
-		// Lower the limit to make it more likely to get starved.
-		kvserver.ConcurrentRangefeedItersLimit.Override(ctx, &settings.SV, 8)
-		kvserver.PerConsumerCatchupLimit.Override(ctx, &settings.SV, 6)
-		srv, _, db := serverutils.StartServer(t, base.TestServerArgs{
-			Settings: settings,
-		})
-		defer srv.Stopper().Stop(ctx)
-		s := srv.ApplicationLayer()
-		ts := s.Clock().Now()
-		scratchKey := append(s.Codec().TenantPrefix(), keys.ScratchRangeMin...)
-		scratchKey = scratchKey[:len(scratchKey):len(scratchKey)]
-		mkKey := func(k string) roachpb.Key {
-			return encoding.EncodeStringAscending(scratchKey, k)
-		}
-		ranges := 32
-		keysPerRange := 128
-		totalKeys := ranges * keysPerRange
-		for i := range ranges {
-			for j := range keysPerRange {
-				k := mkKey(fmt.Sprintf("%d-%d", i, j))
-				require.NoError(t, db.Put(ctx, k, 1))
-			}
-			_, _, err := srv.SplitRange(mkKey(fmt.Sprintf("%d", i)))
-			require.NoError(t, err)
-		}
-
-		span := roachpb.Span{Key: scratchKey, EndKey: scratchKey.PrefixEnd()}
-		f, err := rangefeed.NewFactory(s.AppStopper(), db, s.ClusterSettings(), nil)
-		require.NoError(t, err)
-
-		blocked := make(chan struct{}, 1)
-		r1, err := f.RangeFeed(ctx, "consumer-1-rf-1", []roachpb.Span{span}, ts,
-			func(ctx context.Context, value *kvpb.RangeFeedValue) {
-				select {
-				case blocked <- struct{}{}:
-				default:
-					// We can hit this case on retries.
-				}
-				<-ctx.Done()
-			},
-			rangefeed.WithConsumerID(1),
-		)
-		require.NoError(t, err)
-		defer r1.Close()
-		<-blocked
-
-		// Multiple rangefeeds from the same ConsumeID should
-		// be treated as the same consumer and thus they
-		// shouldn't be able to overwhelm the overall store
-		// quota.
-		for i := range 8 {
-			r1, err := f.RangeFeed(ctx, fmt.Sprintf("consumer-1-rf-%d", i+2), []roachpb.Span{span}, ts,
-				func(ctx context.Context, value *kvpb.RangeFeedValue) { <-ctx.Done() },
-				rangefeed.WithConsumerID(1),
-			)
-			require.NoError(t, err)
-			defer r1.Close()
-		}
-
-		// Despite 9 rangefeeds above each needing 32 catchup
-		// scans, the following rangefeed should always make
-		// progress because it has a different consumer ID.
-		r2ConsumedRow := make(chan roachpb.Key)
-		r2, err := f.RangeFeed(ctx, "rf2", []roachpb.Span{span}, ts,
-			func(ctx context.Context, value *kvpb.RangeFeedValue) {
-				r2ConsumedRow <- value.Key
-			},
-			rangefeed.WithConsumerID(2),
-		)
-		require.NoError(t, err)
-		defer r2.Close()
-
-		// Wait until we see every key we've writen on rf2.
-		seen := make(map[string]struct{}, 0)
-		for {
-			select {
-			case r := <-r2ConsumedRow:
-				seen[r.String()] = struct{}{}
-				if len(seen) >= totalKeys {
-					return
-				}
-			case <-time.After(testutils.SucceedsSoonDuration()):
-				t.Fatal("test timed out")
-			}
 		}
 	})
 }

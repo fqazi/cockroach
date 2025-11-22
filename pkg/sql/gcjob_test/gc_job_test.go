@@ -10,7 +10,6 @@ import (
 	gosql "database/sql"
 	"fmt"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,7 +34,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/gcjob"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqltestutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -92,19 +90,16 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 			return nil
 		},
 	}
-	srv, db, kvDB := serverutils.StartServer(t, params)
+	s, db, kvDB := serverutils.StartServer(t, params)
 	ctx := context.Background()
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	defer s.Stopper().Stop(ctx)
 	// The deferred call to unblock the GC job needs to run before the deferred
 	// call to stop the TestServer. Otherwise, the quiesce step of shutting down
 	// can hang forever waiting for the GC job.
 	defer close(blockGC)
-
-	sysDB := sqlutils.MakeSQLRunner(srv.SystemLayer().SQLConn(t))
-	sysDB.Exec(t, `SET CLUSTER SETTING sql.gc_job.wait_for_gc.interval = '1s';`)
-
 	sqlDB := sqlutils.MakeSQLRunner(db)
+
+	sqlDB.Exec(t, `SET CLUSTER SETTING sql.gc_job.wait_for_gc.interval = '1s';`)
 	// Refresh protected timestamp cache immediately to make MVCC GC queue to
 	// process GC immediately.
 	sqlDB.Exec(t, `SET CLUSTER SETTING kv.protectedts.poll_interval = '1s';`)
@@ -126,7 +121,7 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 
 	var myTableDesc *tabledesc.Mutable
 	var myOtherTableDesc *tabledesc.Mutable
-	if err := sqltestutils.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
+	if err := sql.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
 		myImm, err := col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, myTableID)
 		if err != nil {
 			return err
@@ -148,7 +143,7 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 		dropTime = 1
 	}
 	var details jobspb.SchemaChangeGCDetails
-	var expectedStatusMessage string
+	var expectedRunningStatus string
 	switch dropItem {
 	case INDEX:
 		details = jobspb.SchemaChangeGCDetails{
@@ -161,7 +156,7 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 			ParentID: myTableID,
 		}
 		myTableDesc.SetPublicNonPrimaryIndexes([]descpb.IndexDescriptor{})
-		expectedStatusMessage = "deleting data"
+		expectedRunningStatus = "deleting data"
 	case TABLE:
 		details = jobspb.SchemaChangeGCDetails{
 			Tables: []jobspb.SchemaChangeGCDetails_DroppedID{
@@ -173,7 +168,7 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 		}
 		myTableDesc.State = descpb.DescriptorState_DROP
 		myTableDesc.DropTime = dropTime
-		expectedStatusMessage = "deleting data"
+		expectedRunningStatus = "deleting data"
 	case DATABASE:
 		details = jobspb.SchemaChangeGCDetails{
 			Tables: []jobspb.SchemaChangeGCDetails_DroppedID{
@@ -192,15 +187,15 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 		myTableDesc.DropTime = dropTime
 		myOtherTableDesc.State = descpb.DescriptorState_DROP
 		myOtherTableDesc.DropTime = dropTime
-		expectedStatusMessage = "deleting data"
+		expectedRunningStatus = "deleting data"
 	}
 
 	if err := kvDB.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
 		b := txn.NewBatch()
-		descKey := catalogkeys.MakeDescMetadataKey(s.Codec(), myTableID)
+		descKey := catalogkeys.MakeDescMetadataKey(keys.SystemSQLCodec, myTableID)
 		descDesc := myTableDesc.DescriptorProto()
 		b.Put(descKey, descDesc)
-		descKey2 := catalogkeys.MakeDescMetadataKey(s.Codec(), myOtherTableID)
+		descKey2 := catalogkeys.MakeDescMetadataKey(keys.SystemSQLCodec, myOtherTableID)
 		descDesc2 := myOtherTableDesc.DescriptorProto()
 		b.Put(descKey2, descDesc2)
 		return txn.Run(ctx, b)
@@ -214,7 +209,7 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 		DescriptorIDs: descpb.IDs{myTableID},
 		Details:       details,
 		Progress:      jobspb.SchemaChangeGCProgress{},
-		StatusMessage: sql.StatusWaitingGC,
+		RunningStatus: sql.RunningStatusWaitingGC,
 		NonCancelable: true,
 	}
 
@@ -235,12 +230,12 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 	jobIDStr := strconv.Itoa(int(job.ID()))
 	testutils.SucceedsSoon(t, func() error {
 		if err := jobutils.VerifyRunningSystemJob(
-			t, sqlDB, 0, jobspb.TypeSchemaChangeGC, sql.StatusWaitingGC, lookupJR,
+			t, sqlDB, 0, jobspb.TypeSchemaChangeGC, sql.RunningStatusWaitingGC, lookupJR,
 		); err != nil {
 			// Since the intervals are set very low, the GC TTL job may have already
 			// started. If so, the status will be "deleting data" since "waiting for
 			// GC TTL" will have completed already.
-			if testutils.IsError(err, "expected status waiting for GC TTL, got deleting data") {
+			if testutils.IsError(err, "expected running status waiting for GC TTL, got deleting data") {
 				return nil
 			}
 			return err
@@ -253,7 +248,7 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 		sqlDB.CheckQueryResultsRetry(
 			t,
 			fmt.Sprintf("SELECT status, running_status FROM [SHOW JOBS] WHERE job_id = %s", jobIDStr),
-			[][]string{{"running", expectedStatusMessage}})
+			[][]string{{"running", expectedRunningStatus}})
 	}
 	blockGC <- struct{}{}
 
@@ -261,12 +256,12 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 		time.Sleep(500 * time.Millisecond)
 	} else {
 		sqlDB.CheckQueryResultsRetry(t, fmt.Sprintf("SELECT status FROM [SHOW JOBS] WHERE job_id = %s", jobIDStr), [][]string{{"succeeded"}})
-		if err := jobutils.VerifySystemJob(t, sqlDB, 0, jobspb.TypeSchemaChangeGC, jobs.StateSucceeded, lookupJR); err != nil {
+		if err := jobutils.VerifySystemJob(t, sqlDB, 0, jobspb.TypeSchemaChangeGC, jobs.StatusSucceeded, lookupJR); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if err := sqltestutils.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
+	if err := sql.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
 		myImm, err := col.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, myTableID)
 		if err != nil {
 			if ttlTime != FUTURE && (dropItem == TABLE || dropItem == DATABASE) {
@@ -332,31 +327,31 @@ SELECT job_id
  WHERE job_type = 'SCHEMA CHANGE GC' AND description LIKE '%foo%';`,
 	).Scan(&jobID)
 
-	const expectedStatusMessage = string(sql.StatusWaitingForMVCCGC)
+	const expectedRunningStatus = string(sql.RunningStatusWaitingForMVCCGC)
 	testutils.SucceedsSoon(t, func() error {
-		var state, statusMessage, jobErr gosql.NullString
+		var status, runningStatus, lastRun, nextRun, numRuns, jobErr gosql.NullString
 		tdb.QueryRow(t, fmt.Sprintf(`
-SELECT status, running_status, error
+SELECT status, running_status, error, last_run, next_run, num_runs
 FROM crdb_internal.jobs
-WHERE job_id = %s`, jobID)).Scan(&state, &statusMessage, &jobErr)
+WHERE job_id = %s`, jobID)).Scan(&status, &runningStatus, &jobErr, &lastRun, &nextRun, &numRuns)
 
-		t.Logf(`details about SCHEMA CHANGE GC job: {state: %#v, status: %#v, error: %#v}`,
-			state, statusMessage, jobErr)
+		t.Logf(`details about SCHEMA CHANGE GC job: {status: %#v, running_status: %#v, error: %#v, last_run: %#v, next_run: %#v, num_runs: %#v}`,
+			status, runningStatus, jobErr, lastRun, nextRun, numRuns)
 
-		if !statusMessage.Valid {
-			return errors.Newf(`status is NULL but expected %q`, expectedStatusMessage)
+		if !runningStatus.Valid {
+			return errors.Newf(`running_status is NULL but expected %q`, expectedRunningStatus)
 		}
 
-		if actualStatus := statusMessage.String; actualStatus != expectedStatusMessage {
-			return errors.Newf(`status %q does not match expected status %q`,
-				actualStatus, expectedStatusMessage)
+		if actualRunningStatus := runningStatus.String; actualRunningStatus != expectedRunningStatus {
+			return errors.Newf(`running_status %q does not match expected status %q`,
+				actualRunningStatus, expectedRunningStatus)
 		}
 
 		return nil
 	})
 }
 
-// TestGCResumer is lightweight test that tests the branching logic in Resume
+// TestGCTenant is lightweight test that tests the branching logic in Resume
 // depending on if the job is GC for tenant or tables/indexes.
 func TestGCResumer(t *testing.T) {
 	defer leaktest.AfterTest(t)()
@@ -365,12 +360,7 @@ func TestGCResumer(t *testing.T) {
 	defer gcjob.SetSmallMaxGCIntervalForTest()()
 
 	ctx := context.Background()
-	args := base.TestServerArgs{
-		Knobs: base.TestingKnobs{
-			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
-		},
-		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-	}
+	args := base.TestServerArgs{Knobs: base.TestingKnobs{JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals()}}
 	srv, sqlDB, _ := serverutils.StartServer(t, args)
 	execCfg := srv.ExecutorConfig().(sql.ExecutorConfig)
 	jobRegistry := execCfg.JobRegistry
@@ -394,7 +384,7 @@ func TestGCResumer(t *testing.T) {
 		require.NoError(t, sj.AwaitCompletion(ctx))
 		job, err := jobRegistry.LoadJob(ctx, sj.ID())
 		require.NoError(t, err)
-		require.Equal(t, jobs.StateSucceeded, job.State())
+		require.Equal(t, jobs.StatusSucceeded, job.Status())
 		err = execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 			_, err := sql.GetTenantRecordByID(ctx, txn, roachpb.MustMakeTenantID(tenID), execCfg.Settings)
 			return err
@@ -427,7 +417,7 @@ func TestGCResumer(t *testing.T) {
 
 		job, err := jobRegistry.LoadJob(ctx, sj.ID())
 		require.NoError(t, err)
-		require.Equal(t, jobs.StateSucceeded, job.State())
+		require.Equal(t, jobs.StatusSucceeded, job.Status())
 		err = execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 			_, err := sql.GetTenantRecordByID(ctx, txn, roachpb.MustMakeTenantID(tenID), execCfg.Settings)
 			return err
@@ -468,9 +458,7 @@ func TestGCTenant(t *testing.T) {
 	defer jobs.ResetConstructors()()
 
 	ctx := context.Background()
-	srv, _, kvDB := serverutils.StartServer(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-	})
+	srv, _, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
 	execCfg := srv.ExecutorConfig().(sql.ExecutorConfig)
 	defer srv.Stopper().Stop(ctx)
 
@@ -610,8 +598,6 @@ func TestDropWithDeletedDescriptor(t *testing.T) {
 	runTest := func(t *testing.T, dropIndex bool, beforeDelRange bool) {
 		ctx, cancel := context.WithCancel(context.Background())
 		gcJobID := make(chan jobspb.JobID)
-		var hookShouldExecuteOnce sync.Once
-
 		knobs := base.TestingKnobs{
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			GCJob: &sql.GCJobTestingKnobs{
@@ -648,28 +634,23 @@ func TestDropWithDeletedDescriptor(t *testing.T) {
 					if len(k) == 0 {
 						return nil
 					}
-					// Disable the channel logic after the first execution in case
-					// any retries happen in the KV dist sender.
-					hookShouldExecuteOnce.Do(func() {
-						ch := make(chan struct{})
-						select {
-						case delRangeChan <- ch:
-						case <-ctx.Done():
-						}
-						select {
-						case <-ch:
-						case <-ctx.Done():
-						}
-					})
+					ch := make(chan struct{})
+					select {
+					case delRangeChan <- ch:
+					case <-ctx.Done():
+					}
+					select {
+					case <-ch:
+					case <-ctx.Done():
+					}
 					return nil
 				},
 			}
 		}
-		srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{
+		s, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{
 			Knobs: knobs,
 		})
-		defer srv.Stopper().Stop(ctx)
-		s := srv.ApplicationLayer()
+		defer s.Stopper().Stop(ctx)
 		defer cancel()
 		tdb := sqlutils.MakeSQLRunner(sqlDB)
 

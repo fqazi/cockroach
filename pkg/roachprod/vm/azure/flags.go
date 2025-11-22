@@ -26,13 +26,12 @@ type ProviderOpts struct {
 	NetworkDiskSize int32
 	UltraDiskIOPS   int64
 	DiskCaching     string
-	BootDiskOnly    bool
 }
 
 // These default locations support availability zones. At the time of
 // this comment, `westus` did not and `westus2` is consistently out of
 // capacity.
-var defaultZones = []string{
+var DefaultZones = []string{
 	"eastus-1",
 	"canadacentral-1",
 	"westus3-1",
@@ -56,16 +55,6 @@ func (p *Provider) CreateProviderOpts() vm.ProviderOpts {
 	return DefaultProviderOpts()
 }
 
-// ConfigureProviderFlags implements vm.ProviderFlags and is a no-op.
-func (p *Provider) ConfigureProviderFlags(*pflag.FlagSet, vm.MultipleProjectsOption) {
-}
-
-// ConfigureClusterCleanupFlags is part of ProviderOpts.
-func (o *Provider) ConfigureClusterCleanupFlags(flags *pflag.FlagSet) {
-	flags.StringSliceVar(&providerInstance.SubscriptionNames, ProviderName+"-subscription-names", []string{},
-		"Azure subscription names as a comma-separated string")
-}
-
 // ConfigureCreateFlags implements vm.ProviderFlags.
 func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 	flags.DurationVar(&providerInstance.OperationTimeout, ProviderName+"-timeout", providerInstance.OperationTimeout,
@@ -80,7 +69,7 @@ func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 			"and availability zone seperated by a dash. If zones are formatted as Location-AZ:N where N is an integer,\n"+
 			"the zone will be repeated N times. If > 1 zone specified, nodes will be geo-distributed\n"+
 			"regardless of geo (default [%s])",
-			strings.Join(DefaultZones(true), ",")))
+			strings.Join(DefaultZones, ",")))
 	flags.StringVar(&o.VnetName, ProviderName+"-vnet-name", "common",
 		"The name of the VNet to use")
 	flags.StringVar(&o.NetworkDiskType, ProviderName+"-network-disk-type", "premium-disk",
@@ -91,6 +80,14 @@ func (o *ProviderOpts) ConfigureCreateFlags(flags *pflag.FlagSet) {
 		"Number of IOPS provisioned for ultra disk, only used if network-disk-type=ultra-disk")
 	flags.StringVar(&o.DiskCaching, ProviderName+"-disk-caching", "none",
 		"Disk caching behavior for attached storage.  Valid values are: none, read-only, read-write.  Not applicable to Ultra disks.")
-	flags.BoolVar(&o.BootDiskOnly, ProviderName+"-boot-disk-only", o.BootDiskOnly,
-		"Only attach the boot disk. No additional volumes will be provisioned even if specified.")
+}
+
+// ConfigureClusterFlags implements vm.ProviderFlags and is a no-op.
+func (o *ProviderOpts) ConfigureClusterFlags(*pflag.FlagSet, vm.MultipleProjectsOption) {
+}
+
+// ConfigureClusterCleanupFlags is part of ProviderOpts.
+func (o *ProviderOpts) ConfigureClusterCleanupFlags(flags *pflag.FlagSet) {
+	flags.StringSliceVar(&providerInstance.SubscriptionNames, ProviderName+"-subscription-names", []string{},
+		"Azure subscription names as a comma-separated string")
 }

@@ -11,16 +11,14 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
-	"github.com/cockroachdb/cockroach/pkg/sql/parserutils"
+	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins/builtinsregistry"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/errors"
 )
 
 // DequalifyColumnRefs returns a serialized expression with database and table
@@ -152,7 +150,7 @@ func FormatColumnForDisplay(
 // RenameColumn replaces any occurrence of the column from in expr with to, and
 // returns a string representation of the new expression.
 func RenameColumn(expr string, from tree.Name, to tree.Name) (string, error) {
-	parsed, err := parserutils.ParseExpr(expr)
+	parsed, err := parser.ParseExpr(expr)
 	if err != nil {
 		return "", err
 	}
@@ -221,51 +219,6 @@ func iterColDescriptors(
 	return err
 }
 
-// iterColsWithLookupFn iterates over the expression's variable columns and
-// calls f on each, providing the column information from the lookup function.
-//
-// If the expression references a column that does not exist according to the
-// lookup function, iterColsWithLookupFn errs with pgcode.UndefinedColumn.
-//
-// The column lookup function allows looking up columns both in the descriptor
-// or in declarative schema changer elements.
-func iterColsWithLookupFn(
-	rootExpr tree.Expr,
-	columnLookupFn ColumnLookupFn,
-	f func(columnName tree.Name, id catid.ColumnID, typ *types.T, isAccessible, isComputed bool) error,
-) error {
-	_, err := tree.SimpleVisit(rootExpr, func(expr tree.Expr) (recurse bool, newExpr tree.Expr, err error) {
-		vBase, ok := expr.(tree.VarName)
-		if !ok {
-			// Not a VarName, don't do anything to this node.
-			return true, expr, nil
-		}
-
-		v, err := vBase.NormalizeVarName()
-		if err != nil {
-			return false, nil, err
-		}
-
-		c, ok := v.(*tree.ColumnItem)
-		if !ok {
-			return true, expr, nil
-		}
-
-		colExists, colIsAccessible, isComputed, colID, colType := columnLookupFn(c.ColumnName)
-		if !colExists {
-			return false, nil, pgerror.Newf(pgcode.UndefinedColumn,
-				"column %q does not exist, referenced in %q", c.ColumnName, rootExpr.String())
-		}
-
-		if err := f(c.ColumnName, colID, colType, colIsAccessible, isComputed); err != nil {
-			return false, nil, err
-		}
-		return false, expr, err
-	})
-
-	return err
-}
-
 // dummyColumn represents a variable column that can type-checked. It is used
 // in validating check constraint and partial index predicate expressions. This
 // validation requires that the expression can be both both typed-checked and
@@ -306,7 +259,7 @@ func (d *dummyColumn) ResolvedType() *types.T {
 	return d.typ
 }
 
-type ColumnLookupFn func(columnName tree.Name) (exists, accessible, computed bool, id catid.ColumnID, typ *types.T)
+type ColumnLookupFn func(columnName tree.Name) (exists bool, accessible bool, id catid.ColumnID, typ *types.T)
 
 // ReplaceColumnVars replaces the occurrences of column names in an expression with
 // dummyColumns containing their type, so that they may be type-checked. It
@@ -340,7 +293,7 @@ func ReplaceColumnVars(
 			return true, expr, nil
 		}
 
-		colExists, colIsAccessible, _, colID, colType := columnLookupFn(c.ColumnName)
+		colExists, colIsAccessible, colID, colType := columnLookupFn(c.ColumnName)
 		if !colExists {
 			return false, nil, pgerror.Newf(pgcode.UndefinedColumn,
 				"column %q does not exist, referenced in %q", c.ColumnName, rootExpr.String())
@@ -428,33 +381,4 @@ func formatGeneratedAsIdentitySequenceOption(seqOpt string) string {
 		return ""
 	}
 	return fmt.Sprintf(" (%s)", seqOpt)
-}
-
-// wrapWithAssignmentCast wraps the given typed expression with an assignment
-// cast to the given column's type if the expression's type is not identical to
-// the column's type.
-func wrapWithAssignmentCast(
-	ctx context.Context, typedExpr tree.TypedExpr, col catalog.Column, semaCtx *tree.SemaContext,
-) (tree.TypedExpr, error) {
-	origExpr := typedExpr
-	if !typedExpr.ResolvedType().Identical(col.GetType()) {
-		const fnName = "crdb_internal.assignment_cast"
-		funcRef := tree.WrapFunction(fnName)
-		props, overloads := builtinsregistry.GetBuiltinProperties(fnName)
-		var err error
-		if typedExpr, err = tree.TypeCheck(ctx, tree.NewTypedFuncExpr(
-			funcRef,
-			0, /* aggQualifier */
-			tree.TypedExprs{typedExpr, tree.NewTypedCastExpr(tree.DNull, col.GetType())},
-			nil, /* filter */
-			nil, /* windowDef */
-			col.GetType(),
-			props,
-			&overloads[0],
-		), semaCtx, col.GetType()); err != nil {
-			return nil, errors.NewAssertionErrorWithWrappedErrf(err,
-				"failed to type check the cast of %v to %v", origExpr, col.GetType())
-		}
-	}
-	return typedExpr, nil
 }

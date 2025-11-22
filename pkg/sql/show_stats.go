@@ -182,7 +182,7 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 					}
 					obs := &stats.TableStatistic{TableStatisticProto: *stat}
 					if obs.HistogramData != nil && !obs.HistogramData.ColumnType.UserDefined() {
-						if err := stats.DecodeHistogramBuckets(ctx, obs); err != nil {
+						if err := stats.DecodeHistogramBuckets(obs); err != nil {
 							return nil, err
 						}
 					}
@@ -195,9 +195,9 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 					statsList[i], statsList[j] = statsList[j], statsList[i]
 				}
 
-				merged := stats.MergedStatistics(ctx, statsList, p.ExtendedEvalContext().Settings)
-				statsList = append(merged, statsList...)
 				if withMerge {
+					merged := stats.MergedStatistics(ctx, statsList, p.ExtendedEvalContext().Settings)
+					statsList = append(merged, statsList...)
 					// Iterate in reverse order to match the ORDER BY "columnIDs".
 					for i := len(merged) - 1; i >= 0; i-- {
 						mergedRow, err := tableStatisticProtoToRow(&merged[i].TableStatisticProto)
@@ -297,16 +297,17 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 				}
 
 				colIDs := r[columnIDsIdx].(*tree.DArray).Array
-				colNames := make(tree.Datums, len(colIDs))
+				colNames := tree.NewDArray(types.String)
+				colNames.Array = make(tree.Datums, len(colIDs))
 				ignoreStatsRowWithDroppedColumn := false
+				var colName string
 				for i, d := range colIDs {
-					var colName string
 					colName, err = statColumnString(desc, d)
 					if err != nil && sqlerrors.IsUndefinedColumnError(err) {
 						ignoreStatsRowWithDroppedColumn = true
 						break
 					}
-					colNames[i] = tree.NewDString(colName)
+					colNames.Array[i] = tree.NewDString(colName)
 				}
 				if ignoreStatsRowWithDroppedColumn {
 					continue
@@ -325,7 +326,7 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 
 				res := tree.Datums{
 					r[nameIdx],
-					tree.NewDArrayFromDatums(types.String, colNames),
+					colNames,
 					createdAtTZ,
 					r[rowCountIdx],
 					r[distinctCountIdx],

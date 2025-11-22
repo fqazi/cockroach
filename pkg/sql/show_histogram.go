@@ -90,17 +90,20 @@ func (p *planner) ShowHistogram(ctx context.Context, n *tree.ShowHistogram) (pla
 			if err := typedesc.EnsureTypeIsHydrated(ctx, histogram.ColumnType, &resolver); err != nil {
 				return nil, err
 			}
-			decodedBuckets, _, err := histogram.DecodeBuckets(ctx)
-			if err != nil {
-				return nil, err
-			}
-			for _, b := range decodedBuckets {
-				upperBound := b.UpperBound.String()
+			var a tree.DatumAlloc
+			for _, b := range histogram.Buckets {
+				var upperBound string
+				datum, err := stats.DecodeUpperBound(histogram.Version, histogram.ColumnType, &a, b.UpperBound)
+				if err != nil {
+					upperBound = fmt.Sprintf("<error: %v>", err)
+				} else {
+					upperBound = datum.String()
+				}
 				row := tree.Datums{
 					tree.NewDString(upperBound),
-					tree.NewDInt(tree.DInt(int64(b.NumRange))),
+					tree.NewDInt(tree.DInt(b.NumRange)),
 					tree.NewDFloat(tree.DFloat(b.DistinctRange)),
-					tree.NewDInt(tree.DInt(int64(b.NumEq))),
+					tree.NewDInt(tree.DInt(b.NumEq)),
 				}
 				if _, err := v.rows.AddRow(ctx, row); err != nil {
 					v.Close(ctx)

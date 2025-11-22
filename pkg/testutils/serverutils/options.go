@@ -17,7 +17,6 @@ type SQLConnOptions struct {
 	User           *url.Userinfo
 	ClientCerts    bool
 	CertsDirPrefix string
-	CertName       string
 }
 
 // SQLConnOption is an option for opening a SQL connection.
@@ -70,12 +69,5 @@ func ClientCerts(clientCerts bool) SQLConnOption {
 func CertsDirPrefix(certsDirPrefix string) SQLConnOption {
 	return func(result *SQLConnOptions) {
 		result.CertsDirPrefix = certsDirPrefix
-	}
-}
-
-// CertName sets the name of the client certificate to be used.
-func CertName(certName string) SQLConnOption {
-	return func(result *SQLConnOptions) {
-		result.CertName = certName
 	}
 }

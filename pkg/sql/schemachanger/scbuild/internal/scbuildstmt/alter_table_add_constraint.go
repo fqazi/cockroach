@@ -85,12 +85,7 @@ func alterTableAddPrimaryKey(
 	if getPrimaryIndexDefaultRowIDColumn(
 		b, tbl.TableID, oldPrimaryIndex.IndexID,
 	) == nil {
-		// If the constraint already exists then nothing to do here.
-		if oldPrimaryIndex != nil && d.IfNotExists {
-			return
-		}
-		panic(pgerror.Newf(pgcode.InvalidColumnDefinition,
-			"multiple primary keys for table %q are not allowed", tn.Object()))
+		panic(scerrors.NotImplementedError(t))
 	}
 	alterPrimaryKey(b, tn, tbl, stmt, alterPrimaryKeySpec{
 		n:             t,
@@ -123,7 +118,7 @@ func alterTableAddCheck(
 		func() colinfo.ResultColumns {
 			return getNonDropResultColumns(b, tbl.TableID)
 		},
-		func(columnName tree.Name) (exists, accessible, computed bool, id catid.ColumnID, typ *types.T) {
+		func(columnName tree.Name) (exists bool, accessible bool, id catid.ColumnID, typ *types.T) {
 			return columnLookupFn(b, tbl.TableID, columnName)
 		},
 	)
@@ -286,7 +281,7 @@ func alterTableAddForeignKey(
 			"and is no longer supported."))
 	}
 	// Disallow schema change if the FK references a table whose schema is locked.
-	defer checkTableSchemaChangePrerequisites(b, b.QueryByID(referencedTableID), stmt)()
+	panicIfSchemaChangeIsDisallowed(b.QueryByID(referencedTableID), stmt)
 
 	// 6. Check that temporary tables can only reference temporary tables, or,
 	// permanent tables can only reference permanent tables.
@@ -522,7 +517,7 @@ func alterTableAddUniqueWithoutIndex(
 			func() colinfo.ResultColumns {
 				return getNonDropResultColumns(b, tbl.TableID)
 			},
-			func(columnName tree.Name) (exists, accessible, computed bool, id catid.ColumnID, typ *types.T) {
+			func(columnName tree.Name) (exists bool, accessible bool, id catid.ColumnID, typ *types.T) {
 				return columnLookupFn(b, tbl.TableID, columnName)
 			},
 		)
@@ -662,6 +657,36 @@ func validateConstraintNameIsNotUsed(
 		"duplicate constraint name: %q", name)
 }
 
+// getNonDropResultColumns returns all public and adding columns, sorted by
+// column ID in ascending order, in the format of ResultColumns.
+func getNonDropResultColumns(b BuildCtx, tableID catid.DescID) (ret colinfo.ResultColumns) {
+	for _, col := range getNonDropColumns(b, tableID) {
+		ret = append(ret, colinfo.ResultColumn{
+			Name:           mustRetrieveColumnNameElem(b, tableID, col.ColumnID).Name,
+			Typ:            mustRetrieveColumnTypeElem(b, tableID, col.ColumnID).Type,
+			Hidden:         col.IsHidden,
+			TableID:        tableID,
+			PGAttributeNum: uint32(col.PgAttributeNum),
+		})
+	}
+	return ret
+}
+
+// columnLookupFn can look up information of a column by name.
+// It should be exclusively used in DequalifyAndValidateExprImpl.
+func columnLookupFn(
+	b BuildCtx, tableID catid.DescID, columnName tree.Name,
+) (exists bool, accessible bool, id catid.ColumnID, typ *types.T) {
+	columnID := getColumnIDFromColumnName(b, tableID, columnName, false /* required */)
+	if columnID == 0 {
+		return false, false, 0, nil
+	}
+
+	colElem := mustRetrieveColumnElem(b, tableID, columnID)
+	colTypeElem := mustRetrieveColumnTypeElem(b, tableID, columnID)
+	return true, !colElem.IsInaccessible, columnID, colTypeElem.Type
+}
+
 // generateUniqueCheckConstraintName generates a unique name for check constraint.
 // The default name is `check_` followed by all columns in the expression (e.g. `check_a_b_a`).
 // If that name is already in use, append a number (i.e. 1, 2, ...) to it until
@@ -766,21 +791,21 @@ func iterateColNamesInExpr(
 func retrieveColumnDefaultExpressionElem(
 	b BuildCtx, tableID catid.DescID, columnID catid.ColumnID,
 ) *scpb.ColumnDefaultExpression {
-	return b.QueryByID(tableID).Filter(publicTargetFilter).FilterColumnDefaultExpression().
-		Filter(func(_ scpb.Status, _ scpb.TargetStatus, e *scpb.ColumnDefaultExpression) bool {
-			return e.ColumnID == columnID
-		}).
-		MustGetZeroOrOneElement()
+	_, _, ret := scpb.FindColumnDefaultExpression(b.QueryByID(tableID).Filter(hasColumnIDAttrFilter(columnID)))
+	return ret
 }
 
 func retrieveColumnOnUpdateExpressionElem(
 	b BuildCtx, tableID catid.DescID, columnID catid.ColumnID,
 ) (columnOnUpdateExpression *scpb.ColumnOnUpdateExpression) {
-	return b.QueryByID(tableID).Filter(publicTargetFilter).FilterColumnOnUpdateExpression().
-		Filter(func(_ scpb.Status, _ scpb.TargetStatus, e *scpb.ColumnOnUpdateExpression) bool {
-			return e.ColumnID == columnID
-		}).
-		MustGetZeroOrOneElement()
+	scpb.ForEachColumnOnUpdateExpression(b.QueryByID(tableID), func(
+		current scpb.Status, target scpb.TargetStatus, e *scpb.ColumnOnUpdateExpression,
+	) {
+		if e.ColumnID == columnID {
+			columnOnUpdateExpression = e
+		}
+	})
+	return columnOnUpdateExpression
 }
 
 // ensureColCanBeUsedInOutboundFK ensures the column can be used in an outbound

@@ -8,10 +8,8 @@ package changefeedccl
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvevent"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvfeed"
-	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/resolvedspan"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
@@ -72,10 +70,6 @@ type TestingKnobs struct {
 		partitions []sql.SpanPartition, draining []roachpb.NodeID,
 	) ([]sql.SpanPartition, error)
 
-	// ShouldFlushFrontier returns true if the change aggregator should flush
-	// its frontier after processing a resolved span.
-	ShouldFlushFrontier func(rs jobspb.ResolvedSpan) bool
-
 	// ShouldCheckpointToJobRecord returns true if change frontier should checkpoint itself
 	// to the job record.
 	ShouldCheckpointToJobRecord func(hw hlc.Timestamp) bool
@@ -87,10 +81,6 @@ type TestingKnobs struct {
 	// when the changefeed is planned.
 	SpanPartitionsCallback func([]sql.SpanPartition)
 
-	// RangeDistributionStrategyCallback is called with the resolved
-	// range distribution strategy when the changefeed is planned.
-	RangeDistributionStrategyCallback func(changefeedbase.ChangefeedRangeDistributionStrategy)
-
 	// PreserveDeprecatedPts is used to prevent a changefeed from upgrading
 	// its PTS record from the deprecated style to the new style.
 	PreserveDeprecatedPts func() bool
@@ -98,9 +88,6 @@ type TestingKnobs struct {
 	// PreservePTSTargets is used to prevent a changefeed from upgrading
 	// its PTS record to include all required targets.
 	PreservePTSTargets func() bool
-
-	// ManagePTSError is used to return an error when managing protected timestamps.
-	ManagePTSError func() error
 
 	// PulsarClientSkipCreation skips creating the sink client when
 	// dialing.
@@ -115,24 +102,12 @@ type TestingKnobs struct {
 	// AsyncFlushSync is called in async flush goroutines as a way to provide synchronization between them.
 	AsyncFlushSync func()
 
-	// AfterCoordinatorFrontierRestore is called on the start of the changefeed coordinator so we can
-	// make assertions about its frontier.
-	AfterCoordinatorFrontierRestore func(frontier *resolvedspan.CoordinatorFrontier)
-
 	// WrapTelemetryLogger is used to wrap the periodic telemetry logger in tests.
 	WrapTelemetryLogger func(logger telemetryLogger) telemetryLogger
-
-	// OverrideCursorAge is used to change how old a cursor is. Returns time in nanoseconds.
-	OverrideCursorAge func() int64
 
 	// MakeKVFeedToAggregatorBufferKnobs is used to make a fresh set of testing knobs
 	// to pass to the constructor of the kv feed to change aggregator buffer.
 	MakeKVFeedToAggregatorBufferKnobs func() kvevent.BlockingBufferTestingKnobs
-
-	// AfterComputeDistChangefeedTimestamps is called when a changefeed is starting, after
-	// the initial timestamps are computed and before the changefeed targets'
-	// descriptors are fetched.
-	AfterComputeDistChangefeedTimestamps func(context.Context)
 }
 
 // ModuleTestingKnobs is part of the base.ModuleTestingKnobs interface.

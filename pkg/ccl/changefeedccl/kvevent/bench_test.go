@@ -27,7 +27,7 @@ import (
 )
 
 func BenchmarkMemBuffer(b *testing.B) {
-	log.Changefeed.Infof(context.Background(), "b.N=%d", b.N)
+	log.Infof(context.Background(), "b.N=%d", b.N)
 
 	eventPool := func() []kvevent.Event {
 		const valSize = 16 << 10
@@ -49,7 +49,7 @@ func BenchmarkMemBuffer(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	metrics := kvevent.MakeMetrics(time.Minute).AggregatorBufferMetrics
+	metrics := kvevent.MakeMetrics(time.Minute).AggregatorBufferMetricsWithCompat
 	st := cluster.MakeTestingClusterSettings()
 
 	buf := kvevent.NewMemBuffer(ba, &st.SV, &metrics)

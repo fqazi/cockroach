@@ -74,11 +74,11 @@ type testModelRunner struct {
 func newTestModelRunner(t *testing.T) testModelRunner {
 	st := cluster.MakeTestingClusterSettings()
 	workerMonitor := mon.NewUnlimitedMonitor(context.Background(), mon.Options{
-		Name:     mon.MakeName("timeseries-test-worker"),
+		Name:     "timeseries-test-worker",
 		Settings: st,
 	})
 	resultMonitor := mon.NewUnlimitedMonitor(context.Background(), mon.Options{
-		Name:     mon.MakeName("timeseries-test-result"),
+		Name:     "timeseries-test-result",
 		Settings: st,
 	})
 	return testModelRunner{
@@ -667,7 +667,7 @@ type modelDataSource struct {
 // set of TimeSeriesData to subsequent calls. It stores each TimeSeriesData
 // object in the test model before returning it. If all TimeSeriesData objects
 // have been returned, this method will stop the provided Stopper.
-func (mds *modelDataSource) GetTimeSeriesData(childMetrics bool) []tspb.TimeSeriesData {
+func (mds *modelDataSource) GetTimeSeriesData() []tspb.TimeSeriesData {
 	if len(mds.datasets) == 0 {
 		// Stop on goroutine to prevent deadlock.
 		go mds.once.Do(func() { mds.stopper.Stop(context.Background()) })
@@ -762,7 +762,7 @@ func TestPollSource(t *testing.T) {
 		}
 
 		ambient := log.MakeTestingAmbientContext(tr)
-		tm.DB.PollSource(ambient, &testSource, time.Millisecond, Resolution10s, testSource.stopper, false)
+		tm.DB.PollSource(ambient, &testSource, time.Millisecond, Resolution10s, testSource.stopper)
 		<-testSource.stopper.IsStopped()
 		if a, e := testSource.calledCount, 2; a != e {
 			t.Errorf("testSource was called %d times, expected %d", a, e)
@@ -815,7 +815,7 @@ func TestDisableStorage(t *testing.T) {
 		}
 
 		ambient := log.MakeTestingAmbientCtxWithNewTracer()
-		tm.DB.PollSource(ambient, &testSource, time.Millisecond, Resolution10s, testSource.stopper, false)
+		tm.DB.PollSource(ambient, &testSource, time.Millisecond, Resolution10s, testSource.stopper)
 		select {
 		case <-testSource.stopper.IsStopped():
 			t.Error("testSource data exhausted when polling should have been enabled")

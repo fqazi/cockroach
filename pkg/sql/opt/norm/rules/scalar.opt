@@ -240,11 +240,7 @@ $input
     [
         (Subquery
             (Project
-                (Limit
-                    $input
-                    (IntConst (DInt 1))
-                    (EmptyOrdering)
-                )
+                (Limit $input (IntConst 1) (EmptyOrdering))
                 [ (ProjectionsItem (True) (MakeBoolCol)) ]
                 (MakeEmptyColSet)
             )
@@ -277,20 +273,13 @@ $input
 =>
 (Exists $input $existsPrivate)
 
-# EliminateConstValueSubquery replaces a subquery with a constant value if the
+# EliminateConstValuesSubquery replaces a subquery with a constant value if the
 # subquery's input is a single-row, single-column Values expression with a
 # constant value.
 [EliminateConstValueSubquery, Normalize]
 (Subquery (Values [ (Tuple [ $value:(Const) ]) ]))
 =>
 $value
-
-# EliminateUDFCallSubquery replaces a subquery with a udf call if the subquery's
-# input is a single-row, single-column Values expression with a udf call.
-[EliminateUDFCallSubquery, Normalize]
-(Subquery (Values [ (Tuple [ $udf:(UDFCall) ]) ]))
-=>
-$udf
 
 # SimplifyCaseWhenConstValue removes branches known to not match. Any
 # branch known to match is used as the ELSE and further WHEN conditions
@@ -452,21 +441,3 @@ $udf
 (Indirection $input:* $index:* & (IsJSON $input))
 =>
 (FetchVal $input $index)
-
-# ConvertLikeEscapeToLike converts a LIKE x ESCAPE '\' expression, which is
-# parsed as a like_escape function call, to a LIKE expression. This is valid
-# because the default escape character is '\'.
-#
-# Note that the FunctionExpr match pattern is enough to ensure that we are not
-# transforming a UDF because UDF invocations are always built as UDFCallExprs.
-[ConvertLikeEscapeToLike, Normalize]
-(Function
-    $args:*
-    $private:(FunctionPrivate "like_escape") &
-        (Let ($input $iOk):(ScalarExprAt $args 0) $iOk) &
-        (Let ($pattern $pOk):(ScalarExprAt $args 1) $pOk) &
-        (Let ($escape $eOk):(ScalarExprAt $args 2) $eOk) &
-        (ConstStringEquals $escape "\\")
-)
-=>
-(Like $input $pattern)

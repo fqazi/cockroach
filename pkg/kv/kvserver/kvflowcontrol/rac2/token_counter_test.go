@@ -18,13 +18,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/dd"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/datadriven"
 	"github.com/dustin/go-humanize"
 	"github.com/stretchr/testify/require"
@@ -67,23 +65,23 @@ func TestTokenAdjustment(t *testing.T) {
 				admissionpb.ElasticWorkClass,
 			} {
 				fmt.Fprintf(buf, "  %-7v\n", wc)
-				fmt.Fprintf(buf, "    %-66v: %v\n", streamMetrics.Count[wc].GetName(false /* useStaticLabels */), streamMetrics.Count[wc].Value())
-				fmt.Fprintf(buf, "    %-66v: %v\n", streamMetrics.BlockedCount[wc].GetName(false /* useStaticLabels */), streamMetrics.BlockedCount[wc].Value())
-				fmt.Fprintf(buf, "    %-66v: %v\n", streamMetrics.TokensAvailable[wc].GetName(false /* useStaticLabels */), ft(streamMetrics.TokensAvailable[wc].Value()))
-				fmt.Fprintf(buf, "    %-66v: %v\n", counterMetrics.Deducted[wc].GetName(false /* useStaticLabels */), ft(counterMetrics.Deducted[wc].Count()))
-				fmt.Fprintf(buf, "    %-66v: %v\n", counterMetrics.Disconnected[wc].GetName(false /* useStaticLabels */), ft(counterMetrics.Disconnected[wc].Count()))
-				fmt.Fprintf(buf, "    %-66v: %v\n", counterMetrics.Returned[wc].GetName(false /* useStaticLabels */), ft(counterMetrics.Returned[wc].Count()))
-				fmt.Fprintf(buf, "    %-66v: %v\n", counterMetrics.Unaccounted[wc].GetName(false /* useStaticLabels */), ft(counterMetrics.Unaccounted[wc].Count()))
+				fmt.Fprintf(buf, "    %-66v: %v\n", streamMetrics.Count[wc].GetName(), streamMetrics.Count[wc].Value())
+				fmt.Fprintf(buf, "    %-66v: %v\n", streamMetrics.BlockedCount[wc].GetName(), streamMetrics.BlockedCount[wc].Value())
+				fmt.Fprintf(buf, "    %-66v: %v\n", streamMetrics.TokensAvailable[wc].GetName(), ft(streamMetrics.TokensAvailable[wc].Value()))
+				fmt.Fprintf(buf, "    %-66v: %v\n", counterMetrics.Deducted[wc].GetName(), ft(counterMetrics.Deducted[wc].Count()))
+				fmt.Fprintf(buf, "    %-66v: %v\n", counterMetrics.Disconnected[wc].GetName(), ft(counterMetrics.Disconnected[wc].Count()))
+				fmt.Fprintf(buf, "    %-66v: %v\n", counterMetrics.Returned[wc].GetName(), ft(counterMetrics.Returned[wc].Count()))
+				fmt.Fprintf(buf, "    %-66v: %v\n", counterMetrics.Unaccounted[wc].GetName(), ft(counterMetrics.Unaccounted[wc].Count()))
 			}
 			if t == SendToken {
 				sendQueueMetrics := counterMetrics.SendQueue[0]
 				fmt.Fprintf(buf, "  send queue token metrics\n")
-				fmt.Fprintf(buf, "    %-66v: %v\n", sendQueueMetrics.ForceFlushDeducted.GetName(false /* useStaticLabels */), ft(sendQueueMetrics.ForceFlushDeducted.Count()))
+				fmt.Fprintf(buf, "    %-66v: %v\n", sendQueueMetrics.ForceFlushDeducted.GetName(), ft(sendQueueMetrics.ForceFlushDeducted.Count()))
 				for _, wc := range []admissionpb.WorkClass{
 					admissionpb.RegularWorkClass,
 					admissionpb.ElasticWorkClass,
 				} {
-					fmt.Fprintf(buf, "    %-66v: %v\n", sendQueueMetrics.PreventionDeducted[wc].GetName(false /* useStaticLabels */), ft(sendQueueMetrics.PreventionDeducted[wc].Count()))
+					fmt.Fprintf(buf, "    %-66v: %v\n", sendQueueMetrics.PreventionDeducted[wc].GetName(), ft(sendQueueMetrics.PreventionDeducted[wc].Count()))
 				}
 			}
 		}
@@ -91,24 +89,17 @@ func TestTokenAdjustment(t *testing.T) {
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
 			switch d.Cmd {
 			case "init":
-				store := dd.ScanArg[roachpb.StoreID](t, d, "stream")
-				evalCounter = provider.Eval(kvflowcontrol.Stream{StoreID: store})
-				sendCounter = provider.Send(kvflowcontrol.Stream{StoreID: store})
+				var stream int
+				d.ScanArgs(t, "stream", &stream)
+				evalCounter = provider.Eval(kvflowcontrol.Stream{StoreID: roachpb.StoreID(stream)})
+				sendCounter = provider.Send(kvflowcontrol.Stream{StoreID: roachpb.StoreID(stream)})
 				adjustments = nil
 				return ""
 
 			case "adjust":
-				typ := dd.ScanArgOr(t, d, "type", "eval")
-				var counter *tokenCounter
-				switch typ {
-				case "eval":
-					counter = evalCounter
-				case "send":
-					counter = sendCounter
-				default:
-					t.Fatalf("unknown type: %s", typ)
-				}
-				require.NotNilf(t, counter, "uninitialized token counter (did you use 'init'?)")
+				require.NotNilf(t, evalCounter, "uninitialized token counter (did you use 'init'?)")
+				typ := "eval"
+				d.MaybeScanArgs(t, "type", &typ)
 
 				for _, line := range strings.Split(d.Input, "\n") {
 					parts := strings.Fields(line)
@@ -168,6 +159,16 @@ func TestTokenAdjustment(t *testing.T) {
 						}
 					}
 
+					counter := evalCounter
+					switch typ {
+					case "eval":
+						// Already set as the default above.
+					case "send":
+						counter = sendCounter
+					default:
+						t.Fatalf("unknown type: %s", typ)
+					}
+
 					counter.adjust(ctx, wc, delta, flag)
 					adjustments = append(adjustments, adjustment{
 						wc:    wc,
@@ -179,19 +180,12 @@ func TestTokenAdjustment(t *testing.T) {
 						flag: flag,
 					})
 				}
-				var b strings.Builder
-				printStats := func(kind string, stats deltaStats) {
-					fmt.Fprintf(&b, "%s: deducted: %s, returned: %s, force-flush: %s, prevent-send-q: %s\n",
-						kind, stats.tokensDeducted, stats.tokensReturned, stats.tokensDeductedForceFlush,
-						stats.tokensDeductedPreventSendQueue)
-				}
-				regularStats, elasticStats := counter.GetAndResetStats(timeutil.Now())
-				printStats("regular", regularStats)
-				printStats("elastic", elasticStats)
-				return b.String()
+				return ""
 
 			case "history":
-				typ := dd.ScanArgOr(t, d, "type", "eval")
+				typ := "eval"
+				d.MaybeScanArgs(t, "type", &typ)
+
 				var counter *tokenCounter
 				switch typ {
 				case "eval":
@@ -217,7 +211,8 @@ func TestTokenAdjustment(t *testing.T) {
 				return buf.String()
 
 			case "metrics":
-				typ := dd.ScanArgOr(t, d, "type", "eval")
+				typ := "eval"
+				d.MaybeScanArgs(t, "type", &typ)
 
 				provider.UpdateMetricGauges()
 				var buf strings.Builder
@@ -302,7 +297,7 @@ func TestTokenCounter(t *testing.T) {
 	assertStateReset := func(t *testing.T) {
 		available, handle := counter.TokensAvailable(admissionpb.ElasticWorkClass)
 		require.True(t, available)
-		require.Equal(t, tokenWaitHandle{}, handle)
+		require.Nil(t, handle)
 		require.Equal(t, limits.regular, counter.tokens(admissionpb.RegularWorkClass))
 		require.Equal(t, limits.elastic, counter.tokens(admissionpb.ElasticWorkClass))
 	}
@@ -312,11 +307,11 @@ func TestTokenCounter(t *testing.T) {
 		// classes.
 		available, handle := counter.TokensAvailable(admissionpb.RegularWorkClass)
 		require.True(t, available)
-		require.Equal(t, tokenWaitHandle{}, handle)
+		require.Nil(t, handle)
 
 		available, handle = counter.TokensAvailable(admissionpb.ElasticWorkClass)
 		require.True(t, available)
-		require.Equal(t, tokenWaitHandle{}, handle)
+		require.Nil(t, handle)
 		assertStateReset(t)
 	})
 
@@ -331,7 +326,7 @@ func TestTokenCounter(t *testing.T) {
 		// Now there should be no tokens available for regular work class.
 		available, handle := counter.TokensAvailable(admissionpb.RegularWorkClass)
 		require.False(t, available)
-		require.NotEqual(t, tokenWaitHandle{}, handle)
+		require.NotNil(t, handle)
 		counter.Return(ctx, admissionpb.RegularWorkClass, limits.regular, AdjNormal)
 		assertStateReset(t)
 	})
@@ -358,18 +353,18 @@ func TestTokenCounter(t *testing.T) {
 		// returned.
 		available, handle := counter.TokensAvailable(admissionpb.RegularWorkClass)
 		require.False(t, available)
-		require.NotEqual(t, tokenWaitHandle{}, handle)
+		require.NotNil(t, handle)
 		counter.Return(ctx, admissionpb.RegularWorkClass, limits.regular, AdjNormal)
 		// Wait on the handle to be unblocked and expect that there are tokens
 		// available when the wait channel is signaled.
-		<-handle.waitChannel()
-		haveTokens := handle.confirmHaveTokensAndUnblockNextWaiter()
+		<-handle.WaitChannel()
+		haveTokens := handle.ConfirmHaveTokensAndUnblockNextWaiter()
 		require.True(t, haveTokens)
 		// Wait on the handle to be unblocked again, this time try deducting such
 		// that there are no tokens available after.
 		counter.Deduct(ctx, admissionpb.RegularWorkClass, limits.regular, AdjNormal)
-		<-handle.waitChannel()
-		haveTokens = handle.confirmHaveTokensAndUnblockNextWaiter()
+		<-handle.WaitChannel()
+		haveTokens = handle.ConfirmHaveTokensAndUnblockNextWaiter()
 		require.False(t, haveTokens)
 		// Return the tokens deducted from the first wait above.
 		counter.Return(ctx, admissionpb.RegularWorkClass, limits.regular, AdjNormal)
@@ -399,14 +394,14 @@ func TestTokenCounter(t *testing.T) {
 					// available.
 					available, handle := counter.TokensAvailable(admissionpb.RegularWorkClass)
 					if !available {
-						<-handle.waitChannel()
+						<-handle.WaitChannel()
 						// This may or may not have raced with another goroutine, there's
 						// no guarantee we have tokens here. If we don't have tokens here,
 						// the next call to TryDeduct will fail (unless someone returns
 						// tokens between here and that call), which is harmless. This test
 						// is using TokensAvailable and the returned handle to avoid
 						// busy-waiting.
-						handle.confirmHaveTokensAndUnblockNextWaiter()
+						handle.ConfirmHaveTokensAndUnblockNextWaiter()
 					}
 				}
 
@@ -421,8 +416,8 @@ func TestTokenCounter(t *testing.T) {
 	})
 }
 
-func (t *tokenCounter) testingHandle() tokenWaitHandle {
-	return tokenWaitHandle{wc: admissionpb.RegularWorkClass, b: t}
+func (t *tokenCounter) testingHandle() waitHandle {
+	return waitHandle{wc: admissionpb.RegularWorkClass, b: t}
 }
 
 type namedTokenCounter struct {
@@ -605,10 +600,12 @@ func TestWaitForEval(t *testing.T) {
 	datadriven.RunTest(t, "testdata/wait_for_eval", func(t *testing.T, d *datadriven.TestData) string {
 		switch d.Cmd {
 		case "wait_for_eval":
-			name := dd.ScanArg[string](t, d, "name")
-			quorum := dd.ScanArg[int](t, d, "quorum")
+			var name string
+			var quorum int
 			var handles []tokenWaitingHandleInfo
 
+			d.ScanArgs(t, "name", &name)
+			d.ScanArgs(t, "quorum", &quorum)
 			for _, line := range strings.Split(d.Input, "\n") {
 				require.True(t, strings.HasPrefix(line, "handle:"))
 				line = strings.TrimPrefix(line, "handle:")
@@ -648,7 +645,8 @@ func TestWaitForEval(t *testing.T) {
 			return ts.evalStatesString()
 
 		case "cancel":
-			name := dd.ScanArg[string](t, d, "name")
+			var name string
+			d.ScanArgs(t, "name", &name)
 			func() {
 				ts.mu.Lock()
 				defer ts.mu.Unlock()
@@ -661,8 +659,10 @@ func TestWaitForEval(t *testing.T) {
 			return ts.evalStatesString()
 
 		case "refresh":
-			name := dd.ScanArg[string](t, d, "name")
-			kind := dd.ScanArg[string](t, d, "kind")
+			var name string
+			d.ScanArgs(t, "name", &name)
+			var kind string
+			d.ScanArgs(t, "kind", &kind)
 			func() {
 				ts.mu.Lock()
 				defer ts.mu.Unlock()

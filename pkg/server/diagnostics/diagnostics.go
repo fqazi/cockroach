@@ -112,7 +112,7 @@ func addInfoToURL(
 		if license.OrganizationId != nil {
 			organizationUUID, err := uuid.FromBytes(license.OrganizationId)
 			if err != nil {
-				log.Dev.Infof(context.Background(), "unexpected error parsing organization id from license %s", err)
+				log.Infof(context.Background(), "unexpected error parsing organization id from license %s", err)
 			}
 			organizationID = organizationUUID.String()
 		}
@@ -120,7 +120,7 @@ func addInfoToURL(
 			licenseExpiry = strconv.Itoa(int(license.ValidUntilUnixSec))
 			licenseUUID, err := uuid.FromBytes(license.LicenseId)
 			if err != nil {
-				log.Dev.Infof(context.Background(), "unexpected error parsing organization id from license %s", err)
+				log.Infof(context.Background(), "unexpected error parsing organization id from license %s", err)
 			}
 			licenseID = licenseUUID.String()
 		}
@@ -149,9 +149,9 @@ func addInfoToURL(
 }
 
 // randomly shift `d` to be up to `jitterSeconds` shorter or longer.
-func addJitter(d time.Duration, rng *rand.Rand) time.Duration {
+func addJitter(d time.Duration) time.Duration {
 	const jitterSeconds = 120
-	j := time.Duration(rng.Intn(jitterSeconds*2)-jitterSeconds) * time.Second
+	j := time.Duration(rand.Intn(jitterSeconds*2)-jitterSeconds) * time.Second
 	return d + j
 }
 

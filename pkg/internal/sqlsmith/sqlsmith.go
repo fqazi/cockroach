@@ -119,11 +119,6 @@ type Smither struct {
 	// It follows that if we haven't created any UDFs, we have no UDFs to invoke
 	// too.
 	disableUDFCreation bool
-	// disableDoBlock indicates whether we're not allowed to create DO blocks,
-	// both as top level statements and inside plpgsql function body
-	// definition.
-	disableDoBlock         bool
-	disableIsolationChange bool
 
 	bulkSrv     *httptest.Server
 	bulkFiles   map[string][]byte
@@ -192,7 +187,6 @@ var prettyCfg = func() tree.PrettyCfg {
 	cfg := tree.DefaultPrettyCfg()
 	cfg.LineWidth = 120
 	cfg.Simplify = false
-	cfg.FmtFlags = tree.FmtPLpgSQLParen
 	return cfg
 }()
 
@@ -214,10 +208,10 @@ func (s *Smither) Generate() string {
 		i = 0
 
 		printCfg := prettyCfg
-		fl := plpgsqlFlags
+		fl := tree.FmtParsable
 		if s.postgres {
-			printCfg.FmtFlags = tree.FmtPGCatalog | tree.FmtPLpgSQLParen
-			fl = tree.FmtPGCatalog | tree.FmtPLpgSQLParen
+			printCfg.FmtFlags = tree.FmtPGCatalog
+			fl = tree.FmtPGCatalog
 		}
 		p, err := printCfg.Pretty(stmt)
 		if err != nil {
@@ -232,16 +226,6 @@ func (s *Smither) Generate() string {
 // tables or columns.
 func (s *Smither) GenerateExpr() tree.TypedExpr {
 	return makeScalar(s, s.randScalarType(), nil)
-}
-
-// GenerateUDF returns a random CREATE FUNCTION statement.
-func (s *Smither) GenerateUDF() tree.Statement {
-	for {
-		routine, ok := s.makeCreateFunc()
-		if ok {
-			return routine
-		}
-	}
 }
 
 type nameGenInfo struct {
@@ -367,7 +351,6 @@ var DisableDDLs = simpleOption("disable DDLs", func(s *Smither) {
 		{5, makeUpdate},
 		{1, makeDelete},
 		{1, makeCreateStats},
-		{1, makeSetSessionCharacteristics},
 		// If we don't have any DDL's, allow for use of savepoints and transactions.
 		{2, makeBegin},
 		{2, makeSavepoint},
@@ -375,13 +358,11 @@ var DisableDDLs = simpleOption("disable DDLs", func(s *Smither) {
 		{2, makeRollbackToSavepoint},
 		{2, makeCommit},
 		{2, makeRollback},
-		// TODO(nvanbenschoten): add two-phase commit statements.
 	}
 })
 
 // OnlySingleDMLs causes the Smither to only emit single-statement DML (SELECT,
-// INSERT, UPDATE, DELETE), CREATE STATISTICS, and SET SESSION CHARACTERISTICS
-// statements.
+// INSERT, UPDATE, DELETE) and CREATE STATISTICS statements.
 var OnlySingleDMLs = simpleOption("only single DMLs", func(s *Smither) {
 	s.stmtWeights = []statementWeight{
 		{20, makeSelect},
@@ -389,7 +370,6 @@ var OnlySingleDMLs = simpleOption("only single DMLs", func(s *Smither) {
 		{5, makeUpdate},
 		{1, makeDelete},
 		{1, makeCreateStats},
-		{1, makeSetSessionCharacteristics},
 	}
 })
 
@@ -452,39 +432,26 @@ var SimpleNames = simpleOption("simple names", func(s *Smither) {
 	s.simpleNames = true
 })
 
-// MutationsOnly causes the Smither to emit 60% INSERT, 10% UPDATE, 10% DELETE,
-// 10% CREATE STATISTICS, and 10% SET SESSION CHARACTERISTICS statements.
+// MutationsOnly causes the Smither to emit 70% INSERT, 10% UPDATE, 10% DELETE,
+// and 10% CREATE STATISTICS statements.
 var MutationsOnly = simpleOption("mutations only", func(s *Smither) {
-	s.stmtWeights = []statementWeight{
-		{6, makeInsert},
-		{1, makeUpdate},
-		{1, makeDelete},
-		{1, makeCreateStats},
-		{1, makeSetSessionCharacteristics},
-	}
-})
-
-// InsUpdOnly causes the Smither to emit 70% INSERT, 10% UPDATE, 10% CREATE
-// STATISTICS, and 10% SET SESSION CHARACTERISTICS statements.
-var InsUpdOnly = simpleOption("inserts and updates only", func(s *Smither) {
 	s.stmtWeights = []statementWeight{
 		{7, makeInsert},
 		{1, makeUpdate},
+		{1, makeDelete},
 		{1, makeCreateStats},
-		{1, makeSetSessionCharacteristics},
 	}
 })
 
-// InsUpdDelOnly causes the Smither to emit 80% INSERT, 10% UPDATE,
-// 10% DELETE statements.
-var InsUpdDelOnly = simpleOption("inserts updates and deletes only",
-	func(s *Smither) {
-		s.stmtWeights = []statementWeight{
-			{8, makeInsert},
-			{1, makeUpdate},
-			{1, makeDelete},
-		}
-	})
+// InsUpdOnly causes the Smither to emit 80% INSERT, 10% UPDATE, and 10% CREATE
+// STATISTICS statements.
+var InsUpdOnly = simpleOption("inserts and updates only", func(s *Smither) {
+	s.stmtWeights = []statementWeight{
+		{8, makeInsert},
+		{1, makeUpdate},
+		{1, makeCreateStats},
+	}
+})
 
 // IgnoreFNs causes the Smither to ignore functions that match the regex.
 func IgnoreFNs(regex string) SmitherOption {
@@ -615,17 +582,6 @@ var DisableOIDs = simpleOption("disable OIDs", func(s *Smither) {
 // DisableUDFs causes the Smither to disable user-defined functions.
 var DisableUDFs = simpleOption("disable udfs", func(s *Smither) {
 	s.disableUDFCreation = true
-})
-
-// DisableDoBlocks causes the Smither to disable DO blocks.
-var DisableDoBlocks = simpleOption("disable do block", func(s *Smither) {
-	s.disableDoBlock = true
-})
-
-// DisableIsolationChange causes the Smither to disable stmts that modify the
-// txn isolation level.
-var DisableIsolationChange = simpleOption("disable isolation change", func(s *Smither) {
-	s.disableIsolationChange = true
 })
 
 // CompareMode causes the Smither to generate statements that have

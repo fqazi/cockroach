@@ -28,6 +28,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// startTestCluster starts a 3 node cluster.
+//
+// Note, if a testfeed depends on particular testing knobs, those may
+// need to be applied to each of the servers in the test cluster
+// returned from this function.
 func TestMultiRegionDatabaseStats(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -924,7 +929,6 @@ func testRegionAddDropWithConcurrentBackupOps(
 	},
 ) {
 	skip.UnderRace(t, "times out under race")
-	skip.UnderDeadlock(t)
 
 	testCases := []struct {
 		name      string
@@ -933,8 +937,8 @@ func testRegionAddDropWithConcurrentBackupOps(
 	}{
 		{
 			name:      "backup-database",
-			backupOp:  `BACKUP DATABASE db INTO 'nodelocal://1/db_backup'`,
-			restoreOp: `RESTORE DATABASE db FROM LATEST IN 'nodelocal://1/db_backup'`,
+			backupOp:  `BACKUP DATABASE db TO 'nodelocal://1/db_backup'`,
+			restoreOp: `RESTORE DATABASE db FROM 'nodelocal://1/db_backup'`,
 		},
 	}
 

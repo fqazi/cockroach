@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
@@ -81,9 +80,9 @@ func (rec *SpanSetReplicaEvalContext) GetNodeLocality() roachpb.Locality {
 	return rec.i.GetNodeLocality()
 }
 
-// GetCompactedIndex returns the compacted index of the raft log.
-func (rec *SpanSetReplicaEvalContext) GetCompactedIndex() kvpb.RaftIndex {
-	return rec.i.GetCompactedIndex()
+// GetFirstIndex returns the first index.
+func (rec *SpanSetReplicaEvalContext) GetFirstIndex() kvpb.RaftIndex {
+	return rec.i.GetFirstIndex()
 }
 
 // GetTerm returns the term for the given index in the Raft log.
@@ -94,11 +93,6 @@ func (rec *SpanSetReplicaEvalContext) GetTerm(i kvpb.RaftIndex) (kvpb.RaftTerm, 
 // GetLeaseAppliedIndex returns the lease index of the last applied command.
 func (rec *SpanSetReplicaEvalContext) GetLeaseAppliedIndex() kvpb.LeaseAppliedIndex {
 	return rec.i.GetLeaseAppliedIndex()
-}
-
-// LogEngine returns the log engine.
-func (rec *SpanSetReplicaEvalContext) LogEngine() storage.Engine {
-	return rec.i.LogEngine()
 }
 
 // IsFirstRange returns true iff the replica belongs to the first range.
