@@ -14,7 +14,6 @@ go_library(
         "//pkg/roachpb",
         "//pkg/storage",
         "//pkg/storage/fs",
-        "//pkg/util/debugutil",
         "//pkg/util/hlc",
         "//pkg/util/log",
         "//pkg/util/protoutil",
@@ -29,7 +28,6 @@ go_test(
     size = "small",
     srcs = [
         "batch_test.go",
-        "merge_test.go",
         "spanset_test.go",
     ],
     embed = [":spanset"],

@@ -8,6 +8,7 @@ package pgrepl
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/datadriven"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,7 +33,6 @@ import (
 func TestMain(m *testing.M) {
 	securityassets.SetLoader(securitytest.EmbeddedAssets)
 	serverutils.InitTestServerFactory(server.TestServerFactory)
-	serverutils.TestingGlobalDRPCOption(base.TestDRPCEnabledRandomly)
 	os.Exit(m.Run())
 }
 
@@ -40,11 +40,10 @@ func TestDataDriven(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(context.Background())
-	s := srv.ApplicationLayer()
+	s := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(context.Background())
 
-	pgURL, cleanup := s.PGUrl(t, serverutils.CertsDirPrefix("pgrepl_datadriven_test"), serverutils.User(username.RootUser))
+	pgURL, cleanup := sqlutils.PGUrl(t, s.AdvSQLAddr(), "pgrepl_datadriven_test", url.User(username.RootUser))
 	defer cleanup()
 
 	cfg, err := pgx.ParseConfig(pgURL.String())
@@ -71,7 +70,7 @@ func TestDataDriven(t *testing.T) {
 
 			switch d.Cmd {
 			case "simple_query":
-				rows, err := conn.Query(ctx, d.Input, pgx.QueryExecModeSimpleProtocol)
+				rows, err := conn.Query(ctx, d.Input, pgx.QuerySimpleProtocol(true))
 				if expectError {
 					require.Error(t, err)
 					return err.Error()
@@ -82,7 +81,7 @@ func TestDataDriven(t *testing.T) {
 				return out
 			case "identify_system":
 				// IDENTIFY_SYSTEM needs some redaction to be deterministic.
-				rows, err := conn.Query(ctx, "IDENTIFY_SYSTEM", pgx.QueryExecModeSimpleProtocol)
+				rows, err := conn.Query(ctx, "IDENTIFY_SYSTEM", pgx.QuerySimpleProtocol(true))
 				require.NoError(t, err)
 				var sb strings.Builder
 				for rows.Next() {
@@ -92,13 +91,13 @@ func TestDataDriven(t *testing.T) {
 						if i > 0 {
 							sb.WriteRune('\n')
 						}
-						switch rows.FieldDescriptions()[i].Name {
+						switch string(rows.FieldDescriptions()[i].Name) {
 						case "systemid":
 							val = "some_cluster_id"
 						case "xlogpos":
 							val = "some_lsn"
 						}
-						sb.WriteString(rows.FieldDescriptions()[i].Name)
+						sb.Write(rows.FieldDescriptions()[i].Name)
 						sb.WriteString(": ")
 						sb.WriteString(fmt.Sprintf("%v", val))
 					}

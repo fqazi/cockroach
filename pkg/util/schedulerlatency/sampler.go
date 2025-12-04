@@ -33,7 +33,12 @@ var samplePeriod = settings.RegisterDurationSetting(
 	"scheduler_latency.sample_period",
 	"controls the duration between consecutive scheduler latency samples",
 	100*time.Millisecond,
-	settings.DurationWithMinimum(time.Millisecond),
+	settings.WithValidateDuration(func(period time.Duration) error {
+		if period < time.Millisecond {
+			return fmt.Errorf("minimum sample period is %s, got %s", time.Millisecond, period)
+		}
+		return nil
+	}),
 )
 
 var sampleDuration = settings.RegisterDurationSetting(
@@ -41,7 +46,12 @@ var sampleDuration = settings.RegisterDurationSetting(
 	"scheduler_latency.sample_duration",
 	"controls the duration over which each scheduler latency sample is a measurement over",
 	2500*time.Millisecond,
-	settings.DurationWithMinimum(100*time.Millisecond),
+	settings.WithValidateDuration(func(duration time.Duration) error {
+		if duration < 100*time.Millisecond {
+			return fmt.Errorf("minimum sample duration is %s, got %s", 100*time.Millisecond, duration)
+		}
+		return nil
+	}),
 )
 
 var schedulerLatency = metric.Metadata{
@@ -49,7 +59,6 @@ var schedulerLatency = metric.Metadata{
 	Help:        "Go scheduling latency",
 	Measurement: "Nanoseconds",
 	Unit:        metric.Unit_NANOSECONDS,
-	Visibility:  metric.Metadata_SUPPORT,
 }
 
 // StartSampler spawn a goroutine to periodically sample the scheduler latencies
@@ -98,11 +107,12 @@ func StartSampler(
 				case <-stopper.ShouldQuiesce():
 					return
 				case <-ticker.C:
-					schedulingLatenciesHistogram := s.getAndClearLastStatsHistogram()
-					if schedulingLatenciesHistogram == nil {
+					lastIntervalHistogram := s.lastIntervalHistogram()
+					if lastIntervalHistogram == nil {
 						continue
 					}
-					schedulerLatencyHistogram.update(schedulingLatenciesHistogram)
+
+					schedulerLatencyHistogram.update(lastIntervalHistogram)
 				}
 			}
 		})
@@ -148,10 +158,8 @@ type sampler struct {
 	listener LatencyObserver
 	mu       struct {
 		syncutil.Mutex
-		ringBuffer ring.Buffer[*metrics.Float64Histogram]
-		// schedulerLatencyAccumulator accumulates per-sample histogram deltas of
-		// the go scheduler latencies.
-		schedulerLatencyAccumulator *metrics.Float64Histogram
+		ringBuffer            ring.Buffer[*metrics.Float64Histogram]
+		lastIntervalHistogram *metrics.Float64Histogram
 	}
 }
 
@@ -171,7 +179,7 @@ func (s *sampler) setPeriodAndDuration(period, duration time.Duration) {
 		numSamples = 1 // we need at least one sample to compare (also safeguards against integer division)
 	}
 	s.mu.ringBuffer.Resize(numSamples)
-	s.mu.schedulerLatencyAccumulator = nil
+	s.mu.lastIntervalHistogram = nil
 }
 
 // sampleOnTickAndInvokeCallbacks samples scheduler latency stats as the ticker
@@ -180,32 +188,16 @@ func (s *sampler) sampleOnTickAndInvokeCallbacks(period time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Capture the previous sample before adding the new one.
-	var prevSample *metrics.Float64Histogram
-	if s.mu.ringBuffer.Len() > 0 {
-		prevSample = s.mu.ringBuffer.GetFirst()
-	}
-
 	latestCumulative := sample()
 	oldestCumulative, ok := s.recordLocked(latestCumulative)
 	if !ok {
 		return
 	}
-
-	// Compute the delta since the previous sample for stats accumulation.
-	if prevSample != nil {
-		sampleDelta := sub(latestCumulative, prevSample)
-		if s.mu.schedulerLatencyAccumulator == nil {
-			s.mu.schedulerLatencyAccumulator = sampleDelta
-		} else {
-			s.mu.schedulerLatencyAccumulator = add(s.mu.schedulerLatencyAccumulator, sampleDelta)
-		}
-	}
+	s.mu.lastIntervalHistogram = sub(latestCumulative, oldestCumulative)
+	p99 := time.Duration(int64(percentile(s.mu.lastIntervalHistogram, 0.99) * float64(time.Second.Nanoseconds())))
 
 	// Perform the callback if there's a listener.
 	if s.listener != nil {
-		p99 := time.Duration(int64(percentile(sub(latestCumulative, oldestCumulative),
-			0.99) * float64(time.Second.Nanoseconds())))
 		s.listener.SchedulerLatency(p99, period)
 	}
 }
@@ -221,12 +213,10 @@ func (s *sampler) recordLocked(
 	return oldest, oldest != nil
 }
 
-func (s *sampler) getAndClearLastStatsHistogram() *metrics.Float64Histogram {
+func (s *sampler) lastIntervalHistogram() *metrics.Float64Histogram {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res := s.mu.schedulerLatencyAccumulator
-	s.mu.schedulerLatencyAccumulator = nil
-	return res
+	return s.mu.lastIntervalHistogram
 }
 
 // sample the cumulative (since process start) scheduler latency histogram from
@@ -264,16 +254,6 @@ func sub(a, b *metrics.Float64Histogram) *metrics.Float64Histogram {
 	res := clone(a)
 	for i := 0; i < len(res.Counts); i++ {
 		res.Counts[i] -= b.Counts[i]
-	}
-	return res
-}
-
-// add adds the counts of one histogram to another, assuming the bucket
-// boundaries are the same.
-func add(a, b *metrics.Float64Histogram) *metrics.Float64Histogram {
-	res := clone(a)
-	for i := 0; i < len(res.Counts); i++ {
-		res.Counts[i] += b.Counts[i]
 	}
 	return res
 }

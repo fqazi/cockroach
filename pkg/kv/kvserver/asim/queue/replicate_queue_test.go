@@ -107,15 +107,14 @@ func TestReplicateQueue(t *testing.T) {
 	}
 
 	testCases := []struct {
-		desc                  string
-		replicaCounts         map[state.StoreID]int
-		spanConfig            roachpb.SpanConfig
-		initialRF             int
-		nodeLivenessOverrides map[state.NodeID]state.LivenessState // liveness for all stores
-		nodeStatusOverrides   map[state.NodeID]state.NodeStatus    // membership, draining
-		nodeLocalities        map[state.NodeID]roachpb.Locality
-		ticks                 []int64
-		expectedReplCounts    map[int64]map[int]int
+		desc               string
+		replicaCounts      map[state.StoreID]int
+		spanConfig         roachpb.SpanConfig
+		initialRF          int
+		nonLiveNodes       map[state.NodeID]livenesspb.NodeLivenessStatus
+		nodeLocalities     map[state.NodeID]roachpb.Locality
+		ticks              []int64
+		expectedReplCounts map[int64]map[int]int
 	}{
 		{
 			// NB: Expect no action, range counts are balanced.
@@ -209,8 +208,8 @@ func TestReplicateQueue(t *testing.T) {
 				NumReplicas: 3,
 				NumVoters:   3,
 			},
-			nodeLivenessOverrides: map[state.NodeID]state.LivenessState{
-				3: state.LivenessDead},
+			nonLiveNodes: map[state.NodeID]livenesspb.NodeLivenessStatus{
+				3: livenesspb.NodeLivenessStatus_DEAD},
 			ticks: []int64{5, 10, 15},
 			expectedReplCounts: map[int64]map[int]int{
 				5:  {1: 1, 2: 1, 3: 1, 4: 0},
@@ -228,8 +227,8 @@ func TestReplicateQueue(t *testing.T) {
 				NumReplicas: 3,
 				NumVoters:   3,
 			},
-			nodeStatusOverrides: map[state.NodeID]state.NodeStatus{
-				3: {Membership: livenesspb.MembershipStatus_DECOMMISSIONING}},
+			nonLiveNodes: map[state.NodeID]livenesspb.NodeLivenessStatus{
+				3: livenesspb.NodeLivenessStatus_DECOMMISSIONING},
 			ticks: []int64{5, 10, 15, 20, 25},
 			expectedReplCounts: map[int64]map[int]int{
 				5:  {1: 10, 2: 10, 3: 10, 4: 0},
@@ -290,21 +289,16 @@ func TestReplicateQueue(t *testing.T) {
 			store, _ := s.Store(testingStore)
 			rq := NewReplicateQueue(
 				store.StoreID(),
-				store.NodeID(),
 				changer,
 				testSettings,
-				s.Allocator(store.StoreID()),
-				s.Node(store.NodeID()).AllocatorSync(),
+				s.MakeAllocator(store.StoreID()),
 				s.StorePool(store.StoreID()),
 				start,
 			)
 			s.TickClock(start)
 
-			for nodeID, liveness := range tc.nodeLivenessOverrides {
-				s.SetAllStoresLiveness(nodeID, liveness)
-			}
-			for nodeID, status := range tc.nodeStatusOverrides {
-				s.SetNodeStatus(nodeID, status)
+			for nodeID, livenessStatus := range tc.nonLiveNodes {
+				s.SetNodeLiveness(nodeID, livenessStatus)
 			}
 
 			for nodeID, locality := range tc.nodeLocalities {
@@ -325,7 +319,7 @@ func TestReplicateQueue(t *testing.T) {
 				s.TickClock(state.OffsetTick(start, tick))
 
 				// Tick state updates that are queued for completion.
-				changer.Tick(ctx, state.OffsetTick(start, tick), s)
+				changer.Tick(state.OffsetTick(start, tick), s)
 
 				// Update the store's view of the cluster, we update all stores
 				// but only care about s1's view.

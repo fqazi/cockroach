@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/persistedsqlstats/sqlstatstestutil"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -160,10 +159,6 @@ INSERT INTO t.test VALUES (2);
 INSERT INTO t.test VALUES (3);
 `)
 
-	sqlstatstestutil.WaitForStatementEntriesAtLeast(t, sqlDB, 3, sqlstatstestutil.StatementFilter{
-		ExecCount: 5,
-	})
-
 	// Find the in-memory stats for the queries.
 	stats, err := ts.GetScrubbedStmtStats(ctx)
 	require.NoError(t, err)
@@ -212,7 +207,7 @@ INSERT INTO t.test VALUES (3);
 type testDrainContext struct {
 	*testing.T
 	tc         *testcluster.TestCluster
-	c          serverpb.RPCAdminClient
+	c          serverpb.AdminClient
 	connCloser func()
 }
 
@@ -223,7 +218,6 @@ func newTestDrainContext(t *testing.T, drainSleepCallCount *int) *testDrainConte
 			// We need to start the cluster insecure in order to not
 			// care about TLS settings for the RPC client connection.
 			ServerArgs: base.TestServerArgs{
-				DefaultDRPCOption: base.TestDRPCDisabled,
 				DefaultTestTenant: base.TestControlsTenantsExplicitly,
 				Knobs: base.TestingKnobs{
 					Server: &server.TestingKnobs{
@@ -289,7 +283,7 @@ func (t *testDrainContext) sendShutdown() *serverpb.DrainResponse {
 		// It's possible we're getting "connection reset by peer" or some
 		// gRPC initialization failure because the server is shutting
 		// down. Tolerate that.
-		log.Dev.Infof(context.Background(), "RPC error: %v", err)
+		log.Infof(context.Background(), "RPC error: %v", err)
 	}
 	return resp
 }
@@ -317,7 +311,7 @@ func (t *testDrainContext) assertEqual(expected int, actual int) {
 }
 
 func (t *testDrainContext) getDrainResponse(
-	stream serverpb.RPCAdmin_DrainClient,
+	stream serverpb.Admin_DrainClient,
 ) (*serverpb.DrainResponse, error) {
 	resp, err := stream.Recv()
 	if err != nil {

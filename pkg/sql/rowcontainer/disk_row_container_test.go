@@ -94,21 +94,21 @@ func compareRowToEncRow(
 
 func getMemoryMonitor(st *cluster.Settings) *mon.BytesMonitor {
 	return mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("test-mem"),
+		Name:     "test-mem",
 		Settings: st,
 	})
 }
 
 func getUnlimitedMemoryMonitor(st *cluster.Settings) *mon.BytesMonitor {
 	return mon.NewUnlimitedMonitor(context.Background(), mon.Options{
-		Name:     mon.MakeName("test-mem"),
+		Name:     "test-mem",
 		Settings: st,
 	})
 }
 
 func getDiskMonitor(st *cluster.Settings) *mon.BytesMonitor {
 	return mon.NewMonitor(mon.Options{
-		Name:     mon.MakeName("test-disk"),
+		Name:     "test-disk",
 		Res:      mon.DiskResource,
 		Settings: st,
 	})
@@ -120,7 +120,7 @@ func TestDiskRowContainer(t *testing.T) {
 
 	ctx := context.Background()
 	st := cluster.MakeTestingClusterSettings()
-	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), nil /* statsCollector */)
+	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec, nil /* statsCollector */)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,11 +169,13 @@ func TestDiskRowContainer(t *testing.T) {
 			// Test with different orderings so that we have a mix of key and
 			// value encodings.
 			for _, ordering := range orderings {
-				typs := randgen.RandSortingTypes(rng, numCols)
+				typs := make([]*types.T, numCols)
+				for i := range typs {
+					typs[i] = randgen.RandSortingType(rng)
+				}
 				row := randgen.RandEncDatumRowOfTypes(rng, typs)
 				func() {
-					memAcc := evalCtx.TestingMon.MakeBoundAccount()
-					d, _ := MakeDiskRowContainer(ctx, memAcc, diskMonitor, typs, ordering, tempEngine)
+					d, _ := MakeDiskRowContainer(ctx, diskMonitor, typs, ordering, tempEngine)
 					defer d.Close(ctx)
 					if err := d.AddRow(ctx, row); err != nil {
 						t.Fatal(err)
@@ -236,8 +238,7 @@ func TestDiskRowContainer(t *testing.T) {
 			types := randgen.RandSortingTypes(rng, numCols)
 			rows := randgen.RandEncDatumRowsOfTypes(rng, numRows, types)
 			func() {
-				memAcc := evalCtx.TestingMon.MakeBoundAccount()
-				d, _ := MakeDiskRowContainer(ctx, memAcc, diskMonitor, types, ordering, tempEngine)
+				d, _ := MakeDiskRowContainer(ctx, diskMonitor, types, ordering, tempEngine)
 				defer d.Close(ctx)
 				for i := 0; i < len(rows); i++ {
 					if err := d.AddRow(ctx, rows[i]); err != nil {
@@ -281,21 +282,17 @@ func TestDiskRowContainer(t *testing.T) {
 					}
 
 					// Check sorted order.
-					err = sortedRows.getEncRow(sortedRows.scratchEncRow, numKeysRead)
-					if err != nil {
-						t.Fatal(err)
-					}
+					sortedRows.getEncRow(sortedRows.scratchEncRow, numKeysRead)
 					if cmp, err := compareEncRows(
 						ctx, types, sortedRows.scratchEncRow, row, &evalCtx, d.datumAlloc, ordering,
 					); err != nil {
 						t.Fatal(err)
 					} else if cmp != 0 {
-						err = sortedRows.getEncRow(sortedRows.scratchEncRow, numKeysRead)
+						sortedRows.getEncRow(sortedRows.scratchEncRow, numKeysRead)
 						t.Fatalf(
-							"expected %s to be equal to %s (err=%v)",
+							"expected %s to be equal to %s",
 							row.String(types),
 							sortedRows.scratchEncRow.String(types),
-							err,
 						)
 					}
 					numKeysRead++
@@ -323,8 +320,7 @@ func TestDiskRowContainer(t *testing.T) {
 		// Use random types and random rows.
 		types := randgen.RandSortingTypes(rng, numCols)
 		numRows, rows := makeUniqueRows(t, &evalCtx, rng, numRows, types, ordering)
-		memAcc := evalCtx.TestingMon.MakeBoundAccount()
-		d, _ := MakeDiskRowContainer(ctx, memAcc, diskMonitor, types, ordering, tempEngine)
+		d, _ := MakeDiskRowContainer(ctx, diskMonitor, types, ordering, tempEngine)
 		defer d.Close(ctx)
 		d.DoDeDuplicate()
 		addRowsRepeatedly := func() {
@@ -353,7 +349,7 @@ func TestDiskRowContainer(t *testing.T) {
 		addRowsRepeatedly()
 		// Reset and add the rows in a different order.
 		require.NoError(t, d.UnsafeReset(ctx))
-		rng.Shuffle(len(rows), func(i, j int) {
+		rand.Shuffle(len(rows), func(i, j int) {
 			rows[i], rows[j] = rows[j], rows[i]
 		})
 		addRowsRepeatedly()
@@ -365,9 +361,8 @@ func TestDiskRowContainer(t *testing.T) {
 		// Use random types and random rows.
 		types := randgen.RandSortingTypes(rng, numCols)
 		rows := randgen.RandEncDatumRowsOfTypes(rng, numRows, types)
-		memAcc := evalCtx.TestingMon.MakeBoundAccount()
 		// There are no ordering columns when using the numberedRowIterator.
-		d, _ := MakeDiskRowContainer(ctx, memAcc, diskMonitor, types, nil, tempEngine)
+		d, _ := MakeDiskRowContainer(ctx, diskMonitor, types, nil, tempEngine)
 		defer d.Close(ctx)
 		for i := 0; i < numRows; i++ {
 			require.NoError(t, d.AddRow(ctx, rows[i]))
@@ -425,7 +420,7 @@ func makeUniqueRows(
 	}
 	rows = deDupedRows
 	// Shuffle so that not adding in sorted order.
-	rng.Shuffle(len(rows), func(i, j int) {
+	rand.Shuffle(len(rows), func(i, j int) {
 		rows[i], rows[j] = rows[j], rows[i]
 	})
 	return len(rows), rows
@@ -437,8 +432,7 @@ func TestDiskRowContainerDiskFull(t *testing.T) {
 
 	ctx := context.Background()
 	st := cluster.MakeTestingClusterSettings()
-	evalCtx := eval.MakeTestingEvalContext(st)
-	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), nil /* statsCollector */)
+	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec, nil /* statsCollector */)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,10 +442,8 @@ func TestDiskRowContainerDiskFull(t *testing.T) {
 	monitor := getDiskMonitor(st)
 	monitor.Start(ctx, nil, mon.NewStandaloneBudget(0 /* capacity */))
 
-	memAcc := evalCtx.TestingMon.MakeBoundAccount()
 	d, _ := MakeDiskRowContainer(
 		ctx,
-		memAcc,
 		monitor,
 		[]*types.T{types.Int},
 		colinfo.ColumnOrdering{colinfo.ColumnOrderInfo{ColIdx: 0, Direction: encoding.Ascending}},
@@ -459,7 +451,7 @@ func TestDiskRowContainerDiskFull(t *testing.T) {
 	)
 	defer d.Close(ctx)
 
-	row := rowenc.EncDatumRow{rowenc.DatumToEncDatumUnsafe(types.Int, tree.NewDInt(tree.DInt(1)))}
+	row := rowenc.EncDatumRow{rowenc.DatumToEncDatum(types.Int, tree.NewDInt(tree.DInt(1)))}
 	err = d.AddRow(ctx, row)
 	if code := pgerror.GetPGCode(err); code != pgcode.DiskFull {
 		t.Fatalf("unexpected error: %v", err)
@@ -474,7 +466,7 @@ func TestDiskRowContainerFinalIterator(t *testing.T) {
 	st := cluster.MakeTestingClusterSettings()
 	alloc := &tree.DatumAlloc{}
 	evalCtx := eval.MakeTestingEvalContext(st)
-	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), nil /* statsCollector */)
+	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec, nil /* statsCollector */)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,8 +476,7 @@ func TestDiskRowContainerFinalIterator(t *testing.T) {
 	diskMonitor.Start(ctx, nil /* pool */, mon.NewStandaloneBudget(math.MaxInt64))
 	defer diskMonitor.Stop(ctx)
 
-	memAcc := evalCtx.TestingMon.MakeBoundAccount()
-	d, _ := MakeDiskRowContainer(ctx, memAcc, diskMonitor, types.OneIntCol, nil /* ordering */, tempEngine)
+	d, _ := MakeDiskRowContainer(ctx, diskMonitor, types.OneIntCol, nil /* ordering */, tempEngine)
 	defer d.Close(ctx)
 
 	const numCols = 1
@@ -596,8 +587,7 @@ func TestDiskRowContainerUnsafeReset(t *testing.T) {
 
 	ctx := context.Background()
 	st := cluster.MakeTestingClusterSettings()
-	evalCtx := eval.MakeTestingEvalContext(st)
-	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), nil /* statsCollector */)
+	tempEngine, _, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec, nil /* statsCollector */)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,8 +596,7 @@ func TestDiskRowContainerUnsafeReset(t *testing.T) {
 	monitor := getDiskMonitor(st)
 	monitor.Start(ctx, nil, mon.NewStandaloneBudget(math.MaxInt64))
 
-	memAcc := evalCtx.TestingMon.MakeBoundAccount()
-	d, _ := MakeDiskRowContainer(ctx, memAcc, monitor, types.OneIntCol, nil /* ordering */, tempEngine)
+	d, _ := MakeDiskRowContainer(ctx, monitor, types.OneIntCol, nil /* ordering */, tempEngine)
 	defer d.Close(ctx)
 
 	const (

@@ -39,7 +39,7 @@ func runSampleTest(
 	var sr SampleReservoir
 	sr.Init(numSamples, 1, []*types.T{types.Int}, memAcc, intsets.MakeFast(0))
 	for _, r := range ranks {
-		d := rowenc.DatumToEncDatumUnsafe(types.Int, tree.NewDInt(tree.DInt(r)))
+		d := rowenc.DatumToEncDatum(types.Int, tree.NewDInt(tree.DInt(r)))
 		prevCapacity := sr.Cap()
 		if err := sr.SampleRow(ctx, evalCtx, rowenc.EncDatumRow{d}, uint64(r)); err != nil {
 			t.Fatal(err)
@@ -102,12 +102,12 @@ func TestSampleReservoir(t *testing.T) {
 		}
 		for _, k := range []int{1, 5, 10, 100} {
 			t.Run(fmt.Sprintf("n=%d/k=%d/mem=nolimit", n, k), func(t *testing.T) {
-				runSampleTest(t, &evalCtx, k, k, ranks, mon.NewStandaloneUnlimitedAccount())
+				runSampleTest(t, &evalCtx, k, k, ranks, nil)
 			})
 			for _, mem := range []int64{1 << 8, 1 << 10, 1 << 12} {
 				t.Run(fmt.Sprintf("n=%d/k=%d/mem=%d", n, k, mem), func(t *testing.T) {
 					monitor := mon.NewMonitor(mon.Options{
-						Name:      mon.MakeName("test-monitor"),
+						Name:      "test-monitor",
 						Limit:     mem,
 						Increment: 1,
 						Settings:  st,
@@ -189,7 +189,7 @@ func TestSampleReservoirMemAccounting(t *testing.T) {
 
 	getStringDatum := func(l int) rowenc.EncDatum {
 		d := tree.DString(strings.Repeat("a", l))
-		return rowenc.DatumToEncDatumUnsafe(types.String, &d)
+		return rowenc.DatumToEncDatum(types.String, &d)
 	}
 	// First two rows need 152 bytes each. The third row has the smallest rank,
 	// so it wants to replace one of the other rows, but it has a large datum
@@ -201,7 +201,7 @@ func TestSampleReservoirMemAccounting(t *testing.T) {
 		{getStringDatum(maxBytesPerSample), getStringDatum(0)}, // rank 1
 	}
 	monitor := mon.NewMonitor(mon.Options{
-		Name:      mon.MakeName("test-monitor"),
+		Name:      "test-monitor",
 		Limit:     memLimit,
 		Increment: 1,
 		Settings:  st,

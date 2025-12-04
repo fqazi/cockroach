@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -27,14 +26,15 @@ import (
 func TestTenantsStorageMetricsRelease(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	m := newTenantsStorageMetrics()
-	var refs []*tenantStorageMetrics
+	var refs []*tenantMetricsRef
 	const tenants = 7
 	for i := 0; i < tenants; i++ {
 		id := roachpb.MustMakeTenantID(roachpb.MinTenantID.InternalValue + uint64(i))
-		tm := m.acquireTenant(id)
+		ref := m.acquireTenant(id)
+		tm := m.getTenant(context.Background(), ref)
 		tm.SysBytes.Update(1023)
 		tm.KeyCount.Inc(123)
-		refs = append(refs, tm)
+		refs = append(refs, ref)
 	}
 	for i, ref := range refs {
 		require.Equal(t, int64(1023*(tenants-i)), m.SysBytes.Value(), i)
@@ -102,16 +102,16 @@ func TestPebbleDiskWriteMetrics(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	ts := serverutils.StartServerOnly(t, base.TestServerArgs{
+	ts, _, kvDB := serverutils.StartServer(t, base.TestServerArgs{
 		DefaultTestTenant: base.TestControlsTenantsExplicitly,
 		StoreSpecs: []base.StoreSpec{
-			{Size: storageconfig.BytesSize(storageconfig.MinimumStoreSize), Path: tmpDir},
+			{Size: base.SizeSpec{InBytes: base.MinimumStoreSize}, Path: tmpDir},
 		},
 	})
 	defer ts.Stopper().Stop(ctx)
 
 	// Force a WAL write.
-	require.NoError(t, ts.DB().Put(ctx, "kev", "value"))
+	require.NoError(t, kvDB.Put(ctx, "kev", "value"))
 
 	if err := ts.GetStores().(*Stores).VisitStores(func(s *Store) error {
 		testutils.SucceedsSoon(t, func() error {
@@ -120,39 +120,6 @@ func TestPebbleDiskWriteMetrics(t *testing.T) {
 			}
 			return nil
 		})
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestWALSecondaryFileOpLatencyMetric verifies that the secondary WAL file
-// operation latency metric is properly registered and accessible.
-func TestWALSecondaryFileOpLatencyMetric(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	tmpDir, cleanup := testutils.TempDir(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	ts := serverutils.StartServerOnly(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestControlsTenantsExplicitly,
-		StoreSpecs: []base.StoreSpec{
-			{Size: storageconfig.BytesSize(storageconfig.MinimumStoreSize), Path: tmpDir},
-		},
-	})
-	defer ts.Stopper().Stop(ctx)
-
-	// Verify the secondary WAL file operation latency metric is registered.
-	if err := ts.GetStores().(*Stores).VisitStores(func(s *Store) error {
-		if ok := s.Registry().Contains("storage.wal.secondary.file_op.latency"); !ok {
-			return fmt.Errorf("missing secondary WAL file operation latency metric")
-		}
-		// Verify the metric is non-nil in the store metrics.
-		if s.metrics.WALSecondaryFileOpLatency == nil {
-			return fmt.Errorf("WALSecondaryFileOpLatency metric is nil")
-		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)

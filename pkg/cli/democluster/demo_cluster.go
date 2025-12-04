@@ -39,6 +39,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils/regionlatency"
@@ -64,7 +65,7 @@ import (
 
 type serverEntry struct {
 	serverutils.TestServerInterface
-	adminClient    serverpb.RPCAdminClient
+	adminClient    serverpb.AdminClient
 	nodeID         roachpb.NodeID
 	decommissioned bool
 }
@@ -86,7 +87,7 @@ type transientCluster struct {
 
 	stickyVFSRegistry fs.StickyRegistry
 
-	drainAndShutdown func(ctx context.Context, adminClient serverpb.RPCAdminClient) error
+	drainAndShutdown func(ctx context.Context, adminClient serverpb.AdminClient) error
 
 	infoLog  LoggerFn
 	warnLog  LoggerFn
@@ -145,7 +146,7 @@ func NewDemoCluster(
 	warnLog LoggerFn,
 	shoutLog ShoutLoggerFn,
 	startStopper func(ctx context.Context) (*stop.Stopper, error),
-	drainAndShutdown func(ctx context.Context, s serverpb.RPCAdminClient) error,
+	drainAndShutdown func(ctx context.Context, s serverpb.AdminClient) error,
 ) (DemoCluster, error) {
 	c := &transientCluster{
 		demoCtx:          demoCtx,
@@ -456,6 +457,15 @@ func (c *transientCluster) Start(ctx context.Context) (err error) {
 					return err
 				}
 			}
+
+			for _, s := range []string{
+				string(sqlclustersettings.RestrictAccessToSystemInterface.Name()),
+				string(sql.TipUserAboutSystemInterface.Name()),
+			} {
+				if _, err := ie.Exec(ctx, "restrict-system-interface", nil, fmt.Sprintf(`SET CLUSTER SETTING %s = true`, s)); err != nil {
+					return err
+				}
+			}
 		}
 
 		// Prepare the URL for use by the SQL shell.
@@ -535,15 +545,6 @@ func (c *transientCluster) startTenantService(
 						InjectedLatencyEnabled: c.latencyEnabled.Load,
 					},
 				},
-				JobsTestingKnobs: &jobs.TestingKnobs{
-					// Allow the scheduler daemon to start earlier in demo.
-					SchedulerDaemonInitialScanDelay: func() time.Duration {
-						return time.Second * 2
-					},
-					SchedulerDaemonScanDelay: func() time.Duration {
-						return time.Second * 5
-					},
-				},
 			},
 		}
 
@@ -570,15 +571,6 @@ func (c *transientCluster) startTenantService(
 						ContextTestingKnobs: rpc.ContextTestingKnobs{
 							InjectedLatencyOracle:  latencyMap,
 							InjectedLatencyEnabled: c.latencyEnabled.Load,
-						},
-					},
-					JobsTestingKnobs: &jobs.TestingKnobs{
-						// Allow the scheduler daemon to start earlier in demo.
-						SchedulerDaemonInitialScanDelay: func() time.Duration {
-							return time.Second * 2
-						},
-						SchedulerDaemonScanDelay: func() time.Duration {
-							return time.Second * 5
 						},
 					},
 				},
@@ -803,7 +795,7 @@ func (c *transientCluster) waitForNodeIDReadiness(
 			if err != nil {
 				return err
 			}
-			c.servers[idx].adminClient = conn.NewAdminClient()
+			c.servers[idx].adminClient = serverpb.NewAdminClient(conn)
 
 		}
 		break
@@ -932,8 +924,7 @@ func (demoCtx *Context) testServerArgsForTransientCluster(
 		EnableDemoLoginEndpoint: true,
 		// Demo clusters by default will create their own tenants, so we
 		// don't need to create them here.
-		DefaultTestTenant: base.TestControlsTenantsExplicitly,
-		DefaultTenantName: roachpb.TenantName(demoTenantName),
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 
 		Knobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
@@ -942,10 +933,7 @@ func (demoCtx *Context) testServerArgsForTransientCluster(
 			JobsTestingKnobs: &jobs.TestingKnobs{
 				// Allow the scheduler daemon to start earlier in demo.
 				SchedulerDaemonInitialScanDelay: func() time.Duration {
-					return time.Second * 2
-				},
-				SchedulerDaemonScanDelay: func() time.Duration {
-					return time.Second * 5
+					return time.Second * 15
 				},
 			},
 		},
@@ -984,11 +972,6 @@ func (demoCtx *Context) testServerArgsForTransientCluster(
 		args.Insecure = false
 		args.SSLCertsDir = demoDir
 	}
-
-	// Allow access to system and crdb_internal tables in demo mode.
-	// Demo mode is for development/testing, so we want to allow access
-	// to these tables for debugging and introspection.
-	serverutils.SetUnsafeOverride(&args.Knobs)
 
 	return args
 }
@@ -1099,9 +1082,9 @@ func (c *transientCluster) DrainAndShutdown(ctx context.Context, nodeID int32) e
 // server than the one referred to by the node ID.
 func (c *transientCluster) findOtherServer(
 	ctx context.Context, nodeID int32, op string,
-) (serverpb.RPCAdminClient, error) {
+) (serverpb.AdminClient, error) {
 	// Find a node to use as the sender.
-	var adminClient serverpb.RPCAdminClient
+	var adminClient serverpb.AdminClient
 	for _, s := range c.servers {
 		if s.adminClient != nil && s.nodeID != roachpb.NodeID(nodeID) {
 			adminClient = s.adminClient
@@ -1235,7 +1218,7 @@ func (c *transientCluster) startServerInternal(
 
 	c.servers[serverIdx] = serverEntry{
 		TestServerInterface: s,
-		adminClient:         conn.NewAdminClient(),
+		adminClient:         serverpb.NewAdminClient(conn),
 		nodeID:              nodeID,
 	}
 

@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
 	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
@@ -28,8 +27,8 @@ var railsReleaseTagRegex = regexp.MustCompile(`^v(?P<major>\d+)\.(?P<minor>\d+)\
 
 // WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
 // This is used by docs automation to produce a list of supported versions for ORM's.
-var supportedRailsVersion = "8.0.1"
-var activerecordAdapterVersion = "v8.0.1"
+var supportedRailsVersion = "7.2.1"
+var activerecordAdapterVersion = "v7.2.0"
 
 // This test runs activerecord's full test suite against a single cockroach node.
 
@@ -47,7 +46,7 @@ func registerActiveRecord(r registry.Registry) {
 		startOpts := option.NewStartOpts(sqlClientsInMemoryDB)
 		startOpts.RoachprodOpts.SQLPort = config.DefaultSQLPort
 		// Activerecord uses root user with ssl disabled.
-		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(install.SimpleSecureOption(false)), c.All())
+		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(install.SecureOption(false)), c.All())
 
 		version, err := fetchCockroachVersion(ctx, t.L(), c, node[0])
 		if err != nil {
@@ -246,7 +245,7 @@ func registerActiveRecord(r registry.Registry) {
 		Name:             "activerecord",
 		Owner:            registry.OwnerSQLFoundations,
 		Timeout:          5 * time.Hour,
-		Cluster:          r.MakeClusterSpec(1, spec.Arch(spec.AllExceptFIPS)),
+		Cluster:          r.MakeClusterSpec(1),
 		NativeLibs:       registry.LibGEOS,
 		CompatibleClouds: registry.OnlyGCE,
 		Suites:           registry.Suites(registry.Nightly, registry.ORM),

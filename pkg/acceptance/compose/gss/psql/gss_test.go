@@ -8,6 +8,7 @@
 // tag is reserved for the toplevel Makefile's linux-gnu build.
 
 //go:build gss_compose
+// +build gss_compose
 
 package gss
 
@@ -109,12 +110,12 @@ func TestGSS(t *testing.T) {
 			user:     "tester",
 			gssErr:   "",
 		},
-		// Verify names are matched without case-sensitivity.
+		// Verify case-sensitivity.
 		{
 			conf:     `host all all all gss map=demo`,
 			identMap: `demo /^(.*)@MY.EX$ \1`,
 			user:     "tester",
-			gssErr:   ``,
+			gssErr:   `system identity "tester@my.ex" did not map to a database role`,
 		},
 		// Validating the use of "map" as a filter.
 		{

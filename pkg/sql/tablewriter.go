@@ -16,7 +16,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/mutations"
 	"github.com/cockroachdb/cockroach/pkg/sql/row"
+	"github.com/cockroachdb/cockroach/pkg/sql/rowcontainer"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
@@ -24,6 +26,72 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
+
+// expressionCarrier handles visiting sub-expressions.
+type expressionCarrier interface {
+	// walkExprs explores all sub-expressions held by this object, if
+	// any.
+	walkExprs(func(desc string, index int, expr tree.TypedExpr))
+}
+
+// tableWriter handles writing kvs and forming table rows.
+//
+// Usage:
+//
+//	err := tw.init(txn, evalCtx)
+//	// Handle err.
+//	for {
+//	   values := ...
+//	   row, err := tw.row(values)
+//	   // Handle err.
+//	}
+//	err := tw.finalize()
+//	// Handle err.
+type tableWriter interface {
+	expressionCarrier
+
+	// init provides the tableWriter with a Txn and optional monitor to write to
+	// and returns an error if it was misconfigured.
+	init(context.Context, *kv.Txn, *eval.Context) error
+
+	// row performs a sql row modification (tableInserter performs an insert,
+	// etc). It batches up writes to the init'd txn and periodically sends them.
+	//
+	// The passed Datums is not used after `row` returns.
+	//
+	// The PartialIndexUpdateHelper is used to determine which partial indexes
+	// to avoid updating when performing row modification. This is necessary
+	// because not all rows are indexed by partial indexes.
+	//
+	// The traceKV parameter determines whether the individual K/V operations
+	// should be logged to the context. We use a separate argument here instead
+	// of a Value field on the context because Value access in context.Context
+	// is rather expensive and the tableWriter interface is used on the
+	// inner loop of table accesses.
+	row(context.Context, tree.Datums, row.PartialIndexUpdateHelper, bool /* traceKV */) error
+
+	// flushAndStartNewBatch is called at the end of each batch but the last.
+	// This should flush the current batch.
+	flushAndStartNewBatch(context.Context) error
+
+	// finalize flushes out any remaining writes. It is called after all calls
+	// to row.
+	finalize(context.Context) error
+
+	// tableDesc returns the TableDescriptor for the table that the tableWriter
+	// will modify.
+	tableDesc() catalog.TableDescriptor
+
+	// close frees all resources held by the tableWriter.
+	close(context.Context)
+
+	// desc returns a name suitable for describing the table writer in
+	// the output of EXPLAIN.
+	desc() string
+
+	// enable auto commit in call to finalize().
+	enableAutoCommit()
+}
 
 type autoCommitOpt int
 
@@ -49,19 +117,20 @@ type tableWriterBase struct {
 	// deadlockTimeout specifies the amount of time that the writer will wait
 	// on a lock before checking if there is a race condition.
 	deadlockTimeout time.Duration
-	// maxBatchSize determines the maximum number of rows in the SQL-level batch
-	// for a mutation operation. By default, it will be set to 10k but can be a
-	// different value in tests.
+	// maxBatchSize determines the maximum number of entries in the KV batch
+	// for a mutation operation. By default, it will be set to 10k but can be
+	// a different value in tests.
 	maxBatchSize int
 	// maxBatchByteSize determines the maximum number of key and value bytes in
 	// the KV batch for a mutation operation.
-	// NOTE: This is based on the bytes in the KV batch, while maxBatchSize is
-	// based on the rows in the SQL-level batch.
 	maxBatchByteSize int
 	// currentBatchSize is the size of the current SQL-level batch (i.e. not the
 	// KV-level batch). It is updated on every row() call and is reset once a new
 	// batch is started.
 	currentBatchSize int
+	// lastBatchSize is the size of the last batch. It is set to the value of
+	// currentBatchSize once the batch is flushed or finalized.
+	lastBatchSize int
 	// rowsWritten tracks the number of primary index rows written by this
 	// tableWriterBase so far. This counter includes unsuccessful writes (e.g.
 	// those performed by swap mutations in the event of a nonexistent row).
@@ -72,14 +141,14 @@ type tableWriterBase struct {
 	// indexBytesWritten tracks the number of primary and secondary index bytes
 	// written by this tableWriterBase so far.
 	indexBytesWritten int64
-	// kvCPUTime tracks the cumulative CPU time (in nanoseconds) that KV
-	// reported in BatchResponse headers during the execution of this table writer.
-	kvCPUTime int64
 	// rowsWrittenLimit if positive indicates that
 	// `transaction_rows_written_err` is enabled. The limit will be checked in
 	// finalize() before deciding whether it is safe to auto commit (if auto
 	// commit is enabled).
 	rowsWrittenLimit int64
+	// rows contains the accumulated result rows if rowsNeeded is set on the
+	// corresponding tableWriter.
+	rows *rowcontainer.RowContainer
 	// If set, mutations.MaxBatchSize and row.getKVBatchSize will be overridden
 	// to use the non-test value.
 	forceProductionBatchSizes bool
@@ -101,7 +170,6 @@ var maxBatchBytes = settings.RegisterByteSizeSetting(
 	4<<20,
 )
 
-// init initializes the tableWriterBase with a Txn.
 func (tb *tableWriterBase) init(
 	txn *kv.Txn, tableDesc catalog.TableDescriptor, evalCtx *eval.Context,
 ) error {
@@ -147,15 +215,13 @@ func (tb *tableWriterBase) setRowsWrittenLimit(sd *sessiondata.SessionData) {
 func (tb *tableWriterBase) flushAndStartNewBatch(ctx context.Context) error {
 	log.VEventf(ctx, 2, "writing batch with %d requests", len(tb.b.Requests()))
 	if err := tb.txn.Run(ctx, tb.b); err != nil {
-		return row.ConvertBatchError(ctx, tb.desc, tb.b, false /* alwaysConvertCondFailed */)
+		return row.ConvertBatchError(ctx, tb.desc, tb.b)
 	}
 	if err := tb.tryDoResponseAdmission(ctx); err != nil {
 		return err
 	}
-	if br := tb.b.RawResponse(); br != nil && br.CPUTime > 0 {
-		tb.kvCPUTime += br.CPUTime
-	}
 	tb.rowsWritten += int64(tb.currentBatchSize)
+	tb.lastBatchSize = tb.currentBatchSize
 	// The mutation operators add one request to the KV batch for each index
 	// entry that's written.
 	tb.indexRowsWritten += int64(len(tb.b.Requests()))
@@ -192,11 +258,9 @@ func (tb *tableWriterBase) finalize(ctx context.Context) (err error) {
 		log.VEventf(ctx, 2, "writing batch with %d requests", len(tb.b.Requests()))
 		err = tb.txn.Run(ctx, tb.b)
 	}
+	tb.lastBatchSize = tb.currentBatchSize
 	if err != nil {
-		return row.ConvertBatchError(ctx, tb.desc, tb.b, false /* alwaysConvertCondFailed */)
-	}
-	if br := tb.b.RawResponse(); br != nil && br.CPUTime > 0 {
-		tb.kvCPUTime += br.CPUTime
+		return row.ConvertBatchError(ctx, tb.desc, tb.b)
 	}
 	return tb.tryDoResponseAdmission(ctx)
 }
@@ -236,10 +300,16 @@ func (tb *tableWriterBase) initNewBatch() {
 	}
 }
 
-func (tb *tableWriterBase) createSavepoint(ctx context.Context) (kv.SavepointToken, error) {
-	return tb.txn.CreateSavepoint(ctx)
+func (tb *tableWriterBase) clearLastBatch(ctx context.Context) {
+	tb.lastBatchSize = 0
+	if tb.rows != nil {
+		tb.rows.Clear(ctx)
+	}
 }
 
-func (tb *tableWriterBase) rollbackToSavepoint(ctx context.Context, s kv.SavepointToken) error {
-	return tb.txn.RollbackToSavepoint(ctx, s)
+func (tb *tableWriterBase) close(ctx context.Context) {
+	if tb.rows != nil {
+		tb.rows.Close(ctx)
+		tb.rows = nil
+	}
 }

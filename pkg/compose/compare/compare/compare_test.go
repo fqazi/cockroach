@@ -23,7 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -79,13 +79,8 @@ func TestCompare(t *testing.T) {
 	}
 	configs := map[string]testConfig{
 		"mutators": {
-			setup: sqlsmith.Setups[sqlsmith.RandTableSetupName],
-			opts: []sqlsmith.SmitherOption{
-				sqlsmith.CompareMode(),
-				// TODO(yuzefovich): perhaps allow DO blocks again after they
-				// have been stabilized in other tests.
-				sqlsmith.DisableDoBlocks(),
-			},
+			setup:           sqlsmith.Setups[sqlsmith.RandTableSetupName],
+			opts:            []sqlsmith.SmitherOption{sqlsmith.CompareMode()},
 			ignoreSQLErrors: true,
 			conns: []testConn{
 				{
@@ -98,7 +93,7 @@ func TestCompare(t *testing.T) {
 						randgen.ForeignKeyMutator,
 						randgen.ColumnFamilyMutator,
 						randgen.IndexStoringMutator,
-						randgen.DupPartialIndexMutator,
+						randgen.PartialIndexMutator,
 					},
 				},
 			},

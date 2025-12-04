@@ -3,7 +3,7 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package sql_test
+package sql
 
 import (
 	"context"
@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqltestutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -28,7 +27,7 @@ func TestDatabaseAccessors(t *testing.T) {
 	s := serverutils.StartServerOnly(t, base.TestServerArgs{})
 	defer s.Stopper().Stop(context.Background())
 
-	if err := sqltestutils.TestingDescsTxn(context.Background(), s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
+	if err := TestingDescsTxn(context.Background(), s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
 		_, err := col.ByIDWithoutLeased(txn.KV()).Get().Database(ctx, keys.SystemDatabaseID)
 		return err
 	}); err != nil {
@@ -42,9 +41,8 @@ func TestDatabaseHasChildSchemas(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	s, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
 
 	// Create a database and schema.
 	if _, err := sqlDB.Exec(`
@@ -56,7 +54,7 @@ CREATE SCHEMA sc;
 	}
 
 	// Now get the database descriptor from disk.
-	db := desctestutils.TestingGetDatabaseDescriptor(kvDB, s.Codec(), "d")
+	db := desctestutils.TestingGetDatabaseDescriptor(kvDB, keys.SystemSQLCodec, "d")
 	if db.GetSchemaID("sc") == descpb.InvalidID {
 		t.Fatal("expected to find child schema sc in db")
 	}
@@ -66,7 +64,7 @@ CREATE SCHEMA sc;
 		t.Fatal(err)
 	}
 
-	db = desctestutils.TestingGetDatabaseDescriptor(kvDB, s.Codec(), "d")
+	db = desctestutils.TestingGetDatabaseDescriptor(kvDB, keys.SystemSQLCodec, "d")
 	if db.GetSchemaID("sc2") == descpb.InvalidID {
 		t.Fatal("expected to find child schema sc2 in db")
 	}

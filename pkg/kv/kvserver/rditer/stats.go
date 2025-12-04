@@ -11,46 +11,33 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 )
 
 // ComputeStatsForRange computes the stats for a given range by iterating over
 // all key spans for the given range that should be accounted for in its stats.
 func ComputeStatsForRange(
-	ctx context.Context,
-	d *roachpb.RangeDescriptor,
-	reader storage.Reader,
-	readCategory fs.ReadCategory,
-	nowNanos int64,
+	ctx context.Context, d *roachpb.RangeDescriptor, reader storage.Reader, nowNanos int64,
 ) (enginepb.MVCCStats, error) {
 	return ComputeStatsForRangeWithVisitors(
-		ctx, d, reader, readCategory, nowNanos, storage.ComputeStatsVisitors{})
+		ctx, d, reader, nowNanos, storage.ComputeStatsVisitors{})
 }
 
 // ComputeStatsForRangeUserOnly is like ComputeStatsForRange but iterates only
 // over spans corresponding to user keys.
 func ComputeStatsForRangeUserOnly(
-	ctx context.Context,
-	d *roachpb.RangeDescriptor,
-	reader storage.Reader,
-	readCategory fs.ReadCategory,
-	nowNanos int64,
+	ctx context.Context, d *roachpb.RangeDescriptor, reader storage.Reader, nowNanos int64,
 ) (enginepb.MVCCStats, error) {
 	return ComputeStatsForRangeWithVisitorsUserOnly(
-		ctx, d, reader, readCategory, nowNanos, storage.ComputeStatsVisitors{})
+		ctx, d, reader, nowNanos, storage.ComputeStatsVisitors{})
 }
 
 // ComputeStatsForRangeExcludingUser is like ComputeStatsForRange but iterates
 // only over spans *not* corresponding to user keys.
 func ComputeStatsForRangeExcludingUser(
-	ctx context.Context,
-	d *roachpb.RangeDescriptor,
-	reader storage.Reader,
-	readCategory fs.ReadCategory,
-	nowNanos int64,
+	ctx context.Context, d *roachpb.RangeDescriptor, reader storage.Reader, nowNanos int64,
 ) (enginepb.MVCCStats, error) {
 	return ComputeStatsForRangeWithVisitorsExcludingUser(
-		ctx, d, reader, readCategory, nowNanos, storage.ComputeStatsVisitors{})
+		ctx, d, reader, nowNanos, storage.ComputeStatsVisitors{})
 }
 
 // ComputeStatsForRangeWithVisitors is like ComputeStatsForRange but also
@@ -59,12 +46,10 @@ func ComputeStatsForRangeWithVisitors(
 	ctx context.Context,
 	d *roachpb.RangeDescriptor,
 	reader storage.Reader,
-	readCategory fs.ReadCategory,
 	nowNanos int64,
 	visitors storage.ComputeStatsVisitors,
 ) (enginepb.MVCCStats, error) {
-	return computeStatsForSpansWithVisitors(ctx, MakeReplicatedKeySpans(d),
-		reader, readCategory, nowNanos, visitors)
+	return computeStatsForSpansWithVisitors(ctx, MakeReplicatedKeySpans(d), reader, nowNanos, visitors)
 }
 
 // ComputeStatsForRangeWithVisitorsUserOnly is like
@@ -74,12 +59,10 @@ func ComputeStatsForRangeWithVisitorsUserOnly(
 	ctx context.Context,
 	d *roachpb.RangeDescriptor,
 	reader storage.Reader,
-	readCategory fs.ReadCategory,
 	nowNanos int64,
 	visitors storage.ComputeStatsVisitors,
 ) (enginepb.MVCCStats, error) {
-	return computeStatsForSpansWithVisitors(ctx, MakeReplicatedKeySpansUserOnly(d),
-		reader, readCategory, nowNanos, visitors)
+	return computeStatsForSpansWithVisitors(ctx, MakeReplicatedKeySpansUserOnly(d), reader, nowNanos, visitors)
 }
 
 // ComputeStatsForRangeWithVisitorsExcludingUser is like
@@ -89,26 +72,23 @@ func ComputeStatsForRangeWithVisitorsExcludingUser(
 	ctx context.Context,
 	d *roachpb.RangeDescriptor,
 	reader storage.Reader,
-	readCategory fs.ReadCategory,
 	nowNanos int64,
 	visitors storage.ComputeStatsVisitors,
 ) (enginepb.MVCCStats, error) {
-	return computeStatsForSpansWithVisitors(ctx, MakeReplicatedKeySpansExcludingUser(d),
-		reader, readCategory, nowNanos, visitors)
+	return computeStatsForSpansWithVisitors(ctx, MakeReplicatedKeySpansExcludingUser(d), reader, nowNanos, visitors)
 }
 
 func computeStatsForSpansWithVisitors(
 	ctx context.Context,
 	spans []roachpb.Span,
 	reader storage.Reader,
-	readCategory fs.ReadCategory,
 	nowNanos int64,
 	visitors storage.ComputeStatsVisitors,
 ) (enginepb.MVCCStats, error) {
 	var ms enginepb.MVCCStats
 	for _, keySpan := range spans {
 		msDelta, err := storage.ComputeStatsWithVisitors(
-			ctx, reader, readCategory, keySpan.Key, keySpan.EndKey, nowNanos, visitors)
+			ctx, reader, keySpan.Key, keySpan.EndKey, nowNanos, visitors)
 		if err != nil {
 			return enginepb.MVCCStats{}, err
 		}

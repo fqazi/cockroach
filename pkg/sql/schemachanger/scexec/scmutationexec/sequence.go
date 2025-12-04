@@ -48,7 +48,9 @@ func (i *immediateVisitor) CreateSequenceDescriptor(
 	return nil
 }
 
-func (i *immediateVisitor) SetSequenceOption(ctx context.Context, op scop.SetSequenceOption) error {
+func (i *immediateVisitor) SetSequenceOptions(
+	ctx context.Context, op scop.SetSequenceOptions,
+) error {
 	sc, err := i.checkOutTable(ctx, op.SequenceID)
 	if err != nil {
 		return err
@@ -71,13 +73,13 @@ func (i *immediateVisitor) SetSequenceOption(ctx context.Context, op scop.SetSeq
 	sequenceOptionMeta := map[string]struct {
 		SetFunc func(Value string) error
 	}{
-		tree.SeqOptIncrement:    {SetFunc: setIntValue(&sc.SequenceOpts.Increment)},
-		tree.SeqOptMinValue:     {SetFunc: setIntValue(&sc.SequenceOpts.MinValue)},
-		tree.SeqOptMaxValue:     {SetFunc: setIntValue(&sc.SequenceOpts.MaxValue)},
-		tree.SeqOptStart:        {SetFunc: setIntValue(&sc.SequenceOpts.Start)},
-		tree.SeqOptCacheSession: {SetFunc: setIntValue(&sc.SequenceOpts.SessionCacheSize)},
-		tree.SeqOptCacheNode:    {SetFunc: setIntValue(&sc.SequenceOpts.NodeCacheSize)},
-		tree.SeqOptVirtual:      {SetFunc: setBoolValue(&sc.SequenceOpts.Virtual)},
+		tree.SeqOptIncrement: {SetFunc: setIntValue(&sc.SequenceOpts.Increment)},
+		tree.SeqOptMinValue:  {SetFunc: setIntValue(&sc.SequenceOpts.MinValue)},
+		tree.SeqOptMaxValue:  {SetFunc: setIntValue(&sc.SequenceOpts.MaxValue)},
+		tree.SeqOptStart:     {SetFunc: setIntValue(&sc.SequenceOpts.Start)},
+		tree.SeqOptCache:     {SetFunc: setIntValue(&sc.SequenceOpts.CacheSize)},
+		tree.SeqOptCacheNode: {SetFunc: setIntValue(&sc.SequenceOpts.NodeCacheSize)},
+		tree.SeqOptVirtual:   {SetFunc: setBoolValue(&sc.SequenceOpts.Virtual)},
 		tree.SeqOptAs: {SetFunc: func(Value string) error {
 			sc.SequenceOpts.AsIntegerType = Value
 			return nil

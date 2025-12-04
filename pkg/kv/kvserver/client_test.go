@@ -20,14 +20,14 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/stretchr/testify/require"
@@ -173,7 +173,7 @@ func assertRangeStats(
 ) {
 	t.Helper()
 
-	ms, err := kvstorage.MakeStateLoader(rangeID).LoadMVCCStats(context.Background(), r)
+	ms, err := stateloader.Make(rangeID).LoadMVCCStats(context.Background(), r)
 	require.NoError(t, err)
 	// When used with a real wall clock these will not be the same, since it
 	// takes time to load stats.
@@ -193,7 +193,7 @@ func assertRecomputedStats(
 ) {
 	t.Helper()
 
-	ms, err := rditer.ComputeStatsForRange(context.Background(), desc, r, fs.UnknownReadCategory, nowNanos)
+	ms, err := rditer.ComputeStatsForRange(context.Background(), desc, r, nowNanos)
 	require.NoError(t, err)
 
 	// When used with a real wall clock these will not be the same, since it
@@ -208,15 +208,17 @@ func assertRecomputedStats(
 func waitForTombstone(
 	t *testing.T, reader storage.Reader, rangeID roachpb.RangeID,
 ) (tombstone kvserverpb.RangeTombstone) {
-	t.Helper()
-	sl := kvstorage.MakeStateLoader(rangeID)
 	testutils.SucceedsSoon(t, func() error {
-		ts, err := sl.LoadRangeTombstone(context.Background(), reader)
-		require.NoError(t, err)
-		if ts.NextReplicaID == 0 {
+		tombstoneKey := keys.RangeTombstoneKey(rangeID)
+		ok, err := storage.MVCCGetProto(
+			context.Background(), reader, tombstoneKey, hlc.Timestamp{}, &tombstone, storage.MVCCGetOptions{},
+		)
+		if err != nil {
+			t.Fatalf("failed to read tombstone: %v", err)
+		}
+		if !ok {
 			return fmt.Errorf("tombstone not found for range %d", rangeID)
 		}
-		tombstone = ts
 		return nil
 	})
 	return tombstone

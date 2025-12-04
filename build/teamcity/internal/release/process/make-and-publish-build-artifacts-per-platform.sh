@@ -77,7 +77,7 @@ tc_end_block "Tag the release"
 
 tc_start_block "Compile and publish artifacts"
 BAZEL_SUPPORT_EXTRA_DOCKER_ARGS="-e TC_BUILDTYPE_ID -e TC_BUILD_BRANCH=$build_name -e build_name=$build_name -e gcs_credentials -e gcs_bucket=$gcs_bucket -e platform=$platform -e telemetry_disabled=$telemetry_disabled -e cockroach_archive_prefix=$cockroach_archive_prefix" run_bazel << 'EOF'
-bazel build //pkg/cmd/publish-artifacts
+bazel build //pkg/cmd/publish-provisional-artifacts
 BAZEL_BIN=$(bazel info bazel-bin)
 export google_credentials="$gcs_credentials"
 source "build/teamcity-support.sh"  # For log_into_gcloud
@@ -103,7 +103,7 @@ done
 
 tr -d '\r' < /tmp/THIRD-PARTY-NOTICES.txt.tmp > /tmp/THIRD-PARTY-NOTICES.txt
 
-$BAZEL_BIN/pkg/cmd/publish-artifacts/publish-artifacts_/publish-artifacts release --gcs-bucket="$gcs_bucket" --output-directory=artifacts --build-tag-override="$build_name" --platform $platform --third-party-notices-file=/tmp/THIRD-PARTY-NOTICES.txt --telemetry-disabled=$telemetry_disabled --cockroach-archive-prefix=$cockroach_archive_prefix
+$BAZEL_BIN/pkg/cmd/publish-provisional-artifacts/publish-provisional-artifacts_/publish-provisional-artifacts -provisional -release --gcs-bucket="$gcs_bucket" --output-directory=artifacts --build-tag-override="$build_name" --platform $platform --third-party-notices-file=/tmp/THIRD-PARTY-NOTICES.txt --telemetry-disabled=$telemetry_disabled --cockroach-archive-prefix=$cockroach_archive_prefix
 
 EOF
 tc_end_block "Compile and publish artifacts"
@@ -133,8 +133,10 @@ if [[ $platform == "linux-amd64" || $platform == "linux-arm64" || $platform == "
   build_docker_tag="${gcr_repository}:${arch}-${build_name}"
   if [[ $platform == "linux-amd64-fips" ]]; then
     build_docker_tag="${gcr_repository}:${build_name}-fips"
+    docker build --no-cache --pull --platform "linux/${arch}" --tag="${build_docker_tag}" --build-arg fips_enabled=1 "build/deploy-${platform}"
+  else
+    docker build --no-cache --pull --platform "linux/${arch}" --tag="${build_docker_tag}" "build/deploy-${platform}"
   fi
-  docker build --no-cache --pull --platform "linux/${arch}" --tag="${build_docker_tag}" "build/deploy-${platform}"
   docker push "$build_docker_tag"
 
   tc_end_block "Make and push docker images"
@@ -150,7 +152,6 @@ The binaries will be available at:
   https://storage.googleapis.com/$gcs_bucket/cockroach-$build_name.linux-amd64.tgz
   https://storage.googleapis.com/$gcs_bucket/cockroach-$build_name.linux-amd64-fips.tgz
   https://storage.googleapis.com/$gcs_bucket/cockroach-$build_name.linux-arm64.tgz
-  https://storage.googleapis.com/$gcs_bucket/cockroach-$build_name.linux-s390x.tgz
   https://storage.googleapis.com/$gcs_bucket/cockroach-$build_name.darwin-11.0-arm64.tgz
   https://storage.googleapis.com/$gcs_bucket/cockroach-$build_name.darwin-10.9-amd64.tgz
   https://storage.googleapis.com/$gcs_bucket/cockroach-$build_name.windows-6.2-amd64.zip
@@ -165,7 +166,6 @@ if [[ $telemetry_disabled == true ]]; then
 
 Additionally, the binaries with telemetry disabled will be available at:
   https://storage.googleapis.com/$gcs_bucket/${cockroach_archive_prefix}-${build_name}.linux-amd64.tgz
-  https://storage.googleapis.com/$gcs_bucket/${cockroach_archive_prefix}-${build_name}.linux-amd64-fips.tgz
   https://storage.googleapis.com/$gcs_bucket/${cockroach_archive_prefix}-${build_name}.linux-arm64.tgz
 
 EOF

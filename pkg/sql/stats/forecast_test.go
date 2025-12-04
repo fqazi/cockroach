@@ -640,7 +640,6 @@ type testStat struct {
 	at, row, dist, null, size uint64
 	hist                      testHistogram
 	colID                     uint32
-	atExtremes                bool
 }
 
 func (ts *testStat) toTableStatistic(

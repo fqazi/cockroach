@@ -21,14 +21,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/pprompt"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
+	"github.com/cockroachdb/cockroach/pkg/util/version"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/version"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgconn"
+	"github.com/jackc/pgx/v4"
 	"github.com/otan/gopgkrb5"
 )
-
-const InternalSqlAppName = "$ internal cockroach sql"
 
 func init() {
 	// Ensure that the CLI client commands can use GSSAPI authentication.
@@ -438,8 +436,6 @@ func (c *sqlConn) checkServerMetadata(ctx context.Context) error {
 	defer func(prev bool) { c.alwaysInferResultTypes = prev }(c.alwaysInferResultTypes)
 	c.alwaysInferResultTypes = false
 
-	defer c.AllowExecuteInternal(ctx)()
-
 	_, newServerVersion, newClusterID, err := c.GetServerMetadata(ctx)
 	if c.conn.IsClosed() {
 		return MarkWithConnectionClosed(err)
@@ -506,18 +502,6 @@ func (c *sqlConn) checkServerMetadata(ctx context.Context) error {
 	return c.tryEnableServerExecutionTimings(ctx)
 }
 
-func (c *sqlConn) AllowExecuteInternal(ctx context.Context) func() {
-	oldApplicationName, _ := c.getSessionVariable(ctx, "application_name")
-	if strings.HasPrefix(oldApplicationName, InternalSqlAppName) {
-		// If already an internal app name, we don't need to set a new one
-		return func() {}
-	}
-	_ = c.Exec(ctx, fmt.Sprintf("SET application_name = '%s'", InternalSqlAppName))
-	return func() {
-		_ = c.Exec(ctx, fmt.Sprintf("SET application_name = '%s'", oldApplicationName))
-	}
-}
-
 // GetServerInfo returns a copy of the remote server details.
 func (c *sqlConn) GetServerInfo() ServerInfo {
 	return ServerInfo{
@@ -560,15 +544,6 @@ func (c *sqlConn) GetServerValue(
 	}
 
 	return dbVals[0], true
-}
-
-// getSessionVariable retrieves the value of a session variable.
-func (c *sqlConn) getSessionVariable(ctx context.Context, varName string) (string, error) {
-	val, ok := c.GetServerValue(ctx, varName, fmt.Sprintf("SHOW %s", varName))
-	if !ok {
-		return "", errors.Newf("unable to retrieve session variable %s", varName)
-	}
-	return toString(val), nil
 }
 
 func (c *sqlConn) GetLastQueryStatistics(ctx context.Context) (results QueryStats, resErr error) {
@@ -684,7 +659,7 @@ func (c *sqlConn) Query(ctx context.Context, query string, args ...interface{}) 
 		if err != nil {
 			return nil, err
 		}
-		return &sqlRows{rows: rows, typeMap: c.conn.TypeMap(), conn: c}, nil
+		return &sqlRows{rows: rows, connInfo: c.conn.ConnInfo(), conn: c}, nil
 	}
 
 	// Otherwise, we use pgconn. This allows us to add support for multiple
@@ -696,9 +671,9 @@ func (c *sqlConn) Query(ctx context.Context, query string, args ...interface{}) 
 		return nil, MarkWithConnectionClosed(multiResultReader.Close())
 	}
 	rs := &sqlRowsMultiResultSet{
-		rows:    multiResultReader,
-		typeMap: c.conn.TypeMap(),
-		conn:    c,
+		rows:     multiResultReader,
+		connInfo: c.conn.ConnInfo(),
+		conn:     c,
 	}
 	if _, err := rs.NextResultSet(); err != nil {
 		return nil, err

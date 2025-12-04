@@ -11,7 +11,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/loqrecovery/loqrecoverypb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -65,7 +64,7 @@ func writeReplicaRecoveryStoreRecord(
 // recovery actions are properly reflected in server logs as needed.
 func RegisterOfflineRecoveryEvents(
 	ctx context.Context,
-	readWriter kvstorage.RaftRW,
+	readWriter storage.ReadWriter,
 	registerEvent func(context.Context, loqrecoverypb.ReplicaRecoveryRecord) (bool, error),
 ) (int, error) {
 	successCount := 0
@@ -196,7 +195,7 @@ func readNodeRecoveryStatusInfo(
 	ok, err := storage.MVCCGetProto(ctx, reader, keys.StoreLossOfQuorumRecoveryStatusKey(),
 		hlc.Timestamp{}, &result, storage.MVCCGetOptions{})
 	if err != nil {
-		log.KvExec.Error(ctx, "failed to read loss of quorum recovery plan application status")
+		log.Error(ctx, "failed to read loss of quorum recovery plan application status")
 		return loqrecoverypb.PlanApplicationResult{}, false, err
 	}
 	return result, ok, nil
@@ -211,7 +210,7 @@ func ReadCleanupActionsInfo(
 	exists, err := storage.MVCCGetProto(ctx, writer, keys.StoreLossOfQuorumRecoveryCleanupActionsKey(),
 		hlc.Timestamp{}, &result, storage.MVCCGetOptions{})
 	if err != nil {
-		log.KvExec.Errorf(ctx, "failed to read loss of quorum cleanup actions key: %s", err)
+		log.Errorf(ctx, "failed to read loss of quorum cleanup actions key: %s", err)
 		return loqrecoverypb.DeferredRecoveryActions{}, false, err
 	}
 	return result, exists, nil

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -63,7 +64,7 @@ var MaxFractionHistogramMCVs = settings.RegisterFloatSetting(
 	"sql.stats.histogram_buckets.max_fraction_most_common_values",
 	"maximum fraction of histogram buckets to use for most common values",
 	0.1,
-	settings.Fraction,
+	settings.NonNegativeFloatWithMaximum(1),
 	settings.WithPublic)
 
 // HistogramVersion identifies histogram versions.
@@ -109,11 +110,15 @@ Please add new entries at the top.
 // using value-encoding for upper bound datums.
 const upperBoundsValueEncodedVersion = HistogramVersion(3)
 
+// upperBoundsKeyEncodedVersion is the HistogramVersion at which we still used
+// key-encoding for upper bound datums.
+const upperBoundsKeyEncodedVersion = HistogramVersion(2)
+
 // EncodeUpperBound encodes the upper-bound datum of a histogram bucket.
 func EncodeUpperBound(version HistogramVersion, upperBound tree.Datum) ([]byte, error) {
 	if version >= upperBoundsValueEncodedVersion || upperBound.ResolvedType().Family() == types.TSQueryFamily {
 		// TSQuery doesn't have key-encoding, so we must use value-encoding.
-		return valueside.Encode(nil /* appendTo */, valueside.NoColumnID, upperBound)
+		return valueside.Encode(nil /* appendTo */, valueside.NoColumnID, upperBound, nil /* scratch */)
 	}
 	return keyside.Encode(nil /* b */, upperBound, encoding.Ascending)
 }
@@ -138,37 +143,6 @@ func DecodeUpperBound(
 		)
 	}
 	return datum, err
-}
-
-// enumValueExistsBetweenEncodedUpperBounds finds whether any values exist in
-// the enum type with physical representation greater than lowerBound and less
-// than upperBound, exclusive. The encoded bounds could represent old values
-// that were dropped from the enum type, or current values that exist in the
-// enum type.
-//
-// If there are any values in the enum type with physical representation between
-// the bounds, nil is returned. Otherwise an error is returned. If the bounds
-// cannot be decoded as enum physical representations an error is returned.
-func enumValueExistsBetweenEncodedUpperBounds(
-	version HistogramVersion, enumType *types.T, lowerBound, upperBound []byte,
-) error {
-	// If the encoded bounds represent old values that were dropped from the enum
-	// type, we won't be able to decode them as enums. Instead, decode them as
-	// bytes, which should give the physical representation. (This relies on enum
-	// encoding being simply the encoding of the physical representation bytes.)
-	var a tree.DatumAlloc
-	lowerPhys, err := DecodeUpperBound(version, types.Bytes, &a, lowerBound)
-	if err != nil {
-		return err
-	}
-	upperPhys, err := DecodeUpperBound(version, types.Bytes, &a, upperBound)
-	if err != nil {
-		return err
-	}
-	_, err = enumType.EnumGetFirstIdxOfPhysicalBetween(
-		[]byte(*lowerPhys.(*tree.DBytes)), []byte(*upperPhys.(*tree.DBytes)),
-	)
-	return err
 }
 
 // GetDefaultHistogramBuckets gets the default number of histogram buckets to
@@ -910,6 +884,12 @@ func (h histogram) toHistogramData(
 	ctx context.Context, colType *types.T, st *cluster.Settings,
 ) (HistogramData, error) {
 	version := HistVersion
+	if !st.Version.IsActive(ctx, clusterversion.V24_1) {
+		// If the cluster hasn't been upgraded to 24.1 version yet, then we
+		// cannot yet use the newest histogram version to preserve
+		// backwards-compatibility.
+		version = upperBoundsKeyEncodedVersion
+	}
 	histogramData := HistogramData{
 		Buckets:    make([]HistogramData_Bucket, len(h.buckets)),
 		ColumnType: colType,

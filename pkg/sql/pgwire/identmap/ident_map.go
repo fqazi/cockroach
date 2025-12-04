@@ -85,12 +85,9 @@ func From(r io.Reader) (*Conf, error) {
 		var sysPattern *regexp.Regexp
 		var err error
 		if sysName := parts[2]; sysName[0] == '/' {
-			// Use case-insensitive matching since system identities (e.g., certificate CNs)
-			// are normalized to lowercase before being passed to the user map.
-			sysPattern, err = regexp.Compile("(?i)" + sysName[1:])
+			sysPattern, err = regexp.Compile(sysName[1:])
 		} else {
-			// Use case-insensitive matching for literal patterns as well.
-			sysPattern, err = regexp.Compile("(?i)^" + regexp.QuoteMeta(sysName) + "$")
+			sysPattern, err = regexp.Compile("^" + regexp.QuoteMeta(sysName) + "$")
 		}
 		if err != nil {
 			return nil, errors.Wrapf(err, "unable to parse line %d", lineNo)
@@ -123,7 +120,7 @@ func From(r io.Reader) (*Conf, error) {
 
 // Empty returns true if no mappings have been defined.
 func (c *Conf) Empty() bool {
-	return len(c.data) == 0
+	return c.data == nil || len(c.data) == 0
 }
 
 // Map returns the database usernames that a system identity maps to
@@ -146,7 +143,7 @@ func (c *Conf) Map(mapName, systemIdentity string) ([]username.SQLUsername, bool
 	var names []username.SQLUsername
 	seen := make(map[string]bool)
 	for _, elt := range elts {
-		if n := elt.substitute(systemIdentity); n != "" {
+		if n := elt.substitute(systemIdentity); n != "" && !seen[n] {
 			// We're returning this as a for-validation username since a
 			// pattern-based mapping could still result in invalid characters
 			// being incorporated into the input.
@@ -154,11 +151,8 @@ func (c *Conf) Map(mapName, systemIdentity string) ([]username.SQLUsername, bool
 			if err != nil {
 				return nil, true, err
 			}
-			normalized := u.Normalized()
-			if !seen[normalized] {
-				names = append(names, u)
-				seen[normalized] = true
-			}
+			names = append(names, u)
+			seen[n] = true
 		}
 	}
 	return names, true, nil

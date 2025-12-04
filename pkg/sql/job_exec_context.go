@@ -14,9 +14,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/lease"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessionmutator"
 	"github.com/cockroachdb/cockroach/pkg/upgrade"
-	"github.com/cockroachdb/redact"
 )
 
 // plannerJobExecContext is a wrapper to implement JobExecContext with a planner
@@ -30,7 +28,7 @@ type plannerJobExecContext struct {
 // MakeJobExecContext makes a JobExecContext.
 func MakeJobExecContext(
 	ctx context.Context,
-	opName redact.SafeString,
+	opName string,
 	user username.SQLUsername,
 	memMetrics *MemoryMetrics,
 	execCfg *ExecutorConfig,
@@ -54,7 +52,7 @@ func (e *plannerJobExecContext) ExtendedEvalContext() *extendedEvalContext {
 func (e *plannerJobExecContext) SessionData() *sessiondata.SessionData {
 	return e.p.SessionData()
 }
-func (e *plannerJobExecContext) SessionDataMutatorIterator() *sessionmutator.SessionDataMutatorIterator {
+func (e *plannerJobExecContext) SessionDataMutatorIterator() *sessionDataMutatorIterator {
 	return e.p.SessionDataMutatorIterator()
 }
 func (e *plannerJobExecContext) ExecCfg() *ExecutorConfig        { return e.p.ExecCfg() }
@@ -85,7 +83,7 @@ type JobExecContext interface {
 	SemaCtx() *tree.SemaContext
 	ExtendedEvalContext() *extendedEvalContext
 	SessionData() *sessiondata.SessionData
-	SessionDataMutatorIterator() *sessionmutator.SessionDataMutatorIterator
+	SessionDataMutatorIterator() *sessionDataMutatorIterator
 	ExecCfg() *ExecutorConfig
 	DistSQLPlanner() *DistSQLPlanner
 	LeaseMgr() *lease.Manager

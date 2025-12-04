@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/stretchr/testify/require"
@@ -244,7 +243,6 @@ func (s *testIterator) RangeKeyChanged() bool {
 
 func TestInitResolvedTSScan(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 
 	startKey := roachpb.RKey("d")
@@ -313,7 +311,7 @@ func TestInitResolvedTSScan(t *testing.T) {
 			roachpb.MakeLock(&txn1.TxnMeta, roachpb.Key("p"), lock.Exclusive),
 		}
 		for _, l := range testLocks {
-			err := storage.MVCCAcquireLock(ctx, engine, &txn1.TxnMeta, txn1.IgnoredSeqNums, l.Strength, l.Key, nil, 0, 0, false)
+			err := storage.MVCCAcquireLock(ctx, engine, &txn1, l.Strength, l.Key, nil, 0, 0)
 			require.NoError(t, err)
 		}
 		return engine
@@ -336,9 +334,7 @@ func TestInitResolvedTSScan(t *testing.T) {
 	defer engine.Close()
 
 	// Mock processor. We just needs its eventC.
-	s := newTestScheduler(1)
-	p := ScheduledProcessor{
-		scheduler: s.NewClientScheduler(),
+	p := LegacyProcessor{
 		Config: Config{
 			Span: span,
 		},
@@ -481,11 +477,7 @@ func TestTxnPushAttempt(t *testing.T) {
 
 	// Mock processor. We configure its key span to exclude one of txn2's lock
 	// spans and a portion of three of txn4's lock spans.
-	s := newTestScheduler(1)
-	p := ScheduledProcessor{
-		scheduler: s.NewClientScheduler(),
-		eventC:    make(chan *event, 100),
-	}
+	p := LegacyProcessor{eventC: make(chan *event, 100)}
 	p.Span = roachpb.RSpan{Key: roachpb.RKey("b"), EndKey: roachpb.RKey("m")}
 	p.TxnPusher = &tp
 

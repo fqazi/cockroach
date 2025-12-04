@@ -18,11 +18,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/server"
+	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils/regionlatency"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -34,7 +33,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -46,7 +45,6 @@ func TestColdStartLatency(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	skip.UnderDuress(t, "too slow")
-	skip.WithIssue(t, 150251, "skipping as timeout settings causes #150105 to fail")
 	// We'll need to make some per-node args to assign the different
 	// KV nodes to different regions and AZs. We'll want to do it to
 	// look somewhat like the real cluster topologies we have in mind.
@@ -87,7 +85,7 @@ func TestColdStartLatency(t *testing.T) {
 				InjectedLatencyOracle:  regionlatency.MakeAddrMap(),
 				InjectedLatencyEnabled: latencyEnabled.Load,
 				UnaryClientInterceptor: func(
-					target string, class rpcbase.ConnectionClass,
+					target string, class rpc.ConnectionClass,
 				) grpc.UnaryClientInterceptor {
 					return func(
 						ctx context.Context, method string, req, reply interface{},
@@ -116,11 +114,13 @@ func TestColdStartLatency(t *testing.T) {
 		args.Knobs.Server = serverKnobs
 		perServerArgs[i] = args
 	}
+	cs := cluster.MakeTestingClusterSettings()
 	tc := testcluster.NewTestCluster(t, numNodes, base.TestClusterArgs{
 		ParallelStart:     true,
 		ServerArgsPerNode: perServerArgs,
 		ServerArgs: base.TestServerArgs{
-			DefaultTestTenant: base.TestControlsTenantsExplicitly,
+			DefaultTestTenant: base.TODOTestTenantDisabled,
+			Settings:          cs,
 		},
 	})
 	go func() {
@@ -152,6 +152,10 @@ func TestColdStartLatency(t *testing.T) {
 	tdb.Exec(t, `SET CLUSTER SETTING kv.rangefeed.closed_timestamp_refresh_interval = '200ms'`)
 	tdb.Exec(t, "SET CLUSTER SETTING kv.allocator.load_based_rebalancing = off")
 	tdb.Exec(t, "SET CLUSTER SETTING kv.allocator.min_lease_transfer_interval = '10ms'")
+	// Until a migration is added, we cannot guarantee that the descriptor will have
+	// the appropriate zone config for MR testing with fake latency. So, avoid using
+	// session based leases here.
+	tdb.Exec(t, "SET CLUSTER SETTING sql.catalog.experimental_use_session_based_leasing='off'")
 	// Lengthen the lead time for the global tables to prevent overload from
 	// resulting in delays in propagating closed timestamps and, ultimately
 	// forcing requests from being redirected to the leaseholder. Without this
@@ -171,7 +175,6 @@ func TestColdStartLatency(t *testing.T) {
 		} else {
 			stmts = []string{`
 BEGIN;
-SET LOCAL autocommit_before_ddl = false;
 ALTER DATABASE system PRIMARY REGION "us-east1";
 ALTER DATABASE system ADD REGION "us-west1";
 ALTER DATABASE system ADD REGION "europe-west1";
@@ -199,7 +202,7 @@ COMMIT;`}
 					InjectedLatencyOracle,
 				InjectedLatencyEnabled: latencyEnabled.Load,
 				StreamClientInterceptor: func(
-					target string, class rpcbase.ConnectionClass,
+					target string, class rpc.ConnectionClass,
 				) grpc.StreamClientInterceptor {
 					return func(
 						ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn,
@@ -230,7 +233,7 @@ COMMIT;`}
 						}, nil
 					}
 				},
-				UnaryClientInterceptor: func(target string, class rpcbase.ConnectionClass) grpc.UnaryClientInterceptor {
+				UnaryClientInterceptor: func(target string, class rpc.ConnectionClass) grpc.UnaryClientInterceptor {
 					var nodeID int
 					if nodeIDPtr, ok := addrsToNodeIDs.Load(target); ok {
 						nodeID = *nodeIDPtr
@@ -258,6 +261,7 @@ COMMIT;`}
 	const password = "asdf"
 	{
 		tenant, tenantDB := serverutils.StartTenant(t, tc.Server(0), base.TestTenantArgs{
+			Settings: cs,
 			TenantID: serverutils.TestTenantID(),
 			TestingKnobs: base.TestingKnobs{
 				Server: tenantServerKnobs(0),
@@ -306,6 +310,7 @@ COMMIT;`}
 		start := timeutil.Now()
 		sn := tenantServerKnobs(i)
 		tenant, err := tc.Server(i).TenantController().StartTenant(ctx, base.TestTenantArgs{
+			Settings:            cs,
 			TenantID:            serverutils.TestTenantID(),
 			DisableCreateTenant: true,
 			SkipTenantCheck:     true,
@@ -316,9 +321,9 @@ COMMIT;`}
 		})
 		require.NoError(t, err)
 		defer tenant.AppStopper().Stop(ctx)
-		pgURL, cleanup, err := pgurlutils.PGUrlWithOptionalClientCertsE(
+		pgURL, cleanup, err := sqlutils.PGUrlWithOptionalClientCertsE(
 			tenant.AdvSQLAddr(), "tenantdata", url.UserPassword("foo", password),
-			false /* withClientCerts */, "", /* certName */
+			false, "", // withClientCerts
 		)
 		if !assert.NoError(t, err) {
 			return

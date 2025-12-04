@@ -57,21 +57,7 @@ type byIDStateValue struct {
 	// this descriptor ID.
 	hasScanNamespaceForDatabaseEntries bool
 	hasScanNamespaceForDatabaseSchemas bool
-	hasDescriptor                      bool
-	hasComment                         bool
-	hasZoneConfig                      bool
-}
-
-func (b byIDStateValue) HasRequiredDescriptorEntries(
-	desc bool, comment bool, zoneConfig bool,
-) bool {
-	return (!desc || b.hasDescriptor) &&
-		(!comment || b.hasComment) &&
-		(!zoneConfig || b.hasZoneConfig)
-}
-
-func (s byIDStateValue) HasDescriptorEntries() bool {
-	return s.hasComment && s.hasZoneConfig && s.hasDescriptor
+	hasGetDescriptorEntries            bool
 }
 
 type byNameStateValue struct {
@@ -114,16 +100,11 @@ func (c *cachedCatalogReader) Cache() nstree.Catalog {
 
 // IsIDInCache is part of the CatalogReader interface.
 func (c *cachedCatalogReader) IsIDInCache(id descpb.ID) bool {
-	return c.byIDState[id].HasDescriptorEntries()
-}
-
-// IsCommentInCache is part of the CatalogReader interface.
-func (c *cachedCatalogReader) IsCommentInCache(id descpb.ID) bool {
-	return c.byIDState[id].hasComment
+	return c.byIDState[id].hasGetDescriptorEntries
 }
 
 // IsNameInCache is part of the CatalogReader interface.
-func (c *cachedCatalogReader) IsNameInCache(key descpb.NameInfo) bool {
+func (c *cachedCatalogReader) IsNameInCache(key catalog.NameKey) bool {
 	return c.cache.LookupNamespaceEntry(key) != nil
 }
 
@@ -198,7 +179,7 @@ func (c *cachedCatalogReader) ScanAll(ctx context.Context, txn *kv.Txn) (nstree.
 	// These ids don't have corresponding descriptors but some of them may have
 	// zone configs.
 	{
-		s := byIDStateValue{hasDescriptor: true, hasZoneConfig: true, hasComment: true}
+		s := byIDStateValue{hasGetDescriptorEntries: true}
 		c.setByIDState(keys.RootNamespaceID, s)
 		for _, id := range keys.PseudoTableIDs {
 			c.setByIDState(descpb.ID(id), s)
@@ -222,9 +203,7 @@ func (c *cachedCatalogReader) ScanAll(ctx context.Context, txn *kv.Txn) (nstree.
 		var nameState byNameStateValue
 		idState.hasScanNamespaceForDatabaseEntries = true
 		idState.hasScanNamespaceForDatabaseSchemas = true
-		idState.hasDescriptor = true
-		idState.hasComment = true
-		idState.hasZoneConfig = true
+		idState.hasGetDescriptorEntries = true
 		nameState.hasGetNamespaceEntries = true
 		c.setByIDState(desc.GetID(), idState)
 		ni := descpb.NameInfo{
@@ -360,20 +339,11 @@ func (c *cachedCatalogReader) GetByIDs(
 	ids []descpb.ID,
 	isDescriptorRequired bool,
 	expectedType catalog.DescriptorType,
-	opts ...GetByIDOption,
 ) (nstree.Catalog, error) {
 	numUncached := 0
-	var options getByIDOptions
-	if len(opts) == 0 {
-		opts = withDefaultOptions()
-	}
-	for _, opt := range opts {
-		opt.apply(&options)
-	}
 	// Move any uncached IDs to the front of the slice.
 	for i, id := range ids {
-		if c.byIDState[id].HasRequiredDescriptorEntries(options.withDescriptor,
-			options.withComments, options.withZoneConfig) || c.hasScanAll {
+		if c.byIDState[id].hasGetDescriptorEntries || c.hasScanAll {
 			continue
 		}
 		if desc := c.systemDatabaseCache.lookupDescriptor(c.version, id); desc != nil {
@@ -384,7 +354,7 @@ func (c *cachedCatalogReader) GetByIDs(
 	}
 	if numUncached > 0 && !(c.hasScanAll && !isDescriptorRequired) {
 		uncachedIDs := ids[:numUncached]
-		read, err := c.cr.GetByIDs(ctx, txn, uncachedIDs, isDescriptorRequired, expectedType, opts...)
+		read, err := c.cr.GetByIDs(ctx, txn, uncachedIDs, isDescriptorRequired, expectedType)
 		if err != nil {
 			return nstree.Catalog{}, err
 		}
@@ -393,10 +363,7 @@ func (c *cachedCatalogReader) GetByIDs(
 		}
 		for _, id := range uncachedIDs {
 			s := c.byIDState[id]
-			// Set flags based on what was read for us.
-			s.hasDescriptor = s.hasDescriptor || options.withDescriptor
-			s.hasComment = s.hasComment || options.withComments
-			s.hasZoneConfig = s.hasZoneConfig || options.withZoneConfig
+			s.hasGetDescriptorEntries = true
 			c.setByIDState(id, s)
 		}
 	}
@@ -421,8 +388,8 @@ func (c *cachedCatalogReader) GetByNames(
 		if c.byNameState[ni].hasGetNamespaceEntries || c.hasScanAll {
 			continue
 		}
-		if id, ts := c.systemDatabaseCache.lookupDescriptorID(c.version, ni); id != descpb.InvalidID {
-			c.cache.UpsertNamespaceEntry(ni, id, ts)
+		if id, ts := c.systemDatabaseCache.lookupDescriptorID(c.version, &ni); id != descpb.InvalidID {
+			c.cache.UpsertNamespaceEntry(&ni, id, ts)
 			s := c.byNameState[ni]
 			s.hasGetNamespaceEntries = true
 			c.setByNameState(ni, s)

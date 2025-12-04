@@ -127,7 +127,7 @@ func TestTenantGlobalAggregatedLivebytes(t *testing.T) {
 			&in,
 			expfmt.FmtText,
 			func(ex *metric.PrometheusExporter) {
-				ex.ScrapeRegistry(r, metric.WithIncludeChildMetrics(true), metric.WithIncludeAggregateMetrics(true))
+				ex.ScrapeRegistry(r, true /* includeChildMetrics */, true)
 			},
 		)
 		require.NoError(t, err)
@@ -203,7 +203,7 @@ func TestTenantGlobalAggregatedLivebytes(t *testing.T) {
 		// Exact match for non stress tests, and allow values to differ by up to
 		// 5% in stress situations.
 		confidenceLevel := 0.0
-		if skip.DevStress() {
+		if skip.Stress() {
 			confidenceLevel = 0.05
 		}
 		testutils.SucceedsSoon(t, func() error {

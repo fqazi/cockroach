@@ -87,16 +87,12 @@ func (s *Selectivity) Divide(other Selectivity) {
 	s.selectivity = selectivityInRange(s.selectivity / other.selectivity)
 }
 
-// MinSelectivity returns the smallest of the given selectivities (most
-// selective).
-func MinSelectivity(a Selectivity, others ...Selectivity) Selectivity {
-	m := a.selectivity
-	for _, o := range others {
-		if o.selectivity < m {
-			m = o.selectivity
-		}
+// MinSelectivity returns the smaller value of two selectivities.
+func MinSelectivity(a, b Selectivity) Selectivity {
+	if a.selectivity < b.selectivity {
+		return a
 	}
-	return Selectivity{m}
+	return b
 }
 
 // MaxSelectivity returns the larger value of two selectivities.

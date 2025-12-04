@@ -47,14 +47,14 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
+	"github.com/jackc/pgconn"
 	pgproto3 "github.com/jackc/pgproto3/v2"
-	pgx "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	pgx "github.com/jackc/pgx/v4"
 	proxyproto "github.com/pires/go-proxyproto"
 	"github.com/pires/go-proxyproto/tlvparse"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.yaml.in/yaml/v4"
+	"gopkg.in/yaml.v3"
 )
 
 const frontendError = "Frontend error!"
@@ -162,7 +162,7 @@ func TestProxyProtocol(t *testing.T) {
 	sqlDB.Exec(t, `CREATE USER bob WITH PASSWORD 'builder'`)
 
 	var validateFn func(h *proxyproto.Header) error
-	withProxyProtocol := func(p bool, stopper *stop.Stopper) (server *Server, addrs *serverAddresses) {
+	withProxyProtocol := func(p bool) (server *Server, addrs *serverAddresses) {
 		options := &ProxyOptions{
 			RoutingRule:          ts.AdvSQLAddr(),
 			SkipVerify:           true,
@@ -171,7 +171,7 @@ func TestProxyProtocol(t *testing.T) {
 		options.testingKnobs.validateProxyHeader = func(h *proxyproto.Header) error {
 			return validateFn(h)
 		}
-		return newSecureProxyServer(ctx, t, stopper, options)
+		return newSecureProxyServer(ctx, t, sql.Stopper(), options)
 	}
 
 	timeout := 3 * time.Second
@@ -228,10 +228,11 @@ func TestProxyProtocol(t *testing.T) {
 	})()
 
 	testSQLNoRequiredProxyProtocol := func(s *Server, addr string) {
-		url := fmt.Sprintf("postgres://bob:builder@%s/tenant-cluster-42.defaultdb?sslmode=require&sslrootcert=%s", addr, datapathutils.TestDataPath(t, "testserver.crt"))
+		url := fmt.Sprintf("postgres://bob:builder@%s/tenant-cluster-42.defaultdb?sslmode=require", addr)
 		// No proxy protocol.
 		te.TestConnect(ctx, t, url,
 			func(conn *pgx.Conn) {
+				t.Log("B")
 				require.NotZero(t, s.metrics.CurConnCount.Value())
 				require.NoError(t, runTestQuery(ctx, conn))
 			},
@@ -246,7 +247,7 @@ func TestProxyProtocol(t *testing.T) {
 	}
 
 	testSQLRequiredProxyProtocol := func(s *Server, addr string) {
-		url := fmt.Sprintf("postgres://bob:builder@%s/tenant-cluster-42.defaultdb?sslmode=require&sslrootcert=%s", addr, datapathutils.TestDataPath(t, "testserver.crt"))
+		url := fmt.Sprintf("postgres://bob:builder@%s/tenant-cluster-42.defaultdb?sslmode=require", addr)
 		// No proxy protocol.
 		_ = te.TestConnectErr(ctx, t, url, codeClientReadFailed, "tls error")
 		// Proxy protocol.
@@ -263,10 +264,7 @@ func TestProxyProtocol(t *testing.T) {
 	}
 
 	t.Run("server doesn't require proxy protocol", func(t *testing.T) {
-		ctx := context.Background()
-		stopper := stop.NewStopper()
-		defer stopper.Stop(ctx)
-		s, addrs := withProxyProtocol(false, stopper)
+		s, addrs := withProxyProtocol(false)
 		// Test SQL on the default listener. Both should go through.
 		testSQLNoRequiredProxyProtocol(s, addrs.listenAddr)
 		// Test SQL on the proxy protocol listener. Only request with PROXY should go
@@ -281,10 +279,7 @@ func TestProxyProtocol(t *testing.T) {
 	})
 
 	t.Run("server requires proxy protocol", func(t *testing.T) {
-		ctx := context.Background()
-		stopper := stop.NewStopper()
-		defer stopper.Stop(ctx)
-		s, addrs := withProxyProtocol(true, stopper)
+		s, addrs := withProxyProtocol(true)
 		// Test SQL on the default listener. Both should go through.
 		testSQLRequiredProxyProtocol(s, addrs.listenAddr)
 		// Test SQL on the proxy protocol listener. Only request with PROXY should go
@@ -722,7 +717,7 @@ func TestUnexpectedError(t *testing.T) {
 	defer testutils.TestingHook(&FrontendAdmit, func(
 		conn net.Conn, incomingTLSConfig *tls.Config,
 	) *FrontendAdmitInfo {
-		log.Dev.Infof(context.Background(), "frontend admitter returning unexpected error")
+		log.Infof(context.Background(), "frontend admitter returning unexpected error")
 		return &FrontendAdmitInfo{Conn: conn, Err: errors.New("unexpected error")}
 	})()
 
@@ -1815,8 +1810,7 @@ func TestCancelQuery(t *testing.T) {
 			ProcessID: 1,
 			SecretKey: conn.PgConn().SecretKey() + 1,
 		}
-		buf, err := crdbRequest.Encode(nil /* buf */)
-		require.NoError(t, err)
+		buf := crdbRequest.Encode(nil /* buf */)
 		proxyAddr := conn.PgConn().Conn().RemoteAddr()
 		cancelConn, err := net.Dial(proxyAddr.Network(), proxyAddr.String())
 		require.NoError(t, err)
@@ -2023,12 +2017,12 @@ func TestConnectionMigration(t *testing.T) {
 		require.Equal(t, totalAttempts, count)
 	}
 
-	transferConnWithRetries := func(t *testing.T, ctx context.Context, f *forwarder) error {
+	transferConnWithRetries := func(t *testing.T, f *forwarder) error {
 		t.Helper()
 
 		var nonRetriableErrSeen bool
 		err := testutils.SucceedsSoonError(func() error {
-			err := f.TransferConnection(ctx)
+			err := f.TransferConnection()
 			if err == nil {
 				return nil
 			}
@@ -2096,7 +2090,7 @@ func TestConnectionMigration(t *testing.T) {
 			require.NoError(t, err)
 
 			// Show that we get alternating SQL pods when we transfer.
-			require.NoError(t, transferConnWithRetries(t, tCtx, f))
+			require.NoError(t, transferConnWithRetries(t, f))
 			require.Equal(t, int64(1), f.metrics.ConnMigrationSuccessCount.Count())
 			require.Equal(t, tenant2.SQLAddr(), queryAddr(tCtx, t, db))
 
@@ -2107,7 +2101,7 @@ func TestConnectionMigration(t *testing.T) {
 			_, err = db.Exec("SET application_name = 'bar'")
 			require.NoError(t, err)
 
-			require.NoError(t, transferConnWithRetries(t, tCtx, f))
+			require.NoError(t, transferConnWithRetries(t, f))
 			require.Equal(t, int64(2), f.metrics.ConnMigrationSuccessCount.Count())
 			require.Equal(t, tenant1.SQLAddr(), queryAddr(tCtx, t, db))
 
@@ -2125,14 +2119,14 @@ func TestConnectionMigration(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				for subCtx.Err() == nil {
-					_ = f.TransferConnection(tCtx)
+					_ = f.TransferConnection()
 					time.Sleep(100 * time.Millisecond)
 				}
 			}()
 
 			// This loop will run approximately 5 seconds.
 			var tenant1Addr, tenant2Addr int
-			for range 100 {
+			for i := 0; i < 100; i++ {
 				addr := queryAddr(tCtx, t, db)
 				if addr == tenant1.SQLAddr() {
 					tenant1Addr++
@@ -2172,7 +2166,7 @@ func TestConnectionMigration(t *testing.T) {
 			err = crdb.ExecuteTx(tCtx, db, nil /* txopts */, func(tx *gosql.Tx) error {
 				// Run multiple times to ensure that connection isn't closed.
 				for i := 0; i < 5; {
-					err := f.TransferConnection(tCtx)
+					err := f.TransferConnection()
 					if err == nil {
 						return errors.New("no error")
 					}
@@ -2206,7 +2200,7 @@ func TestConnectionMigration(t *testing.T) {
 			require.Equal(t, int64(0), f.metrics.ConnMigrationErrorFatalCount.Count())
 
 			// Once the transaction is closed, transfers should work.
-			require.NoError(t, transferConnWithRetries(t, tCtx, f))
+			require.NoError(t, transferConnWithRetries(t, f))
 			require.NotEqual(t, initAddr, queryAddr(tCtx, t, db))
 			require.Nil(t, f.ctx.Err())
 			require.Equal(t, initSuccessCount+1, f.metrics.ConnMigrationSuccessCount.Count())
@@ -2228,7 +2222,7 @@ func TestConnectionMigration(t *testing.T) {
 			lookupAddrDelayDuration = 10 * time.Second
 			defer testutils.TestingHook(&defaultTransferTimeout, 3*time.Second)()
 
-			err := f.TransferConnection(tCtx)
+			err := f.TransferConnection()
 			require.Error(t, err)
 			require.Regexp(t, "injected delays", err.Error())
 			require.Equal(t, initAddr, queryAddr(tCtx, t, db))
@@ -2324,7 +2318,7 @@ func TestConnectionMigration(t *testing.T) {
 		time.Sleep(2 * time.Second)
 		// This should be an error because the transfer timed out. Connection
 		// should automatically be closed.
-		require.Error(t, f.TransferConnection(tCtx))
+		require.Error(t, f.TransferConnection())
 
 		select {
 		case <-time.After(10 * time.Second):

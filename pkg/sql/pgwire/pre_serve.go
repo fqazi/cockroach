@@ -140,7 +140,7 @@ func NewPreServeConnHandler(
 		getTLSConfig:             getTLSConfig,
 
 		tenantIndependentConnMonitor: mon.NewMonitor(mon.Options{
-			Name:       mon.MakeName("pre-conn"),
+			Name:       "pre-conn",
 			CurCount:   metrics.PreServeCurBytes,
 			MaxHist:    metrics.PreServeMaxBytes,
 			Increment:  int64(connReservationBatchSize) * baseSQLMemoryBudget,
@@ -170,12 +170,6 @@ func (s *PreServeConnHandler) AnnotateCtxForIncomingConn(
 		tag = "peer"
 	}
 	return logtags.AddTag(ctx, tag, conn.RemoteAddr().String())
-}
-
-// TestingSetAcceptSQLWithoutTLS updates the config to tweak whether SQL clients
-// can authenticate without TLS on a secure cluster, in tests.
-func (s *PreServeConnHandler) TestingSetAcceptSQLWithoutTLS(accept bool) {
-	s.cfg.AcceptSQLWithoutTLS = accept
 }
 
 // tenantIndependentMetrics is the set of metrics for the

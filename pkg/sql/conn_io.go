@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/ring"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/lib/pq/oid"
 )
@@ -54,7 +53,7 @@ const (
 // statements to be prepared, etc. At any point in time the buffer contains
 // outstanding commands that have yet to be executed, and it can also contain
 // some history of commands that we might want to retry - in the case of a
-// retryable error, we'd like to retry all the commands pertaining to the
+// retriable error, we'd like to retry all the commands pertaining to the
 // current SQL transaction.
 //
 // The buffer is supposed to be used by one reader and one writer. The writer
@@ -135,16 +134,14 @@ type ExecStmt struct {
 
 	// TimeReceived is the time at which the exec message was received
 	// from the client. Used to compute the service latency.
-	TimeReceived crtime.Mono
+	TimeReceived time.Time
 	// ParseStart/ParseEnd are the timing info for parsing of the query. Used for
 	// stats reporting.
-	ParseStart crtime.Mono
-	ParseEnd   crtime.Mono
+	ParseStart time.Time
+	ParseEnd   time.Time
 
 	// LastInBatch indicates if this command contains the last query in a
 	// simple protocol Query message that contains a batch of 1 or more queries.
-	// This is used to determine whether autocommit can be applied to the
-	// transaction, and need not be set for correctness.
 	LastInBatch bool
 	// LastInBatchBeforeShowCommitTimestamp indicates that this command contains
 	// the second-to-last query in a simple protocol Query message that contains
@@ -153,9 +150,7 @@ type ExecStmt struct {
 	// such that the SHOW COMMIT TIMESTAMP statement can return the timestamp of
 	// the transaction which applied to all the other statements in the batch.
 	// Note that SHOW COMMIT TIMESTAMP is not permitted in any other position in
-	// such a multi-statement implicit transaction. This is used to determine
-	// whether autocommit can be applied to the transaction, and need not be set
-	// for correctness.
+	// such a multi-statement implicit transaction.
 	LastInBatchBeforeShowCommitTimestamp bool
 }
 
@@ -186,7 +181,7 @@ type ExecPortal struct {
 	Limit int
 	// TimeReceived is the time at which the exec message was received
 	// from the client. Used to compute the service latency.
-	TimeReceived crtime.Mono
+	TimeReceived time.Time
 	// FollowedBySync is true if the next command after this is a Sync. This is
 	// used to enable the 1PC txn fast path in the extended protocol.
 	FollowedBySync bool
@@ -218,8 +213,8 @@ type PrepareStmt struct {
 	// RawTypeHints is the representation of type hints exactly as specified by
 	// the client.
 	RawTypeHints []oid.Oid
-	ParseStart   crtime.Mono
-	ParseEnd     crtime.Mono
+	ParseStart   time.Time
+	ParseEnd     time.Time
 }
 
 // command implements the Command interface.
@@ -281,14 +276,14 @@ type BindStmt struct {
 	// code, in which case that code will be applied to all arguments.
 	ArgFormatCodes []pgwirebase.FormatCode
 
-	// InternalArgs, if not nil, represents the arguments for the prepared
+	// internalArgs, if not nil, represents the arguments for the prepared
 	// statements as produced by the internal clients. These don't need to go
 	// through encoding/decoding of the args. However, the types of the datums
 	// must correspond exactly to the inferred types (but note that the types of
 	// the datums are passes as type hints to the PrepareStmt command, so the
 	// inferred types should reflect that).
-	// If InternalArgs is specified, Args and ArgFormatCodes are ignored.
-	InternalArgs []tree.Datum
+	// If internalArgs is specified, Args and ArgFormatCodes are ignored.
+	internalArgs []tree.Datum
 }
 
 // command implements the Command interface.
@@ -382,11 +377,11 @@ type CopyIn struct {
 	}
 	// TimeReceived is the time at which the message was received
 	// from the client. Used to compute the service latency.
-	TimeReceived crtime.Mono
+	TimeReceived time.Time
 	// ParseStart/ParseEnd are the timing info for parsing of the query. Used for
 	// stats reporting.
-	ParseStart crtime.Mono
-	ParseEnd   crtime.Mono
+	ParseStart time.Time
+	ParseEnd   time.Time
 }
 
 // command implements the Command interface.
@@ -411,11 +406,11 @@ type CopyOut struct {
 	Stmt       *tree.CopyTo
 	// TimeReceived is the time at which the message was received
 	// from the client. Used to compute the service latency.
-	TimeReceived crtime.Mono
+	TimeReceived time.Time
 	// ParseStart/ParseEnd are the timing info for parsing of the query. Used for
 	// stats reporting.
-	ParseStart crtime.Mono
-	ParseEnd   crtime.Mono
+	ParseStart time.Time
+	ParseEnd   time.Time
 }
 
 // command implements the Command interface.
@@ -558,23 +553,6 @@ func (buf *StmtBuf) CurCmd() (Command, CmdPos, error) {
 	}
 }
 
-// Empty returns true if there are no unprocessed commands in the buffer.
-// If the buffer is closed, it returns io.EOF.
-func (buf *StmtBuf) Empty() (bool, error) {
-	buf.mu.Lock()
-	defer buf.mu.Unlock()
-
-	if buf.mu.closed {
-		return false, io.EOF
-	}
-	curPos := buf.mu.curPos
-	cmdIdx, err := buf.translatePosLocked(curPos)
-	if err != nil {
-		return false, err
-	}
-	return !(cmdIdx < buf.mu.data.Len()), nil
-}
-
 // translatePosLocked translates an absolute position of a command (counting
 // from the connection start) to the index of the respective command in the
 // buffer (so, it returns an index relative to the start of the buffer).
@@ -598,11 +576,11 @@ func (buf *StmtBuf) Ltrim(ctx context.Context, pos CmdPos) {
 	buf.mu.Lock()
 	defer buf.mu.Unlock()
 	if pos < buf.mu.startPos {
-		log.Dev.Fatalf(ctx, "invalid ltrim position: %d. buf starting at: %d",
+		log.Fatalf(ctx, "invalid ltrim position: %d. buf starting at: %d",
 			pos, buf.mu.startPos)
 	}
 	if buf.mu.curPos < pos {
-		log.Dev.Fatalf(ctx, "invalid ltrim position: %d when cursor is: %d",
+		log.Fatalf(ctx, "invalid ltrim position: %d when cursor is: %d",
 			pos, buf.mu.curPos)
 	}
 	// Remove commands one by one.
@@ -700,7 +678,7 @@ func (buf *StmtBuf) Rewind(ctx context.Context, pos CmdPos) {
 	buf.mu.Lock()
 	defer buf.mu.Unlock()
 	if pos < buf.mu.startPos {
-		log.Dev.Fatalf(ctx, "attempting to rewind below buffer start")
+		log.Fatalf(ctx, "attempting to rewind below buffer start")
 	}
 	if buf.PipelineCount != nil {
 		buf.PipelineCount.Inc(int64(buf.mu.curPos - pos))
@@ -859,9 +837,8 @@ type RestrictedCommandResult interface {
 	// This gets flushed only when the CommandResult is closed.
 	BufferNotice(notice pgnotice.Notice)
 
-	// SendNotice sends a notice to the client, which can optionally be flushed
-	// immediately.
-	SendNotice(ctx context.Context, notice pgnotice.Notice, immediateFlush bool) error
+	// SendNotice immediately flushes a notice to the client.
+	SendNotice(ctx context.Context, notice pgnotice.Notice) error
 
 	// SetColumns informs the client about the schema of the result. The columns
 	// can be nil.
@@ -1136,9 +1113,7 @@ func (r *streamingCommandResult) BufferNotice(notice pgnotice.Notice) {
 }
 
 // SendNotice is part of the RestrictedCommandResult interface.
-func (r *streamingCommandResult) SendNotice(
-	ctx context.Context, notice pgnotice.Notice, immediateFlush bool,
-) error {
+func (r *streamingCommandResult) SendNotice(ctx context.Context, notice pgnotice.Notice) error {
 	// Unimplemented: the internal executor does not support notices.
 	return nil
 }

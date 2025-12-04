@@ -6,11 +6,7 @@
 package sql
 
 import (
-	"context"
-
-	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 )
@@ -18,6 +14,30 @@ import (
 // TODO(ajwerner): Add many more metrics.
 
 var (
+	metaRunning = metric.Metadata{
+		Name:        "sql.schema_changer.running",
+		Help:        "Gauge of currently running schema changes",
+		Measurement: "Schema changes",
+		Unit:        metric.Unit_COUNT,
+	}
+	metaSuccesses = metric.Metadata{
+		Name:        "sql.schema_changer.successes",
+		Help:        "Counter of the number of schema changer resumes which succeed",
+		Measurement: "Schema changes",
+		Unit:        metric.Unit_COUNT,
+	}
+	metaRetryErrors = metric.Metadata{
+		Name:        "sql.schema_changer.retry_errors",
+		Help:        "Counter of the number of retriable errors experienced by the schema changer",
+		Measurement: "Errors",
+		Unit:        metric.Unit_COUNT,
+	}
+	metaPermanentErrors = metric.Metadata{
+		Name:        "sql.schema_changer.permanent_errors",
+		Help:        "Counter of the number of permanent errors experienced by the schema changer",
+		Measurement: "Errors",
+		Unit:        metric.Unit_COUNT,
+	}
 	metaObjects = metric.Metadata{
 		Name:        "sql.schema_changer.object_count",
 		Help:        "Counter of the number of objects in the cluster",
@@ -28,9 +48,13 @@ var (
 
 // SchemaChangerMetrics are metrics corresponding to the schema changer.
 type SchemaChangerMetrics struct {
-	ConstraintErrors    telemetry.Counter
-	UncategorizedErrors telemetry.Counter
-	ObjectCount         *metric.Gauge
+	RunningSchemaChanges *metric.Gauge
+	Successes            *metric.Counter
+	RetryErrors          *metric.Counter
+	PermanentErrors      *metric.Counter
+	ConstraintErrors     telemetry.Counter
+	UncategorizedErrors  telemetry.Counter
+	ObjectCount          *metric.Gauge
 }
 
 // MetricStruct makes SchemaChangerMetrics a metric.Struct.
@@ -41,30 +65,12 @@ var _ metric.Struct = (*SchemaChangerMetrics)(nil)
 // NewSchemaChangerMetrics constructs a new SchemaChangerMetrics.
 func NewSchemaChangerMetrics() *SchemaChangerMetrics {
 	return &SchemaChangerMetrics{
-		ConstraintErrors:    sqltelemetry.SchemaChangeErrorCounter("constraint_violation"),
-		UncategorizedErrors: sqltelemetry.SchemaChangeErrorCounter("uncategorized"),
-		ObjectCount:         metric.NewGauge(metaObjects),
+		RunningSchemaChanges: metric.NewGauge(metaRunning),
+		Successes:            metric.NewCounter(metaSuccesses),
+		RetryErrors:          metric.NewCounter(metaRetryErrors),
+		PermanentErrors:      metric.NewCounter(metaPermanentErrors),
+		ConstraintErrors:     sqltelemetry.SchemaChangeErrorCounter("constraint_violation"),
+		UncategorizedErrors:  sqltelemetry.SchemaChangeErrorCounter("uncategorized"),
+		ObjectCount:          metric.NewGauge(metaObjects),
 	}
-}
-
-// UpdateDescriptorCount updates our sql.schema_changer.object_count gauge with
-// a fresh count of objects in the system.descriptor table.
-func UpdateDescriptorCount(
-	ctx context.Context, execCfg *ExecutorConfig, metric *SchemaChangerMetrics,
-) error {
-	return execCfg.InternalDB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
-		desc, err := txn.Descriptors().ByIDWithLeased(txn.KV()).Get().Table(ctx, keys.DescriptorTableID)
-		if err != nil {
-			return err
-		}
-		tableStats, err := execCfg.TableStatsCache.GetTableStats(ctx, desc, nil /* typeResolver */)
-		if err != nil {
-			return err
-		}
-		if len(tableStats) > 0 {
-			// Use the row count from the most recent statistic.
-			metric.ObjectCount.Update(int64(tableStats[0].RowCount))
-		}
-		return nil
-	})
 }

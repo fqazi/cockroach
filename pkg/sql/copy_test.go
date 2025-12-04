@@ -9,14 +9,17 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/url"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/jackc/pgx/v5"
+	"github.com/cockroachdb/cockroach/pkg/util/stop"
+	"github.com/jackc/pgx/v4"
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
@@ -34,9 +37,8 @@ func TestCopyLogging(t *testing.T) {
 		{`SET CLUSTER SETTING sql.log.admin_audit.enabled = true`},
 	} {
 		t.Run(strings[0], func(t *testing.T) {
-			srv, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
-			defer srv.Stopper().Stop(context.Background())
-			s := srv.ApplicationLayer()
+			s, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
+			defer s.Stopper().Stop(context.Background())
 
 			_, err := db.Exec(`CREATE TABLE t (i INT PRIMARY KEY);`)
 			require.NoError(t, err)
@@ -48,12 +50,13 @@ func TestCopyLogging(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			pgURL, cleanupGoDB := s.PGUrl(
-				t,
-				serverutils.CertsDirPrefix("StartServer"),
-				serverutils.User(username.RootUser),
+			pgURL, cleanupGoDB, err := sqlutils.PGUrlE(
+				s.AdvSQLAddr(),
+				"StartServer", /* prefix */
+				url.User(username.RootUser),
 			)
-			defer cleanupGoDB()
+			require.NoError(t, err)
+			s.Stopper().AddCloser(stop.CloserFn(func() { cleanupGoDB() }))
 			config, err := pgx.ParseConfig(pgURL.String())
 			require.NoError(t, err)
 
@@ -178,7 +181,7 @@ func TestCopyLogging(t *testing.T) {
 			})
 
 			t.Run("no privilege on table", func(t *testing.T) {
-				pgURL, cleanup := s.PGUrl(t, serverutils.CertsDirPrefix("copy_test"), serverutils.User(username.TestUser))
+				pgURL, cleanup := sqlutils.PGUrl(t, s.AdvSQLAddr(), "copy_test", url.User(username.TestUser))
 				defer cleanup()
 				conn, err := pgx.Connect(ctx, pgURL.String())
 				require.NoError(t, err)

@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/interval"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
@@ -50,11 +49,12 @@ var MaxTxnRefreshSpansBytes = settings.RegisterIntSetting(
 // to impact customers because they should already be able to handle
 // serialization errors; in case any unforeseen customer issues arise, the
 // setting here allows us to revert to the old behavior.
+// TODO(mira): set the default to true after #113765.
 var KeepRefreshSpansOnSavepointRollback = settings.RegisterBoolSetting(
 	settings.SystemVisible,
 	"kv.transaction.keep_refresh_spans_on_savepoint_rollback.enabled",
 	"if enabled, all refresh spans accumulated since a savepoint was created are kept after the savepoint is rolled back",
-	true)
+	false)
 
 // txnSpanRefresher is a txnInterceptor that collects the read spans of a
 // serializable transaction in the event it gets a serializable retry error. It
@@ -225,13 +225,62 @@ func (sr *txnSpanRefresher) maybeCondenseRefreshSpans(
 func (sr *txnSpanRefresher) sendLockedWithRefreshAttempts(
 	ctx context.Context, ba *kvpb.BatchRequest, maxRefreshAttempts int,
 ) (*kvpb.BatchResponse, *kvpb.Error) {
+	if ba.Txn.WriteTooOld {
+		// The WriteTooOld flag is not supposed to be set on requests. It's only set
+		// by the server and it's terminated by this interceptor on the client.
+		log.Fatalf(ctx, "unexpected WriteTooOld request. ba: %s (txn: %s)",
+			ba.String(), ba.Txn.String())
+	}
 	br, pErr := sr.wrapped.SendLocked(ctx, ba)
+
+	// We might receive errors with the WriteTooOld flag set. This interceptor
+	// wants to always terminate that flag. In the case of an error, we can just
+	// ignore it.
+	if pErr != nil && pErr.GetTxn() != nil {
+		pErr.GetTxn().WriteTooOld = false
+	}
 
 	// Check for server-side refresh.
 	if err := sr.forwardRefreshTimestampOnResponse(ba, br, pErr); err != nil {
 		return nil, kvpb.NewError(err)
 	}
 
+	if pErr == nil && br.Txn.WriteTooOld {
+		// If the transaction is no longer pending, terminate the WriteTooOld flag
+		// without hitting the logic below. It's not clear that this can happen in
+		// practice, but it's better to be safe.
+		if br.Txn.Status != roachpb.PENDING {
+			br.Txn = br.Txn.Clone()
+			br.Txn.WriteTooOld = false
+			return br, nil
+		}
+		// If we got a response with the WriteTooOld flag set, then we pretend that
+		// we got a WriteTooOldError, which will cause us to attempt to refresh and
+		// propagate the error if we failed. When it can, the server prefers to
+		// return the WriteTooOld flag, rather than a WriteTooOldError because, in
+		// the former case, it can leave intents behind. We like refreshing eagerly
+		// when the WriteTooOld flag is set because it's likely that the refresh
+		// will fail (if we previously read the key that's now causing a WTO, then
+		// the refresh will surely fail).
+		// TODO(andrei): Implement a more discerning policy based on whether we've
+		// read that key before.
+		//
+		// If the refresh fails, we could continue running the transaction even
+		// though it will not be able to commit, in order for it to lay down more
+		// intents. Not doing so, though, gives the SQL a chance to auto-retry.
+		// TODO(andrei): Implement a more discerning policy based on whether
+		// auto-retries are still possible.
+		//
+		// For the refresh, we have two options: either refresh everything read
+		// *before* this batch, and then retry this batch, or refresh the current
+		// batch's reads too and then, if successful, there'd be nothing to retry.
+		// We take the former option by setting br = nil below to minimized the
+		// chances that the refresh fails.
+		bumpedTxn := br.Txn.Clone()
+		bumpedTxn.WriteTooOld = false
+		pErr = kvpb.NewErrorWithTxn(kvpb.NewTransactionRetryError(kvpb.RETRY_WRITE_TOO_OLD, "WriteTooOld flag converted to WriteTooOldError"), bumpedTxn)
+		br = nil
+	}
 	if pErr != nil {
 		if maxRefreshAttempts > 0 {
 			br, pErr = sr.maybeRefreshAndRetrySend(ctx, ba, pErr, maxRefreshAttempts)
@@ -259,21 +308,6 @@ func (sr *txnSpanRefresher) maybeRefreshAndRetrySend(
 	if !ok {
 		return nil, pErr
 	}
-
-	// If we are in a weak isolation transaction and we had an EndTxn in our
-	// batch, then this retry faces another hazard: The STAGING record written in
-	// the first attempt may possibly be satisfied by our future writes.
-	//
-	// TODO(ssd): If we were guaranteed to have a BatchResponse if a request was
-	// evaluated, then we could narrow this further and only bump the refresh
-	// timestamp if the StagingTimestamp == RefreshTS.
-	endTxnArg, hasET := ba.GetArg(kvpb.EndTxn)
-	bumpedRefreshTimestampRequired := hasET && txn.Status == roachpb.STAGING && txn.IsoLevel.ToleratesWriteSkew()
-	if bumpedRefreshTimestampRequired {
-		refreshTS = refreshTS.Next()
-		log.Eventf(ctx, "bumping refresh timestamp to avoid unexpected parallel commit: %s", refreshTS)
-	}
-
 	refreshFrom := txn.ReadTimestamp
 	refreshToTxn := txn.Clone()
 	refreshToTxn.BumpReadTimestamp(refreshTS)
@@ -281,9 +315,9 @@ func (sr *txnSpanRefresher) maybeRefreshAndRetrySend(
 	case roachpb.PENDING:
 	case roachpb.STAGING:
 		// If the batch resulted in an error but the EndTxn request succeeded,
-		// staging the transaction record in the process, downgrade the status back
-		// to PENDING. Even though the transaction record may have a status of
-		// STAGING, we know that the transaction failed to implicitly commit.
+		// staging the transaction record in the process, downgrade the status
+		// back to PENDING. Even though the transaction record may have a status
+		// of STAGING, we know that the transaction failed to implicitly commit.
 		refreshToTxn.Status = roachpb.PENDING
 	default:
 		return nil, kvpb.NewError(errors.AssertionFailedf(
@@ -295,7 +329,7 @@ func (sr *txnSpanRefresher) maybeRefreshAndRetrySend(
 	// Try refreshing the txn spans so we can retry.
 	if refreshErr := sr.tryRefreshTxnSpans(ctx, refreshFrom, refreshToTxn); refreshErr != nil {
 		log.Eventf(ctx, "refresh failed; propagating original retry error")
-		// TODO(#146734): We should add refreshErr info to the returned error.
+		// TODO(lidor): we should add refreshErr info to the returned error. See issue #41057.
 		return nil, pErr
 	}
 
@@ -308,7 +342,8 @@ func (sr *txnSpanRefresher) maybeRefreshAndRetrySend(
 
 	// To prevent starvation of batches and to ensure the correctness of parallel
 	// commits, split off the EndTxn request into its own batch on auto-retries.
-	if len(ba.Requests) > 1 && hasET && !endTxnArg.(*kvpb.EndTxnRequest).Require1PC {
+	args, hasET := ba.GetArg(kvpb.EndTxn)
+	if len(ba.Requests) > 1 && hasET && !args.(*kvpb.EndTxnRequest).Require1PC {
 		log.Eventf(ctx, "sending EndTxn separately from rest of batch on retry")
 		return sr.splitEndTxnAndRetrySend(ctx, ba)
 	}
@@ -501,6 +536,10 @@ func (sr *txnSpanRefresher) maybeRefreshPreemptively(
 func newRetryErrorOnFailedPreemptiveRefresh(
 	txn *roachpb.Transaction, pErr *kvpb.Error,
 ) *kvpb.Error {
+	reason := kvpb.RETRY_SERIALIZABLE
+	if txn.WriteTooOld {
+		reason = kvpb.RETRY_WRITE_TOO_OLD
+	}
 	var conflictingTxn *enginepb.TxnMeta
 	msg := redact.StringBuilder{}
 	msg.SafeString("failed preemptive refresh")
@@ -519,7 +558,7 @@ func newRetryErrorOnFailedPreemptiveRefresh(
 			msg.Printf(" - unknown error: %s", pErr)
 		}
 	}
-	retryErr := kvpb.NewTransactionRetryError(kvpb.RETRY_SERIALIZABLE, msg.RedactableString(), kvpb.WithConflictingTxn(conflictingTxn))
+	retryErr := kvpb.NewTransactionRetryError(reason, msg.RedactableString(), kvpb.WithConflictingTxn(conflictingTxn))
 	return kvpb.NewErrorWithTxn(retryErr, txn)
 }
 
@@ -726,14 +765,9 @@ func (sr *txnSpanRefresher) maxRefreshAttempts() int {
 func (sr *txnSpanRefresher) setWrapped(wrapped lockedSender) { sr.wrapped = wrapped }
 
 // populateLeafInputState is part of the txnInterceptor interface.
-func (sr *txnSpanRefresher) populateLeafInputState(
-	tis *roachpb.LeafTxnInputState, tree interval.Tree,
-) {
+func (sr *txnSpanRefresher) populateLeafInputState(tis *roachpb.LeafTxnInputState) {
 	tis.RefreshInvalid = sr.refreshInvalid
 }
-
-// initializeLeaf is part of the txnInterceptor interface.
-func (*txnSpanRefresher) initializeLeaf(tis *roachpb.LeafTxnInputState) {}
 
 // populateLeafFinalState is part of the txnInterceptor interface.
 func (sr *txnSpanRefresher) populateLeafFinalState(tfs *roachpb.LeafTxnFinalState) {
@@ -779,9 +813,6 @@ func (sr *txnSpanRefresher) createSavepointLocked(ctx context.Context, s *savepo
 	copy(s.refreshSpans, sr.refreshFootprint.asSlice())
 	s.refreshInvalid = sr.refreshInvalid
 }
-
-// releaseSavepointLocked is part of the txnInterceptor interface.
-func (sr *txnSpanRefresher) releaseSavepointLocked(context.Context, *savepoint) {}
 
 // rollbackToSavepointLocked is part of the txnInterceptor interface.
 func (sr *txnSpanRefresher) rollbackToSavepointLocked(ctx context.Context, s savepoint) {

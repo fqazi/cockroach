@@ -5,18 +5,7 @@
 
 package storeliveness
 
-import (
-	"time"
-
-	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/util/metric"
-)
-
-// minCallbackDurationToRecord is the minimum duration for which we record
-// callback processing durations. This skews the histogram, but avoids recording
-// very short durations which are not interesting and which will be dominated by
-// the overhead of recording the duration itself.
-const minCallbackDurationToRecord = 10 * time.Millisecond
+import "github.com/cockroachdb/cockroach/pkg/util/metric"
 
 // TransportMetrics includes all Store Liveness Transport metrics.
 type TransportMetrics struct {
@@ -28,9 +17,6 @@ type TransportMetrics struct {
 	MessagesReceived       *metric.Counter
 	MessagesSendDropped    *metric.Counter
 	MessagesReceiveDropped *metric.Counter
-
-	BatchesSent     *metric.Counter
-	BatchesReceived *metric.Counter
 }
 
 func newTransportMetrics() *TransportMetrics {
@@ -42,22 +28,19 @@ func newTransportMetrics() *TransportMetrics {
 		MessagesReceived:       metric.NewCounter(metaMessagesReceived),
 		MessagesSendDropped:    metric.NewCounter(metaMessagesSendDropped),
 		MessagesReceiveDropped: metric.NewCounter(metaMessagesReceiveDropped),
-		BatchesSent:            metric.NewCounter(metaBatchesSent),
-		BatchesReceived:        metric.NewCounter(metaBatchesReceived),
 	}
 }
 
 // SupportManagerMetrics includes all Store Liveness SupportManager metrics.
 type SupportManagerMetrics struct {
-	HeartbeatSuccesses          *metric.Counter
-	HeartbeatFailures           *metric.Counter
-	MessageHandleSuccesses      *metric.Counter
-	MessageHandleFailures       *metric.Counter
-	SupportWithdrawSuccesses    *metric.Counter
-	SupportWithdrawFailures     *metric.Counter
-	CallbacksProcessingDuration metric.IHistogram
-	SupportFromStores           *metric.Gauge
-	SupportForStores            *metric.Gauge
+	HeartbeatSuccesses       *metric.Counter
+	HeartbeatFailures        *metric.Counter
+	MessageHandleSuccesses   *metric.Counter
+	MessageHandleFailures    *metric.Counter
+	SupportWithdrawSuccesses *metric.Counter
+	SupportWithdrawFailures  *metric.Counter
+	SupportFromStores        *metric.Gauge
+	SupportForStores         *metric.Gauge
 
 	ReceiveQueueSize  *metric.Gauge
 	ReceiveQueueBytes *metric.Gauge
@@ -71,18 +54,10 @@ func newSupportManagerMetrics() *SupportManagerMetrics {
 		MessageHandleFailures:    metric.NewCounter(metaMessageHandleFailures),
 		SupportWithdrawSuccesses: metric.NewCounter(metaSupportWithdrawSuccesses),
 		SupportWithdrawFailures:  metric.NewCounter(metaSupportWithdrawFailures),
-		CallbacksProcessingDuration: metric.NewHistogram(
-			metric.HistogramOptions{
-				Mode:         metric.HistogramModePreferHdrLatency,
-				Metadata:     metaCallbacksProcessingDuration,
-				Duration:     base.DefaultHistogramWindowInterval(),
-				BucketConfig: metric.IOLatencyBuckets,
-			},
-		),
-		SupportFromStores: metric.NewGauge(metaSupportFromStores),
-		SupportForStores:  metric.NewGauge(metaSupportForStores),
-		ReceiveQueueSize:  metric.NewGauge(metaReceiveQueueSize),
-		ReceiveQueueBytes: metric.NewGauge(metaReceiveQueueBytes),
+		SupportFromStores:        metric.NewGauge(metaSupportFromStores),
+		SupportForStores:         metric.NewGauge(metaSupportForStores),
+		ReceiveQueueSize:         metric.NewGauge(metaReceiveQueueSize),
+		ReceiveQueueBytes:        metric.NewGauge(metaReceiveQueueBytes),
 	}
 }
 
@@ -149,7 +124,6 @@ var (
 			"Store Liveness Support Manager",
 		Measurement: "Heartbeats",
 		Unit:        metric.Unit_COUNT,
-		Visibility:  metric.Metadata_SUPPORT,
 	}
 	metaMessageHandleSuccesses = metric.Metadata{
 		Name: "storeliveness.message_handle.successes",
@@ -206,23 +180,5 @@ var (
 			"Store Liveness Transport",
 		Measurement: "Bytes",
 		Unit:        metric.Unit_BYTES,
-	}
-	metaCallbacksProcessingDuration = metric.Metadata{
-		Name:        "storeliveness.callbacks.processing_duration",
-		Help:        "Duration of support withdrawal callback processing",
-		Measurement: "Duration",
-		Unit:        metric.Unit_NANOSECONDS,
-	}
-	metaBatchesSent = metric.Metadata{
-		Name:        "storeliveness.transport.batches-sent",
-		Help:        "Number of message batches sent by the Store Liveness Transport",
-		Measurement: "Batches",
-		Unit:        metric.Unit_COUNT,
-	}
-	metaBatchesReceived = metric.Metadata{
-		Name:        "storeliveness.transport.batches-received",
-		Help:        "Number of message batches received by the Store Liveness Transport",
-		Measurement: "Batches",
-		Unit:        metric.Unit_COUNT,
 	}
 )

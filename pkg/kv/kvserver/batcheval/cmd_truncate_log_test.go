@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -59,54 +58,43 @@ func TestTruncateLog(t *testing.T) {
 
 	ctx := context.Background()
 	const (
-		rangeID        = 12
-		term           = 10
-		compactedIndex = 99
+		rangeID    = 12
+		term       = 10
+		firstIndex = 100
 	)
 
 	st := cluster.MakeTestingClusterSettings()
-
-	// The truncate command takes the stateEng as any other command. However, it
-	// also accepts the log engine via EvalCtx for the stats computation.
-	stateEng := storage.NewDefaultInMemForTesting()
-	logEng := storage.NewDefaultInMemForTesting()
-	defer stateEng.Close()
-	defer logEng.Close()
-
 	evalCtx := &MockEvalCtx{
 		ClusterSettings: st,
 		Desc:            &roachpb.RangeDescriptor{RangeID: rangeID},
 		Term:            term,
-		CompactedIndex:  compactedIndex,
-		LogEngine:       logEng,
+		FirstIndex:      firstIndex,
 	}
 
+	eng := storage.NewDefaultInMemForTesting()
+	defer eng.Close()
+
 	truncState := kvserverpb.RaftTruncatedState{
-		Index: compactedIndex + 2,
+		Index: firstIndex + 1,
 		Term:  term,
 	}
 
-	putTruncatedState(t, stateEng, rangeID, truncState)
-
-	// Write some raft log entries to the log engine to create non-zero stats.
-	// These entries will be "truncated" by our request.
-	for i := compactedIndex + 1; i < compactedIndex+8; i++ {
-		key := keys.RaftLogKey(rangeID, kvpb.RaftIndex(i))
-		require.NoError(t, logEng.PutUnversioned(key, []byte("some-data")))
-	}
+	putTruncatedState(t, eng, rangeID, truncState)
 
 	// Send a truncation request.
 	req := kvpb.TruncateLogRequest{
 		RangeID: rangeID,
-		Index:   compactedIndex + 8,
+		Index:   firstIndex + 7,
 	}
 	cArgs := CommandArgs{
 		EvalCtx: evalCtx.EvalContext(),
 		Args:    &req,
 	}
 	resp := &kvpb.TruncateLogResponse{}
-	res, err := TruncateLog(ctx, stateEng, cArgs, resp)
-	require.NoError(t, err)
+	res, err := TruncateLog(ctx, eng, cArgs, resp)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	expTruncState := kvserverpb.RaftTruncatedState{
 		Index: req.Index - 1,
@@ -115,22 +103,11 @@ func TestTruncateLog(t *testing.T) {
 
 	// The unreplicated key that we see should be the initial truncated
 	// state (it's only updated below Raft).
-	gotTruncatedState := readTruncStates(t, stateEng, rangeID)
+	gotTruncatedState := readTruncStates(t, eng, rangeID)
 	assert.Equal(t, truncState, gotTruncatedState)
 
-	assert.NotNil(t, res.Replicated.RaftTruncatedState)
-	assert.Equal(t, expTruncState, *res.Replicated.RaftTruncatedState)
+	assert.NotNil(t, res.Replicated.State)
+	assert.NotNil(t, res.Replicated.State.TruncatedState)
+	assert.Equal(t, expTruncState, *res.Replicated.State.TruncatedState)
 
-	// Verify the stats match what's actually in the log engine.
-	start := keys.RaftLogKey(rangeID, compactedIndex+1)
-	end := keys.RaftLogKey(rangeID, compactedIndex+8)
-	expectedStats, err := storage.ComputeStats(ctx, logEng, fs.ReplicationReadCategory, start, end, 0)
-	require.NoError(t, err)
-	assert.Equal(t, -expectedStats.SysBytes, res.Replicated.RaftLogDelta,
-		"RaftLogDelta should match stats computed from log engine")
-
-	// The state machine engine's stats should be zero.
-	zeroStats, err := storage.ComputeStats(ctx, stateEng, fs.UnknownReadCategory, start, end, 0)
-	require.NoError(t, err)
-	require.Zero(t, zeroStats.SysBytes)
 }

@@ -61,8 +61,6 @@ func SuffixFromPlatform(platform Platform) string {
 		return ".linux-2.6.32-gnu-amd64-fips"
 	case PlatformLinuxArm:
 		return ".linux-3.7.10-gnu-arm64"
-	case PlatformLinuxS390x:
-		return ".linux-3.7.10-gnu-s390x"
 	case PlatformMacOS:
 		// TODO(#release): The architecture is at least 10.10 until v20.2 and 10.15 for
 		// v21.1 and after. Check whether this can be changed.
@@ -86,8 +84,6 @@ func CrossConfigFromPlatform(platform Platform) string {
 		return "crosslinuxfipsbase"
 	case PlatformLinuxArm:
 		return "crosslinuxarmbase"
-	case PlatformLinuxS390x:
-		return "crosslinuxs390xbase"
 	case PlatformMacOS:
 		return "crossmacosbase"
 	case PlatformMacOSArm:
@@ -107,8 +103,6 @@ func TargetTripleFromPlatform(platform Platform) string {
 		return "x86_64-pc-linux-gnu"
 	case PlatformLinuxArm:
 		return "aarch64-unknown-linux-gnu"
-	case PlatformLinuxS390x:
-		return "s390x-unknown-linux-gnu"
 	case PlatformMacOS:
 		return "x86_64-apple-darwin19"
 	case PlatformMacOSArm:
@@ -123,7 +117,7 @@ func TargetTripleFromPlatform(platform Platform) string {
 // SharedLibraryExtensionFromPlatform returns the shared library extensions for a given Platform.
 func SharedLibraryExtensionFromPlatform(platform Platform) string {
 	switch platform {
-	case PlatformLinux, PlatformLinuxFIPS, PlatformLinuxArm, PlatformLinuxS390x:
+	case PlatformLinux, PlatformLinuxFIPS, PlatformLinuxArm:
 		return ".so"
 	case PlatformWindows:
 		return ".dll"
@@ -155,7 +149,7 @@ func MakeWorkload(platform Platform, opts BuildOptions, pkgDir string) error {
 	if err != nil {
 		return err
 	}
-	return stageBinary("//pkg/cmd/workload", platform, bazelBin, filepath.Join(pkgDir, "bin"), platform == PlatformLinuxArm || platform == PlatformLinuxS390x)
+	return stageBinary("//pkg/cmd/workload", platform, bazelBin, filepath.Join(pkgDir, "bin"), platform == PlatformLinuxArm)
 }
 
 // MakeRelease makes the release binary and associated files.
@@ -188,7 +182,7 @@ func MakeRelease(platform Platform, opts BuildOptions, pkgDir string) error {
 		stampCommand = fmt.Sprintf("%s -d true", stampCommand)
 	}
 	buildArgs = append(buildArgs, stampCommand)
-	configs := []string{"-c", "opt", "--config=force_build_cdeps", "--config=pgo", fmt.Sprintf("--config=%s", CrossConfigFromPlatform(platform))}
+	configs := []string{"-c", "opt", "--config=force_build_cdeps", fmt.Sprintf("--config=%s", CrossConfigFromPlatform(platform))}
 	buildArgs = append(buildArgs, configs...)
 	buildArgs = append(buildArgs, "--norun_validations")
 	cmd := exec.Command("bazel", buildArgs...)
@@ -247,6 +241,24 @@ func MakeRelease(platform Platform, opts BuildOptions, pkgDir string) error {
 		if err := scanner.Err(); err != nil {
 			return err
 		}
+
+		cmd = exec.Command("bazel", "run", "@go_sdk//:bin/go", "--", "tool", "nm", binaryName)
+		cmd.Dir = pkgDir
+		cmd.Stderr = os.Stderr
+		log.Printf("%s %s", cmd.Env, cmd.Args)
+		stdoutBytes, err = opts.ExecFn.Run(cmd)
+		if err != nil {
+			log.Fatalf("%s %s: out=%s err=%v", cmd.Env, cmd.Args, string(stdoutBytes), err)
+		}
+		out := string(stdoutBytes)
+		if platform == PlatformLinuxFIPS && !strings.Contains(out, "golang-fips") {
+			log.Print("`go nm tool` does not contain `golang-fips` in its output")
+			log.Fatalf("%s %s: out=%s", cmd.Env, cmd.Args, out)
+		}
+		if platform == PlatformLinux && strings.Contains(out, "golang-fips") {
+			log.Print("`go nm tool` contains `golang-fips` in its output")
+			log.Fatalf("%s %s: out=%s", cmd.Env, cmd.Args, out)
+		}
 	}
 	return nil
 }
@@ -279,8 +291,6 @@ const (
 	PlatformLinuxFIPS Platform = "linux-amd64-fips"
 	// PlatformLinuxArm is the Linux aarch64 target.
 	PlatformLinuxArm Platform = "linux-arm64"
-	// PlatformLinuxS390x is the Linux s390x target.
-	PlatformLinuxS390x Platform = "linux-s390x"
 	// PlatformMacOS is the Darwin x86_64 target.
 	PlatformMacOS Platform = "darwin-amd64"
 	// PlatformMacOSArm is the Darwin aarch6 target.
@@ -309,17 +319,12 @@ func (p Platforms) String() string {
 // Set implements flag.Value interface
 func (p *Platforms) Set(v string) error {
 	switch Platform(v) {
-	case PlatformLinux, PlatformLinuxArm, PlatformLinuxFIPS, PlatformLinuxS390x, PlatformMacOS, PlatformMacOSArm, PlatformWindows:
+	case PlatformLinux, PlatformLinuxArm, PlatformLinuxFIPS, PlatformMacOS, PlatformMacOSArm, PlatformWindows:
 		*p = append(*p, Platform(v))
 		return nil
 	default:
 		return fmt.Errorf("unsupported platform `%s`", v)
 	}
-}
-
-// Type implements pflag.Value interface
-func (p *Platforms) Type() string {
-	return "platform"
 }
 
 // DefaultPlatforms returns a list of platforms supported by default.
@@ -328,23 +333,14 @@ func DefaultPlatforms() Platforms {
 		PlatformLinux,
 		PlatformLinuxFIPS,
 		PlatformLinuxArm,
-		PlatformLinuxS390x,
 		PlatformMacOS,
 		PlatformMacOSArm,
 		PlatformWindows,
 	}
 }
 
-func WorkloadPlatforms() Platforms {
-	return Platforms{
-		PlatformLinux,
-		PlatformLinuxArm,
-		PlatformLinuxS390x,
-	}
-}
-
 func getPathToBazelBin(execFn ExecFn, pkgDir string, configArgs []string) (string, error) {
-	args := []string{"info", "bazel-bin", "--norun_validations"}
+	args := []string{"info", "bazel-bin"}
 	args = append(args, configArgs...)
 	cmd := exec.Command("bazel", args...)
 	cmd.Dir = pkgDir
@@ -371,8 +367,18 @@ func stageBinary(
 	}
 	dstBase = dstBase + suffix
 	dst := filepath.Join(dir, dstBase)
-
-	return copyFile(src, dst, 0755)
+	srcF, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer closeFileOrPanic(srcF)
+	dstF, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE, 0755)
+	if err != nil {
+		return err
+	}
+	defer closeFileOrPanic(dstF)
+	_, err = io.Copy(dstF, srcF)
+	return err
 }
 
 func stageLibraries(platform Platform, bazelBin string, dir string) error {
@@ -385,26 +391,28 @@ func stageLibraries(platform Platform, bazelBin string, dir string) error {
 	ext := SharedLibraryExtensionFromPlatform(platform)
 	for _, lib := range CRDBSharedLibraries {
 		src := filepath.Join(bazelBin, "c-deps", "libgeos_foreign", "lib", lib+ext)
+		srcF, err := os.Open(src)
+		if err != nil {
+			return err
+		}
+		defer closeFileOrPanic(srcF)
 		dst := filepath.Join(dir, filepath.Base(src))
-		if err := copyFile(src, dst, 0644); err != nil {
+		dstF, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE, 0644)
+		if err != nil {
+			return err
+		}
+		defer closeFileOrPanic(dstF)
+		_, err = io.Copy(dstF, srcF)
+		if err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func copyFile(srcPath, dstPath string, perm os.FileMode) error {
-	srcF, err := os.Open(srcPath)
+func closeFileOrPanic(f io.Closer) {
+	err := f.Close()
 	if err != nil {
-		return err
+		panic(errors.Wrapf(err, "could not close file"))
 	}
-	dstF, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE, perm)
-	if err != nil {
-		_ = srcF.Close()
-		return err
-	}
-	_, err = io.Copy(dstF, srcF)
-	err = errors.CombineErrors(err, dstF.Close())
-	err = errors.CombineErrors(err, srcF.Close())
-	return err
 }

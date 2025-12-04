@@ -3,44 +3,40 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package memo
+package memo_test
 
-import "testing"
+import (
+	"testing"
 
-type testAux struct {
-	fullScanCount      uint16
-	unboundedReadCount uint16
-}
+	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
+)
 
 func TestCostLess(t *testing.T) {
 	testCases := []struct {
-		left, right Cost
+		left, right memo.Cost
 		expected    bool
 	}{
-		{Cost{C: 0.0}, Cost{C: 1.0}, true},
-		{Cost{C: 0.0}, Cost{C: 1e-20}, true},
-		{Cost{C: 0.0}, Cost{C: 0.0}, false},
-		{Cost{C: 1.0}, Cost{C: 0.0}, false},
-		{Cost{C: 1e-20}, Cost{C: 1.0000000000001e-20}, false},
-		{Cost{C: 1e-20}, Cost{C: 1.000001e-20}, true},
-		{Cost{C: 1}, Cost{C: 1.00000000000001}, false},
-		{Cost{C: 1}, Cost{C: 1.00000001}, true},
-		{Cost{C: 1000}, Cost{C: 1000.00000000001}, false},
-		{Cost{C: 1000}, Cost{C: 1000.00001}, true},
-		{Cost{C: 1.0, Penalties: FullScanPenalty}, Cost{C: 1.0}, false},
-		{Cost{C: 1.0}, Cost{C: 1.0, Penalties: HugeCostPenalty}, true},
-		{Cost{C: 1.0, Penalties: FullScanPenalty | HugeCostPenalty}, Cost{C: 1.0}, false},
-		{Cost{C: 1.0, Penalties: FullScanPenalty}, Cost{C: 1.0, Penalties: HugeCostPenalty}, true},
-		{MaxCost, Cost{C: 1.0}, false},
-		{Cost{C: 0.0}, MaxCost, true},
-		{MaxCost, MaxCost, false},
-		{MaxCost, Cost{C: 1.0, Penalties: FullScanPenalty}, false},
-		{Cost{C: 1.0, Penalties: HugeCostPenalty}, MaxCost, true},
-		{Cost{C: 2.0}, Cost{C: 1.0, Penalties: UnboundedCardinalityPenalty}, true},
-		{Cost{C: 1.0, Penalties: UnboundedCardinalityPenalty}, Cost{C: 2.0}, false},
-		// Auxiliary information should not affect the comparison.
-		{Cost{C: 1.0, aux: testAux{0, 0}}, Cost{C: 1.0, aux: testAux{1, 1}}, false},
-		{Cost{C: 1.0, aux: testAux{1, 1}}, Cost{C: 1.0, aux: testAux{0, 0}}, false},
+		{memo.Cost{C: 0.0}, memo.Cost{C: 1.0}, true},
+		{memo.Cost{C: 0.0}, memo.Cost{C: 1e-20}, true},
+		{memo.Cost{C: 0.0}, memo.Cost{C: 0.0}, false},
+		{memo.Cost{C: 1.0}, memo.Cost{C: 0.0}, false},
+		{memo.Cost{C: 1e-20}, memo.Cost{C: 1.0000000000001e-20}, false},
+		{memo.Cost{C: 1e-20}, memo.Cost{C: 1.000001e-20}, true},
+		{memo.Cost{C: 1}, memo.Cost{C: 1.00000000000001}, false},
+		{memo.Cost{C: 1}, memo.Cost{C: 1.00000001}, true},
+		{memo.Cost{C: 1000}, memo.Cost{C: 1000.00000000001}, false},
+		{memo.Cost{C: 1000}, memo.Cost{C: 1000.00001}, true},
+		{memo.Cost{C: 1.0, Flags: memo.CostFlags{FullScanPenalty: true}}, memo.Cost{C: 1.0}, false},
+		{memo.Cost{C: 1.0}, memo.Cost{C: 1.0, Flags: memo.CostFlags{HugeCostPenalty: true}}, true},
+		{memo.Cost{C: 1.0, Flags: memo.CostFlags{FullScanPenalty: true, HugeCostPenalty: true}}, memo.Cost{C: 1.0}, false},
+		{memo.Cost{C: 1.0, Flags: memo.CostFlags{FullScanPenalty: true}}, memo.Cost{C: 1.0, Flags: memo.CostFlags{HugeCostPenalty: true}}, true},
+		{memo.MaxCost, memo.Cost{C: 1.0}, false},
+		{memo.Cost{C: 0.0}, memo.MaxCost, true},
+		{memo.MaxCost, memo.MaxCost, false},
+		{memo.MaxCost, memo.Cost{C: 1.0, Flags: memo.CostFlags{FullScanPenalty: true}}, false},
+		{memo.Cost{C: 1.0, Flags: memo.CostFlags{HugeCostPenalty: true}}, memo.MaxCost, true},
+		{memo.Cost{C: 2.0, Flags: memo.CostFlags{}}, memo.Cost{C: 1.0, Flags: memo.CostFlags{UnboundedCardinality: true}}, true},
+		{memo.Cost{C: 1.0, Flags: memo.CostFlags{UnboundedCardinality: true}}, memo.Cost{C: 2.0, Flags: memo.CostFlags{}}, false},
 	}
 	for _, tc := range testCases {
 		if tc.left.Less(tc.right) != tc.expected {
@@ -51,17 +47,14 @@ func TestCostLess(t *testing.T) {
 
 func TestCostAdd(t *testing.T) {
 	testCases := []struct {
-		left, right, expected Cost
+		left, right, expected memo.Cost
 	}{
-		{Cost{C: 1.0}, Cost{C: 2.0}, Cost{C: 3.0}},
-		{Cost{C: 0.0}, Cost{C: 0.0}, Cost{C: 0.0}},
-		{Cost{C: -1.0}, Cost{C: 1.0}, Cost{C: 0.0}},
-		{Cost{C: 1.5}, Cost{C: 2.5}, Cost{C: 4.0}},
-		{Cost{C: 1.0, Penalties: FullScanPenalty}, Cost{C: 2.0}, Cost{C: 3.0, Penalties: FullScanPenalty}},
-		{Cost{C: 1.0}, Cost{C: 2.0, Penalties: HugeCostPenalty}, Cost{C: 3.0, Penalties: HugeCostPenalty}},
-		{Cost{C: 1.0, Penalties: UnboundedCardinalityPenalty}, Cost{C: 2.0, Penalties: HugeCostPenalty}, Cost{C: 3.0, Penalties: HugeCostPenalty | UnboundedCardinalityPenalty}},
-		{Cost{C: 1.0, aux: testAux{1, 4}}, Cost{C: 1.0, aux: testAux{2, 5}}, Cost{C: 2.0, aux: testAux{3, 9}}},
-		{Cost{C: 1.0, aux: testAux{65530, 65530}}, Cost{C: 1.0, aux: testAux{100, 100}}, Cost{C: 2.0, aux: testAux{65535, 65535}}},
+		{memo.Cost{C: 1.0}, memo.Cost{C: 2.0}, memo.Cost{C: 3.0}},
+		{memo.Cost{C: 0.0}, memo.Cost{C: 0.0}, memo.Cost{C: 0.0}},
+		{memo.Cost{C: -1.0}, memo.Cost{C: 1.0}, memo.Cost{C: 0.0}},
+		{memo.Cost{C: 1.5}, memo.Cost{C: 2.5}, memo.Cost{C: 4.0}},
+		{memo.Cost{C: 1.0, Flags: memo.CostFlags{FullScanPenalty: true}}, memo.Cost{C: 2.0}, memo.Cost{C: 3.0, Flags: memo.CostFlags{FullScanPenalty: true}}},
+		{memo.Cost{C: 1.0}, memo.Cost{C: 2.0, Flags: memo.CostFlags{HugeCostPenalty: true}}, memo.Cost{C: 3.0, Flags: memo.CostFlags{HugeCostPenalty: true}}},
 	}
 	for _, tc := range testCases {
 		tc.left.Add(tc.right)
@@ -71,27 +64,40 @@ func TestCostAdd(t *testing.T) {
 	}
 }
 
-func TestCostSummary(t *testing.T) {
+func TestCostFlagsLess(t *testing.T) {
 	testCases := []struct {
-		c        Cost
-		expected string
+		left, right memo.CostFlags
+		expected    bool
 	}{
-		{Cost{C: 1.0}, "1::0f0u"},
-		{Cost{C: 1.23}, "1.23::0f0u"},
-		{Cost{C: 1.23456}, "1.23456::0f0u"},
-		{Cost{C: 1.23, Penalties: HugeCostPenalty}, "1.23:H:0f0u"},
-		{Cost{C: 1.23, Penalties: FullScanPenalty}, "1.23:F:0f0u"},
-		{Cost{C: 1.23, Penalties: UnboundedCardinalityPenalty}, "1.23:U:0f0u"},
-		{Cost{C: 1.23, Penalties: HugeCostPenalty | FullScanPenalty | UnboundedCardinalityPenalty}, "1.23:HFU:0f0u"},
-		{Cost{C: 1.23, Penalties: HugeCostPenalty | FullScanPenalty | UnboundedCardinalityPenalty}, "1.23:HFU:0f0u"},
-		{Cost{C: 1.23, aux: testAux{5, 0}}, "1.23::5f0u"},
-		{Cost{C: 1.23, aux: testAux{0, 6}}, "1.23::0f6u"},
-		{Cost{C: 1.23, aux: testAux{5, 10}}, "1.23::5f10u"},
-		{Cost{C: 1.23, Penalties: HugeCostPenalty | FullScanPenalty, aux: testAux{5, 9}}, "1.23:HF:5f9u"},
+		{memo.CostFlags{FullScanPenalty: false, HugeCostPenalty: false}, memo.CostFlags{FullScanPenalty: true, HugeCostPenalty: true}, true},
+		{memo.CostFlags{FullScanPenalty: true, HugeCostPenalty: true}, memo.CostFlags{FullScanPenalty: false, HugeCostPenalty: false}, false},
+		{memo.CostFlags{FullScanPenalty: true, HugeCostPenalty: true}, memo.CostFlags{FullScanPenalty: true, HugeCostPenalty: true}, false},
+		{memo.CostFlags{FullScanPenalty: false}, memo.CostFlags{FullScanPenalty: true}, true},
+		{memo.CostFlags{HugeCostPenalty: false}, memo.CostFlags{HugeCostPenalty: true}, true},
+		{memo.CostFlags{UnboundedCardinality: false}, memo.CostFlags{UnboundedCardinality: true}, true},
+		{memo.CostFlags{UnboundedCardinality: true}, memo.CostFlags{UnboundedCardinality: false}, false},
 	}
 	for _, tc := range testCases {
-		if r := tc.c.Summary(); r != tc.expected {
-			t.Errorf("expected %q, got %q", tc.expected, r)
+		if tc.left.Less(tc.right) != tc.expected {
+			t.Errorf("expected %v.Less(%v) to be %v", tc.left, tc.right, tc.expected)
+		}
+	}
+}
+
+func TestCostFlagsAdd(t *testing.T) {
+	testCases := []struct {
+		left, right, expected memo.CostFlags
+	}{
+		{memo.CostFlags{FullScanPenalty: false, HugeCostPenalty: false}, memo.CostFlags{FullScanPenalty: true, HugeCostPenalty: true}, memo.CostFlags{FullScanPenalty: true, HugeCostPenalty: true}},
+		{memo.CostFlags{FullScanPenalty: true, HugeCostPenalty: true}, memo.CostFlags{FullScanPenalty: false, HugeCostPenalty: false}, memo.CostFlags{FullScanPenalty: true, HugeCostPenalty: true}},
+		{memo.CostFlags{FullScanPenalty: false}, memo.CostFlags{FullScanPenalty: true}, memo.CostFlags{FullScanPenalty: true}},
+		{memo.CostFlags{HugeCostPenalty: false}, memo.CostFlags{HugeCostPenalty: true}, memo.CostFlags{HugeCostPenalty: true}},
+		{memo.CostFlags{FullScanPenalty: true, HugeCostPenalty: false}, memo.CostFlags{FullScanPenalty: false, HugeCostPenalty: true}, memo.CostFlags{FullScanPenalty: true, HugeCostPenalty: true}},
+	}
+	for _, tc := range testCases {
+		tc.left.Add(tc.right)
+		if tc.left != tc.expected {
+			t.Errorf("expected %v.Add(%v) to be %v, got %v", tc.left, tc.right, tc.expected, tc.left)
 		}
 	}
 }

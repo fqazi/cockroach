@@ -20,8 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -204,7 +202,7 @@ func TestDeleteRangeTombstone(t *testing.T) {
 						StartKey:               roachpb.Key(tc.start),
 						EndKey:                 roachpb.Key(tc.end),
 						Timestamp:              ts,
-						EncodedTimestampSuffix: mvccencoding.EncodeMVCCTimestampSuffix(ts),
+						EncodedTimestampSuffix: storage.EncodeMVCCTimestampSuffix(ts),
 					}
 
 					// Prepare the request and environment.
@@ -412,7 +410,7 @@ func computeStats(
 	if len(to) == 0 {
 		to = keys.MaxKey
 	}
-	ms, err := storage.ComputeStats(t.Context(), reader, fs.UnknownReadCategory, from, to, nowNanos)
+	ms, err := storage.ComputeStats(context.Background(), reader, from, to, nowNanos)
 	require.NoError(t, err)
 	return ms
 }
