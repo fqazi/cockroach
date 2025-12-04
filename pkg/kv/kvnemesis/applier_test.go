@@ -70,7 +70,7 @@ func TestApplier(t *testing.T) {
 		require.NoError(t, w.Finish())
 	}
 
-	a := MakeApplier(env, &nodes{}, db)
+	a := MakeApplier(env, db)
 
 	tests := []testCase{
 		{

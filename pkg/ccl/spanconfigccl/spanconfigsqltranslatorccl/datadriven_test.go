@@ -17,11 +17,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	_ "github.com/cockroachdb/cockroach/pkg/ccl/kvccl/kvtenantccl"
 	_ "github.com/cockroachdb/cockroach/pkg/ccl/partitionccl"
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig/spanconfigsqltranslator"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig/spanconfigtestutils"
@@ -35,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
-	"github.com/cockroachdb/cockroach/pkg/upgrade/upgradebase"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -117,28 +114,15 @@ func TestDataDriven(t *testing.T) {
 		sqlExecutorKnobs := &sql.ExecutorTestingKnobs{
 			UseTransactionalDescIDGenerator: true,
 		}
-
-		serverKnobs := &server.TestingKnobs{}
-		if strings.Contains(path, "25_4_26_1_mixed_version") {
-			serverKnobs = &server.TestingKnobs{
-				DisableAutomaticVersionUpgrade: make(chan struct{}),
-				ClusterVersionOverride:         (clusterversion.V26_1_InstallMeta2StaticSplitPoint - 1).Version(),
-			}
-		}
-
 		tsArgs := func(attr string) base.TestServerArgs {
 			return base.TestServerArgs{
 				Knobs: base.TestingKnobs{
 					GCJob:       gcTestingKnobs,
 					SpanConfig:  scKnobs,
 					SQLExecutor: sqlExecutorKnobs,
-					Server:      serverKnobs,
-					UpgradeManager: &upgradebase.TestingKnobs{
-						SkipHotRangesLoggerJobBootstrap: true,
-					},
 				},
 				StoreSpecs: []base.StoreSpec{
-					{InMemory: true, Attributes: []string{attr}},
+					{InMemory: true, Attributes: roachpb.Attributes{Attrs: []string{attr}}},
 				},
 			}
 		}

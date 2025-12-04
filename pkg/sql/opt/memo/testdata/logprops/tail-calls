@@ -444,13 +444,14 @@ values
                                     │              └── const: '00000'
                                     └── project
                                          ├── barrier
-                                         │    └── values
-                                         │         └── tuple
-                                         │              └── udf: nested
-                                         │                   └── body
-                                         │                        └── values
-                                         │                             └── tuple
-                                         │                                  └── const: 1
+                                         │    └── barrier
+                                         │         └── values
+                                         │              └── tuple
+                                         │                   └── udf: nested
+                                         │                        └── body
+                                         │                             └── values
+                                         │                                  └── tuple
+                                         │                                       └── const: 1
                                          └── projections
                                               └── udf: _stmt_raise_3
                                                    ├── tail-call
@@ -958,22 +959,22 @@ values
                                ├── params: x
                                └── body
                                     └── project
-                                         ├── barrier
-                                         │    └── left-join (cross)
-                                         │         ├── values
-                                         │         │    └── tuple
-                                         │         ├── limit
-                                         │         │    ├── project-set
-                                         │         │    │    ├── values
-                                         │         │    │    │    └── tuple
-                                         │         │    │    └── zip
-                                         │         │    │         └── udf: nested
-                                         │         │    │              └── body
-                                         │         │    │                   └── values
-                                         │         │    │                        └── tuple
-                                         │         │    │                             └── const: 1
-                                         │         │    └── const: 1
-                                         │         └── filters (true)
+                                         ├── left-join (cross)
+                                         │    ├── values
+                                         │    │    └── tuple
+                                         │    ├── barrier
+                                         │    │    └── limit
+                                         │    │         ├── project-set
+                                         │    │         │    ├── values
+                                         │    │         │    │    └── tuple
+                                         │    │         │    └── zip
+                                         │    │         │         └── udf: nested
+                                         │    │         │              └── body
+                                         │    │         │                   └── values
+                                         │    │         │                        └── tuple
+                                         │    │         │                             └── const: 1
+                                         │    │         └── const: 1
+                                         │    └── filters (true)
                                          └── projections
                                               └── variable: nested
 

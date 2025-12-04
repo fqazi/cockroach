@@ -429,13 +429,13 @@ func (c *CustomFuncs) generateLookupJoinsImpl(
 			derivedfkOnFilters = c.ForeignKeyConstraintFilters(
 				input2, scanPrivate2, indexCols2, onClauseLookupRelStrictKeyCols, lookupRelEquijoinCols, inputRelJoinCols)
 		}
-		lookupConstraint, equalityLookupCols := c.cb.Build(index, onFilters, optionalFilters, derivedfkOnFilters)
+		lookupConstraint, foundEqualityCols := c.cb.Build(index, onFilters, optionalFilters, derivedfkOnFilters)
 		if lookupConstraint.IsUnconstrained() {
 			// We couldn't find equality columns or a lookup expression to
 			// perform a lookup join on this index.
 			return
 		}
-		if equalityLookupCols.Len() == 0 && !inputProps.Cardinality.IsZeroOrOne() &&
+		if !foundEqualityCols && !inputProps.Cardinality.IsZeroOrOne() &&
 			!joinPrivate.Flags.Has(memo.AllowOnlyLookupJoinIntoRight) {
 			// Avoid planning an inequality-only lookup when the input has more than
 			// one row unless the lookup join is forced (see canGenerateLookupJoins
@@ -452,9 +452,6 @@ func (c *CustomFuncs) generateLookupJoinsImpl(
 		lookupJoin.KeyCols = lookupConstraint.KeyCols
 		lookupJoin.DerivedEquivCols = lookupConstraint.DerivedEquivCols
 		lookupJoin.LookupExpr = lookupConstraint.LookupExpr
-		if lookupJoin.LookupExpr != nil {
-			lookupJoin.EqualityLookupCols = equalityLookupCols
-		}
 		lookupJoin.On = lookupConstraint.RemainingFilters
 		lookupJoin.AllLookupFilters = lookupConstraint.AllLookupFilters
 
@@ -1203,6 +1200,17 @@ func (c *CustomFuncs) ConvertIndexToLookupJoinPrivate(
 	}
 }
 
+// HasVolatileProjection returns true if any of the projection items of the
+// ProjectionsExpr contains a volatile expression.
+func (c *CustomFuncs) HasVolatileProjection(projections memo.ProjectionsExpr) bool {
+	for i := range projections {
+		if projections[i].ScalarProps().VolatilitySet.HasVolatile() {
+			return true
+		}
+	}
+	return false
+}
+
 // FindLeftJoinCanaryColumn tries to find a "canary" column from the right input
 // of a left join. This is a column that is NULL in the join output iff the row
 // is an "outer left" row that had no match in the join.
@@ -1221,8 +1229,7 @@ func (c *CustomFuncs) FindLeftJoinCanaryColumn(
 	// Find any column from the right which is null-rejected by the ON condition.
 	// right rows where such a column is NULL will never contribute to the join
 	// result.
-	var nullRejectedCols opt.ColSet
-	memo.ExtractNullColsRejectedByFilter(c.e.ctx, c.e.evalCtx, on, &nullRejectedCols)
+	nullRejectedCols := memo.NullColsRejectedByFilter(c.e.ctx, c.e.evalCtx, on)
 	nullRejectedCols.IntersectionWith(right.Relational().OutputCols)
 
 	canaryCol, ok = nullRejectedCols.Next(0)

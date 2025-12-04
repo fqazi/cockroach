@@ -1,5 +1,3 @@
-# LogicTest: !local-prepared
-
 # The following tests have results equivalent to Postgres (differences
 # in string representation and number of decimals returned, but otherwise
 # the same). These do not pass using the inf package. The inf package
@@ -571,10 +569,10 @@ SELECT width_bucket('inf', 3.0, 4.0, 888)
 ----
 889
 
-statement error pgcode 2201G pq: lower and upper bounds must be finite
+statement error pgcode 2201G pq: width_bucket\(\): lower and upper bounds must be finite
 SELECT width_bucket(2.0, 3.0, '-inf', 888)
 
-statement error pgcode 2201G pq: lower and upper bounds must be finite
+statement error pgcode 2201G pq: width_bucket\(\): lower and upper bounds must be finite
 SELECT width_bucket(0, '-inf', 4.0, 888)
 
 query RRR

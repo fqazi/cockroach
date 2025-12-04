@@ -86,14 +86,13 @@ func forceNewConfig(t testing.TB, s serverutils.TestServerInterface) *config.Sys
 func TestGetZoneConfig(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
+	params, _ := createTestServerParamsAllowTenants()
 	defaultZoneConfig := zonepb.DefaultSystemZoneConfig()
 	defaultZoneConfig.NumReplicas = proto.Int32(1)
 	defaultZoneConfig.RangeMinBytes = proto.Int64(1 << 20)
 	defaultZoneConfig.RangeMaxBytes = proto.Int64(100 << 20)
 	defaultZoneConfig.GC = &zonepb.GCPolicy{TTLSeconds: 60}
 	require.NoError(t, defaultZoneConfig.Validate())
-	var params base.TestServerArgs
 	params.Knobs.Server = &server.TestingKnobs{
 		DefaultZoneConfigOverride:       &defaultZoneConfig,
 		DefaultSystemZoneConfigOverride: &defaultZoneConfig,
@@ -192,7 +191,7 @@ func TestGetZoneConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := sqlDB.Exec(`CREATE TABLE db2.tb2 (k INT PRIMARY KEY, v INT) WITH (schema_locked=false)`); err != nil {
+	if _, err := sqlDB.Exec(`CREATE TABLE db2.tb2 (k INT PRIMARY KEY, v INT)`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -324,6 +323,7 @@ func TestGetZoneConfig(t *testing.T) {
 func TestCascadingZoneConfig(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	params, _ := createTestServerParamsAllowTenants()
 
 	defaultZoneConfig := zonepb.DefaultZoneConfig()
 	defaultZoneConfig.NumReplicas = proto.Int32(1)
@@ -331,7 +331,6 @@ func TestCascadingZoneConfig(t *testing.T) {
 	defaultZoneConfig.RangeMaxBytes = proto.Int64(100 << 20)
 	defaultZoneConfig.GC = &zonepb.GCPolicy{TTLSeconds: 60}
 	require.NoError(t, defaultZoneConfig.Validate())
-	var params base.TestServerArgs
 	params.Knobs.Server = &server.TestingKnobs{
 		DefaultZoneConfigOverride:       &defaultZoneConfig,
 		DefaultSystemZoneConfigOverride: &defaultZoneConfig,
@@ -431,7 +430,7 @@ func TestCascadingZoneConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := sqlDB.Exec(`CREATE TABLE db2.tb2 (k INT PRIMARY KEY, v INT) WITH (schema_locked=false)`); err != nil {
+	if _, err := sqlDB.Exec(`CREATE TABLE db2.tb2 (k INT PRIMARY KEY, v INT)`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -650,7 +649,7 @@ func BenchmarkGetZoneConfig(b *testing.B) {
 	defer leaktest.AfterTest(b)()
 	defer log.Scope(b).Close(b)
 
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	// GetZoneConfigForKey is exclusive to the system tenant.
 	params.DefaultTestTenant = base.TestIsSpecificToStorageLayerAndNeedsASystemTenant
 	s, sqlDB, _ := serverutils.StartServer(b, params)

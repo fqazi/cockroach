@@ -133,7 +133,7 @@ func StartReplicationProducerJob(
 		return streampb.ReplicationProducerSpec{}, err
 	}
 	if req.TenantID.Equal(roachpb.TenantID{}) && req.ClusterID.Equal(uuid.UUID{}) {
-		log.Dev.Infof(ctx, "started post cutover producer job %d", jr.JobID)
+		log.Infof(ctx, "started post cutover producer job %d", jr.JobID)
 	}
 
 	return streampb.ReplicationProducerSpec{

@@ -7,7 +7,6 @@ package build
 
 import (
 	"bytes"
-	"crypto/fips140"
 	_ "embed"
 	"fmt"
 	"runtime"
@@ -108,16 +107,16 @@ func BinaryVersion() string {
 // It returns "vX.Y" for all release versions, and all prerelease versions >= "alpha.1".
 // X and Y are the major and minor, respectively, of the version specified in version.txt.
 // For all other prerelease versions, it returns "dev".
-// N.B. new public-facing doc URLs are expected to be up once the "alpha.1" prerelease is shipped. Otherwise, "dev" will
+// N.B. new public-facing doc URLs are expected to be up beginning with the "alpha.1" prerelease. Otherwise, "dev" will
 // cause the url mapper to redirect to the latest stable release.
 func VersionForURLs() string {
 	if parsedVersionTxt.IsPrerelease() {
 		phaseAndOrdinal := parsedVersionTxt.Format("%P.%o")
-		// builds use 'dev' in their URLs until "alpha.1" is shipped
-		if phaseAndOrdinal <= "alpha.1" {
+		// builds prior to "alpha.1" use 'dev' in their URLs
+		if phaseAndOrdinal < "alpha.1" {
 			return "dev"
 		}
-	} else if parsedVersionTxt.IsCustomOrAdhocBuild() {
+	} else if parsedVersionTxt.IsCustomOrNightlyBuild() {
 		return "dev"
 	}
 	return parsedVersionTxt.Major().String()
@@ -169,10 +168,6 @@ func (b Info) Long() string {
 	fmt.Fprintf(tw, "C Compiler:       %s\n", b.CgoCompiler)
 	fmt.Fprintf(tw, "Build Commit ID:  %s\n", b.Revision)
 	fmt.Fprintf(tw, "Build Type:       %s\n", b.Type)
-	if fips140.Enabled() {
-		fmt.Fprintf(tw, "FIPS enabled:     true\n")
-	}
-
 	fmt.Fprintf(tw, "Enabled Assertions: %t", b.EnabledAssertions) // No final newline: cobra prints one for us.
 	_ = tw.Flush()
 	return buf.String()

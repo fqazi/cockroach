@@ -448,7 +448,7 @@ func TestGossipMostDistant(t *testing.T) {
 
 			// Connect the network in a loop. This will cut the distance to the most
 			// distant node in half.
-			log.Dev.Infof(context.Background(), "connecting from n%d to n%d", c.from, c.to)
+			log.Infof(context.Background(), "connecting from n%d to n%d", c.from, c.to)
 			connect(nodes[c.from], nodes[c.to], nodesCtx[c.from])
 
 			// Wait for n1 to determine that n6 is now the most distant hops from 9
@@ -529,7 +529,7 @@ func TestGossipNoForwardSelf(t *testing.T) {
 				return err
 			}
 
-			stream, err := NewGRPCGossipClientAdapter(conn).Gossip(ctx)
+			stream, err := NewGossipClient(conn).Gossip(ctx)
 			if err != nil {
 				return err
 			}
@@ -1008,10 +1008,10 @@ func TestServerSendsHighStampsDiff(t *testing.T) {
 	conn, err := localCxt.GRPCUnvalidatedDial(c.addr.String(), roachpb.Locality{}).Connect(ctx)
 	require.NoError(t, err)
 
-	stream, err := NewGRPCGossipClientAdapter(conn).Gossip(ctx)
+	stream, err := NewGossipClient(conn).Gossip(ctx)
 	require.NoError(t, err)
 
-	requestGossip := func(g *Gossip, stream RPCGossip_GossipClient) Response {
+	requestGossip := func(g *Gossip, stream Gossip_GossipClient) Response {
 		err := c.requestGossip(g, stream)
 		require.NoError(t, err)
 		resp := &Response{}
@@ -1172,7 +1172,7 @@ func TestCallbacksPendingMetricGoesToZeroOnStop(t *testing.T) {
 			defer stopper.Stop(ctx)
 			g := NewTest(1, stopper, metric.NewRegistry())
 
-			unregister := g.RegisterCallback("test.*", func(key string, val roachpb.Value, _ int64) {
+			unregister := g.RegisterCallback("test.*", func(key string, val roachpb.Value) {
 				// Do nothing.
 			})
 

@@ -127,7 +127,6 @@ const (
 	createTableAs       // CREATE TABLE <table> AS <def>
 	createView          // CREATE VIEW <view> AS <def>
 	createFunction      // CREATE FUNCTION <function> ...
-	createTrigger       // CREATE TRIGGER <trigger> {...} ON <table> EXECUTE FUNCTION <function>()
 
 	// COMMENT ON ...
 
@@ -141,12 +140,7 @@ const (
 	dropSchema   // DROP SCHEMA <schema>
 	dropSequence // DROP SEQUENCE <sequence>
 	dropTable    // DROP TABLE <table>
-	dropTrigger  // DROP TRIGGER <trigger> ON <table>
 	dropView     // DROP VIEW <view>
-	truncateTable
-
-	// INSPECT ...
-	inspect // INSPECT {TABLE|DATABASE} ...
 
 	// Unimplemented operations. TODO(sql-foundations): Audit and/or implement these operations.
 	// alterDatabaseOwner
@@ -209,7 +203,7 @@ const (
 )
 
 func isDMLOpType(t opType) bool {
-	return t == insertRow || t == selectStmt || t == validate || t == inspect
+	return t == insertRow || t == selectStmt || t == validate
 }
 
 var opFuncs = []func(*operationGenerator, context.Context, pgx.Tx) (*opStmt, error){
@@ -217,7 +211,6 @@ var opFuncs = []func(*operationGenerator, context.Context, pgx.Tx) (*opStmt, err
 	insertRow:  (*operationGenerator).insertRow,
 	selectStmt: (*operationGenerator).selectStmt,
 	validate:   (*operationGenerator).validate,
-	inspect:    (*operationGenerator).inspect,
 
 	// DDL Operations
 	alterDatabaseAddRegion:            (*operationGenerator).addRegion,
@@ -253,7 +246,6 @@ var opFuncs = []func(*operationGenerator, context.Context, pgx.Tx) (*opStmt, err
 	createSequence:                    (*operationGenerator).createSequence,
 	createTable:                       (*operationGenerator).createTable,
 	createTableAs:                     (*operationGenerator).createTableAs,
-	createTrigger:                     (*operationGenerator).createTrigger,
 	createTypeEnum:                    (*operationGenerator).createEnum,
 	createTypeComposite:               (*operationGenerator).createCompositeType,
 	createView:                        (*operationGenerator).createView,
@@ -263,13 +255,11 @@ var opFuncs = []func(*operationGenerator, context.Context, pgx.Tx) (*opStmt, err
 	dropSchema:                        (*operationGenerator).dropSchema,
 	dropSequence:                      (*operationGenerator).dropSequence,
 	dropTable:                         (*operationGenerator).dropTable,
-	dropTrigger:                       (*operationGenerator).dropTrigger,
 	dropView:                          (*operationGenerator).dropView,
 	renameIndex:                       (*operationGenerator).renameIndex,
 	renameSequence:                    (*operationGenerator).renameSequence,
 	renameTable:                       (*operationGenerator).renameTable,
 	renameView:                        (*operationGenerator).renameView,
-	truncateTable:                     (*operationGenerator).truncateTable,
 }
 
 var opWeights = []int{
@@ -277,7 +267,6 @@ var opWeights = []int{
 	insertRow:  10,
 	selectStmt: 10,
 	validate:   2, // validate twice more often
-	inspect:    1,
 
 	// DDL Operations
 	alterDatabaseAddRegion:            1,
@@ -312,7 +301,6 @@ var opWeights = []int{
 	createSequence:                    1,
 	createTable:                       10,
 	createTableAs:                     1,
-	createTrigger:                     1,
 	createTypeEnum:                    1,
 	createTypeComposite:               1,
 	createView:                        1,
@@ -322,13 +310,11 @@ var opWeights = []int{
 	dropSchema:                        1,
 	dropSequence:                      1,
 	dropTable:                         1,
-	dropTrigger:                       1,
 	dropView:                          1,
 	renameIndex:                       1,
 	renameSequence:                    1,
 	renameTable:                       1,
 	renameView:                        1,
-	truncateTable:                     1,
 }
 
 // This workload will maintain its own list of minimal supported versions for
@@ -339,7 +325,6 @@ var opDeclarativeVersion = map[opType]clusterversion.Key{
 	insertRow:  clusterversion.MinSupported,
 	selectStmt: clusterversion.MinSupported,
 	validate:   clusterversion.MinSupported,
-	inspect:    clusterversion.V25_4,
 
 	alterPolicy:                       clusterversion.V25_2,
 	alterTableAddColumn:               clusterversion.MinSupported,
@@ -348,8 +333,7 @@ var opDeclarativeVersion = map[opType]clusterversion.Key{
 	alterTableAlterPrimaryKey:         clusterversion.MinSupported,
 	alterTableDropColumn:              clusterversion.MinSupported,
 	alterTableDropConstraint:          clusterversion.MinSupported,
-	alterTableSetColumnNotNull:        clusterversion.MinSupported,
-	alterTableDropNotNull:             clusterversion.V25_3,
+	alterTableDropNotNull:             clusterversion.MinSupported,
 	alterTableRLS:                     clusterversion.V25_2,
 	alterTypeDropValue:                clusterversion.MinSupported,
 	commentOn:                         clusterversion.MinSupported,
@@ -358,14 +342,11 @@ var opDeclarativeVersion = map[opType]clusterversion.Key{
 	createPolicy:                      clusterversion.V25_2,
 	createSchema:                      clusterversion.MinSupported,
 	createSequence:                    clusterversion.MinSupported,
-	createTrigger:                     clusterversion.MinSupported,
 	dropFunction:                      clusterversion.MinSupported,
 	dropIndex:                         clusterversion.MinSupported,
 	dropPolicy:                        clusterversion.V25_2,
 	dropSchema:                        clusterversion.MinSupported,
 	dropSequence:                      clusterversion.MinSupported,
 	dropTable:                         clusterversion.MinSupported,
-	dropTrigger:                       clusterversion.MinSupported,
 	dropView:                          clusterversion.MinSupported,
-	truncateTable:                     clusterversion.V25_4,
 }

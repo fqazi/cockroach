@@ -16,7 +16,7 @@ import (
 
 func init() {
 	// Inject logging functions into the errors package.
-	errors.SetWarningFn(Dev.Warningf)
+	errors.SetWarningFn(Warningf)
 	// Inject logging functions into the syncutil package.
 	syncutil.LogExpensiveLogEnabled = untypedExpensiveLogEnabled
 	syncutil.LogVEventfDepth = untypedVEventfDepth

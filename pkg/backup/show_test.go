@@ -229,7 +229,7 @@ ORDER BY object_type, object_name`, full)
 		b INT8 NULL,
 		CONSTRAINT tablea_pkey PRIMARY KEY (a ASC),
 		INDEX tablea_b_idx (b ASC)
-	) WITH (schema_locked = true)`
+	)`
 		expectedCreateView := "CREATE VIEW viewa (\n\ta\n) AS SELECT a FROM data.public.tablea"
 		expectedCreateSeq := `CREATE SEQUENCE seqa MINVALUE 1 MAXVALUE 20 INCREMENT 2 START 1`
 
@@ -263,13 +263,13 @@ ORDER BY object_type, object_name`, full)
 				b INT8 NULL,
 				CONSTRAINT fkreftable_pkey PRIMARY KEY (a ASC),
 				CONSTRAINT fkreftable_b_fkey FOREIGN KEY (b) REFERENCES public.fksrc(a)
-			) WITH (schema_locked = true)`
+			)`
 		wantDiffDB := `CREATE TABLE fkreftable (
 				a INT8 NOT NULL,
 				b INT8 NULL,
 				CONSTRAINT fkreftable_pkey PRIMARY KEY (a ASC),
 				CONSTRAINT fkreftable_b_fkey FOREIGN KEY (b) REFERENCES data.public.fksrc(a)
-			) WITH (schema_locked = true)`
+			)`
 
 		showBackupRows = sqlDBRestore.QueryStr(t, fmt.Sprintf(`SELECT create_statement FROM [SHOW BACKUP SCHEMAS FROM LATEST IN '%s'] WHERE object_type='table'`, includedFK))
 		createStmtSameDB := showBackupRows[1][0]
@@ -293,7 +293,7 @@ ORDER BY object_type, object_name`, full)
 				a INT8 NOT NULL,
 				b INT8 NULL,
 				CONSTRAINT fkreftable_pkey PRIMARY KEY (a ASC)
-			) WITH (schema_locked = true)`
+			)`
 
 		showBackupRows = sqlDBRestore.QueryStr(t, fmt.Sprintf(`SELECT create_statement FROM [SHOW BACKUP SCHEMAS FROM LATEST IN '%s'] WHERE object_type='table'`, missingFK))
 		createStmt := showBackupRows[0][0]
@@ -371,7 +371,7 @@ GRANT UPDATE ON top_secret TO agent_bond;
 				`GRANT CREATE, USAGE ON SCHEMA public TO public; ` +
 				`GRANT ALL ON SCHEMA public TO root WITH GRANT OPTION; `, `root`},
 			{`locator`, `schema`, `GRANT ALL ON SCHEMA locator TO admin WITH GRANT OPTION; ` +
-				`GRANT CHANGEFEED, CREATE ON SCHEMA locator TO agent_bond; ` +
+				`GRANT CREATE ON SCHEMA locator TO agent_bond; ` +
 				`GRANT ALL ON SCHEMA locator TO m; ` +
 				`GRANT ALL ON SCHEMA locator TO root WITH GRANT OPTION; `, `root`},
 			{`continent`, `type`, `GRANT ALL ON TYPE continent TO admin WITH GRANT OPTION; ` +
@@ -455,11 +455,9 @@ func TestShowBackups(t *testing.T) {
 	sqlDB.Exec(t, `BACKUP data.bank INTO LATEST IN $1 WITH incremental_location = $2`, full, remoteInc)
 
 	rows := sqlDBRestore.QueryStr(t, `SHOW BACKUPS IN $1`, full)
-	rowsUsingIndex := sqlDBRestore.QueryStr(t, `SHOW BACKUPS IN $1 WITH INDEX`, full)
 
 	// assert that we see the three, and only the three, full backups.
 	require.Equal(t, 3, len(rows))
-	require.Equal(t, rows, rowsUsingIndex)
 
 	// check that we can show the inc layers in the individual full backups.
 	b1 := sqlDBRestore.QueryStr(t, `SELECT * FROM [SHOW BACKUP FROM $1 IN $2] WHERE object_type='table'`, rows[0][0], full)
@@ -543,25 +541,32 @@ func TestShowBackupTenantView(t *testing.T) {
 
 	_ = securitytest.EmbeddedTenantIDs()
 
-	_, conn3 := serverutils.StartTenant(t, srv, base.TestTenantArgs{TenantID: roachpb.MustMakeTenantID(3)})
-	defer conn3.Close()
+	_, conn2 := serverutils.StartTenant(t, srv, base.TestTenantArgs{TenantID: roachpb.MustMakeTenantID(2)})
+	defer conn2.Close()
 
-	tenant3 := sqlutils.MakeSQLRunner(conn3)
+	tenant2 := sqlutils.MakeSQLRunner(conn2)
 	dataQuery := `CREATE DATABASE foo; CREATE TABLE foo.bar(i int primary key); INSERT INTO foo.bar VALUES (110), (210)`
 	backupQuery := `BACKUP TABLE foo.bar INTO $1`
 	showBackupQuery := "SELECT object_name, object_type, rows FROM [SHOW BACKUP FROM LATEST IN $1]"
-	tenant3.Exec(t, dataQuery)
+	tenant2.Exec(t, dataQuery)
 
-	const collectionURI = "nodelocal://1/backup"
-	tenant3.Exec(t, backupQuery, collectionURI)
-	systemTenantShowRes := systemDB.QueryStr(t, showBackupQuery, collectionURI)
-	require.Equal(t, systemTenantShowRes, tenant3.QueryStr(t, showBackupQuery, collectionURI))
+	// First, assert that SHOW BACKUPS on a tenant backup returns the same results if
+	// either the system tenant or tenant2 calls it.
+	tenantAddr, httpServerCleanup := makeInsecureHTTPServer(t)
+	defer httpServerCleanup()
+
+	tenant2.Exec(t, backupQuery, tenantAddr)
+	systemTenantShowRes := systemDB.QueryStr(t, showBackupQuery, tenantAddr)
+	require.Equal(t, systemTenantShowRes, tenant2.QueryStr(t, showBackupQuery, tenantAddr))
 
 	// If the system tenant created the same data, and conducted the same backup,
 	// the row counts should look the same.
+	systemAddr, httpServerCleanup2 := makeInsecureHTTPServer(t)
+	defer httpServerCleanup2()
+
 	systemDB.Exec(t, dataQuery)
-	systemDB.Exec(t, backupQuery, collectionURI)
-	require.Equal(t, systemTenantShowRes, systemDB.QueryStr(t, showBackupQuery, collectionURI))
+	systemDB.Exec(t, backupQuery, systemAddr)
+	require.Equal(t, systemTenantShowRes, systemDB.QueryStr(t, showBackupQuery, systemAddr))
 }
 
 func TestShowBackupTenants(t *testing.T) {
@@ -698,7 +703,6 @@ func TestShowBackupWithDebugIDs(t *testing.T) {
 func TestShowBackupPathIsCollectionRoot(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 152935)
 
 	const numAccounts = 11
 
@@ -706,15 +710,12 @@ func TestShowBackupPathIsCollectionRoot(t *testing.T) {
 	_, sqlDB, _, cleanupFn := backupRestoreTestSetup(t, singleNode, numAccounts, InitManualReplication)
 	defer cleanupFn()
 
-	// Error output changes depending on whether or not the index is used. This
-	// deterministically enables the index to make the error output consistent.
-	sqlDB.Exec(t, "SET CLUSTER SETTING backup.index.read.enabled = true")
-
 	// Make an initial backup.
 	sqlDB.Exec(t, `BACKUP data.bank INTO $1`, localFoo)
 
 	// Ensure proper error gets returned from back SHOW BACKUP Path
-	sqlDB.ExpectErr(t, "subdir does not match format", "SHOW BACKUP '' IN $1", localFoo)
+	sqlDB.ExpectErr(t, "The specified path is the root of a backup collection.",
+		"SHOW BACKUP '' IN $1", localFoo)
 }
 
 // TestShowBackupCheckFiles verifies the check_files option catches a corrupt

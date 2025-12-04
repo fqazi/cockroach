@@ -63,6 +63,7 @@ var DiscardedStatsLogInterval = settings.RegisterDurationSetting(
 	"sql.metrics.discarded_stats_log.interval",
 	"interval between log emissions for discarded statistics due to SQL statistics memory limit",
 	1*time.Minute,
+	settings.NonNegativeDuration,
 	settings.WithVisibility(settings.Reserved))
 
 func NewSQLStatsAtomicCounters(
@@ -106,7 +107,7 @@ func (s *SQLStatsAtomicCounters) maybeLogDiscardMessage(ctx context.Context) {
 	// The count being slightly off won't impact users looking at the message. It
 	// also avoids holding a lock on the counts which would block requests until
 	// the log is sent.
-	log.Dev.Warningf(ctx, "statistics discarded due to memory limit. transaction discard count: %d with limit: %d, statement discard count: %d with limit: %d, logged at interval: %s, last logged: %s",
+	log.Warningf(ctx, "statistics discarded due to memory limit. transaction discard count: %d with limit: %d, statement discard count: %d with limit: %d, logged at interval: %s, last logged: %s",
 		discardTxnCnt, stmtLimit, discardSmtCnt, txnLimit, discardLogInterval, s.mu.lastDiscardLogMessageSent)
 	s.mu.lastDiscardLogMessageSent = timeNow
 

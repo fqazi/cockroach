@@ -295,7 +295,7 @@ func (g *movr) Hooks() workload.Hooks {
 				if _, err := db.Exec(fkStmt); err != nil {
 					// If the statement failed because the fk already exists,
 					// ignore it. Return the error for any other reason.
-					const duplicateFKErr = "duplicate constraint name"
+					const duplicateFKErr = "columns cannot be used by multiple foreign key constraints"
 					if !strings.Contains(err.Error(), duplicateFKErr) {
 						return err
 					}
@@ -349,9 +349,6 @@ ALTER DATABASE %[1]s SURVIVE %s FAILURE
 							)
 						}
 						sort.Strings(cityClauses)
-						if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s SET (schema_locked = false)", rbrTable)); err != nil {
-							return err
-						}
 						if _, err := db.Exec(
 							fmt.Sprintf(
 								`ALTER TABLE %s ADD COLUMN crdb_region crdb_internal_region NOT NULL AS (
@@ -374,23 +371,14 @@ ALTER DATABASE %[1]s SURVIVE %s FAILURE
 					); err != nil {
 						return err
 					}
-					if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s RESET (schema_locked)", rbrTable)); err != nil {
-						return err
-					}
 				}
 				for _, globalTable := range globalTables {
-					if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s SET (schema_locked = false)", globalTable)); err != nil {
-						return err
-					}
 					if _, err := db.Exec(
 						fmt.Sprintf(
 							`ALTER TABLE %s SET LOCALITY GLOBAL`,
 							globalTable,
 						),
 					); err != nil {
-						return err
-					}
-					if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s RESET (schema_locked)", globalTable)); err != nil {
 						return err
 					}
 				}

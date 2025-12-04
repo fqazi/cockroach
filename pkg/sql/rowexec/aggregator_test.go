@@ -389,15 +389,7 @@ func TestAggregator(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	st := cluster.MakeTestingClusterSettings()
-	evalCtx := eval.MakeTestingEvalContext(st)
-	test := MakeProcessorTest(ProcessorTestConfig{
-		FlowCtx: &execinfra.FlowCtx{
-			Cfg:     &execinfra.ServerConfig{Settings: st},
-			EvalCtx: &evalCtx,
-			Mon:     evalCtx.TestingMon,
-		},
-	})
+	test := MakeProcessorTest(DefaultProcessorTestConfig())
 	defer test.Close(ctx)
 	test.RunTestCases(ctx, t, testCases)
 }
@@ -655,10 +647,10 @@ func makeGroupedIntRows(groupSize, numCols int, groupedCols []int) rowenc.EncDat
 		rows[i] = make(rowenc.EncDatumRow, numCols)
 		for j := 0; j < numCols; j++ {
 			if groupColSet.Contains(j) {
-				rows[i][j] = rowenc.DatumToEncDatumUnsafe(
+				rows[i][j] = rowenc.DatumToEncDatum(
 					types.Int, tree.NewDInt(tree.DInt(getGroupedColVal(i, j))))
 			} else {
-				rows[i][j] = rowenc.DatumToEncDatumUnsafe(types.Int, tree.NewDInt(tree.DInt(i+j)))
+				rows[i][j] = rowenc.DatumToEncDatum(types.Int, tree.NewDInt(tree.DInt(i+j)))
 			}
 		}
 	}

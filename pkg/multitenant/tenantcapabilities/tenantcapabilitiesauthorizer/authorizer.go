@@ -244,10 +244,10 @@ var reqMethodToCap = map[kvpb.Method]methodCapability{
 	kvpb.Delete:             noCapCheckNeeded,
 	kvpb.DeleteRange:        noCapCheckNeeded,
 	kvpb.Export:             noCapCheckNeeded,
-	kvpb.FlushLockTable:     noCapCheckNeeded,
 	kvpb.Get:                noCapCheckNeeded,
 	kvpb.HeartbeatTxn:       noCapCheckNeeded,
 	kvpb.Increment:          noCapCheckNeeded,
+	kvpb.InitPut:            noCapCheckNeeded,
 	kvpb.IsSpanEmpty:        noCapCheckNeeded,
 	kvpb.LeaseInfo:          noCapCheckNeeded,
 	kvpb.PushTxn:            noCapCheckNeeded,
@@ -286,21 +286,22 @@ var reqMethodToCap = map[kvpb.Method]methodCapability{
 
 	// TODO(knz,arul): Verify with the relevant teams whether secondary
 	// tenants have legitimate access to any of those.
-	kvpb.AdminMerge:             onlySystemTenant,
-	kvpb.ComputeChecksum:        onlySystemTenant,
-	kvpb.GC:                     onlySystemTenant,
-	kvpb.Merge:                  onlySystemTenant,
-	kvpb.Migrate:                onlySystemTenant,
-	kvpb.Probe:                  onlySystemTenant,
-	kvpb.QueryResolvedTimestamp: onlySystemTenant,
-	kvpb.RecomputeStats:         onlySystemTenant,
-	kvpb.RequestLease:           onlySystemTenant,
-	kvpb.Subsume:                onlySystemTenant,
-	kvpb.TransferLease:          onlySystemTenant,
-	kvpb.TruncateLog:            onlySystemTenant,
-	kvpb.WriteBatch:             onlySystemTenant,
-	kvpb.LinkExternalSSTable:    onlySystemTenant,
-	kvpb.Excise:                 onlySystemTenant,
+	kvpb.AdminMerge:                    onlySystemTenant,
+	kvpb.AdminVerifyProtectedTimestamp: onlySystemTenant,
+	kvpb.ComputeChecksum:               onlySystemTenant,
+	kvpb.GC:                            onlySystemTenant,
+	kvpb.Merge:                         onlySystemTenant,
+	kvpb.Migrate:                       onlySystemTenant,
+	kvpb.Probe:                         onlySystemTenant,
+	kvpb.QueryResolvedTimestamp:        onlySystemTenant,
+	kvpb.RecomputeStats:                onlySystemTenant,
+	kvpb.RequestLease:                  onlySystemTenant,
+	kvpb.Subsume:                       onlySystemTenant,
+	kvpb.TransferLease:                 onlySystemTenant,
+	kvpb.TruncateLog:                   onlySystemTenant,
+	kvpb.WriteBatch:                    onlySystemTenant,
+	kvpb.LinkExternalSSTable:           onlySystemTenant,
+	kvpb.Excise:                        onlySystemTenant,
 }
 
 // BindReader implements the tenantcapabilities.Authorizer interface.
@@ -413,7 +414,7 @@ func (a *Authorizer) getMode(
 		// The server has started but the reader hasn't started/bound
 		// yet. Block requests that would need specific capabilities.
 		if a.logEvery.ShouldLog() {
-			log.Dev.Warningf(ctx, "capability check for tenant %s before capability reader exists, assuming capability is unavailable", tid)
+			log.Warningf(ctx, "capability check for tenant %s before capability reader exists, assuming capability is unavailable", tid)
 		}
 		selectedMode = authorizerModeV222
 	} else {
@@ -423,7 +424,7 @@ func (a *Authorizer) getMode(
 		if !found {
 			// No data from the rangefeed yet. Assume caps are still
 			// unavailable.
-			log.Dev.VInfof(ctx, 2,
+			log.VInfof(ctx, 2,
 				"no capability information for tenant %s; requests that require capabilities may be denied",
 				tid)
 			selectedMode = authorizerModeV222

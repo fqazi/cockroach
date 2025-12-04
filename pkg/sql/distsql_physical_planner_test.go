@@ -19,16 +19,16 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/gossip"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangecache"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
@@ -277,10 +277,6 @@ func TestDistSQLRangeCachesIntegrationTest(t *testing.T) {
 			ReplicationMode: base.ReplicationManual,
 			ServerArgs: base.TestServerArgs{
 				UseDatabase: "test",
-				// Probably this test could work in shared-process mode, but
-				// it's occasionally flaking there and doesn't seem worth
-				// investigating since we're touching the ranges directly.
-				DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
 			},
 		})
 	defer tc.Stopper().Stop(context.Background())
@@ -301,7 +297,7 @@ func TestDistSQLRangeCachesIntegrationTest(t *testing.T) {
 	//
 	// TODO(andrei): This is super hacky. What this test really wants to do is to
 	// precisely control the contents of the range cache on node 4.
-	tc.ApplicationLayer(3).DistSenderI().(*kvcoord.DistSender).DisableFirstRangeUpdates()
+	tc.Server(3).DistSenderI().(*kvcoord.DistSender).DisableFirstRangeUpdates()
 	db3 := tc.ServerConn(3)
 	// Force the DistSQL on this connection.
 	_, err := db3.Exec(`SET CLUSTER SETTING sql.defaults.distsql = always;`)
@@ -1375,16 +1371,15 @@ func TestPartitionSpans(t *testing.T) {
 	// We need a mock Gossip to contain addresses for the nodes. Otherwise the
 	// DistSQLPlanner will not plan flows on them.
 	ctx := context.Background()
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{
+	s := serverutils.StartServerOnly(t, base.TestServerArgs{
 		Knobs: base.TestingKnobs{
 			DistSQL: &execinfra.TestingKnobs{
 				MinimumNumberOfGatewayPartitions: 1,
 			},
 		},
 	})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
-	mockGossip := gossip.NewTest(roachpb.NodeID(1), srv.Stopper(), metric.NewRegistry())
+	defer s.Stopper().Stop(ctx)
+	mockGossip := gossip.NewTest(roachpb.NodeID(1), s.Stopper(), metric.NewRegistry())
 	var nodeDescs []*roachpb.NodeDescriptor
 	mockInstances := make(mockAddressResolver)
 	for i := 1; i <= 10; i++ {
@@ -1446,7 +1441,7 @@ func TestPartitionSpans(t *testing.T) {
 				gossip:               gw,
 				nodeHealth: distSQLNodeHealth{
 					gossip: gw,
-					connHealthSystem: func(node roachpb.NodeID, _ rpcbase.ConnectionClass) error {
+					connHealthSystem: func(node roachpb.NodeID, _ rpc.ConnectionClass) error {
 						return connHealth(node)
 					},
 					connHealthInstance: func(sqlInstance base.SQLInstanceID, _ string) error {
@@ -1463,7 +1458,7 @@ func TestPartitionSpans(t *testing.T) {
 						TestingKnobs: execinfra.TestingKnobs{MinimumNumberOfGatewayPartitions: 1},
 					},
 				},
-				codec:     s.Codec(),
+				codec:     keys.SystemSQLCodec,
 				nodeDescs: mockGossip,
 			}
 
@@ -1472,7 +1467,7 @@ func TestPartitionSpans(t *testing.T) {
 				require.NoError(t, locFilter.Set(tc.locFilter))
 			}
 			evalCtx := &eval.Context{
-				Codec: s.Codec(),
+				Codec: keys.SystemSQLCodec,
 				SessionDataStack: sessiondata.NewStack(&sessiondata.SessionData{
 					SessionData: sessiondatapb.SessionData{
 						DistsqlPlanGatewayBias: 2,
@@ -1750,6 +1745,111 @@ func TestShouldPickGatewayNode(t *testing.T) {
 	}
 }
 
+// Test that a node whose descriptor info is not accessible through gossip is
+// not used. This is to simulate nodes that have been decomisioned and also
+// nodes that have been "replaced" by another node at the same address (which, I
+// guess, is also a type of decomissioning).
+func TestPartitionSpansSkipsNodesNotInGossip(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	// The spans that we're going to plan for.
+	span := roachpb.Span{Key: roachpb.Key("A"), EndKey: roachpb.Key("Z")}
+	gatewayNode := roachpb.NodeID(2)
+	ranges := []testSpanResolverRange{{"A", 1}, {"B", 2}, {"C", 1}}
+
+	stopper := stop.NewStopper()
+	defer stopper.Stop(context.Background())
+
+	mockGossip := gossip.NewTest(roachpb.NodeID(1), stopper, metric.NewRegistry())
+	var nodeDescs []*roachpb.NodeDescriptor
+	for i := 1; i <= 2; i++ {
+		sqlInstanceID := base.SQLInstanceID(i)
+		desc := &roachpb.NodeDescriptor{
+			NodeID:  roachpb.NodeID(sqlInstanceID),
+			Address: util.UnresolvedAddr{AddressField: fmt.Sprintf("addr%d", i)},
+		}
+		if i == 2 {
+			if err := mockGossip.SetNodeDescriptor(desc); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// All the nodes advertise that they are not draining. This is to
+		// simulate the "node overridden by another node at the same address"
+		// case mentioned in the test comment - for such a node, the descriptor
+		// would be taken out of the gossip data, but other datums it advertised
+		// are left in place.
+		if err := mockGossip.AddInfoProto(
+			gossip.MakeDistSQLDrainingKey(sqlInstanceID),
+			&execinfrapb.DistSQLDrainingInfo{
+				Draining: false,
+			},
+			0, // ttl - no expiration
+		); err != nil {
+			t.Fatal(err)
+		}
+
+		nodeDescs = append(nodeDescs, desc)
+	}
+	tsp := &testSpanResolver{
+		nodes:  nodeDescs,
+		ranges: ranges,
+	}
+
+	st := cluster.MakeTestingClusterSettings()
+	gw := gossip.MakeOptionalGossip(mockGossip)
+	dsp := DistSQLPlanner{
+		st:                   st,
+		gatewaySQLInstanceID: base.SQLInstanceID(tsp.nodes[gatewayNode-1].NodeID),
+		stopper:              stopper,
+		spanResolver:         tsp,
+		gossip:               gw,
+		nodeHealth: distSQLNodeHealth{
+			gossip: gw,
+			connHealthSystem: func(node roachpb.NodeID, _ rpc.ConnectionClass) error {
+				_, _, err := mockGossip.GetNodeIDAddress(node)
+				return err
+			},
+			isAvailable: func(base.SQLInstanceID) bool {
+				return true
+			},
+		},
+		codec: keys.SystemSQLCodec,
+	}
+
+	ctx := context.Background()
+	// This test is specific to gossip-based planning.
+	useGossipPlanning.Override(ctx, &st.SV, true)
+	planCtx := dsp.NewPlanningCtx(
+		ctx, &extendedEvalContext{Context: eval.Context{Codec: keys.SystemSQLCodec, Settings: st}},
+		nil /* planner */, nil /* txn */, FullDistribution,
+	)
+	partitions, err := dsp.PartitionSpans(ctx, planCtx, roachpb.Spans{span}, PartitionSpansBoundDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resMap := make(map[base.SQLInstanceID][][2]string)
+	for _, p := range partitions {
+		if _, ok := resMap[p.SQLInstanceID]; ok {
+			t.Fatalf("node %d shows up in multiple partitions", p.SQLInstanceID)
+		}
+		var spans [][2]string
+		for _, s := range p.Spans {
+			spans = append(spans, [2]string{string(s.Key), string(s.EndKey)})
+		}
+		resMap[p.SQLInstanceID] = spans
+	}
+
+	expectedPartitions :=
+		map[base.SQLInstanceID][][2]string{
+			2: {{"A", "Z"}},
+		}
+	if !reflect.DeepEqual(resMap, expectedPartitions) {
+		t.Errorf("expected partitions:\n  %v\ngot:\n  %v", expectedPartitions, resMap)
+	}
+}
+
 func TestCheckNodeHealth(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1783,10 +1883,10 @@ func TestCheckNodeHealth(t *testing.T) {
 		return true
 	}
 
-	connHealthy := func(roachpb.NodeID, rpcbase.ConnectionClass) error {
+	connHealthy := func(roachpb.NodeID, rpc.ConnectionClass) error {
 		return nil
 	}
-	connUnhealthy := func(roachpb.NodeID, rpcbase.ConnectionClass) error {
+	connUnhealthy := func(roachpb.NodeID, rpc.ConnectionClass) error {
 		return errors.New("injected conn health error")
 	}
 	_ = connUnhealthy
@@ -1814,7 +1914,7 @@ func TestCheckNodeHealth(t *testing.T) {
 	}
 
 	connHealthTests := []struct {
-		connHealth func(roachpb.NodeID, rpcbase.ConnectionClass) error
+		connHealth func(roachpb.NodeID, rpc.ConnectionClass) error
 		exp        string
 	}{
 		{connHealthy, ""},
@@ -1847,10 +1947,6 @@ func TestCheckScanParallelizationIfLocal(t *testing.T) {
 		require.NoError(t, b.RunPostDeserializationChanges())
 		return b.BuildImmutableTable()
 	}
-	mvccTimestampSysCol, err := catalog.MustFindColumnByID(makeTableDesc(), colinfo.MVCCTimestampColumnID)
-	require.NoError(t, err)
-	tableOidSysCol, err := catalog.MustFindColumnByID(makeTableDesc(), colinfo.TableOIDColumnID)
-	require.NoError(t, err)
 
 	scanToParallelize := &scanNode{parallelize: true}
 	for _, tc := range []struct {
@@ -1972,34 +2068,6 @@ func TestCheckScanParallelizationIfLocal(t *testing.T) {
 		{
 			plan: planComponents{main: planMaybePhysical{planNode: &windowNode{singleInputPlanNode: singleInputPlanNode{scanToParallelize}}}},
 			// windowNode is not fully supported by the vectorized.
-			prohibitParallelization: true,
-		},
-		{
-			plan: planComponents{main: planMaybePhysical{planNode: &scanNode{
-				fetchPlanningInfo: fetchPlanningInfo{catalogCols: []catalog.Column{mvccTimestampSysCol}},
-			}}},
-			// Usage of crdb_internal_mvcc_timestamp prohibits parallelization
-			// since it forces usage of the LeafTxn, yet for buffered writes we
-			// might need to force usage of the RootTxn.
-			// TODO(#144166): relax this.
-			prohibitParallelization: true,
-		},
-		{
-			plan: planComponents{main: planMaybePhysical{planNode: &scanNode{
-				fetchPlanningInfo: fetchPlanningInfo{catalogCols: []catalog.Column{tableOidSysCol}},
-			}}},
-			// Usage of tableoid system column doesn't force usage of the
-			// LeafTxn, so parallelization is ok.
-			prohibitParallelization: false,
-		},
-		{
-			plan: planComponents{main: planMaybePhysical{planNode: &indexJoinNode{indexJoinPlanningInfo: indexJoinPlanningInfo{
-				fetch: fetchPlanningInfo{catalogCols: []catalog.Column{mvccTimestampSysCol}}},
-			}}},
-			// Usage of crdb_internal_mvcc_timestamp prohibits parallelization
-			// since it forces usage of the LeafTxn, yet for buffered writes we
-			// might need to force usage of the RootTxn.
-			// TODO(#144166): relax this.
 			prohibitParallelization: true,
 		},
 

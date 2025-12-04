@@ -49,15 +49,19 @@ func WriteDescsSST(
 	if err != nil {
 		return err
 	}
+	defer w.Close()
 	descSST := storage.MakeTransportSSTWriter(ctx, dest.Settings(), w)
 	defer descSST.Close()
 
-	err = writeDescsToMetadata(ctx, descSST, m)
-	if err != nil {
+	if err := writeDescsToMetadata(ctx, descSST, m); err != nil {
 		return err
 	}
 
-	return descSST.Finish()
+	if err := descSST.Finish(); err != nil {
+		return err
+	}
+
+	return w.Close()
 }
 
 func DescChangesLess(

@@ -16,7 +16,6 @@ var metaChangefeedTableMetadataNanos = metric.Metadata{
 	Help:        "Time blocked while verifying table metadata histories",
 	Measurement: "Nanoseconds",
 	Unit:        metric.Unit_NANOSECONDS,
-	Category:    metric.Metadata_CHANGEFEEDS,
 }
 
 var metaChangefeedTableHistoryScans = metric.Metadata{
@@ -24,7 +23,6 @@ var metaChangefeedTableHistoryScans = metric.Metadata{
 	Help:        "The number of table history scans during polling",
 	Measurement: "Counts",
 	Unit:        metric.Unit_COUNT,
-	Category:    metric.Metadata_CHANGEFEEDS,
 }
 
 // Metrics is a metric.Struct for schemafeed metrics.

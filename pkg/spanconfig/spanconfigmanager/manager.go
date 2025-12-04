@@ -31,6 +31,7 @@ var checkReconciliationJobInterval = settings.RegisterDurationSetting(
 	"spanconfig.reconciliation_job.check_interval",
 	"the frequency at which to check if the span config reconciliation job exists (and to start it if not)",
 	10*time.Minute,
+	settings.NonNegativeDuration,
 )
 
 // jobEnabledSetting gates the activation of the span config reconciliation job.
@@ -129,10 +130,10 @@ func (m *Manager) run(ctx context.Context) {
 
 		started, err := m.createAndStartJobIfNoneExists(ctx, m.settings)
 		if err != nil {
-			log.Dev.Errorf(ctx, "error starting auto span config reconciliation job: %v", err)
+			log.Errorf(ctx, "error starting auto span config reconciliation job: %v", err)
 		}
 		if started {
-			log.Dev.Infof(ctx, "started auto span config reconciliation job")
+			log.Infof(ctx, "started auto span config reconciliation job")
 		}
 	}
 
@@ -148,6 +149,7 @@ func (m *Manager) run(ctx context.Context) {
 		case <-jobCheckCh:
 			checkJob()
 		case <-timer.C:
+			timer.Read = true
 			checkJob()
 		case <-m.stopper.ShouldQuiesce():
 			return

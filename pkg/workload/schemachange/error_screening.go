@@ -65,17 +65,6 @@ func (og *operationGenerator) columnExistsOnTable(
    )`, tableName.Schema(), tableName.Object(), columnName)
 }
 
-func (og *operationGenerator) fnExistsByName(
-	ctx context.Context, tx pgx.Tx, schemaName string, routineName string,
-) (bool, error) {
-	return og.scanBool(ctx, tx, `SELECT EXISTS (
-	SELECT routine_name
-    FROM information_schema.routines 
-   WHERE routine_schema = $1
-     AND routine_name = $2
-   )`, schemaName, routineName)
-}
-
 func (og *operationGenerator) tableHasRows(
 	ctx context.Context, tx pgx.Tx, tableName *tree.TableName,
 ) (bool, error) {
@@ -108,16 +97,8 @@ func (og *operationGenerator) fnExists(
 	)`, fnName, argTypes)
 }
 
-// tableHasDependencies reports whether the given table has any schema dependencies,
-// optionally excluding foreign keys and/or self-references.
-//
-// A dependency is ignored if:
-// 1. It is a foreign key and includeFKs is false.
-// 2. It is a self-dependency (i.e., the table depends on itself) and:
-// a) It is a foreign key, or
-// b) skipSelfRef is true (regardless of dependency type).
 func (og *operationGenerator) tableHasDependencies(
-	ctx context.Context, tx pgx.Tx, tableName *tree.TableName, includeFKs, skipSelfRef bool,
+	ctx context.Context, tx pgx.Tx, tableName *tree.TableName, includeFKs bool,
 ) (bool, error) {
 	fkFilter := ""
 	if !includeFKs {
@@ -135,27 +116,17 @@ func (og *operationGenerator) tableHasDependencies(
                             ns.oid = c.relnamespace
                      WHERE c.relname = $1 AND ns.nspname = $2
                 )
-           AND NOT (
-             fd.descriptor_id = fd.dependedonby_id
-             AND (
-               fd.dependedonby_type = 'fk'
-               OR $3::BOOL = true
-             )
-           )
+           AND fd.descriptor_id != fd.dependedonby_id
            AND fd.dependedonby_type != 'sequence'
            %s
        )
 	`, fkFilter)
-	return og.scanBool(ctx, tx, q, tableName.Object(), tableName.Schema(), skipSelfRef)
+	return og.scanBool(ctx, tx, q, tableName.Object(), tableName.Schema())
 }
 
-// columnDropViolatesFKIndexRequirements determines if dropping this column
-// will violate foreign key index requirements. This occurs when dropping the
-// column would leave a foreign key without a suitable backing index.
-// CockroachDB requires backing indexes to have the same number of key columns
-// as the FK in any order. Only key columns (not stored columns) count toward
-// FK backing index requirements.
-func (og *operationGenerator) columnDropViolatesFKIndexRequirements(
+// columnRemovalWillDropFKBackingIndexes determines if dropping this column
+// will lead to no indexes backing a foreign key.
+func (og *operationGenerator) columnRemovalWillDropFKBackingIndexes(
 	ctx context.Context, tx pgx.Tx, tableName *tree.TableName, columName tree.Name,
 ) (bool, error) {
 	return og.scanBool(ctx, tx, fmt.Sprintf(`
@@ -228,24 +199,31 @@ WITH
 							[SHOW INDEXES FROM %s]
 						WHERE
 							column_name = $2
-							AND storing = 'f'
 							AND index_name
 								NOT LIKE '%%_pkey' -- renames would keep the old table name
 					)
 		),
-	fk_col_counts
+	matching_indexes
 		AS (
 			SELECT
-				oid, count(*) AS num_cols
+				oid,
+				index_name,
+				count(base_ordinal) AS count_base_ordinal,
+				count(seq_in_index) AS count_seq_in_index
 			FROM
-				fk
+				fk, valid_indexes
+			WHERE
+				storing = 'f'
+				AND non_unique = 'f'
+				AND base_col = column_name
 			GROUP BY
-				oid
+				(oid, index_name)
 		),
-	index_col_counts
+	valid_index_attrib_count
 		AS (
 			SELECT
-				index_name, count(*) AS num_cols
+				index_name,
+				max(seq_in_index) AS max_seq_in_index
 			FROM
 				valid_indexes
 			WHERE
@@ -253,31 +231,30 @@ WITH
 			GROUP BY
 				index_name
 		),
+	valid_fk_count
+		AS (
+			SELECT
+				oid, max(base_ordinal) AS max_base_ordinal
+			FROM
+				fk
+			GROUP BY
+				fk
+		),
 	matching_fks
 		AS (
 			SELECT
-				fk.oid
+				DISTINCT f.oid
 			FROM
-				fk
-				JOIN valid_indexes
-					ON
-						fk.base_col = valid_indexes.column_name
-				JOIN fk_col_counts
-					ON
-						fk.oid = fk_col_counts.oid
-				JOIN index_col_counts
-					ON
-						valid_indexes.index_name = index_col_counts.index_name
+				valid_index_attrib_count AS i,
+				valid_fk_count AS f,
+				matching_indexes AS m
 			WHERE
-				valid_indexes.storing = 'f'
-				AND valid_indexes.non_unique = 'f'
-				AND fk_col_counts.num_cols = index_col_counts.num_cols
-			GROUP BY
-				fk.oid,
-				valid_indexes.index_name,
-				fk_col_counts.num_cols
-			HAVING
-				count(*) = fk_col_counts.num_cols
+				f.oid = m.oid
+				AND i.index_name = m.index_name
+				AND i.max_seq_in_index
+					= m.count_seq_in_index
+				AND f.max_base_ordinal
+					= m.count_base_ordinal
 		)
 SELECT
 	EXISTS(
@@ -286,7 +263,7 @@ SELECT
 		FROM
 			fk
 		WHERE
-			oid NOT IN (SELECT DISTINCT oid FROM matching_fks)
+			oid NOT IN (SELECT oid FROM matching_fks)
 	);
 `, tableName.String(), tableName.String()), tableName.String(), columName)
 }
@@ -1554,39 +1531,4 @@ func (og *operationGenerator) tableHasUniqueConstraintMutation(
 			WHERE (m->>'direction')::STRING IN ('ADD', 'DROP')
 			AND (m->'index'->>'unique')::BOOL IS TRUE
 		);`, tableName)
-}
-
-// getTableForeignKeyReferences returns a list of tables that reference
-// the specified table via foreign key references.
-func (og *operationGenerator) getTableForeignKeyReferences(
-	ctx context.Context, tx pgx.Tx, tableName *tree.TableName,
-) ([]tree.TableName, error) {
-	rows, err := tx.Query(ctx,
-		`WITH fk_refs AS (
-					SELECT conrelid FROM pg_constraint WHERE
-						confrelid = $1::REGCLASS AND
-						conrelid <> $1::REGCLASS
-				)
-				SELECT
-					n.nspname as schema_name,  c.relname AS object_name
-				FROM fk_refs AS f
-					JOIN pg_class AS c ON c.oid = f.conrelid
-					JOIN pg_namespace AS n ON c.relnamespace = n.oid
-`,
-		tableName.String())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []tree.TableName
-	for rows.Next() {
-		var table, schema string
-		err = rows.Scan(&schema, &table)
-		if err != nil {
-			return nil, err
-		}
-		name := tree.MakeTableNameWithSchema(tableName.CatalogName, tree.Name(schema), tree.Name(table))
-		result = append(result, name)
-	}
-	return result, rows.Err()
 }

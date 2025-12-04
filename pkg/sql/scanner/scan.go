@@ -100,10 +100,6 @@ func (s *Scanner) RetainComments() {
 	s.retainComments = true
 }
 
-func (s *Scanner) ResetComments() {
-	s.Comments = nil
-}
-
 // Cleanup is used to avoid holding on to memory unnecessarily (for the cases
 // where we reuse a Scanner).
 func (s *Scanner) Cleanup() {
@@ -286,10 +282,6 @@ func (s *SQLScanner) Scan(lval ScanSymType) {
 				s.pos++
 				lval.SetID(lexbase.NOT_REGIMATCH)
 				return
-			case '~': // !~~ or !~~*
-				s.pos--
-				lval.SetID(lexbase.NOT)
-				return
 			}
 			lval.SetID(lexbase.NOT_REGMATCH)
 			return
@@ -310,20 +302,6 @@ func (s *SQLScanner) Scan(lval ScanSymType) {
 			s.pos++
 			lval.SetID(lexbase.JSON_ALL_EXISTS)
 			return
-		case '@':
-			switch s.peekN(1) {
-			case '>': // ?@>
-				s.pos += 2
-				lval.SetID(lexbase.FIRST_CONTAINS)
-				return
-			}
-		case '<':
-			switch s.peekN(1) {
-			case '@': // ?<@
-				s.pos += 2
-				lval.SetID(lexbase.FIRST_CONTAINED_BY)
-				return
-			}
 		}
 		return
 
@@ -441,16 +419,6 @@ func (s *SQLScanner) Scan(lval ScanSymType) {
 		case '*': // ~*
 			s.pos++
 			lval.SetID(lexbase.REGIMATCH)
-			return
-		case '~': // ~~
-			s.pos++
-			switch s.peek() {
-			case '*': // ~~*
-				s.pos++
-				lval.SetID(lexbase.ILIKE)
-				return
-			}
-			lval.SetID(lexbase.LIKE)
 			return
 		}
 		return
@@ -628,13 +596,8 @@ func (s *Scanner) ScanComment(lval ScanSymType) (present, ok bool) {
 			return false, true
 		}
 		for {
-			next := s.next()
-			switch next {
-			case eof:
-				return true, true
-			case '\n':
-				// Don't include the new-line character in in-line comments.
-				s.pos--
+			switch s.next() {
+			case eof, '\n':
 				return true, true
 			}
 		}

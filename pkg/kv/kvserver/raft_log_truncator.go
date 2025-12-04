@@ -11,7 +11,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -151,8 +151,8 @@ type pendingTruncation struct {
 	//   is adjusted on this replica using SideloadStorage.Stats, but it is
 	//   possible that the truncated state of this replica is already >
 	//   expectedFirstIndex. We don't actually set isDeltaTrusted=false for this
-	//   case since we will change replicaLogStorage.shMu.sizeTrusted to false
-	//   after enacting this truncation.
+	//   case since we will change Replica.raftLogSizeTrusted to false after
+	//   enacting this truncation.
 	// - We merge pendingTruncation entries in the pendingTruncations struct. We
 	//   are making an effort to have consecutive TruncateLogRequests provide us
 	//   stats for index intervals that are adjacent and non-overlapping, but
@@ -162,7 +162,7 @@ type pendingTruncation struct {
 	// ReplicatedEvalResult.RaftLogDelta, this is <= 0.
 	logDeltaBytes  int64
 	isDeltaTrusted bool
-	// hasSideloaded is true if the truncated interval could contain at least one
+	// hasSideloaded is true if the truncated interval contains at least one
 	// sideloaded entry.
 	hasSideloaded bool
 }
@@ -259,7 +259,7 @@ type replicaForTruncator interface {
 	// (from, to].
 	sideloadedStats(
 		_ context.Context, _ kvpb.RaftSpan) (entries uint64, size int64, _ error)
-	getStateLoader() kvstorage.StateLoader
+	getStateLoader() stateloader.StateLoader
 	// NB: Setting the persistent raft state is via the Engine exposed by
 	// storeForTruncator.
 }
@@ -324,7 +324,7 @@ func (t *raftLogTruncator) addPendingTruncation(
 		After: alreadyTruncIndex, Last: pendingTrunc.Index,
 	}); err != nil {
 		// Log a loud error since we need to continue enqueuing the truncation.
-		log.KvExec.Errorf(ctx, "while computing size of sideloaded files to truncate: %+v", err)
+		log.Errorf(ctx, "while computing size of sideloaded files to truncate: %+v", err)
 		pendingTrunc.isDeltaTrusted = false
 	} else if entries != 0 {
 		pendingTrunc.logDeltaBytes -= size
@@ -523,7 +523,7 @@ func (t *raftLogTruncator) tryEnactTruncations(
 	stateLoader := r.getStateLoader()
 	as, err := stateLoader.LoadRangeAppliedState(ctx, reader)
 	if err != nil {
-		log.KvExec.Errorf(ctx, "error loading RangeAppliedState, dropping all pending log truncations: %s",
+		log.Errorf(ctx, "error loading RangeAppliedState, dropping all pending log truncations: %s",
 			err)
 		pendingTruncs.reset()
 		return
@@ -545,13 +545,13 @@ func (t *raftLogTruncator) tryEnactTruncations(
 	}
 	// Do the truncation of persistent raft entries, specified by enactIndex
 	// (this subsumes all the preceding queued truncations).
-	batch := t.store.getEngine().NewWriteBatch()
+	batch := t.store.getEngine().NewUnindexedBatch()
 	defer batch.Close()
 	if err := handleTruncatedStateBelowRaftPreApply(ctx, truncState,
 		pendingTruncs.mu.truncs[enactIndex].RaftTruncatedState,
 		stateLoader.StateLoader, batch,
 	); err != nil {
-		log.KvExec.Errorf(ctx, "while attempting to truncate raft log: %+v", err)
+		log.Errorf(ctx, "while attempting to truncate raft log: %+v", err)
 		pendingTruncs.reset()
 		return
 	}
@@ -570,7 +570,7 @@ func (t *raftLogTruncator) tryEnactTruncations(
 	// so that the subsequent removals from the sideloaded storage are safe.
 	sync := pendingTruncs.mu.truncs[enactIndex].hasSideloaded
 	if err := batch.Commit(sync); err != nil {
-		log.KvExec.Fatalf(ctx, "while committing batch to truncate raft log: %+v", err)
+		log.Fatalf(ctx, "while committing batch to truncate raft log: %+v", err)
 		return
 	}
 	r.finalizeTruncation(ctx)

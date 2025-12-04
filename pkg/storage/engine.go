@@ -13,6 +13,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/settings"
+	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/storage/pebbleiter"
@@ -24,7 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/metrics"
 	"github.com/cockroachdb/pebble/rangekey"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/cockroachdb/redact"
@@ -925,11 +926,8 @@ type Engine interface {
 	Capacity() (roachpb.StoreCapacity, error)
 	// Properties returns the low-level properties for the engine's underlying storage.
 	Properties() roachpb.StoreProperties
-	// ProfileSeparatedValueRetrievals collects a profile of the engine's
-	// separated value retrievals. It stops when the context is done.
-	ProfileSeparatedValueRetrievals(ctx context.Context) (*metrics.ValueRetrievalProfile, error)
 	// Compact forces compaction over the entire database.
-	Compact(ctx context.Context) error
+	Compact() error
 	// Env returns the filesystem environment used by the Engine.
 	Env() *fs.Env
 	// Excise removes all data for the given span from the engine.
@@ -1045,12 +1043,17 @@ type Engine interface {
 		shared []pebble.SharedSSTMeta,
 		external []pebble.ExternalFile,
 		exciseSpan roachpb.Span,
+		sstsContainExciseTombstone bool,
 	) (pebble.IngestOperationStats, error)
 	// IngestExternalFiles is a variant of IngestLocalFiles that takes external
 	// files. These files can be referred to by multiple stores, but are not
 	// modified or deleted by the Engine doing the ingestion.
 	IngestExternalFiles(ctx context.Context, external []pebble.ExternalFile) (pebble.IngestOperationStats, error)
 
+	// PreIngestDelay offers an engine the chance to backpressure ingestions.
+	// When called, it may choose to block if the engine determines that it is in
+	// or approaching a state where further ingestions may risk its health.
+	PreIngestDelay(ctx context.Context)
 	// ApproximateDiskBytes returns an approximation of the on-disk size and file
 	// counts for the given key span, along with how many of those bytes are on
 	// remote, as well as specifically external remote, storage.
@@ -1072,7 +1075,7 @@ type Engine interface {
 	) error
 	// CompactRange ensures that the specified range of key value pairs is
 	// optimized for space efficiency.
-	CompactRange(ctx context.Context, start, end roachpb.Key) error
+	CompactRange(start, end roachpb.Key) error
 	// ScanStorageInternalKeys returns key level statistics for each level of a pebble store (that overlap start and end).
 	ScanStorageInternalKeys(start, end roachpb.Key, megabytesPerSecond int64) ([]enginepb.StorageInternalKeysMetrics, error)
 	// GetTableMetrics returns information about sstables that overlap start and end.
@@ -1132,17 +1135,6 @@ type Engine interface {
 	// GetPebbleOptions returns the options used when creating the engine. The
 	// caller must not modify these.
 	GetPebbleOptions() *pebble.Options
-
-	// GetDiskUnhealthy returns true if the engine has determined that the
-	// underlying disk is transiently unhealthy. This can change from false to
-	// true and back to false. The engine has mechanisms to mask disk unhealth
-	// (e.g. if WAL failover is configured), but in some cases the unhealth is
-	// longer than what the engine may be able to successfully mask, but not yet
-	// long enough to crash the node (see
-	// COCKROACH_ENGINE_MAX_SYNC_DURATION_DEFAULT). This method returns true in
-	// this intermediate case. Currently, this mainly feeds into allocation
-	// decisions by the caller (such as shedding leases).
-	GetDiskUnhealthy() bool
 }
 
 // Batch is the interface for batch specific operations.
@@ -1259,9 +1251,6 @@ type Metrics struct {
 	// distinguished in the pebble logs.
 	WriteStallCount    int64
 	WriteStallDuration time.Duration
-	// DiskUnhealthyDuration is the duration for which Engine.GetUnhealthyDisk
-	// has returned true.
-	DiskUnhealthyDuration time.Duration
 
 	// BlockLoadConcurrencyLimit is the current limit on the number of concurrent
 	// sstable block reads.
@@ -1315,9 +1304,6 @@ type AggregatedIteratorStats struct {
 	// ExternalSteps, it's a good indication that there's an accumulation of
 	// garbage within the LSM (NOT MVCC garbage).
 	InternalSteps int
-	// ValueRetrievalCount is the total count of value retrievals of values
-	// separated into blob files.
-	ValueRetrievalCount uint64
 }
 
 // AggregatedBatchCommitStats hold cumulative stats summed over all the
@@ -1337,17 +1323,16 @@ type MetricsForInterval struct {
 	WALFsyncLatency                prometheusgo.Metric
 	FlushWriteThroughput           pebble.ThroughputMetric
 	WALFailoverWriteAndSyncLatency prometheusgo.Metric
-	WALSecondaryFileOpLatency      prometheusgo.Metric
 }
 
 // NumSSTables returns the total number of SSTables in the LSM, aggregated
 // across levels.
 func (m *Metrics) NumSSTables() int64 {
-	var num uint64
+	var num int64
 	for _, lm := range m.Metrics.Levels {
-		num += lm.Tables.Count
+		num += lm.NumFiles
 	}
-	return int64(num)
+	return num
 }
 
 // IngestedBytes returns the sum of all ingested tables, aggregated across all
@@ -1355,7 +1340,7 @@ func (m *Metrics) NumSSTables() int64 {
 func (m *Metrics) IngestedBytes() uint64 {
 	var ingestedBytes uint64
 	for _, lm := range m.Metrics.Levels {
-		ingestedBytes += lm.TablesIngested.Bytes
+		ingestedBytes += lm.BytesIngested
 	}
 	return ingestedBytes
 }
@@ -1364,11 +1349,9 @@ func (m *Metrics) IngestedBytes() uint64 {
 // compactions across all levels of the LSM.
 func (m *Metrics) CompactedBytes() (read, written uint64) {
 	for _, lm := range m.Metrics.Levels {
-		read += lm.TableBytesRead + lm.BlobBytesRead
-		written += lm.TablesCompacted.Bytes + lm.BlobBytesCompacted
+		read += lm.BytesRead
+		written += lm.BytesCompacted
 	}
-	read += uint64(m.Metrics.Compact.BlobFileRewrite.BytesRead)
-	written += uint64(m.Metrics.Compact.BlobFileRewrite.BytesWritten)
 	return read, written
 }
 
@@ -1378,6 +1361,8 @@ func (m *Metrics) AsStoreStatsEvent() eventpb.StoreStats {
 	e := eventpb.StoreStats{
 		CacheSize:                  m.BlockCache.Size,
 		CacheCount:                 m.BlockCache.Count,
+		CacheHits:                  m.BlockCache.Hits,
+		CacheMisses:                m.BlockCache.Misses,
 		CompactionCountDefault:     m.Compact.DefaultCount,
 		CompactionCountDeleteOnly:  m.Compact.DeleteOnlyCount,
 		CompactionCountElisionOnly: m.Compact.ElisionOnlyCount,
@@ -1402,32 +1387,31 @@ func (m *Metrics) AsStoreStatsEvent() eventpb.StoreStats {
 		WalPhysicalSize:            m.WAL.PhysicalSize,
 		WalBytesIn:                 m.WAL.BytesIn,
 		WalBytesWritten:            m.WAL.BytesWritten,
-		TableObsoleteCount:         int64(m.Table.Physical.Obsolete.Total().Count),
-		TableObsoleteSize:          m.Table.Physical.Obsolete.Total().Bytes,
-		TableZombieCount:           int64(m.Table.Physical.Zombie.Total().Count),
-		TableZombieSize:            m.Table.Physical.Zombie.Total().Bytes,
+		TableObsoleteCount:         m.Table.ObsoleteCount,
+		TableObsoleteSize:          m.Table.ObsoleteSize,
+		TableZombieCount:           m.Table.ZombieCount,
+		TableZombieSize:            m.Table.ZombieSize,
 		RangeKeySetsCount:          m.Keys.RangeKeySetsCount,
 	}
-	e.CacheHits, e.CacheMisses = m.BlockCache.HitsAndMisses.Aggregate()
 	for i, l := range m.Levels {
-		if l.Tables.Count == 0 {
+		if l.NumFiles == 0 {
 			continue
 		}
 		e.Levels = append(e.Levels, eventpb.LevelStats{
 			Level:           uint32(i),
-			NumFiles:        int64(l.Tables.Count),
-			SizeBytes:       int64(l.Tables.Bytes),
+			NumFiles:        l.NumFiles,
+			SizeBytes:       l.Size,
 			Score:           float32(l.Score),
-			BytesIn:         l.TableBytesIn,
-			BytesIngested:   l.TablesIngested.Bytes,
-			BytesMoved:      l.TablesMoved.Bytes,
-			BytesRead:       l.TableBytesRead + l.BlobBytesRead,
-			BytesCompacted:  l.TablesCompacted.Bytes + l.BlobBytesCompacted,
-			BytesFlushed:    l.TablesFlushed.Bytes + l.BlobBytesFlushed,
-			TablesCompacted: l.TablesCompacted.Count,
-			TablesFlushed:   l.TablesFlushed.Count,
-			TablesIngested:  l.TablesIngested.Count,
-			TablesMoved:     l.TablesMoved.Count,
+			BytesIn:         l.BytesIn,
+			BytesIngested:   l.BytesIngested,
+			BytesMoved:      l.BytesMoved,
+			BytesRead:       l.BytesRead,
+			BytesCompacted:  l.BytesCompacted,
+			BytesFlushed:    l.BytesFlushed,
+			TablesCompacted: l.TablesCompacted,
+			TablesFlushed:   l.TablesFlushed,
+			TablesIngested:  l.TablesIngested,
+			TablesMoved:     l.TablesMoved,
 			NumSublevels:    l.Sublevels,
 		})
 	}
@@ -1444,10 +1428,6 @@ func GetIntent(ctx context.Context, reader Reader, key roachpb.Key) (*roachpb.In
 		Prefix: true,
 		// Ignore Exclusive and Shared locks. We only care about intents.
 		MatchMinStr: lock.Intent,
-		// This is eventually called from the QueryIntent request, so this isn't
-		// quite "intent resolution", but we don't want too many categories, and
-		// this does relate to intents, so we use this existing category.
-		ReadCategory: fs.IntentResolutionReadCategory,
 	}
 	iter, err := NewLockTableIterator(ctx, reader, opts)
 	if err != nil {
@@ -1610,22 +1590,24 @@ func WriteSyncNoop(eng Engine) error {
 // either write a Pebble range tombstone or clear individual keys. If it uses
 // a range tombstone, it will tighten the span to the first encountered key.
 //
-// The pointKeyThreshold parameter specifies the number of point keys where it
-// will switch from clearing individual keys using point tombstones to clearing
-// the entire range using Pebble range tombstones (RANGEDELs). The
-// pointKeyThreshold value must be at least 1. NB: An initial scan will be done
-// to determine the type of clear, so a large threshold will potentially involve
-// scanning a large number of keys.
+// pointKeyThreshold and rangeKeyThreshold specify the number of point/range
+// keys respectively where it will switch from clearing individual keys to
+// Pebble range tombstones (RANGEDEL or RANGEKEYDEL respectively). A threshold
+// of 0 disables checking for and clearing that key type.
 //
-// ClearRangeWithHeuristic will also check for the existence of range keys, and
-// if any exist, it will write a RANGEKEYDEL clearing all range keys in the span.
+// NB: An initial scan will be done to determine the type of clear, so a large
+// threshold will potentially involve scanning a large number of keys twice.
+//
+// TODO(erikgrinaker): Consider tightening the end of the range tombstone span
+// too, by doing a SeekLT when we reach the threshold. It's unclear whether it's
+// really worth it.
 func ClearRangeWithHeuristic(
-	ctx context.Context, r Reader, w Writer, start, end roachpb.Key, pointKeyThreshold int,
+	ctx context.Context,
+	r Reader,
+	w Writer,
+	start, end roachpb.Key,
+	pointKeyThreshold, rangeKeyThreshold int,
 ) error {
-	if pointKeyThreshold < 1 {
-		return errors.AssertionFailedf("pointKeyThreshold must be at least 1")
-	}
-
 	clearPointKeys := func(r Reader, w Writer, start, end roachpb.Key, threshold int) error {
 		iter, err := r.NewEngineIterator(ctx, IterOptions{
 			KeyTypes:   IterKeyTypePointsOnly,
@@ -1674,7 +1656,7 @@ func ClearRangeWithHeuristic(
 		return err
 	}
 
-	clearRangeKeys := func(r Reader, w Writer, start, end roachpb.Key) error {
+	clearRangeKeys := func(r Reader, w Writer, start, end roachpb.Key, threshold int) error {
 		iter, err := r.NewEngineIterator(ctx, IterOptions{
 			KeyTypes:   IterKeyTypeRangesOnly,
 			LowerBound: start,
@@ -1685,32 +1667,127 @@ func ClearRangeWithHeuristic(
 		}
 		defer iter.Close()
 
-		ok, err := iter.SeekEngineKeyGE(EngineKey{Key: start})
-		if err != nil {
+		// Scan, and drop a RANGEKEYDEL if we reach the threshold.
+		var ok bool
+		var count int
+		var firstKey roachpb.Key
+		for ok, err = iter.SeekEngineKeyGE(EngineKey{Key: start}); ok; ok, err = iter.NextEngineKey() {
+			count += len(iter.EngineRangeKeys())
+			if len(firstKey) == 0 {
+				bounds, err := iter.EngineRangeBounds()
+				if err != nil {
+					return err
+				}
+				firstKey = bounds.Key.Clone()
+			}
+			if count >= threshold {
+				return w.ClearRawRange(firstKey, end, false /* pointKeys */, true /* rangeKeys */)
+			}
+		}
+		if err != nil || count == 0 {
 			return err
 		}
-		if !ok {
-			// No range keys in the span.
-			return nil
+		// Clear individual range keys.
+		for ok, err = iter.SeekEngineKeyGE(EngineKey{Key: start}); ok; ok, err = iter.NextEngineKey() {
+			bounds, err := iter.EngineRangeBounds()
+			if err != nil {
+				return err
+			}
+			for _, v := range iter.EngineRangeKeys() {
+				if err := w.ClearEngineRangeKey(bounds.Key, bounds.EndKey, v.Version); err != nil {
+					return err
+				}
+			}
 		}
-		bounds, err := iter.EngineRangeBounds()
-		if err != nil {
-			return err
-		}
-		// TODO(erikgrinaker): Consider tightening the end of the range
-		// tombstone span too, by doing a SeekLT when we reach the threshold.
-		// It's unclear whether it's really worth it.
-		return w.ClearRawRange(bounds.Key, end, false /* pointKeys */, true /* rangeKeys */)
+		return err
 	}
 
-	if err := clearPointKeys(r, w, start, end, pointKeyThreshold); err != nil {
-		return err
+	if pointKeyThreshold > 0 {
+		if err := clearPointKeys(r, w, start, end, pointKeyThreshold); err != nil {
+			return err
+		}
 	}
-	if err := clearRangeKeys(r, w, start, end); err != nil {
-		return err
+
+	if rangeKeyThreshold > 0 {
+		if err := clearRangeKeys(r, w, start, end, rangeKeyThreshold); err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+
+var ingestDelayL0Threshold = settings.RegisterIntSetting(
+	settings.ApplicationLevel,
+	"rocksdb.ingest_backpressure.l0_file_count_threshold",
+	"number of L0 files after which to backpressure SST ingestions",
+	20,
+)
+
+var ingestDelayTime = settings.RegisterDurationSetting(
+	settings.ApplicationLevel,
+	"rocksdb.ingest_backpressure.max_delay",
+	"maximum amount of time to backpressure a single SST ingestion",
+	time.Second*5,
+)
+
+var preIngestDelayEnabled = settings.RegisterBoolSetting(
+	settings.SystemOnly,
+	"pebble.pre_ingest_delay.enabled",
+	"controls whether the pre-ingest delay mechanism is active",
+	false,
+)
+
+// PreIngestDelay may choose to block for some duration if L0 has an excessive
+// number of files in it or if PendingCompactionBytesEstimate is elevated. This
+// it is intended to be called before ingesting a new SST, since we'd rather
+// backpressure the bulk operation adding SSTs than slow down the whole RocksDB
+// instance and impact all foreground traffic by adding too many files to it.
+// After the number of L0 files exceeds the configured limit, it gradually
+// begins delaying more for each additional file in L0 over the limit until
+// hitting its configured (via settings) maximum delay. If the pending
+// compaction limit is exceeded, it waits for the maximum delay.
+func preIngestDelay(ctx context.Context, eng Engine, settings *cluster.Settings) {
+	if settings == nil {
+		return
+	}
+	if !preIngestDelayEnabled.Get(&settings.SV) {
+		return
+	}
+	metrics := eng.GetMetrics()
+	targetDelay := calculatePreIngestDelay(settings, metrics.Metrics)
+
+	if targetDelay == 0 {
+		return
+	}
+	log.VEventf(ctx, 2, "delaying SST ingestion %s. %d L0 files, %d L0 Sublevels",
+		targetDelay, metrics.Levels[0].NumFiles, metrics.Levels[0].Sublevels)
+
+	select {
+	case <-time.After(targetDelay):
+	case <-ctx.Done():
+	}
+}
+
+func calculatePreIngestDelay(settings *cluster.Settings, metrics *pebble.Metrics) time.Duration {
+	maxDelay := ingestDelayTime.Get(&settings.SV)
+	l0ReadAmpLimit := ingestDelayL0Threshold.Get(&settings.SV)
+
+	const ramp = 10
+	l0ReadAmp := metrics.Levels[0].NumFiles
+	if metrics.Levels[0].Sublevels >= 0 {
+		l0ReadAmp = int64(metrics.Levels[0].Sublevels)
+	}
+
+	if l0ReadAmp > l0ReadAmpLimit {
+		delayPerFile := maxDelay / time.Duration(ramp)
+		targetDelay := time.Duration(l0ReadAmp-l0ReadAmpLimit) * delayPerFile
+		if targetDelay > maxDelay {
+			return maxDelay
+		}
+		return targetDelay
+	}
+	return 0
 }
 
 // Helper function to implement Reader.MVCCIterate().

@@ -41,15 +41,12 @@ func (r *Replica) setCorruptRaftMuLocked(
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	log.KvExec.ErrorfDepth(ctx, 1, "stalling replica due to: %s", cErr.ErrorMsg)
+	log.ErrorfDepth(ctx, 1, "stalling replica due to: %s", cErr.ErrorMsg)
 	cErr.Processed = true
-	r.shMu.destroyStatus.Set(cErr, destroyReasonRemoved)
+	r.mu.destroyStatus.Set(cErr, destroyReasonRemoved)
 
-	// TODO(sep-raft-log): same as in replica_consistency.go, make sure storing
-	// files into the LogEngine is canonical.
-	eng := r.store.LogEngine()
-	auxDir := eng.GetAuxiliaryDir()
-	_ = eng.Env().MkdirAll(auxDir, os.ModePerm)
+	auxDir := r.store.TODOEngine().GetAuxiliaryDir()
+	_ = r.store.TODOEngine().Env().MkdirAll(auxDir, os.ModePerm)
 	path := base.PreventedStartupFile(auxDir)
 
 	preventStartupMsg := fmt.Sprintf(`ATTENTION:
@@ -62,10 +59,10 @@ A file preventing this node from restarting was placed at:
 %s
 `, r, path)
 
-	if err := fs.WriteFile(eng.Env(), path, []byte(preventStartupMsg), fs.UnspecifiedWriteCategory); err != nil {
-		log.KvExec.Warningf(ctx, "%v", err)
+	if err := fs.WriteFile(r.store.TODOEngine().Env(), path, []byte(preventStartupMsg), fs.UnspecifiedWriteCategory); err != nil {
+		log.Warningf(ctx, "%v", err)
 	}
 
-	log.KvExec.FatalfDepth(ctx, 1, "replica is corrupted: %s", cErr)
+	log.FatalfDepth(ctx, 1, "replica is corrupted: %s", cErr)
 	return kvpb.NewError(cErr)
 }

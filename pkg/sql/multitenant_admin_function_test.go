@@ -58,7 +58,7 @@ func createTestClusterArgs(ctx context.Context, numReplicas, numVoters int32) ba
 	zoneCfg.NumVoters = proto.Int32(numVoters)
 
 	clusterSettings := cluster.MakeTestingClusterSettings()
-	kvserverbase.LoadBasedRebalancingMode.Override(ctx, &clusterSettings.SV, kvserverbase.LBRebalancingOff)
+	kvserver.LoadBasedRebalancingMode.Override(ctx, &clusterSettings.SV, kvserver.LBRebalancingOff)
 	kvserverbase.MergeQueueEnabled.Override(ctx, &clusterSettings.SV, false)
 
 	// Set allocator intervals to scan faster to help with recovery from race
@@ -677,8 +677,6 @@ func TestTruncateTable(t *testing.T) {
 		func(_ serverutils.TestClusterInterface, db *gosql.DB, tenant string, tExp tenantExpected) {
 			_, err := db.ExecContext(ctx, createTable)
 			message := fmt.Sprintf("tenant=%s", tenant)
-			require.NoErrorf(t, err, message)
-			_, err = db.ExecContext(ctx, "ALTER TABLE t SET (schema_locked=false)")
 			require.NoErrorf(t, err, message)
 			_, err = db.ExecContext(ctx, "ALTER TABLE t SPLIT AT VALUES (1);")
 			require.NoErrorf(t, err, message)

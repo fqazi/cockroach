@@ -214,7 +214,7 @@ func topic(name string) *tableDescriptorTopic {
 	tableDesc := tabledesc.NewBuilder(&descpb.TableDescriptor{Name: name}).BuildImmutableTable()
 	spec := changefeedbase.Target{
 		Type:              jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY,
-		DescID:            tableDesc.GetID(),
+		TableID:           tableDesc.GetID(),
 		StatementTimeName: changefeedbase.StatementTimeName(name),
 	}
 	return &tableDescriptorTopic{Metadata: makeMetadata(tableDesc), spec: spec}
@@ -278,7 +278,6 @@ func makeTestKafkaSink(
 				client := &fakeKafkaClient{config}
 				return client, nil
 			},
-			BypassConnectionCheck: true,
 		},
 	}
 	err = s.Dial()
@@ -293,7 +292,7 @@ func makeChangefeedTargets(targetNames ...string) changefeedbase.Targets {
 	targets := changefeedbase.Targets{}
 	for i, name := range targetNames {
 		targets.Add(changefeedbase.Target{
-			DescID:            descpb.ID(i),
+			TableID:           descpb.ID(i),
 			StatementTimeName: changefeedbase.StatementTimeName(name),
 		})
 	}
@@ -469,7 +468,7 @@ func TestSQLSink(t *testing.T) {
 		td := tabledesc.NewBuilder(&descpb.TableDescriptor{Name: name, ID: descpb.ID(id)}).BuildImmutableTable()
 		spec := changefeedbase.Target{
 			Type:              jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY,
-			DescID:            td.GetID(),
+			TableID:           td.GetID(),
 			StatementTimeName: changefeedbase.StatementTimeName(name),
 		}
 		return &tableDescriptorTopic{Metadata: makeMetadata(td), spec: spec}
@@ -520,9 +519,7 @@ func TestSQLSink(t *testing.T) {
 	sqlDB.CheckQueryResults(t, `SELECT key, value FROM sink ORDER BY PRIMARY KEY sink`,
 		[][]string{{`k1`, `v0`}},
 	)
-	sqlDB.Exec(t, `ALTER TABLE sink SET (schema_locked=false)`)
 	sqlDB.Exec(t, `TRUNCATE sink`)
-	sqlDB.Exec(t, `ALTER TABLE sink SET (schema_locked=true)`)
 
 	// Verify the implicit flushing
 	sqlDB.CheckQueryResults(t, `SELECT count(*) FROM sink`, [][]string{{`0`}})
@@ -534,9 +531,7 @@ func TestSQLSink(t *testing.T) {
 	sqlDB.CheckQueryResults(t, `SELECT count(*) FROM sink`, [][]string{{`3`}})
 	require.NoError(t, sink.Flush(ctx))
 	sqlDB.CheckQueryResults(t, `SELECT count(*) FROM sink`, [][]string{{`4`}})
-	sqlDB.Exec(t, `ALTER TABLE sink SET (schema_locked=false)`)
 	sqlDB.Exec(t, `TRUNCATE sink`)
-	sqlDB.Exec(t, `ALTER TABLE sink SET (schema_locked=true)`)
 
 	// Two tables interleaved in time
 	var pool testAllocPool
@@ -548,9 +543,7 @@ func TestSQLSink(t *testing.T) {
 	sqlDB.CheckQueryResults(t, `SELECT topic, key, value FROM sink ORDER BY PRIMARY KEY sink`,
 		[][]string{{`bar`, `kbar`, `v0`}, {`foo`, `kfoo`, `v0`}, {`foo`, `kfoo`, `v1`}},
 	)
-	sqlDB.Exec(t, `ALTER TABLE sink SET (schema_locked=false)`)
 	sqlDB.Exec(t, `TRUNCATE sink`)
-	sqlDB.Exec(t, `ALTER TABLE sink SET (schema_locked=true)`)
 
 	// Multiple keys interleaved in time. Use sqlSinkNumPartitions+1 keys to
 	// guarantee that at lease two of them end up in the same partition.
@@ -575,9 +568,7 @@ func TestSQLSink(t *testing.T) {
 			{`2`, `v0`, `v1`},
 		},
 	)
-	sqlDB.Exec(t, `ALTER TABLE sink SET (schema_locked=false)`)
 	sqlDB.Exec(t, `TRUNCATE sink`)
-	sqlDB.Exec(t, `ALTER TABLE sink SET (schema_locked=true)`)
 
 	// Emit resolved
 	var e testEncoder

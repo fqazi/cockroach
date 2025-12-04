@@ -175,6 +175,8 @@ func TestStreamIngestionJobWithRandomClient(t *testing.T) {
 	var revertRangeTargetTime hlc.Timestamp
 	params := base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
+			// Test hangs with test tenant. More investigation is required.
+			// Tracked with #76378.
 			DefaultTestTenant: base.TestControlsTenantsExplicitly,
 			Knobs: base.TestingKnobs{
 				TenantTestingKnobs: &sql.TenantTestingKnobs{
@@ -322,7 +324,7 @@ func assertExactlyEqualKVs(
 ) hlc.Timestamp {
 	// Iterate over the store.
 	store := tc.GetFirstStoreFromServer(t, 0)
-	it, err := store.StateEngine().NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
+	it, err := store.TODOEngine().NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
 		LowerBound: tenantSpan.Key,
 		UpperBound: tenantSpan.EndKey,
 	})

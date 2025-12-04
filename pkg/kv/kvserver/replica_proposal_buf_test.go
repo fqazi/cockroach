@@ -19,17 +19,21 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/ctpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/tracker"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowcontrolpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowinspectpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/leases"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftutil"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	rafttracker "github.com/cockroachdb/cockroach/pkg/raft/tracker"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -139,6 +143,9 @@ func (t *testProposer) locker() sync.Locker {
 func (t *testProposer) rlocker() sync.Locker {
 	return t.RWMutex.RLocker()
 }
+func (t *testProposer) flowControlHandle(ctx context.Context) kvflowcontrol.Handle {
+	return &testFlowTokenHandle{}
+}
 
 func (t *testProposer) getStoreID() roachpb.StoreID {
 	return 1
@@ -174,7 +181,6 @@ func (t *testProposer) closedTimestampTarget() hlc.Timestamp {
 		1*time.Second,
 		0,
 		200*time.Millisecond,
-		10*time.Millisecond,
 		t.rangePolicy,
 	)
 }
@@ -369,12 +375,12 @@ func TestProposalBuffer(t *testing.T) {
 	require.Equal(t, num, p.registered)
 	// We've flushed num requests, out of which one is a lease request (so that
 	// one did not increment the MLAI).
-	require.Equal(t, kvpb.LeaseAppliedIndex(kvstorage.InitialLeaseAppliedIndex+num-1), b.assignedLAI)
+	require.Equal(t, kvpb.LeaseAppliedIndex(stateloader.InitialLeaseAppliedIndex+num-1), b.assignedLAI)
 	require.Equal(t, 2*propBufArrayMinSize, b.arr.len())
 	require.Equal(t, 1, b.evalTracker.Count())
 	proposals := r.consumeProposals()
 	require.Len(t, proposals, propBufArrayMinSize)
-	lai := kvpb.LeaseAppliedIndex(kvstorage.InitialLeaseAppliedIndex)
+	lai := kvpb.LeaseAppliedIndex(stateloader.InitialLeaseAppliedIndex)
 	for i, p := range proposals {
 		if i != leaseReqIdx {
 			lai++
@@ -922,7 +928,6 @@ func TestProposalBufferClosedTimestamp(t *testing.T) {
 	nowMinusTwiceClosedLag := nowTS.Add(-2*closedts.TargetDuration.Get(&st.SV).Nanoseconds(), 0)
 	nowPlusGlobalReadLead := nowTS.Add((maxOffset +
 		275*time.Millisecond /* sideTransportPropTime */ +
-		10*time.Millisecond /* sideTransportPacing */ +
 		25*time.Millisecond /* bufferTime */).Nanoseconds(), 0)
 	expiredLeaseTimestamp := nowTS.Add(-1000, 0)
 	someClosedTS := nowTS.Add(-2000, 0)
@@ -1160,3 +1165,47 @@ func (t mockTracker) Count() int {
 }
 
 var _ tracker.Tracker = mockTracker{}
+
+type testFlowTokenHandle struct{}
+
+var _ kvflowcontrol.Handle = &testFlowTokenHandle{}
+
+func (t *testFlowTokenHandle) Admit(
+	ctx context.Context, priority admissionpb.WorkPriority, t2 time.Time,
+) (bool, error) {
+	return false, nil
+}
+
+func (t *testFlowTokenHandle) DeductTokensFor(
+	ctx context.Context,
+	priority admissionpb.WorkPriority,
+	position kvflowcontrolpb.RaftLogPosition,
+	tokens kvflowcontrol.Tokens,
+) {
+}
+
+func (t *testFlowTokenHandle) ReturnTokensUpto(
+	ctx context.Context,
+	priority admissionpb.WorkPriority,
+	position kvflowcontrolpb.RaftLogPosition,
+	stream kvflowcontrol.Stream,
+) {
+}
+
+func (t *testFlowTokenHandle) ConnectStream(
+	ctx context.Context, position kvflowcontrolpb.RaftLogPosition, stream kvflowcontrol.Stream,
+) {
+}
+
+func (t *testFlowTokenHandle) DisconnectStream(ctx context.Context, stream kvflowcontrol.Stream) {
+}
+
+func (t *testFlowTokenHandle) ResetStreams(ctx context.Context) {
+}
+
+func (t *testFlowTokenHandle) Inspect(context.Context) kvflowinspectpb.Handle {
+	return kvflowinspectpb.Handle{}
+}
+
+func (t *testFlowTokenHandle) Close(ctx context.Context) {
+}

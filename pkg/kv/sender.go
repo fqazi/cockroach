@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/interval"
 	"github.com/cockroachdb/redact"
 )
 
@@ -97,12 +96,7 @@ type TxnSender interface {
 
 	// GetLeafTxnInputState retrieves the input state necessary and
 	// sufficient to initialize a LeafTxn from the current RootTxn.
-	//
-	// readsTree, when non-nil, specifies an interval tree of key spans that
-	// will be read by the caller. As such, any non-overlapping writes could be
-	// ignored when populating the LeafTxnInputState. If readsTree is nil, then
-	// all writes should be included.
-	GetLeafTxnInputState(context.Context, interval.Tree) (*roachpb.LeafTxnInputState, error)
+	GetLeafTxnInputState(context.Context) (*roachpb.LeafTxnInputState, error)
 
 	// GetLeafTxnFinalState retrieves the final state of a LeafTxn
 	// necessary and sufficient to update a RootTxn with progress made
@@ -134,12 +128,10 @@ type TxnSender interface {
 	SetOmitInRangefeeds()
 
 	// SetBufferedWritesEnabled toggles whether the writes are buffered on the
-	// gateway node until the commit time. Buffered writes cannot be enabled on
-	// a txn that performed any requests. When disabling buffered writes, if
-	// there are any writes in the buffer, they are flushed with the next
-	// BatchRequest.
-	//
-	// Only allowed on the RootTxn.
+	// gateway node until the commit time. Only allowed on the RootTxn. Buffered
+	// writes cannot be enabled on a txn that performed any requests. When
+	// disabling buffered writes, if there are any writes in the buffer, they
+	// are flushed with the next BatchRequest.
 	SetBufferedWritesEnabled(bool)
 
 	// BufferedWritesEnabled returns whether the buffered writes are enabled.
@@ -373,17 +365,11 @@ type TxnSender interface {
 	// observe the writes performed by this transaction.
 	DeferCommitWait(ctx context.Context) func(context.Context) error
 
-	// HasPerformedReads returns true if a read has been performed in the
-	// transaction's current epoch.
+	// HasPerformedReads returns true if a read has been performed.
 	HasPerformedReads() bool
 
-	// HasPerformedWrites returns true if a write has been performed in the
-	// transaction's current epoch.
+	// HasPerformedWrites returns true if a write has been performed.
 	HasPerformedWrites() bool
-
-	// HasBufferedWrites returns true if a write has been buffered for the
-	// transaction's current epoch.
-	HasBufferedWrites() bool
 
 	// TestingShouldRetry returns true if transaction retry errors should be
 	// randomly returned to callers. Note that it is the responsibility of

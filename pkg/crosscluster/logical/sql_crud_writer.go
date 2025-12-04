@@ -7,10 +7,10 @@ package logical
 
 import (
 	"context"
+	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdcevent"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
-	"github.com/cockroachdb/cockroach/pkg/kv/bulk"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
-	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 )
 
@@ -34,7 +33,6 @@ type sqlCrudWriter struct {
 	handlers map[descpb.ID]*tableHandler
 	settings *cluster.Settings
 	discard  jobspb.LogicalReplicationDetails_Discard
-	pacer    *admission.Pacer
 }
 
 var _ BatchHandler = &sqlCrudWriter{}
@@ -47,21 +45,13 @@ func newCrudSqlWriter(
 	discard jobspb.LogicalReplicationDetails_Discard,
 	procConfigByDestID map[descpb.ID]sqlProcessorTableConfig,
 	jobID jobspb.JobID,
-) (_ BatchHandler, err error) {
+) (*sqlCrudWriter, error) {
 	decoder, err := newEventDecoder(ctx, cfg.DB, evalCtx.Settings, procConfigByDestID)
 	if err != nil {
 		return nil, err
 	}
 
 	handlers := make(map[descpb.ID]*tableHandler)
-	defer func() {
-		if err != nil {
-			for _, handler := range handlers {
-				handler.Close(ctx)
-			}
-		}
-	}()
-
 	for dstDescID := range procConfigByDestID {
 		handler, err := newTableHandler(
 			ctx,
@@ -84,7 +74,6 @@ func newCrudSqlWriter(
 		handlers: handlers,
 		settings: evalCtx.Settings,
 		discard:  discard,
-		pacer:    bulk.NewCPUPacer(ctx, cfg.DB.KV(), useLowPriority),
 	}, nil
 }
 
@@ -94,11 +83,7 @@ func (c *sqlCrudWriter) HandleBatch(
 	ctx, sp := tracing.ChildSpan(ctx, "crudBatcher.HandleBatch")
 	defer sp.Finish()
 
-	if _, err := c.pacer.Pace(ctx); err != nil {
-		return batchStats{}, err
-	}
-
-	sortedEvents, err := c.decoder.decodeAndCoalesceEvents(ctx, batch, c.discard)
+	sortedEvents, err := c.decodeAndSortEvents(ctx, batch)
 	if err != nil {
 		return batchStats{}, err
 	}
@@ -114,6 +99,29 @@ func (c *sqlCrudWriter) HandleBatch(
 	}
 
 	return combinedStats, nil
+}
+
+// decodeAndSortEvents returns the decoded events sorted by destination
+// descriptor ID. This grouping allows `eventsByTable` to produce a single
+// group for each table.
+func (c *sqlCrudWriter) decodeAndSortEvents(
+	ctx context.Context, batch []streampb.StreamEvent_KV,
+) ([]decodedEvent, error) {
+	events := make([]decodedEvent, 0, len(batch))
+	for _, event := range batch {
+		if c.discard == jobspb.LogicalReplicationDetails_DiscardAllDeletes && len(event.KeyValue.Value.RawBytes) == 0 {
+			continue
+		}
+		decoded, err := c.decoder.decodeEvent(ctx, event)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, decoded)
+	}
+	sort.SliceStable(events, func(i, j int) bool {
+		return events[i].dstDescID < events[j].dstDescID
+	})
+	return events, nil
 }
 
 // eventsByTable is an iterator that groups events by their destination
@@ -142,9 +150,6 @@ func eventsByTable(events []decodedEvent) func(yield func(descpb.ID, []decodedEv
 
 // Close implements BatchHandler.
 func (c *sqlCrudWriter) Close(ctx context.Context) {
-	for _, handler := range c.handlers {
-		handler.Close(ctx)
-	}
 }
 
 // GetLastRow implements BatchHandler.
@@ -159,13 +164,14 @@ func (c *sqlCrudWriter) ReleaseLeases(ctx context.Context) {
 	}
 }
 
-// ReportMutations implements the BatchHandler interface, but is a no-op for
-// sqlCrudWriter because its mutations are already reported by the queries it
-// runs when they are run.
-func (c *sqlCrudWriter) ReportMutations(context.Context, *stats.Refresher) {}
+// ReportMutations implements BatchHandler.
+func (c *sqlCrudWriter) ReportMutations(*stats.Refresher) {
+}
 
 // SetSyntheticFailurePercent implements BatchHandler.
-func (c *sqlCrudWriter) SetSyntheticFailurePercent(uint32) {}
+func (c *sqlCrudWriter) SetSyntheticFailurePercent(uint32) {
+
+}
 
 // BatchSize implements BatchHandler.
 func (c *sqlCrudWriter) BatchSize() int {

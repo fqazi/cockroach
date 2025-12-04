@@ -116,17 +116,15 @@ func makeRunCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&config.affinity, "affinity", config.affinity, "run benchmarks with each iteration's binaries having affinity to the same node, while different iterations can run on different nodes")
 	cmd.Flags().BoolVar(&config.quiet, "quiet", config.quiet, "suppress roachprod progress output")
 	cmd.Flags().BoolVar(&config.recoverable, "recoverable", config.recoverable, "VMs are able to recover from transient failures (e.g., running spot instances on a MIG in GCE)")
-	cmd.Flags().BoolVar(&config.postIssues, "post-issues", config.postIssues, "post issues to github (requires env vars for github issues to be set)")
 	return cmd
 }
 
 func makeStageCommand() *cobra.Command {
-	longRetries := true
 	runCmdFunc := func(cmd *cobra.Command, args []string) error {
 		cluster := args[0]
 		src := args[1]
 		dest := args[2]
-		return stage(cluster, src, dest, longRetries)
+		return stage(cluster, src, dest)
 	}
 
 	cmd := &cobra.Command{
@@ -140,7 +138,6 @@ The source can be a local path or a GCS URI.`,
 		RunE: runCmdFunc,
 	}
 	cmd.Flags().BoolVar(&roachprodConfig.Quiet, "quiet", roachprodConfig.Quiet, "suppress roachprod progress output")
-	cmd.Flags().BoolVar(&longRetries, "long-retries", longRetries, "use longer retry intervals to handle transient errors (for use with recoverable managed instances)")
 	return cmd
 }
 

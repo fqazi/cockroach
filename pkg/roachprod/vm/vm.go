@@ -41,10 +41,7 @@ const (
 	ArchARM64   = CPUArch("arm64")
 	ArchAMD64   = CPUArch("amd64")
 	ArchFIPS    = CPUArch("fips")
-	ArchS390x   = CPUArch("s390x")
 	ArchUnknown = CPUArch("unknown")
-
-	DefaultLifetime = 12 * time.Hour
 )
 
 // UnimplementedError is returned when a method is not implemented by a
@@ -73,9 +70,6 @@ func ParseArch(s string) CPUArch {
 	}
 	if strings.Contains(arch, "fips") {
 		return ArchFIPS
-	}
-	if strings.Contains(arch, "s390x") {
-		return ArchS390x
 	}
 	return ArchUnknown
 }
@@ -180,7 +174,7 @@ var (
 	ErrNoExpiration       = errors.New("could not determine expiration")
 )
 
-var regionRE = regexp.MustCompile(`(.*[^-])-?[0-9a-z]$`)
+var regionRE = regexp.MustCompile(`(.*[^-])-?[a-z]$`)
 
 // IsLocal returns true if the VM represents the local host.
 func (vm *VM) IsLocal() bool {
@@ -279,35 +273,12 @@ func (vl List) ProviderIDs() []string {
 	return ret
 }
 
-type Filesystem string
-
 const (
 	// Zfs refers to the zfs file system.
-	Zfs Filesystem = "zfs"
+	Zfs = "zfs"
 	// Ext4 refers to the ext4 file system.
-	Ext4 Filesystem = "ext4"
-	// Xfs refers to the xfs file system.
-	Xfs Filesystem = "xfs"
-	// F2fs refers to the f2fs file system.
-	F2fs Filesystem = "f2fs"
-	// Btrfs refers to the btrfs file system.
-	Btrfs Filesystem = "btrfs"
+	Ext4 = "ext4"
 )
-
-// ParseFilesystemString parses and validates a filesystem string.
-func ParseFilesystemString(s string) (Filesystem, error) {
-	return ParseFileSystemOption(Filesystem(s))
-}
-
-// ParseFileSystemOption parses and validates a Filesystem option.
-func ParseFileSystemOption(s Filesystem) (Filesystem, error) {
-	switch s {
-	case Zfs, Ext4, Xfs, F2fs, Btrfs:
-		return s, nil
-	default:
-		return "", errors.Newf("unsupported filesystem: %s", s)
-	}
-}
 
 // CreateOpts is the set of options when creating VMs.
 type CreateOpts struct {
@@ -324,7 +295,7 @@ type CreateOpts struct {
 		// mounting the SSD. Ignored if UseLocalSSD is not set.
 		NoExt4Barrier bool
 		// The file system to be used. This is set to "ext4" by default.
-		FileSystem Filesystem
+		FileSystem string
 	}
 	OsVolumeSize int
 }
@@ -333,7 +304,7 @@ type CreateOpts struct {
 func DefaultCreateOpts() CreateOpts {
 	defaultCreateOpts := CreateOpts{
 		ClusterName:    "",
-		Lifetime:       DefaultLifetime,
+		Lifetime:       12 * time.Hour,
 		GeoDistributed: false,
 		VMProviders:    []string{},
 		OsVolumeSize:   10,
@@ -548,8 +519,6 @@ type Provider interface {
 	GetPreemptedSpotVMs(l *logger.Logger, vms List, since time.Time) ([]PreemptedVM, error)
 	// GetHostErrorVMs returns a list of VMs that had host error since the time specified.
 	GetHostErrorVMs(l *logger.Logger, vms List, since time.Time) ([]string, error)
-	// GetLiveMigrationVMs checks a list of VMs if a live migration happened since the time specified.
-	GetLiveMigrationVMs(l *logger.Logger, vms List, since time.Time) ([]string, error)
 	// GetVMSpecs returns a map from VM.Name to a map of VM attributes, according to a specific cloud provider.
 	GetVMSpecs(l *logger.Logger, vms List) (map[string]map[string]interface{}, error)
 

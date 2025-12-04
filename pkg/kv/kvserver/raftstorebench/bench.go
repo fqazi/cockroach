@@ -78,8 +78,7 @@ func Run(t T, cfg Config) Result {
 					return
 				case <-notifyCh:
 					n++
-					l0Metrics := o.raftEng.GetMetrics().Levels[0]
-					newBytesFlushed := l0Metrics.TablesFlushed.Bytes + l0Metrics.BlobBytesFlushed
+					newBytesFlushed := o.raftEng.GetMetrics().Levels[0].BytesFlushed
 					logf(t, "raft engine flush #%d completed; flushed %s", n,
 						humanizeutil.IBytes(int64(newBytesFlushed-bytesFlushed)))
 					bytesFlushed = newBytesFlushed
@@ -104,9 +103,9 @@ func Run(t T, cfg Config) Result {
 	lsmStatsToFile(t, cfg, "uncompacted", o.smEng.GetMetrics(), o.raftEng.GetMetrics())
 
 	logf(t, "compacting")
-	require.NoError(t, smEng.Compact(context.Background()))
+	require.NoError(t, smEng.Compact())
 	if !cfg.SingleEngine {
-		require.NoError(t, raftEng.Compact(context.Background()))
+		require.NoError(t, raftEng.Compact())
 	}
 	logf(t, "done compacting")
 

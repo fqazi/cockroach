@@ -31,10 +31,11 @@ func TestRemovePartitioningExpiredLicense(t *testing.T) {
 	defer utilccl.TestingEnableEnterprise()()
 
 	ctx := context.Background()
-	srv, sqlDBRaw, _ := serverutils.StartServer(t, base.TestServerArgs{
-		UseDatabase: "d",
+	s, sqlDBRaw, _ := serverutils.StartServer(t, base.TestServerArgs{
+		UseDatabase:       "d",
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 	})
-	defer srv.Stopper().Stop(ctx)
+	defer s.Stopper().Stop(ctx)
 
 	// Create a partitioned table and index.
 	sqlDB := sqlutils.MakeSQLRunner(sqlDBRaw)
@@ -119,7 +120,6 @@ SELECT count(*) > 0
 	// Set up the table to have an index which is partitioned by the enum value
 	// we're going to drop.
 	for _, stmt := range []string{
-		`SET create_table_with_schema_locked=false`,
 		`CREATE TYPE t AS ENUM ('a', 'b', 'c')`,
 		`CREATE TABLE tbl (
     i INT8, k t,

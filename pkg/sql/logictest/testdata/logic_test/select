@@ -1,5 +1,3 @@
-# LogicTest: !local-prepared
-
 # SELECT with no table.
 
 query I
@@ -833,7 +831,7 @@ statement ok
 SELECT * FROM pg_class
 
 statement ok
-SELECT * FROM crdb_internal.node_build_info
+SELECT * FROM crdb_internal.jobs
 
 # Tests for 'large_full_scan_rows'.
 statement ok

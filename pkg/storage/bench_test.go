@@ -13,7 +13,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"slices"
+	"sort"
 	"testing"
 	"time"
 
@@ -41,7 +41,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors/oserror"
 	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/sstable"
 	"github.com/stretchr/testify/require"
@@ -1044,7 +1043,7 @@ func loadTestData(dir string, numKeys, numBatches, batchTimeSpan, valueBytes int
 		return eng, nil
 	}
 
-	log.Dev.Infof(context.Background(), "creating test data: %s", dir)
+	log.Infof(context.Background(), "creating test data: %s", dir)
 
 	// Generate the same data every time.
 	rng := rand.New(rand.NewSource(1449168817))
@@ -1065,7 +1064,7 @@ func loadTestData(dir string, numKeys, numBatches, batchTimeSpan, valueBytes int
 	for i, key := range keys {
 		if (i % batchSize) == 0 {
 			if i > 0 {
-				log.Dev.Infof(ctx, "committing (%d/~%d)", i/batchSize, numBatches)
+				log.Infof(ctx, "committing (%d/~%d)", i/batchSize, numBatches)
 				if err := batch.Commit(false /* sync */); err != nil {
 					return nil, err
 				}
@@ -1127,7 +1126,7 @@ func runMVCCScan(ctx context.Context, b *testing.B, opts benchScanOptions) {
 		// Pull all of the sstables into the RocksDB cache in order to make the
 		// timings more stable. Otherwise, the first run will be penalized pulling
 		// data into the cache while later runs will not.
-		if _, err := ComputeStats(ctx, eng, fs.UnknownReadCategory, keys.LocalMax, roachpb.KeyMax, 0); err != nil {
+		if _, err := ComputeStats(ctx, eng, keys.LocalMax, roachpb.KeyMax, 0); err != nil {
 			b.Fatalf("stats failed: %s", err)
 		}
 	}
@@ -1332,6 +1331,60 @@ func runMVCCBlindConditionalPut(ctx context.Context, b *testing.B, emk engineMak
 	b.StopTimer()
 }
 
+func runMVCCInitPut(ctx context.Context, b *testing.B, emk engineMaker, valueSize int) {
+	rng, _ := randutil.NewTestRand()
+	value := roachpb.MakeValueFromBytes(randutil.RandBytes(rng, valueSize))
+	keyBuf := append(make([]byte, 0, 64), []byte("key-")...)
+
+	eng := emk(b, fmt.Sprintf("iput_%d", valueSize))
+	defer eng.Close()
+
+	b.SetBytes(int64(valueSize))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		key := roachpb.Key(encoding.EncodeUvarintAscending(keyBuf[:4], uint64(i)))
+		ts := hlc.Timestamp{WallTime: timeutil.Now().UnixNano()}
+		batch := eng.NewBatch()
+		if _, err := MVCCInitPut(ctx, batch, key, ts, value, false, MVCCWriteOptions{}); err != nil {
+			b.Fatalf("failed put: %+v", err)
+		}
+		if err := batch.Commit(true); err != nil {
+			b.Fatalf("failed commit: %v", err)
+		}
+		batch.Close()
+	}
+
+	b.StopTimer()
+}
+
+func runMVCCBlindInitPut(ctx context.Context, b *testing.B, emk engineMaker, valueSize int) {
+	rng, _ := randutil.NewTestRand()
+	value := roachpb.MakeValueFromBytes(randutil.RandBytes(rng, valueSize))
+	keyBuf := append(make([]byte, 0, 64), []byte("key-")...)
+
+	eng := emk(b, fmt.Sprintf("iput_%d", valueSize))
+	defer eng.Close()
+
+	b.SetBytes(int64(valueSize))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		key := roachpb.Key(encoding.EncodeUvarintAscending(keyBuf[:4], uint64(i)))
+		ts := hlc.Timestamp{WallTime: timeutil.Now().UnixNano()}
+		wb := eng.NewWriteBatch()
+		if _, err := MVCCBlindInitPut(ctx, wb, key, ts, value, false, MVCCWriteOptions{}); err != nil {
+			b.Fatalf("failed put: %+v", err)
+		}
+		if err := wb.Commit(true); err != nil {
+			b.Fatalf("failed commit: %v", err)
+		}
+		wb.Close()
+	}
+
+	b.StopTimer()
+}
+
 func runMVCCBatchPut(ctx context.Context, b *testing.B, emk engineMaker, valueSize, batchSize int) {
 	rng, _ := randutil.NewTestRand()
 	value := roachpb.MakeValueFromBytes(randutil.RandBytes(rng, valueSize))
@@ -1524,7 +1577,7 @@ func runMVCCDeleteRangeUsingTombstone(
 			eng := getInitialStateEngine(ctx, b, opts, false /* inMemory */)
 			defer eng.Close()
 
-			ms, err := ComputeStats(ctx, eng, fs.UnknownReadCategory, keys.LocalMax, keys.MaxKey, 0)
+			ms, err := ComputeStats(ctx, eng, keys.LocalMax, keys.MaxKey, 0)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -1668,14 +1721,14 @@ func runMVCCComputeStats(ctx context.Context, b *testing.B, valueBytes int, numR
 	var stats enginepb.MVCCStats
 	var err error
 	for i := 0; i < b.N; i++ {
-		stats, err = ComputeStats(ctx, eng, fs.UnknownReadCategory, keys.LocalMax, keys.MaxKey, 0)
+		stats, err = ComputeStats(ctx, eng, keys.LocalMax, keys.MaxKey, 0)
 		if err != nil {
 			b.Fatal(err)
 		}
 	}
 
 	b.StopTimer()
-	log.Dev.Infof(ctx, "live_bytes: %d", stats.LiveBytes)
+	log.Infof(ctx, "live_bytes: %d", stats.LiveBytes)
 }
 
 // runMVCCCFindSplitKey benchmarks MVCCFindSplitKey on a 64MB range of data.
@@ -1951,11 +2004,11 @@ func runMVCCAcquireLockCommon(
 				txn = &txn2
 			}
 			// Acquire a shared and an exclusive lock on the key.
-			err := MVCCAcquireLock(ctx, eng, &txn.TxnMeta, txn.IgnoredSeqNums, lock.Shared, key, nil, 0, 0, false)
+			err := MVCCAcquireLock(ctx, eng, &txn.TxnMeta, txn.IgnoredSeqNums, lock.Shared, key, nil, 0, 0)
 			if err != nil {
 				b.Fatal(err)
 			}
-			err = MVCCAcquireLock(ctx, eng, &txn.TxnMeta, txn.IgnoredSeqNums, lock.Exclusive, key, nil, 0, 0, false)
+			err = MVCCAcquireLock(ctx, eng, &txn.TxnMeta, txn.IgnoredSeqNums, lock.Exclusive, key, nil, 0, 0)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -1979,7 +2032,7 @@ func runMVCCAcquireLockCommon(
 		if checkFor {
 			err = MVCCCheckForAcquireLock(ctx, rw, txn, strength, key, 0, 0)
 		} else {
-			err = MVCCAcquireLock(ctx, rw, &txn.TxnMeta, txn.IgnoredSeqNums, strength, key, ms, 0, 0, false)
+			err = MVCCAcquireLock(ctx, rw, &txn.TxnMeta, txn.IgnoredSeqNums, strength, key, ms, 0, 0)
 		}
 		if heldOtherTxn {
 			if err == nil {
@@ -2127,7 +2180,7 @@ func runMVCCExportToSST(b *testing.B, opts mvccExportToSSTOpts) {
 			MaxSize:                0,
 			StopMidKey:             false,
 			IncludeMVCCValueHeader: opts.importEpochs,
-		}, &objstorage.MemObj{})
+		}, &buf)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2422,14 +2475,14 @@ func BenchmarkMVCCScannerWithIntentsAndVersions(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		slices.SortFunc(kvPairs, func(i, j kvPair) int {
-			v := EngineComparer.Compare(i.key, j.key)
-			if v == 0 {
+		sort.Slice(kvPairs, func(i, j int) bool {
+			cmp := EngineComparer.Compare(kvPairs[i].key, kvPairs[j].key)
+			if cmp == 0 {
 				// Should not happen since we resolve in a different batch from the
 				// one where we wrote the intent.
-				b.Fatal("found equal user keys in same batch")
+				b.Fatalf("found equal user keys in same batch")
 			}
-			return v
+			return cmp < 0
 		})
 		sstFileName := fmt.Sprintf("tmp-ingest-%d", i)
 		sstFile, err := eng.Env().Create(sstFileName, fs.UnspecifiedWriteCategory)
@@ -2532,6 +2585,38 @@ func BenchmarkMVCCBlindConditionalPut(b *testing.B) {
 		b.Run(fmt.Sprintf("valueSize=%d", valueSize), func(b *testing.B) {
 			ctx := context.Background()
 			runMVCCBlindConditionalPut(ctx, b, setupMVCCInMemPebble, valueSize)
+		})
+	}
+}
+
+func BenchmarkMVCCInitPut(b *testing.B) {
+	defer log.Scope(b).Close(b)
+
+	valueSizes := []int{10, 100, 1000, 10000}
+	if testing.Short() {
+		valueSizes = []int{10, 10000}
+	}
+
+	for _, valueSize := range valueSizes {
+		b.Run(fmt.Sprintf("valueSize=%d", valueSize), func(b *testing.B) {
+			ctx := context.Background()
+			runMVCCInitPut(ctx, b, setupMVCCInMemPebble, valueSize)
+		})
+	}
+}
+
+func BenchmarkMVCCBlindInitPut(b *testing.B) {
+	defer log.Scope(b).Close(b)
+
+	valueSizes := []int{10, 100, 1000, 10000}
+	if testing.Short() {
+		valueSizes = []int{10, 10000}
+	}
+
+	for _, valueSize := range valueSizes {
+		b.Run(fmt.Sprintf("valueSize=%d", valueSize), func(b *testing.B) {
+			ctx := context.Background()
+			runMVCCBlindInitPut(ctx, b, setupMVCCInMemPebble, valueSize)
 		})
 	}
 }

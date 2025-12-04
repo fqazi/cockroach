@@ -56,6 +56,10 @@ const (
 	// for nullable columns, which is used in the absence of any real statistics.
 	UnknownNullCountRatio = 0.01
 
+	// UnknownAvgRowSize is the average size of a row in bytes, which is used in
+	// the absence of any real statistics.
+	UnknownAvgRowSize = 8
+
 	// Use a small row count for generator functions; this allows use of lookup
 	// join in cases like using json_array_elements with a small constant array.
 	unknownGeneratorRowCount = 10
@@ -90,29 +94,6 @@ const (
 	// values from the spans a check constraint is allowed to have in order to build
 	// a histogram from it.
 	maxValuesForFullHistogramFromCheckConstraint = tabledesc.MaxBucketAllowed
-
-	// histogramPessimisticThreshold determines the cutoff point below which the
-	// selectivity estimate of a histogram is overridden with a more pessimistic
-	// estimate. This is to avoid over-fitting to a stale or inaccurate histogram.
-	//
-	// The value (1 in 10,000) was chosen because we choose sample sizes according
-	// to table size such that we expect to *nearly* always sample all values with
-	// multiplicity >= row_count/10000. Cardinality estimates below this threshold
-	// are increasingly likely to be inaccurate. See also computeNumberSamples.
-	histogramPessimisticThreshold = 1.0 / 10000.0
-
-	// histogramInequalityMinSelectivity determines the minimum selectivity
-	// estimate that can be derived from an unbounded (above or below) inequality
-	// used to filter a histogram. Similar to histogramPessimisticThreshold, this
-	// is to avoid over-fitting to a stale or inaccurate histogram.
-	//
-	// The value (1 in 10,000) was chosen based on similar logic in Postgres,
-	// which caps the selectivity to (1 / bucket_count*100). Postgres uses 100
-	// histogram buckets by default, so the number comes out to 10,000. We avoid
-	// using the number of histogram buckets directly to avoid arbitrary
-	// variation in the selectivity cap depending on user settings and partial
-	// stat collections.
-	histogramUnboundedInequalityMinSelectivity = 1.0 / 10000.0
 )
 
 // statisticsBuilder is responsible for building the statistics that are
@@ -640,19 +621,12 @@ func (sb *statisticsBuilder) colStatLeaf(
 // | Table |
 // +-------+
 
-// GetTableStats returns the statistics for the given table if already available
-// in the metadata.
-func GetTableStats(md *opt.Metadata, tabID opt.TableID) (*props.Statistics, bool) {
-	stats, ok := md.TableAnnotation(tabID, statsAnnID).(*props.Statistics)
-	return stats, ok
-}
-
 // makeTableStatistics returns the available statistics for the given table.
 // Statistics are derived lazily and are cached in the metadata, since they may
 // be accessed multiple times during query optimization. For more details, see
 // props.Statistics.
 func (sb *statisticsBuilder) makeTableStatistics(tabID opt.TableID) *props.Statistics {
-	stats, ok := GetTableStats(sb.md, tabID)
+	stats, ok := sb.md.TableAnnotation(tabID, statsAnnID).(*props.Statistics)
 	if ok {
 		// Already made.
 		return stats
@@ -680,7 +654,15 @@ func (sb *statisticsBuilder) makeTableStatistics(tabID opt.TableID) *props.Stati
 	// Make now and annotate the metadata table with it for next time.
 	stats = &props.Statistics{}
 
-	first := cat.FindLatestFullStat(tab, sb.evalCtx.SessionData())
+	// Find the most recent full statistic. (Stats are ordered with most recent first.)
+	var first int
+	for first < tab.StatisticCount() &&
+		(tab.Statistic(first).IsPartial() ||
+			tab.Statistic(first).IsMerged() && !sb.evalCtx.SessionData().OptimizerUseMergedPartialStatistics ||
+			tab.Statistic(first).IsForecast() && !sb.evalCtx.SessionData().OptimizerUseForecasts) {
+		first++
+	}
+
 	if first >= tab.StatisticCount() {
 		// No statistics.
 		stats.Available = false
@@ -776,10 +758,7 @@ func (sb *statisticsBuilder) makeTableStatistics(tabID opt.TableID) *props.Stati
 					// is tracked here: https://github.com/cockroachdb/cockroach/issues/50655
 					col := cols.SingleColumn()
 					colStat.Histogram = &props.Histogram{}
-					// Track the minimum number of rows for which histogram selectivity
-					// estimates are trusted.
-					resolution := histogramPessimisticThreshold * stats.RowCount
-					colStat.Histogram.Init(sb.evalCtx, col, stat.Histogram(), resolution)
+					colStat.Histogram.Init(sb.evalCtx, col, stat.Histogram())
 				}
 
 				// Make sure the distinct count is at least 1, for the same reason as
@@ -804,18 +783,7 @@ func (sb *statisticsBuilder) makeTableStatistics(tabID opt.TableID) *props.Stati
 					invCols := opt.MakeColSet(invCol)
 					if invColStat, ok := stats.ColStats.Add(invCols); ok {
 						invColStat.Histogram = &props.Histogram{}
-						// Track the minimum number of rows for which histogram selectivity
-						// estimates are trusted.
-						//
-						// NOTE: an inverted index can have multiple entries per table row.
-						// However, we still use the number of table rows here because the
-						// max multiplicity of a missed value is proportional to the number
-						// of table rows, not the number of inverted index entries. For
-						// example, the arrays [10, 20, 30] and [20, 40, 60] result in six
-						// inverted index entries, but only a maximum multiplicity of two
-						// for the value "20".
-						resolution := histogramPessimisticThreshold * stats.RowCount
-						invColStat.Histogram.Init(sb.evalCtx, invCol, stat.Histogram(), resolution)
+						invColStat.Histogram.Init(sb.evalCtx, invCol, stat.Histogram())
 						// Set inverted entry counts from the histogram. Make sure the
 						// distinct count is at least 1, for the same reason as the row
 						// count above.
@@ -901,7 +869,7 @@ func (sb *statisticsBuilder) buildScan(scan *ScanExpr, relProps *props.Relationa
 		// Add any not-null columns from the predicate constraints.
 		for i := range pred {
 			if c := pred[i].ScalarProps().Constraints; c != nil {
-				c.ExtractNotNullCols(sb.ctx, sb.evalCtx, &notNullCols)
+				notNullCols.UnionWith(c.ExtractNotNullCols(sb.ctx, sb.evalCtx))
 			}
 		}
 		sb.filterRelExpr(pred, scan, notNullCols, relProps, s, MakeTableFuncDep(sb.md, scan.Table))
@@ -1078,12 +1046,12 @@ func (sb *statisticsBuilder) constrainScan(
 	notNullCols := relProps.NotNullCols.Copy()
 	if constraint != nil {
 		// Add any not-null columns from this constraint.
-		constraint.ExtractNotNullCols(sb.ctx, sb.evalCtx, &notNullCols)
+		notNullCols.UnionWith(constraint.ExtractNotNullCols(sb.ctx, sb.evalCtx))
 	}
 	// Add any not-null columns from the predicate constraints.
 	for i := range pred {
 		if c := pred[i].ScalarProps().Constraints; c != nil {
-			c.ExtractNotNullCols(sb.ctx, sb.evalCtx, &notNullCols)
+			notNullCols.UnionWith(c.ExtractNotNullCols(sb.ctx, sb.evalCtx))
 		}
 	}
 	sb.updateNullCountsFromNotNullCols(notNullCols, s)
@@ -3747,7 +3715,7 @@ func (sb *statisticsBuilder) constrainExpr(
 	// ---------------------------------------------
 	notNullCols := relProps.NotNullCols.Copy()
 	// Add any not-null columns from this constraint set.
-	cs.ExtractNotNullCols(sb.ctx, sb.evalCtx, &notNullCols)
+	notNullCols.UnionWith(cs.ExtractNotNullCols(sb.ctx, sb.evalCtx))
 	sb.updateNullCountsFromNotNullCols(notNullCols, s)
 
 	// Calculate row count and selectivity
@@ -4259,10 +4227,10 @@ func (sb *statisticsBuilder) selectivityFromMultiColDistinctCounts(
 		singleColSel := sb.selectivityFromDistinctCount(singleColStat, inputSingleColStat, inputStats.RowCount)
 		multiColSelWithIndepAssumption.Multiply(singleColSel)
 
-		// If the single-column selectivity is 1, then the values calculated
-		// below will not change. Keep the column in the set because it may
-		// prefix other columns in multi-column stats.
+		// Don't bother including columns in the multi-column calculation that
+		// don't contribute to the selectivity.
 		if singleColSel == props.OneSelectivity {
+			multiColSet.Remove(col)
 			continue
 		}
 
@@ -4587,14 +4555,9 @@ func (sb *statisticsBuilder) selectivityFromHistograms(
 		newCount := newHist.ValuesCount()
 		oldCount := oldHist.ValuesCount()
 
-		// Calculate the selectivity of the predicate using the histogram. Nulls
-		// are already included in the histogram, so we do not need to account for
-		// them separately.
+		// Calculate the selectivity of the predicate. Nulls are already included
+		// in the histogram, so we do not need to account for them separately.
 		predicateSelectivity := props.MakeSelectivityFromFraction(newCount, oldCount)
-
-		// Possibly clamp the selectivity to a higher value to avoid overly
-		// optimistic estimates.
-		predicateSelectivity = sb.clampSelForHistogram(inputColStat, colStat, s, predicateSelectivity)
 
 		// The maximum possible selectivity of the entire expression is the minimum
 		// selectivity of all individual predicates.
@@ -4604,50 +4567,6 @@ func (sb *statisticsBuilder) selectivityFromHistograms(
 	}
 
 	return selectivity, selectivityUpperBound
-}
-
-// clampSelForHistogram clamps the selectivity estimate derived from a histogram
-// to a minimum value. This accounts for the possibility that the histogram is
-// missing values due to sampling or staleness. See also
-// histogramPessimisticThreshold.
-func (sb *statisticsBuilder) clampSelForHistogram(
-	oldColStat, newColStat *props.ColumnStatistic, s *props.Statistics, originalSel props.Selectivity,
-) (clampedSel props.Selectivity) {
-	clampedSel = originalSel
-	oldHist, newHist := oldColStat.Histogram, newColStat.Histogram
-	if sb.evalCtx.SessionData().OptimizerClampLowHistogramSelectivity &&
-		newHist.ValuesCount() < oldHist.Resolution() {
-		// NOTE: columns with histograms are skipped when considering distinct
-		// counts in selectivityFromSingleColDistinctCounts, so this doesn't
-		// double count the effect of the predicate.
-		resClamp := props.MakeSelectivityFromFraction(newColStat.DistinctCount, oldColStat.DistinctCount)
-
-		// Cap the selectivity so that the row count estimate is no more than the
-		// pessimistic threshold. This can result in a lower estimate if the
-		// multiplicities of the filtered values really are low compared to the
-		// average multiplicity.
-		resClamp = props.MinSelectivity(resClamp,
-			props.MakeSelectivityFromFraction(oldHist.Resolution(), s.RowCount),
-		)
-		if resClamp.AsFloat() > clampedSel.AsFloat() {
-			sb.mem.optimizationStats.ClampedHistogramSelectivity = true
-		}
-		clampedSel = props.MaxSelectivity(clampedSel, resClamp)
-	}
-
-	tightUpperBound, tightLowerBound := newHist.TightBounds()
-	if sb.evalCtx.SessionData().OptimizerClampInequalitySelectivity &&
-		(!tightUpperBound || !tightLowerBound) {
-		// Similar to Postgres, assume that an open-ended inequality predicate will
-		// scan at least 1/10000th of the table. This accounts for the possibility
-		// that the histogram missed extreme values due to sampling or staleness.
-		inequalityClamp := props.MakeSelectivity(histogramUnboundedInequalityMinSelectivity)
-		if inequalityClamp.AsFloat() > clampedSel.AsFloat() {
-			sb.mem.optimizationStats.ClampedInequalitySelectivity = true
-		}
-		clampedSel = props.MaxSelectivity(clampedSel, inequalityClamp)
-	}
-	return clampedSel
 }
 
 // selectivityFromMaxFrequencies calculates the selectivity of an equality
@@ -4724,7 +4643,7 @@ func (sb *statisticsBuilder) selectivityFromConstrainedCols(
 
 	// Find the minimum upper bound selectivity.
 	selectivityUpperBound =
-		props.MinSelectivity(selectivityUpperBound, selectivityUpperBound2, selectivityUpperBound3)
+		props.MinSelectivity3(selectivityUpperBound, selectivityUpperBound2, selectivityUpperBound3)
 
 	selectivity.Add(props.MakeSelectivity(
 		correlation * (selectivityUpperBound.AsFloat() - selectivity.AsFloat()),
@@ -5348,7 +5267,7 @@ func (sb *statisticsBuilder) buildStatsFromCheckConstraints(
 				if distinctVals <= maxValuesForFullHistogramFromCheckConstraint {
 					values, hasNullValue, _ = filterConstraint.CollectFirstColumnValues(sb.ctx, sb.evalCtx)
 					if hasNullValue {
-						log.Dev.Infof(
+						log.Infof(
 							sb.ctx, "null value seen in histogram built from check constraint: %s", filterConstraint.String(),
 						)
 					}
@@ -5401,7 +5320,7 @@ func (sb *statisticsBuilder) buildStatsFromCheckConstraints(
 					histogram = unencodedBuckets
 				} else {
 					useHistogram = false
-					log.Dev.Infof(
+					log.Infof(
 						sb.ctx, "histogram could not be generated from check constraint due to error: %v", err,
 					)
 				}
@@ -5413,10 +5332,7 @@ func (sb *statisticsBuilder) buildStatsFromCheckConstraints(
 			colStat.NullCount = nullCount
 			if useHistogram {
 				colStat.Histogram = &props.Histogram{}
-				// Track the minimum number of rows for which histogram selectivity
-				// estimates are trusted.
-				resolution := histogramPessimisticThreshold * statistics.RowCount
-				colStat.Histogram.Init(sb.evalCtx, firstColID, histogram, resolution)
+				colStat.Histogram.Init(sb.evalCtx, firstColID, histogram)
 			}
 			sb.finalizeFromRowCountAndDistinctCounts(colStat, statistics)
 			tabMeta.AddCheckConstraintsStats(firstColID, colStat)

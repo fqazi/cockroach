@@ -742,18 +742,9 @@ type UDFDefinition struct {
 	// at the same position in Body.
 	BodyProps []*physical.Required
 
-	// BodyASTs contains the AST representation of each statement in Body. The
-	// size of this slice matches that of Body, but it may contain nil entries
-	// for non tree.RoutineLangSQL types.
-	BodyASTs []tree.Statement
-
 	// BodyStmts, if set, is the string representation of each statement in
 	// Body. It is only populated when verbose tracing is enabled.
 	BodyStmts []string
-
-	// BodyTags contains the type of each statement in Body, which is populated
-	// via `tree.Statement.StatementTag()`.
-	BodyTags []string
 
 	// FirstStmtOutput allows the result of the first body statement to be
 	// redirected. Only one of the options can be set. If one is set, there will

@@ -1,4 +1,3 @@
-# LogicTest: !local-prepared
 statement ok
 CREATE TABLE t (i INT)
 
@@ -138,9 +137,6 @@ statement ok
 ROLLBACK
 
 statement ok
-SET kv_transaction_buffered_writes_enabled = false;
-
-statement ok
 BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE
 
 statement ok
@@ -151,28 +147,6 @@ SET TRANSACTION AS OF system time '-1s'
 
 statement ok
 ROLLBACK
-
-statement ok
-SET kv_transaction_buffered_writes_enabled = true;
-
-# Ensure that the write below is buffered and not flushed.
-statement ok
-SET CLUSTER SETTING kv.transaction.write_buffering.max_buffer_size = '2KiB';
-
-statement ok
-BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE
-
-statement ok
-INSERT INTO t VALUES(1)
-
-statement error cannot set fixed timestamp, .* already performed reads
-SET TRANSACTION AS OF system time '-1s'
-
-statement ok
-ROLLBACK
-
-statement ok
-RESET kv_transaction_buffered_writes_enabled;
 
 # Verify that an expression that requires normalization does not result in an
 # internal error.
@@ -227,12 +201,3 @@ statement error pq: AS OF SYSTEM TIME: timestamp '2090-05-08 12:00:00' is in the
 CREATE VIEW wontcreate AS SELECT * FROM nonexistent AS OF SYSTEM TIME '2090-05-08 12:00:00'
 
 subtest end
-
-# Regression test for #133395. Ensure that an invalid AS OF SYSTEM TIME clause
-# requiring normalization doesn't panic and returns an error.
-statement ok
-CREATE TABLE v00 (c01 INT)
-
-statement error pq: AS OF SYSTEM TIME: expected timestamp, decimal, or interval, got bool
-SELECT ALL FROM ( v00 AS ta1401 NATURAL JOIN v00 AS ta1402 ) WITH ORDINALITY AS ta1403
-AS OF SYSTEM TIME b'any_bytes' BETWEEN SYMMETRIC 'abc' AND 'abc';

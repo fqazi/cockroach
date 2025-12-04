@@ -6,6 +6,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -29,7 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/objstorage"
 	"github.com/cockroachdb/pebble/sstable"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/stretchr/testify/require"
@@ -113,7 +113,7 @@ func TestPebbleIterator_ExternalCorruption(t *testing.T) {
 	st := cluster.MakeTestingClusterSettings()
 	ctx := context.Background()
 	rng := rand.New(rand.NewSource(timeutil.Now().UnixNano()))
-	var f objstorage.MemObj
+	var f bytes.Buffer
 	w := MakeTransportSSTWriter(ctx, st, &f)
 
 	// Create an example sstable.
@@ -130,7 +130,7 @@ func TestPebbleIterator_ExternalCorruption(t *testing.T) {
 	require.NoError(t, w.Finish())
 
 	// Trash a random byte.
-	b := f.Data()
+	b := f.Bytes()
 
 	// If we mess with the format byte, we will get an unexpected error.
 	// See https://github.com/cockroachdb/cockroach/issues/141477 and

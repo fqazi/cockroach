@@ -10,7 +10,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 )
 
@@ -26,7 +26,7 @@ func (r *raftTruncatorReplica) getRangeID() roachpb.RangeID {
 func (r *raftTruncatorReplica) getTruncatedState() kvserverpb.RaftTruncatedState {
 	r.mu.Lock() // TODO(pav-kv): not needed if raftMu is held.
 	defer r.mu.Unlock()
-	return (*Replica)(r).asLogStorage().shMu.trunc
+	return r.shMu.raftTruncState
 }
 
 func (r *raftTruncatorReplica) stagePendingTruncation(_ context.Context, pt pendingTruncation) {
@@ -44,10 +44,10 @@ func (r *raftTruncatorReplica) getPendingTruncs() *pendingLogTruncations {
 func (r *raftTruncatorReplica) sideloadedStats(
 	ctx context.Context, span kvpb.RaftSpan,
 ) (entries uint64, freed int64, err error) {
-	return r.logStorage.ls.Sideload.Stats(ctx, span)
+	return r.raftMu.sideloaded.Stats(ctx, span)
 }
 
-func (r *raftTruncatorReplica) getStateLoader() kvstorage.StateLoader {
+func (r *raftTruncatorReplica) getStateLoader() stateloader.StateLoader {
 	// NB: the replicaForTruncator contract says that Replica.raftMu is held for
 	// the duration of the existence of replicaForTruncator, so we return the
 	// r.raftMu.stateloader (and not r.mu.stateLoader).

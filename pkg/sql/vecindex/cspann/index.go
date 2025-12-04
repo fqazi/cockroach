@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"math"
+	"math/rand"
 	"runtime"
 	"strconv"
 	"strings"
@@ -16,7 +17,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/cspann/quantize"
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/cspann/utils"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecpb"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/num32"
@@ -24,6 +24,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/vector"
 	"github.com/cockroachdb/errors"
 )
+
+// RerankMultiplier is multiplied by MaxResults to calculate the maximum number
+// of search results that will be reranked with the original full-size vectors.
+const RerankMultiplier = 10
 
 // DeletedMinCount sets a minimum number of results that will be reranked, in
 // order to account for vectors that may have been deleted in the primary index.
@@ -37,30 +41,18 @@ const DeletedMultiplier = 1.2
 // MaxQualitySamples specifies the max value of the QualitySamples index option.
 const MaxQualitySamples = 32
 
-// IncreaseRerankResults returns good values for maxResults and maxExtraResults.
-// Deleted results will be filtered out of the final results, so we need to make
-// sure there are additional results that can be returned instead. In addition,
-// quantization error can reduce the accuracy of results, so we need to return
-// extra results that can be reranked by exact distance calculations. Both the
-// search beam size and the top-k limit of results emperically have a
-// logarithmic relationship to the number of vectors that need to be reranked,
-// so use this formula to set a bound to the number of extra results:
-//
-// maxExtraResults =
-// log2(searchBeamSize) * log2(desiredMaxResults) * rerankMultiplier
-//
-// The rerank multiplier is a session setting that can be used to set a tighter
-// or looser bound.
+// IncreaseRerankResults returns good values for maxResults and maxExtraResults
+// that have a high probability of returning the desired number of results, even
+// when there are deleted results. Deleted results will be filtered out by the
+// rerank process, so we need to make sure there are additional results that can
+// be returned instead.
 //
 // TODO(andyk): Switch the index to use a search iterator so the caller can keep
 // requesting further results rather than guessing at how many additional
 // results might be needed.
-func IncreaseRerankResults(
-	searchBeamSize, desiredMaxResults, rerankMultiplier int,
-) (maxResults, maxExtraResults int) {
+func IncreaseRerankResults(desiredMaxResults int) (maxResults, maxExtraResults int) {
 	maxResults = max(int(math.Ceil(float64(desiredMaxResults)*DeletedMultiplier)), DeletedMinCount)
-	log := math.Log2(float64(max(searchBeamSize, 2))) * math.Log2(float64(max(desiredMaxResults, 2)))
-	maxExtraResults = int(log) * rerankMultiplier
+	maxExtraResults = desiredMaxResults * RerankMultiplier
 	return maxResults, maxExtraResults
 }
 
@@ -68,9 +60,6 @@ func IncreaseRerankResults(
 // well as default options for how it will be searched. A given search operation
 // can specify SearchOptions to override the default behavior.
 type IndexOptions struct {
-	// RotAlgorithm specifies the type of random orthogonal transformation to
-	// apply to vectors before indexing and search. See RotAlgorithm for details.
-	RotAlgorithm vecpb.RotAlgorithm
 	// MinPartitionSize specifies the size below which a partition will be merged
 	// into other partitions at the same level.
 	MinPartitionSize int
@@ -148,9 +137,12 @@ type Context struct {
 	// operation, this is always LeafLevel, but inserts and splits/merges can
 	// search at intermediate levels of the tree.
 	level Level
-	// query manages the query vector that was passed to the top-level Index
-	// method.
-	query queryVector
+	// original is the original, full-size vector that was passed to the top-level
+	// Index method.
+	original vector.T
+	// randomized is the original vector after it has been randomized by applying
+	// a random orthogonal transformation (ROT).
+	randomized vector.T
 	// forInsert indicates that this is an insert operation (or a search for
 	// insert operation).
 	forInsert bool
@@ -175,10 +167,15 @@ func (ic *Context) Init(txn Txn) {
 	ic.txn = txn
 }
 
-// TransformedVector is the randomized, normalized form of the original query
-// vector.
-func (ic *Context) TransformedVector() vector.T {
-	return ic.query.Transformed()
+// OriginalVector is the original, full-size vector that was passed to the last
+// index operation.
+func (ic *Context) OriginalVector() vector.T {
+	return ic.original
+}
+
+// RandomizedVector is the randomized form of OriginalVector.
+func (ic *Context) RandomizedVector() vector.T {
+	return ic.randomized
 }
 
 // Index implements the C-SPANN algorithm, which adapts Microsoft's SPANN and
@@ -190,29 +187,6 @@ func (ic *Context) TransformedVector() vector.T {
 // into each partition, and indexes partitions using a K-means tree. Each index
 // can be composed of a forest of K-means trees in order to support partitioned
 // indexes (e.g. partitioned across localities or tenants).
-//
-// Each partition contains a cluster of quantized vectors (typically ~100
-// vectors) grouped around a centroid within the K-means tree. A metadata
-// record stores the centroid and tracks the partition's current state. Leaf
-// partitions reference primary index rows and store quantized versions of the
-// full vectors. Interior partitions reference child partitions at the next
-// level down and store quantized versions of those partitions' centroids.
-//
-// The index supports multiple distance metrics: L2Squared, Cosine, and
-// InnerProduct. Normalization behavior varies by metric:
-//
-//   - Cosine: Both leaf and centroid vectors are normalized before quantization
-//     since cosine similarity is magnitude-agnostic and more efficient with
-//     unit vectors. Query vectors are also normalized for similar reasons.
-//   - InnerProduct: Only centroid vectors are normalized before quantization.
-//     This converts mean centroids to spherical centroids, preventing
-//     high-magnitude centroids from attracting disproportionate numbers of
-//     vectors to their partitions.
-//   - L2Squared: No normalization is applied.
-//
-// All query and data vectors undergo random orthogonal transformation (ROT)
-// before searching or storage. This redistributes skew more evenly across
-// dimensions while preserving distances and angles between vectors.
 //
 // Index is thread-safe. There should typically be only one Index instance in
 // the process for each index.
@@ -232,9 +206,9 @@ type Index struct {
 	// stats maintains locally-cached statistics about the vector index that are
 	// used by adaptive search to improve search accuracy.
 	stats statsManager
-	// rot computes random orthogonal transformations on query and data vectors
-	// to more evenly distribute skew across dimensions.
-	rot RandomOrthoTransformer
+	// rot is a square dims x dims matrix that performs random orthogonal
+	// transformations on input vectors, in order to distribute skew more evenly.
+	rot num32.Matrix
 }
 
 // NewIndex constructs a new vector index instance. Typically, only one Index
@@ -257,7 +231,7 @@ func NewIndex(
 	vi := &Index{
 		options:       *options,
 		store:         store,
-		rootQuantizer: quantize.NewUnQuantizer(quantizer.GetDims(), quantizer.GetDistanceMetric()),
+		rootQuantizer: quantize.NewUnQuantizer(quantizer.GetDims()),
 		quantizer:     quantizer,
 	}
 	if vi.options.MinPartitionSize == 0 {
@@ -279,9 +253,7 @@ func NewIndex(
 		vi.options.MaxInsertAttempts = 32
 	}
 	if vi.options.MaxDeleteAttempts == 0 {
-		// Note that fetching the batch and getting the first result from the
-		// batch are both counted as "attempts", so this needs to be at least 2.
-		vi.options.MaxDeleteAttempts = 2
+		vi.options.MaxDeleteAttempts = 3
 	}
 
 	if vi.options.MaxPartitionSize < 2 {
@@ -292,8 +264,31 @@ func NewIndex(
 			"QualitySamples option %d exceeds max allowed value", vi.options.QualitySamples)
 	}
 
-	// Initialize the random orthogonal transformer.
-	vi.rot.Init(vi.options.RotAlgorithm, quantizer.GetDims(), seed)
+	rng := rand.New(rand.NewSource(seed))
+
+	// Generate dims x dims random orthogonal matrix to mitigate the impact of
+	// skewed input data distributions:
+	//
+	//   1. Set skew: some dimensions can have higher variance than others. For
+	//      example, perhaps all vectors in a set have similar values for one
+	//      dimension but widely differing values in another dimension.
+	//   2. Vector skew: Individual vectors can have internal skew, such that
+	//      values higher than the mean are more spread out than values lower
+	//      than the mean.
+	//
+	// Multiplying vectors by this matrix helps with both forms of skew. While
+	// total skew does not change, the skew is more evenly distributed across
+	// the dimensions. Now quantizing the vector will have more uniform
+	// information loss across dimensions. Critically, none of this impacts
+	// distance calculations, as orthogonal transformations do not change
+	// distances or angles between vectors.
+	//
+	// Ultimately, performing a random orthogonal transformation (ROT) means that
+	// the index will work more consistently across a diversity of input data
+	// sets, even those with skewed data distributions. In addition, the RaBitQ
+	// algorithm depends on the statistical properties that are granted by the
+	// ROT.
+	vi.rot = num32.MakeRandomOrthoMatrix(rng, quantizer.GetDims())
 
 	// Initialize fixup processor.
 	var fixupSeed int64
@@ -319,11 +314,6 @@ func NewIndex(
 	return vi, nil
 }
 
-// Quantizer returns the quantizer used for non-root partitions in the index.
-func (vi *Index) Quantizer() quantize.Quantizer {
-	return vi.quantizer
-}
-
 // Store returns the underlying vector store for the index.
 func (vi *Index) Store() Store {
 	return vi.store
@@ -345,33 +335,24 @@ func (vi *Index) FormatStats() string {
 	return vi.stats.Format()
 }
 
-// TransformVector performs a random orthogonal transformation (ROT) on the
-// "original" vector and writes it to the "randomized" vector. If the index uses
-// the Cosine distance metric, it also ensures that the original vector has been
-// normalized into a unit vector (norm = 1). The caller is responsible for
-// allocating the randomized vector with length equal to the index's dimensions.
+// RandomizeVector performs a random orthogonal transformation (ROT) on the
+// "original" vector and writes it to the "randomized" vector. The caller is
+// responsible for allocating the randomized vector with length equal to the
+// index's dimensions.
 //
 // Randomizing vectors distributes skew more evenly across dimensions and
 // across vectors in a set. Distance and angle between any two vectors
 // remains unchanged, as long as the same ROT is applied to both.
-//
-// Query and data vectors are assumed to be normalized when calculating Cosine
-// distances.
-func (vi *Index) TransformVector(original vector.T, randomized vector.T) vector.T {
-	vi.rot.RandomizeVector(original, randomized)
-	if vi.quantizer.GetDistanceMetric() == vecpb.CosineDistance {
-		num32.Normalize(randomized)
-	}
-	return randomized
+func (vi *Index) RandomizeVector(original vector.T, randomized vector.T) vector.T {
+	return num32.MulMatrixByVector(&vi.rot, original, randomized, num32.NoTranspose)
 }
 
 // UnRandomizeVector inverts the random orthogonal transformation performed by
-// TransformVector, in order to recover the normalized vector in the case of
-// Cosine distance, or the original vector in the case of other distance
-// functions. The caller is responsible for allocating the original vector with
+// RandomizeVector, in order to recover the original vector from its randomized
+// form. The caller is responsible for allocating the original vector with
 // length equal to the index's dimensions.
-func (vi *Index) UnRandomizeVector(randomized vector.T, normalized vector.T) vector.T {
-	return vi.rot.UnRandomizeVector(randomized, normalized)
+func (vi *Index) UnRandomizeVector(randomized vector.T, original vector.T) vector.T {
+	return num32.MulMatrixByVector(&vi.rot, randomized, original, num32.Transpose)
 }
 
 // Close shuts down any background fixup workers. While this also happens when
@@ -402,23 +383,17 @@ func (vi *Index) Insert(
 		return err
 	}
 
-	vi.setupInsertContext(idxCtx, treeKey, LeafLevel)
-	idxCtx.query.InitOriginal(vi.quantizer.GetDistanceMetric(), vec, &vi.rot)
+	vi.setupInsertContext(idxCtx, treeKey, vec)
 
-	return vi.insertHelper(ctx, idxCtx, treeKey, ChildKey{KeyBytes: key})
-}
+	// Insert the vector into the secondary index.
+	childKey := ChildKey{KeyBytes: key}
+	valueBytes := ValueBytes{}
 
-// insertHelper inserts a new vector into a partition at the given level of the
-// tree. The vector might already have been randomized or transformed (both
-// randomized and normalized).
-func (vi *Index) insertHelper(
-	ctx context.Context, idxCtx *Context, treeKey TreeKey, childKey ChildKey,
-) error {
 	// When a candidate insert partition is found, add the vector to it.
 	addFunc := func(ctx context.Context, idxCtx *Context, result *SearchResult) error {
 		partitionKey := result.ChildKey.PartitionKey
 		err := vi.addToPartition(ctx, idxCtx.txn, idxCtx.treeKey,
-			partitionKey, idxCtx.level-1, idxCtx.query.Transformed(), childKey, ValueBytes{})
+			partitionKey, idxCtx.level-1, idxCtx.randomized, childKey, valueBytes)
 		if err != nil {
 			return errors.Wrapf(err, "inserting vector into partition %d", partitionKey)
 		}
@@ -439,7 +414,7 @@ func (vi *Index) insertHelper(
 // "dangling vector" reference will be left in the tree. Vector index methods
 // handle this rare case by joining quantized vectors in the tree with their
 // corresponding full vector from the primary index (which cannot "dangle")
-// before returning search results. For details, see Index.findExactDistances.
+// before returning search results. For details, see Index.getFullVectors.
 //
 // NOTE: Even if the vector is removed, there may still be duplicate dangling
 // instances of the vector still remaining in the index.
@@ -455,8 +430,7 @@ func (vi *Index) Delete(
 		return false, err
 	}
 
-	vi.setupDeleteContext(idxCtx, treeKey)
-	idxCtx.query.InitOriginal(vi.quantizer.GetDistanceMetric(), vec, &vi.rot)
+	vi.setupDeleteContext(idxCtx, treeKey, vec)
 
 	// When a candidate delete partition is found, remove the vector from it.
 	removeFunc := func(ctx context.Context, idxCtx *Context, result *SearchResult) error {
@@ -490,8 +464,7 @@ func (vi *Index) Search(
 	searchSet *SearchSet,
 	options SearchOptions,
 ) error {
-	vi.setupContext(idxCtx, treeKey, LeafLevel, options)
-	idxCtx.query.InitOriginal(vi.quantizer.GetDistanceMetric(), vec, &vi.rot)
+	vi.setupContext(idxCtx, treeKey, vec, options, LeafLevel)
 	return vi.searchHelper(ctx, idxCtx, searchSet)
 }
 
@@ -512,8 +485,7 @@ func (vi *Index) SearchForInsert(
 		return nil, err
 	}
 
-	vi.setupInsertContext(idxCtx, treeKey, LeafLevel)
-	idxCtx.query.InitOriginal(vi.quantizer.GetDistanceMetric(), vec, &vi.rot)
+	vi.setupInsertContext(idxCtx, treeKey, vec)
 
 	// When a candidate insert partition is found, lock its metadata for update
 	// and get its centroid.
@@ -523,10 +495,6 @@ func (vi *Index) SearchForInsert(
 			ctx, treeKey, partitionKey, true /* forUpdate */)
 		if err != nil {
 			return errors.Wrapf(err, "locking metadata for insert into partition %d", partitionKey)
-		}
-		if !metadata.StateDetails.State.AllowAdd() {
-			// The partition does not allow adds, so go to the next candidate.
-			return NewConditionFailedError(metadata)
 		}
 		result.Vector = metadata.Centroid
 		return nil
@@ -552,21 +520,14 @@ func (vi *Index) SearchForDelete(
 		return nil, err
 	}
 
-	vi.setupDeleteContext(idxCtx, treeKey)
-	idxCtx.query.InitOriginal(vi.quantizer.GetDistanceMetric(), vec, &vi.rot)
+	vi.setupDeleteContext(idxCtx, treeKey, vec)
 
 	// When a candidate delete partition is found, lock its metadata for update.
 	removeFunc := func(ctx context.Context, idxCtx *Context, result *SearchResult) error {
 		partitionKey := result.ParentPartitionKey
-		metadata, err := idxCtx.txn.GetPartitionMetadata(
-			ctx, treeKey, partitionKey, true /* forUpdate */)
+		_, err := idxCtx.txn.GetPartitionMetadata(ctx, treeKey, partitionKey, true /* forUpdate */)
 		if err != nil {
 			return errors.Wrapf(err, "locking metadata for delete from partition %d", partitionKey)
-		}
-		if metadata.StateDetails.State.CanSkipRemove() {
-			// The partition will be cleared or deleted anyway, so no need to
-			// remove from it. Go to the next candidate.
-			return NewConditionFailedError(metadata)
 		}
 		return nil
 	}
@@ -574,15 +535,21 @@ func (vi *Index) SearchForDelete(
 	return vi.searchForUpdateHelper(ctx, idxCtx, removeFunc, key, vi.options.MaxDeleteAttempts)
 }
 
+// SuspendFixups suspends background fixup processing until ProcessFixups is
+// explicitly called. It is used for testing.
+func (vi *Index) SuspendFixups() {
+	vi.fixups.Suspend()
+}
+
 // DiscardFixups drops all pending fixups. It is used for testing.
-func (vi *Index) DiscardFixups(ctx context.Context) {
-	vi.fixups.Discard(ctx)
+func (vi *Index) DiscardFixups() {
+	vi.fixups.Process(true /* discard */)
 }
 
 // ProcessFixups waits until all pending fixups have been processed by
 // background workers. It is used for testing.
-func (vi *Index) ProcessFixups(ctx context.Context) error {
-	return vi.fixups.Process(ctx)
+func (vi *Index) ProcessFixups() {
+	vi.fixups.Process(false /* discard */)
 }
 
 // ForceSplit enqueues a split fixup. It is used for testing.
@@ -610,44 +577,48 @@ func (vi *Index) ForceMerge(
 // setupInsertContext sets up the given context for an insert operation. Before
 // performing an insert, we need to search for the best partition with the
 // closest centroid to the query vector. The partition in which to insert the
-// vector is at the parent of the given level.
-func (vi *Index) setupInsertContext(idxCtx *Context, treeKey TreeKey, level Level) {
+// vector is at the parent of the leaf level.
+func (vi *Index) setupInsertContext(idxCtx *Context, treeKey TreeKey, vec vector.T) {
 	// Perform the search using quantized vectors rather than full vectors (i.e.
-	// skip reranking). Use level+1 to search for a parent partition.
-	vi.setupContext(idxCtx, treeKey, level+1, SearchOptions{
+	// skip reranking).
+	vi.setupContext(idxCtx, treeKey, vec, SearchOptions{
 		BaseBeamSize: vi.options.BaseBeamSize,
 		SkipRerank:   true,
-		UpdateStats:  !vi.options.DisableAdaptiveSearch,
-	})
+		UpdateStats:  true,
+	}, SecondLevel)
 	idxCtx.forInsert = true
 }
 
 // setupDeleteContext sets up the given context for a delete operation.
-func (vi *Index) setupDeleteContext(idxCtx *Context, treeKey TreeKey) {
+func (vi *Index) setupDeleteContext(idxCtx *Context, treeKey TreeKey, vec vector.T) {
 	// Perform the search using quantized vectors rather than full vectors (i.e.
 	// skip reranking). Use a larger beam size to make it more likely that we'll
 	// find the vector to delete.
-	vi.setupContext(idxCtx, treeKey, LeafLevel, SearchOptions{
+	vi.setupContext(idxCtx, treeKey, vec, SearchOptions{
 		BaseBeamSize: vi.options.BaseBeamSize * 2,
 		SkipRerank:   true,
-		UpdateStats:  !vi.options.DisableAdaptiveSearch,
-	})
+		UpdateStats:  true,
+	}, LeafLevel)
 	idxCtx.forDelete = true
 }
 
 // setupContext sets up the given context as an operation is beginning.
 func (vi *Index) setupContext(
-	idxCtx *Context, treeKey TreeKey, level Level, options SearchOptions,
+	idxCtx *Context, treeKey TreeKey, vec vector.T, options SearchOptions, level Level,
 ) {
 	idxCtx.treeKey = treeKey
 	idxCtx.level = level
+	idxCtx.original = vec
 	idxCtx.forInsert = false
 	idxCtx.forDelete = false
 	idxCtx.options = options
 	if idxCtx.options.BaseBeamSize == 0 {
 		idxCtx.options.BaseBeamSize = vi.options.BaseBeamSize
 	}
-	idxCtx.query.Clear()
+
+	// Randomize the original vector.
+	idxCtx.randomized = ensureSliceLen(idxCtx.randomized, len(vec))
+	idxCtx.randomized = vi.RandomizeVector(vec, idxCtx.randomized)
 }
 
 // updateFunc is called by searchForUpdateHelper when it has a candidate
@@ -711,15 +682,11 @@ func (vi *Index) searchForUpdateHelper(
 			remainingAttempts--
 			ok, err := idxCtx.search.Next(ctx)
 			if err != nil {
-				log.Dev.Infof(ctx, "error during update: %v", err)
+				log.Infof(ctx, "error during update: %v", err)
 				return nil, errors.Wrapf(err, "searching for partition to update")
 			}
 			if !ok {
 				if idxCtx.forInsert {
-					// Keep aggressively searching for valid insert partition, since
-					// the only alternative is to fail the operation. This is not
-					// necessary in the delete case, since it's OK if there are
-					// dangling vectors in rare cases.
 					return vi.searchForUpdateHelper(ctx, idxCtx, fn, deleteKey, remainingAttempts)
 				}
 				break
@@ -763,7 +730,7 @@ func (vi *Index) searchForUpdateHelper(
 				}
 
 				err = vi.fallbackOnTargets(ctx, idxCtx, &idxCtx.tempSearchSet,
-					parentPartitionKey, sourcePartitionKey, state)
+					parentPartitionKey, sourcePartitionKey, idxCtx.randomized, state)
 				if err != nil {
 					return nil, err
 				}
@@ -795,12 +762,13 @@ func (vi *Index) searchForUpdateHelper(
 	}
 
 	// Do an inconsistent scan of the partition to see if it might be ready to
-	// split. This is necessary because the search does not scan leaf partitions.
-	// Unless we do this, we may never realize the partition is oversized.
+	// split or merge. This is necessary because the search does not scan leaf
+	// partitions. Unless we do this, we may never realize the partition is
+	// oversized or undersized.
 	// NOTE: The scan is not performed in the scope of the current transaction,
 	// so it will not reflect the effects of this operation. That's OK, since it's
-	// not necessary to split at exactly the point where the partition becomes
-	// oversized.
+	// not necessary to split or merge at exactly the point where the partition
+	// becomes oversized or undersized.
 	partitionKey := result.ChildKey.PartitionKey
 	count, err := vi.store.EstimatePartitionCount(ctx, idxCtx.treeKey, partitionKey)
 	if err != nil {
@@ -825,12 +793,13 @@ func (vi *Index) fallbackOnTargets(
 	idxCtx *Context,
 	searchSet *SearchSet,
 	parentPartitionKey, sourcePartitionKey PartitionKey,
+	vec vector.T,
 	state PartitionStateDetails,
 ) error {
 	switch state.State {
 	case DrainingForSplitState:
 		// Synthesize one search result for each split target partition to pass
-		// to findExactDistances.
+		// to getFullVectors.
 		idxCtx.tempResults[0] = SearchResult{
 			ParentPartitionKey: parentPartitionKey,
 			ChildKey:           ChildKey{PartitionKey: state.Target1},
@@ -840,18 +809,18 @@ func (vi *Index) fallbackOnTargets(
 			ChildKey:           ChildKey{PartitionKey: state.Target2},
 		}
 
-		// Get exact distance of the query vector from the centroids of the target
-		// partitions.
+		// Fetch the centroids of the target partitions.
 		var err error
-		tempResults, err := vi.findExactDistances(ctx, idxCtx, idxCtx.tempResults[:2])
+		tempResults, err := vi.getFullVectors(ctx, idxCtx, idxCtx.tempResults[:2])
 		if err != nil {
 			return errors.Wrapf(err,
-				"finding exact distances from target partitions %d and %d, for splitting partition %d",
+				"fetching centroids for target partitions %d and %d, for splitting partition %d",
 				state.Target1, state.Target2, sourcePartitionKey)
 		}
 
-		// Add the exact results to the search set.
+		// Calculate the distance of the query vector to the centroids.
 		for i := range tempResults {
+			tempResults[i].QuerySquaredDistance = num32.L2SquaredDistance(vec, tempResults[i].Vector)
 			searchSet.Add(&tempResults[i])
 		}
 
@@ -861,12 +830,9 @@ func (vi *Index) fallbackOnTargets(
 		// The partition is ready for deletion; its target partitions have already
 		// been built and may themselves been split or deleted, so don't use them.
 		return nil
-
-	case MergingState:
-		// Merging state does not have targets, so nothing to do.
-		return nil
 	}
 
+	// TODO(andyk): Add support for DrainingForMergeState.
 	return errors.AssertionFailedf(
 		"expected state that disallows updates, not %s", state.String())
 }
@@ -884,8 +850,6 @@ func (vi *Index) addToPartition(
 	childKey ChildKey,
 	valueBytes ValueBytes,
 ) error {
-	vi.validateVectorToAdd(level, vec)
-
 	err := txn.AddToPartition(ctx, treeKey, partitionKey, level, vec, childKey, valueBytes)
 	if err != nil {
 		return err
@@ -929,39 +893,55 @@ func (vi *Index) searchHelper(ctx context.Context, idxCtx *Context, searchSet *S
 	return nil
 }
 
-// findExactDistances updates the given search candidates with the original full
-// size vectors from the store and computes their exact distances from the query
-// vector. It does this by fetching the original full-size vectors from the
-// store. If a candidate vector cannot be found in the store, that candidate is
-// removed from the list of candidates that's returned.
-func (vi *Index) findExactDistances(
+// rerankSearchResults updates the given set of candidates with their exact
+// distances from the query vector. It does this by fetching the original full
+// size vectors from the store, in order to re-rank the top candidates for
+// extra search result accuracy.
+func (vi *Index) rerankSearchResults(
 	ctx context.Context, idxCtx *Context, candidates []SearchResult,
 ) ([]SearchResult, error) {
 	if len(candidates) == 0 {
 		return candidates, nil
 	}
 
-	var err error
-	candidates, err = vi.getFullVectors(ctx, idxCtx, candidates)
+	// Fetch the full vectors from the store.
+	candidates, err := vi.getFullVectors(ctx, idxCtx, candidates)
 	if err != nil {
-		return nil, errors.Wrapf(err, "getting full vectors to find exact distances")
+		return candidates, err
 	}
 
-	// Compute exact distance between query vector and the data vectors.
-	idxCtx.query.ComputeExactDistances(vi.quantizer.GetDistanceMetric(), idxCtx.level, candidates)
+	queryVector := idxCtx.randomized
+	if idxCtx.level == LeafLevel {
+		// Leaf vectors haven't been randomized, so compare with the original query
+		// vector if available, or un-randomize the randomized vector. The original
+		// vector is not available in some cases where split/merge needs to move
+		// vectors between partitions.
+		if idxCtx.original == nil {
+			idxCtx.original = ensureSliceLen(idxCtx.original, len(idxCtx.randomized))
+			vi.UnRandomizeVector(idxCtx.randomized, idxCtx.original)
+		}
+		queryVector = idxCtx.original
+	}
+
+	// Compute exact distances for the vectors.
+	for i := range candidates {
+		candidate := &candidates[i]
+		candidate.QuerySquaredDistance = num32.L2SquaredDistance(candidate.Vector, queryVector)
+		candidate.ErrorBound = 0
+	}
 
 	return candidates, nil
 }
 
-// getFullVectors fetches the full-size vectors for the given search candidates.
-// These can be either leaf vectors fetched from the primary index or interior
-// partition centroids fetched from the index. Fixups are enqueued for any
-// vectors found to be "dangling".
+// getFullVectors updates the given search candidates with the original full
+// size vectors from the store. If a candidate's vector has been deleted from
+// the primary index, that candidate is removed from the list of candidates
+// that's returned.
 func (vi *Index) getFullVectors(
 	ctx context.Context, idxCtx *Context, candidates []SearchResult,
 ) ([]SearchResult, error) {
 	// Prepare vector references.
-	idxCtx.tempVectorsWithKeys = utils.EnsureSliceLen(idxCtx.tempVectorsWithKeys, len(candidates))
+	idxCtx.tempVectorsWithKeys = ensureSliceLen(idxCtx.tempVectorsWithKeys, len(candidates))
 	for i := range candidates {
 		idxCtx.tempVectorsWithKeys[i].Key = candidates[i].ChildKey
 	}
@@ -974,62 +954,30 @@ func (vi *Index) getFullVectors(
 
 	i := 0
 	for i < len(candidates) {
-		candidate := &candidates[i]
-		candidate.Vector = idxCtx.tempVectorsWithKeys[i].Vector
+		candidates[i].Vector = idxCtx.tempVectorsWithKeys[i].Vector
 
 		// Exclude deleted child keys from results.
-		if candidate.Vector == nil {
+		if candidates[i].Vector == nil {
 			// TODO(andyk): Need to create an DeletePartitionKey fixup to handle
 			// the case of a dangling partition key.
-			if candidate.ChildKey.IsPrimaryIndexBytes() {
+			if candidates[i].ChildKey.KeyBytes != nil {
 				// Vector was deleted, so add fixup to delete it.
 				vi.fixups.AddDeleteVector(ctx, idxCtx.treeKey,
-					candidate.ParentPartitionKey, candidate.ChildKey.KeyBytes)
+					candidates[i].ParentPartitionKey, candidates[i].ChildKey.KeyBytes)
 			}
 
 			// Move the last candidate to the current position and reduce size
 			// of slice by one.
 			idxCtx.tempVectorsWithKeys[i] = idxCtx.tempVectorsWithKeys[len(candidates)-1]
-			candidates = utils.ReplaceWithLast(candidates, i)
+			candidates[i] = candidates[len(candidates)-1]
+			candidates[len(candidates)-1] = SearchResult{} // for GC
+			candidates = candidates[:len(candidates)-1]
 		} else {
 			i++
 		}
 	}
 
 	return candidates, nil
-}
-
-// validateVectorToAdd ensures a vector being added to partitions is a unit
-// vector when required by the distance metric: always for Cosine, and for
-// InnerProduct only in interior partitions (not leaf partitions).
-func (vi *Index) validateVectorToAdd(level Level, vec vector.T) {
-	if buildutil.CrdbTestBuild {
-		switch vi.quantizer.GetDistanceMetric() {
-		case vecpb.InnerProductDistance:
-			if level != LeafLevel {
-				utils.ValidateUnitVector(vec)
-			}
-
-		case vecpb.CosineDistance:
-			utils.ValidateUnitVector(vec)
-		}
-	}
-}
-
-// validateVectorsToAdd is similar to validateVectorToAdd, but works for a set
-// of vectors.
-func (vi *Index) validateVectorsToAdd(level Level, vectors vector.Set) {
-	if buildutil.CrdbTestBuild {
-		switch vi.quantizer.GetDistanceMetric() {
-		case vecpb.InnerProductDistance:
-			if level != LeafLevel {
-				utils.ValidateUnitVectors(vectors)
-			}
-
-		case vecpb.CosineDistance:
-			utils.ValidateUnitVectors(vectors)
-		}
-	}
 }
 
 // FormatOptions modifies the behavior of the Format method.
@@ -1046,13 +994,13 @@ type FormatOptions struct {
 // Format formats the vector index as a tree-formatted string similar to this,
 // for testing and debugging purposes:
 //
-// • 1 [4, 3]
+// • 1 (4, 3)
 // │
-// ├───• vec1 [1, 2]
-// ├───• vec2 [7, 4]
-// └───• vec3 [4, 3]
+// ├───• vec1 (1, 2)
+// ├───• vec2 (7, 4)
+// └───• vec3 (4, 3)
 //
-// Vectors with many dimensions are abbreviated like [5, -1, ..., 2, 8], and
+// Vectors with many dimensions are abbreviated like (5, -1, ..., 2, 8), and
 // values are rounded to 4 decimal places. Centroids are printed next to
 // partition keys.
 func (vi *Index) Format(
@@ -1092,7 +1040,7 @@ func (vi *Index) Format(
 					buf.WriteByte(' ')
 					utils.WriteVector(&buf, centroid, 4)
 				} else {
-					buf.WriteString(" [MISSING]\n")
+					buf.WriteString(" (MISSING)\n")
 				}
 				return nil
 			}
@@ -1110,9 +1058,9 @@ func (vi *Index) Format(
 		utils.WriteVector(&buf, original, 4)
 		details := partition.Metadata().StateDetails
 		if details.State != ReadyState {
-			buf.WriteString(" (")
+			buf.WriteString(" [")
 			buf.WriteString(details.String())
-			buf.WriteByte(')')
+			buf.WriteByte(']')
 		}
 		buf.WriteByte('\n')
 
@@ -1146,7 +1094,7 @@ func (vi *Index) Format(
 					buf.WriteByte(' ')
 					utils.WriteVector(&buf, refs[0].Vector, 4)
 				} else {
-					buf.WriteString(" [MISSING]")
+					buf.WriteString(" (MISSING)")
 				}
 				buf.WriteByte('\n')
 
@@ -1178,4 +1126,18 @@ func (vi *Index) Format(
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// ensureSliceLen returns a slice of the given length and generic type. If the
+// existing slice has enough capacity, that slice is returned after adjusting
+// its length. Otherwise, a new, larger slice is allocated.
+// NOTE: Every element of the new slice is uninitialized; callers are
+// responsible for initializing the memory.
+func ensureSliceLen[T any](s []T, l int) []T {
+	// In test builds, always allocate new memory, to catch bugs where callers
+	// assume existing slice elements will be copied.
+	if cap(s) < l || buildutil.CrdbTestBuild {
+		return make([]T, l)
+	}
+	return s[:l]
 }

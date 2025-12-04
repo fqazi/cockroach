@@ -16,7 +16,6 @@ go_library(
         "//pkg/sql/sem/idxtype",
         "//pkg/sql/sem/tree",
         "//pkg/sql/sessiondata",
-        "//pkg/sql/vecindex/vecpb",
         "@com_github_cockroachdb_errors//:errors",
     ],
 )
@@ -24,13 +23,9 @@ go_library(
 go_test(
     name = "catformat_test",
     size = "small",
-    srcs = [
-        "index_test.go",
-        "inject_parser_test.go",
-    ],
+    srcs = ["index_test.go"],
     embed = [":catformat"],
     deps = [
-        "//pkg/sql",
         "//pkg/sql/catalog/catenumpb",
         "//pkg/sql/catalog/catpb",
         "//pkg/sql/catalog/descpb",

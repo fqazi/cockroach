@@ -49,7 +49,6 @@ go_library(
         "//pkg/sql/types",
         "//pkg/sql/vecindex/vecpb",
         "//pkg/util",
-        "//pkg/util/buildutil",
         "//pkg/util/hlc",
         "//pkg/util/intsets",
         "//pkg/util/iterutil",

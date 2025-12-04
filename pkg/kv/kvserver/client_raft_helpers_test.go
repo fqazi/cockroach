@@ -8,8 +8,6 @@ package kvserver_test
 import (
 	"context"
 	"fmt"
-	"maps"
-	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -85,7 +83,7 @@ func (h *unreliableRaftHandler) HandleRaftRequest(
 			if h.name != "" {
 				prefix = fmt.Sprintf("[%s] ", h.name)
 			}
-			log.KvExec.Infof(
+			log.Infof(
 				ctx,
 				"%sdropping r%d Raft message %s",
 				prefix,
@@ -105,7 +103,7 @@ func (h *unreliableRaftHandler) HandleRaftRequest(
 			if h.name != "" {
 				prefix = fmt.Sprintf("[%s] ", h.name)
 			}
-			log.KvExec.Infof(
+			log.Infof(
 				ctx,
 				"%s [raft] r%d Raft message %s",
 				prefix,
@@ -244,15 +242,6 @@ type testClusterPartitionedRange struct {
 		partitionedStores   map[roachpb.StoreID]bool
 	}
 	handlers []kvserver.IncomingRaftMessageHandler
-}
-
-func (p *testClusterPartitionedRange) String() string {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return fmt.Sprintf("partition[rangeID: %s, replicas: %v; stores: %v]",
-		p.rangeID,
-		slices.Collect(maps.Keys(p.mu.partitionedReplicas)),
-		slices.Collect(maps.Keys(p.mu.partitionedStores)))
 }
 
 // setupPartitionedRange sets up an testClusterPartitionedRange for the provided
@@ -420,10 +409,10 @@ func setupPartitionedRangeWithHandlers(
 					DropStoreLivenessMsg: func(msg *storelivenesspb.Message) bool {
 						drop := shouldDropStoreLivenessMessage(msg.From.StoreID, msg.To.StoreID)
 						if drop {
-							log.KvExec.Infof(context.Background(), "dropping StoreLiveness msg %s from store %d: to %d",
+							log.Infof(context.Background(), "dropping StoreLiveness msg %s from store %d: to %d",
 								msg.Type, msg.From.StoreID, msg.To.StoreID)
 						} else {
-							log.KvExec.Infof(context.Background(), "allowing StoreLiveness msg %s from store %d: to %d",
+							log.Infof(context.Background(), "allowing StoreLiveness msg %s from store %d: to %d",
 								msg.Type, msg.From.StoreID, msg.To.StoreID)
 						}
 						return drop

@@ -49,7 +49,7 @@ func TestMain(m *testing.M) {
 	serverutils.InitTestClusterFactory(testcluster.TestClusterFactory)
 
 	defer serverutils.TestingSetDefaultTenantSelectionOverride(
-		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(156124),
+		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(76378),
 	)()
 
 	os.Exit(m.Run())
@@ -216,13 +216,6 @@ func TestExecBuild_explain_env(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "explain_env")
-}
-
-func TestExecBuild_explain_fingerprint(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "explain_fingerprint")
 }
 
 func TestExecBuild_explain_gist(
@@ -400,13 +393,6 @@ func TestExecBuild_json(
 	runExecBuildLogicTest(t, "json")
 }
 
-func TestExecBuild_jsonb_path_query(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "jsonb_path_query")
-}
-
 func TestExecBuild_limit(
 	t *testing.T,
 ) {
@@ -419,13 +405,6 @@ func TestExecBuild_lookup_join_limit(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "lookup_join_limit")
-}
-
-func TestExecBuild_lookup_join_local(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "lookup_join_local")
 }
 
 func TestExecBuild_lookup_join_spans(
@@ -636,20 +615,6 @@ func TestExecBuild_subquery_correlated(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "subquery_correlated")
-}
-
-func TestExecBuild_swap_mutation(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "swap_mutation")
-}
-
-func TestExecBuild_system(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runExecBuildLogicTest(t, "system")
 }
 
 func TestExecBuild_topk(

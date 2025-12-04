@@ -66,9 +66,7 @@ func TestAdminAPISettings(t *testing.T) {
 		"view_activity_user":          {userName: "view_activity_user", redactableSettings: true, grantRole: "SYSTEM VIEWACTIVITY", consoleOnly: true},
 		"view_activity_redacted_user": {userName: "view_activity_redacted_user", redactableSettings: true, grantRole: "SYSTEM VIEWACTIVITYREDACTED", consoleOnly: true},
 	}
-	ts := serverutils.StartServerOnly(t, base.TestServerArgs{
-		DefaultDRPCOption: base.TestDRPCDisabled,
-	})
+	ts := serverutils.StartServerOnly(t, base.TestServerArgs{})
 	defer ts.Stopper().Stop(ctx)
 	forSystemTenant := ts.ApplicationLayer().Codec().ForSystemTenant()
 	conn := sqlutils.MakeSQLRunner(ts.ApplicationLayer().SQLConn(t))
@@ -166,7 +164,9 @@ func TestClusterAPI(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(81590),
+		// Disable the default test tenant for now as this tests fails
+		// with it enabled. Tracked with #81590.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 	})
 	defer s.Stopper().Stop(context.Background())
 
@@ -212,7 +212,9 @@ func TestAdminAPILocations(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	s, conn, _ := serverutils.StartServer(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(81590),
+		// Disable the default test tenant for now as this tests fails
+		// with it enabled. Tracked with #81590.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 	})
 	defer s.Stopper().Stop(context.Background())
 	sqlDB := sqlutils.MakeSQLRunner(conn)

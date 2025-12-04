@@ -7,12 +7,12 @@
 --
 -- For faster import, the TPCH database can be restored from backup:
 --
---   RESTORE DATABASE tpch FROM LATEST IN 'gs://cockroach-fixtures-us-east1/workload/tpch/scalefactor=1/backup_25_3?AUTH=implicit';
+--   RESTORE DATABASE tpch FROM 'gs://cockroach-fixtures-us-east1/workload/tpch/scalefactor=1/backup';
 --
 -- When re-generating all data (say after a schema change), a fresh backup can
 -- be created via:
 --
---   BACKUP DATABASE tpch INTO 'gs://cockroach-fixtures-us-east1/workload/tpch/scalefactor=1/backup_25_3?AUTH=implicit';
+--   BACKUP DATABASE tpch TO 'gs://cockroach-fixtures-us-east1/workload/tpch/scalefactor=1/backup';
 --
 
 CREATE TABLE region (
@@ -204,4 +204,7 @@ IMPORT INTO lineitem CSV DATA(
 ALTER TABLE lineitem ADD CONSTRAINT lineitem_fkey_orders FOREIGN KEY (l_orderkey) references orders (o_orderkey);
 ALTER TABLE lineitem ADD CONSTRAINT lineitem_fkey_part FOREIGN KEY (l_partkey) references part (p_partkey);
 ALTER TABLE lineitem ADD CONSTRAINT lineitem_fkey_supplier FOREIGN KEY (l_suppkey) references supplier (s_suppkey);
-ALTER TABLE lineitem ADD CONSTRAINT lineitem_fkey_partsupp FOREIGN KEY (l_partkey, l_suppkey) references partsupp (ps_partkey, ps_suppkey);
+
+-- TODO(andyk): This fails with `pq: column "l_partkey" cannot be used by multiple foreign key constraints`.
+-- This limitation would appear to violate TPCH rules, as all foreign keys must be defined, or none at all.
+-- ALTER TABLE lineitem ADD CONSTRAINT lineitem_fkey_partsupp FOREIGN KEY (l_partkey, l_suppkey) references partsupp (ps_partkey, ps_suppkey);

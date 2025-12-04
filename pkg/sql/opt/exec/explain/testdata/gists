@@ -132,15 +132,9 @@ explain(shape):
 • apply join (semi)
 │ pred: column1 = a
 │
-├── • scan
-│     table: abc@abc_pkey
-│     spans: FULL SCAN
-│
-└── • inner loop (unoptimized)
-    │
-    └── • values
-           ├── (a,)
-           └── (b,)
+└── • scan
+      table: abc@abc_pkey
+      spans: FULL SCAN
 explain(gist):
 • apply join (semi)
 │
@@ -1055,8 +1049,8 @@ explain(gist):
 gist-explain-roundtrip
 CREATE STATISTICS s1 FROM foo
 ----
-hash: 17953548722684387642
-plan-gist: AjdqAg==
+hash: 590681868797177008
+plan-gist: Ajc=
 explain(shape):
 • create statistics
 explain(gist):

@@ -53,9 +53,6 @@ func TestUDFWithRandomTables(t *testing.T) {
 	tc, s, runnerA, runnerB := setupLogicalTestServer(t, ctx, testClusterBaseClusterArgs, 1)
 	defer tc.Stopper().Stop(ctx)
 
-	runnerA.Exec(t, "SET CLUSTER SETTING logical_replication.deprecated_udf_writer.enabled = true")
-	runnerB.Exec(t, "SET CLUSTER SETTING logical_replication.deprecated_udf_writer.enabled = true")
-
 	tableName := "rand_table"
 	rng, _ := randutil.NewPseudoRand()
 	createStmt := randgen.RandCreateTableWithName(
@@ -63,7 +60,7 @@ func TestUDFWithRandomTables(t *testing.T) {
 		rng,
 		tableName,
 		1,
-		[]randgen.TableOption{randgen.WithPrimaryIndexRequired(), randgen.WithSkipColumnFamilyMutations()},
+		randgen.TableOptPrimaryIndexRequired|randgen.TableOptSkipColumnFamilyMutations,
 	)
 	stmt := tree.SerializeForDisplay(createStmt)
 	t.Log(stmt)
@@ -105,14 +102,10 @@ func TestUDFInsertOnly(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	skip.UnderDeadlock(t)
 	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 138667, "flaky in CI")
 
 	ctx := context.Background()
 	tc, s, runnerA, runnerB := setupLogicalTestServer(t, ctx, testClusterBaseClusterArgs, 1)
 	defer tc.Stopper().Stop(ctx)
-
-	runnerA.Exec(t, "SET CLUSTER SETTING logical_replication.deprecated_udf_writer.enabled = true")
-	runnerB.Exec(t, "SET CLUSTER SETTING logical_replication.deprecated_udf_writer.enabled = true")
 
 	tableName := "tallies"
 	stmt := "CREATE TABLE tallies(pk INT PRIMARY KEY, v INT)"
@@ -162,9 +155,6 @@ func TestUDFPreviousValue(t *testing.T) {
 	ctx := context.Background()
 	tc, s, runnerA, runnerB := setupLogicalTestServer(t, ctx, testClusterBaseClusterArgs, 1)
 	defer tc.Stopper().Stop(ctx)
-
-	runnerA.Exec(t, "SET CLUSTER SETTING logical_replication.deprecated_udf_writer.enabled = true")
-	runnerB.Exec(t, "SET CLUSTER SETTING logical_replication.deprecated_udf_writer.enabled = true")
 
 	tableName := "tallies"
 	stmt := "CREATE TABLE tallies(pk INT PRIMARY KEY, v INT)"

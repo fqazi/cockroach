@@ -9,6 +9,7 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,7 +32,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts/ptpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts/ptstorage"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/scheduledjobs"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
@@ -83,7 +83,9 @@ func TestGetAllNamesInternal(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	s, _ /* sqlDB */, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+
+	s, _ /* sqlDB */, kvDB := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
 	err := kvDB.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
@@ -120,8 +122,7 @@ func TestRangeLocalityBasedOnNodeIDs(t *testing.T) {
 	tc := testcluster.StartTestCluster(t, 1,
 		base.TestClusterArgs{
 			ServerArgs: base.TestServerArgs{
-				Locality:          roachpb.Locality{Tiers: []roachpb.Tier{{Key: "node", Value: "1"}}},
-				DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
+				Locality: roachpb.Locality{Tiers: []roachpb.Tier{{Key: "node", Value: "1"}}},
 			},
 			ReplicationMode: base.ReplicationAuto,
 		},
@@ -167,16 +168,17 @@ func TestGossipAlertsTable(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	s := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s := serverutils.StartServerOnly(t, params)
 	defer s.Stop(context.Background())
 	ctx := context.Background()
 
 	if err := s.StorageLayer().GossipI().(*gossip.Gossip).AddInfoProto(gossip.MakeNodeHealthAlertKey(456), &statuspb.HealthCheckResult{
 		Alerts: []statuspb.HealthAlert{{
-			StoreID:         123,
-			Category:        statuspb.HealthAlert_METRICS,
-			SafeDescription: "foo",
-			Value:           100.0,
+			StoreID:     123,
+			Category:    statuspb.HealthAlert_METRICS,
+			Description: "foo",
+			Value:       100.0,
 		}},
 	}, time.Hour); err != nil {
 		t.Fatal(err)
@@ -207,7 +209,8 @@ func TestOldBitColumnMetadata(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	s, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, sqlDB, kvDB := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
 	// The descriptor changes made must have an immediate effect
@@ -228,7 +231,6 @@ CREATE TABLE t.test (k INT);
 		kvDB, s.Codec(), "t", "test")
 	for i := range tableDesc.Columns {
 		if tableDesc.Columns[i].Name == "k" {
-			tableDesc.Columns[i].Type.InternalType.Oid = 0         // Pre-2.1 types don't have an OID.
 			tableDesc.Columns[i].Type.InternalType.VisibleType = 4 // Pre-2.1 BIT.
 			tableDesc.Columns[i].Type.InternalType.Width = 12      // Arbitrary non-std INT size.
 			break
@@ -325,6 +327,10 @@ SELECT column_name, character_maximum_length, numeric_precision, numeric_precisi
 	for i := range tableDesc.Columns {
 		col := &tableDesc.Columns[i]
 		if col.Name == "k" {
+			// TODO(knz): post-2.2, visible types for integer types are gone.
+			if col.Type.InternalType.VisibleType != 0 {
+				t.Errorf("unexpected visible type: got %d, expected 0", col.Type.InternalType.VisibleType)
+			}
 			if col.Type.Width() != 64 {
 				t.Errorf("unexpected width: got %d, expected 64", col.Type.Width())
 			}
@@ -424,7 +430,7 @@ func TestInvalidObjects(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	params.Knobs = base.TestingKnobs{
 		Store: &kvserver.StoreTestingKnobs{
 			DisableMergeQueue: true,
@@ -464,7 +470,7 @@ CREATE TABLE nojob (k INT8);
 
 	// Now introduce some inconsistencies.
 	tdb.Exec(t, fmt.Sprintf(`
-INSERT INTO system.users VALUES ('node', NULL, true, 3, NULL);
+INSERT INTO system.users VALUES ('node', NULL, true, 3);
 GRANT node TO root;
 DELETE FROM system.descriptor WHERE id = %d;
 DELETE FROM system.descriptor WHERE id = %d;
@@ -577,11 +583,6 @@ func TestDistSQLFlowsVirtualTables(t *testing.T) {
 		ServerArgs:      params,
 	})
 	defer tc.Stopper().Stop(context.Background())
-
-	if tc.DefaultTenantDeploymentMode().IsExternal() {
-		tc.GrantTenantCapabilities(context.Background(), t, serverutils.TestTenantID(),
-			map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanAdminRelocateRange: "true"})
-	}
 
 	// Create a table with 3 rows, split them into 3 ranges with each node
 	// having one.
@@ -857,17 +858,13 @@ func TestTxnContentionEventsTableWithRangeDescriptor(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	srv, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(156145),
-	})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
-
+	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
 	_, err := sqlDB.Exec("SET CLUSTER SETTING sql.contention.event_store.resolution_interval = '10ms'")
 	require.NoError(t, err)
 	rangeKey := "/Local/Range/Table/106/1/-1704619207610523008/RangeDescriptor"
 	rangeKeyEscaped := fmt.Sprintf("\"%s\"", rangeKey)
-	s.ExecutorConfig().(sql.ExecutorConfig).ContentionRegistry.AddContentionEvent(contentionpb.ExtendedContentionEvent{
+	s.ApplicationLayer().ExecutorConfig().(sql.ExecutorConfig).ContentionRegistry.AddContentionEvent(contentionpb.ExtendedContentionEvent{
 		BlockingEvent: kvpb.ContentionEvent{
 			Key: roachpb.Key(rangeKey),
 			TxnMeta: enginepb.TxnMeta{
@@ -934,19 +931,6 @@ func TestTxnContentionEventsTableMultiTenant(t *testing.T) {
 func causeContention(
 	t *testing.T, conn *gosql.DB, table string, insertValue string, updateValue string,
 ) {
-	// Given the schema of the table we expect to experience the contention on
-	// the non-unique secondary index. By default, with write buffering we no
-	// longer acquire the lock on those, so we need to tweak the session
-	// variable.
-	if _, err := conn.Exec("SET use_cputs_on_non_unique_indexes = true"); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if _, err := conn.Exec("RESET use_cputs_on_non_unique_indexes"); err != nil {
-			t.Fatal(err)
-		}
-	}()
-
 	// Create a new connection, and then in a go routine have it start a
 	// transaction, update a row, sleep for a time, and then complete the
 	// transaction. With original connection attempt to update the same row
@@ -1329,7 +1313,7 @@ func TestInternalSystemJobsTableMirrorsSystemJobsTable(t *testing.T) {
 	assert.NoError(t, err)
 
 	tdb.Exec(t,
-		"INSERT INTO system.jobs (id, status, created, owner) values ($1, $2, $3, 'root')",
+		"INSERT INTO system.jobs (id, status, created) values ($1, $2, $3)",
 		1, jobs.StateRunning, timeutil.Now(),
 	)
 	tdb.Exec(t,
@@ -1338,9 +1322,9 @@ func TestInternalSystemJobsTableMirrorsSystemJobsTable(t *testing.T) {
 	)
 
 	tdb.Exec(t,
-		`INSERT INTO system.jobs (id, status, created, owner, created_by_type, created_by_id,
-                         claim_session_id, claim_instance_id, num_runs, last_run, job_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		2, jobs.StateRunning, timeutil.Now(), "root", "created by", 2, []byte("claim session id"),
+		`INSERT INTO system.jobs (id, status, created, created_by_type, created_by_id, 
+                         claim_session_id, claim_instance_id, num_runs, last_run, job_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		2, jobs.StateRunning, timeutil.Now(), "created by", 2, []byte("claim session id"),
 		2, 2, timeutil.Now(), jobspb.TypeImport.String(),
 	)
 	tdb.Exec(t,
@@ -1373,27 +1357,33 @@ func TestInternalSystemJobsAccess(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	srv, db, _ := serverutils.StartServer(t, base.TestServerArgs{
+	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
 		Knobs: base.TestingKnobs{
 			KeyVisualizer: &keyvisualizer.TestingKnobs{SkipJobBootstrap: true},
 		},
 	})
 	ctx := context.Background()
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	defer s.Stopper().Stop(ctx)
 	rootDB := sqlutils.MakeSQLRunner(db)
 
 	// Even though this test modifies the system.jobs table and asserts its contents, we
 	// do not disable background job creation nor job adoption. This is because creating
 	// users requires jobs to be created and run. Thus, this test only creates jobs of type
 	// jobspb.TypeImport and overrides the import resumer.
-	registry := s.JobRegistry().(*jobs.Registry)
+	registry := s.ApplicationLayer().JobRegistry().(*jobs.Registry)
 	registry.TestingWrapResumerConstructor(jobspb.TypeImport, func(r jobs.Resumer) jobs.Resumer {
 		return &fakeResumer{}
 	})
 
 	asUser := func(user string, f func(userDB *sqlutils.SQLRunner)) {
-		db2 := s.SQLConn(t, serverutils.UserPassword(user, "test"), serverutils.ClientCerts(false))
+		pgURL := url.URL{
+			Scheme: "postgres",
+			User:   url.UserPassword(user, "test"),
+			Host:   s.AdvSQLAddr(),
+		}
+		db2, err := gosql.Open("postgres", pgURL.String())
+		assert.NoError(t, err)
+		defer db2.Close()
 		userDB := sqlutils.MakeSQLRunner(db2)
 
 		f(userDB)
@@ -1450,13 +1440,13 @@ func TestInternalSystemJobsAccess(t *testing.T) {
 // worker goroutine returns "query canceled error".
 //
 // In particular, the following setup is used:
-//   - issue SHOW ZONE CONFIGURATIONS query which internally issues a query against
-//     crdb_internal.zones virtual table
-//   - that virtual table is generated by issuing "crdb-internal-zones-table" internal
+//   - issue SHOW JOBS query which internally issues a query against
+//     crdb_internal.system_jobs virtual table
+//   - that virtual table is generated by issuing "system-jobs-scan" internal
 //     query
-//   - during that "crdb-internal-zones-table" query we're injecting the query canceled
+//   - during that "system-jobs-scan" query we're injecting the query canceled
 //     error (in other words, the error is injected during the generation of
-//     crdb_internal.zones virtual table).
+//     crdb_internal.system_jobs virtual table).
 //
 // The injection is achieved by adding a callback to DistSQLReceiver.Push which
 // replaces the first piece of metadata it sees with the error.
@@ -1478,7 +1468,7 @@ func TestVirtualTableDoesntHangOnQueryCanceledError(t *testing.T) {
 							return nil
 						}
 						opName, ok := sql.GetInternalOpName(ctx)
-						if !ok || !(opName == "crdb-internal-zones-table") {
+						if !ok || !(opName == "system-jobs-scan" || opName == "system-jobs-join") {
 							return nil
 						}
 						numCallbacksAdded.Add(1)
@@ -1500,7 +1490,7 @@ func TestVirtualTableDoesntHangOnQueryCanceledError(t *testing.T) {
 	sqlDB := sqlutils.MakeSQLRunner(db)
 
 	addCallback.Store(true)
-	sqlDB.ExpectErr(t, err.Error(), "SHOW ZONE CONFIGURATIONS")
+	sqlDB.ExpectErr(t, err.Error(), "SHOW JOBS")
 	addCallback.Store(false)
 
 	// Sanity check that the callback was added at least once.
@@ -1595,8 +1585,8 @@ func TestVirtualPTSTableDeprecated(t *testing.T) {
 			Mode:      ptpb.PROTECT_AFTER,
 			DeprecatedSpans: []roachpb.Span{
 				{
-					Key:    s.Codec().TablePrefix(42),
-					EndKey: s.Codec().TablePrefix(42).PrefixEnd(),
+					Key:    keys.SystemSQLCodec.TablePrefix(42),
+					EndKey: keys.SystemSQLCodec.TablePrefix(42).PrefixEnd(),
 				},
 			},
 			MetaType: "foo",

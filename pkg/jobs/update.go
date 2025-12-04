@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -146,7 +147,7 @@ WHERE id = $1
 				state, j.session.ID(), sqlliveness.SessionID(storedSession))
 		}
 	} else {
-		log.Dev.VInfof(ctx, 1, "job %d: update called with no session ID", j.ID())
+		log.VInfof(ctx, 1, "job %d: update called with no session ID", j.ID())
 	}
 
 	lastRun, ok := row[4].(*tree.DTimestamp)
@@ -203,6 +204,28 @@ WHERE id = $1
 		return nil
 	}
 
+	// Build a statement of the following form, depending on which properties
+	// need updating:
+	//
+	//   UPDATE system.jobs
+	//   SET
+	//     [status = $2,]
+	//     [payload = $y,]
+	//     [progress = $z]
+	//   WHERE
+	//     id = $1
+
+	var setters []string
+	params := []interface{}{j.ID()} // $1 is always the job ID.
+	addSetter := func(column string, value interface{}) {
+		params = append(params, value)
+		setters = append(setters, fmt.Sprintf("%s = $%d", column, len(params)))
+	}
+
+	if ju.md.State != "" {
+		addSetter("status", ju.md.State)
+	}
+
 	var payloadBytes []byte
 	if ju.md.Payload != nil {
 		payload = ju.md.Payload
@@ -224,6 +247,26 @@ WHERE id = $1
 		}
 	}
 
+	if len(setters) != 0 {
+		updateStmt := fmt.Sprintf(
+			"UPDATE system.jobs SET %s WHERE id = $1",
+			strings.Join(setters, ", "),
+		)
+		n, err := u.txn.ExecEx(
+			ctx, "job-update", u.txn.KV(),
+			sessiondata.NodeUserSessionDataOverride,
+			updateStmt, params...,
+		)
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return errors.Errorf(
+				"expected exactly one row affected, but %d rows affected by job update", n,
+			)
+		}
+	}
+
 	// Insert the job payload and progress into the system.jobs_info table.
 	infoStorage := j.InfoStorage(u.txn)
 	infoStorage.claimChecked = true
@@ -238,108 +281,99 @@ WHERE id = $1
 		}
 	}
 
-	if ju.md.State != "" && ju.md.State != state {
-		if err := j.Messages().Record(ctx, u.txn, "state", string(ju.md.State)); err != nil {
-			return err
+	v, err := u.txn.GetSystemSchemaVersion(ctx)
+	if err != nil {
+		return err
+	}
+	if v.AtLeast(clusterversion.V25_1_AddJobsTables.Version()) {
+		if ju.md.State != "" && ju.md.State != state {
+			if err := j.Messages().Record(ctx, u.txn, "state", string(ju.md.State)); err != nil {
+				return err
+			}
+			// If we are changing state, we should clear out the status, unless
+			// we are about to set it to something instead.
+			if progress == nil || progress.StatusMessage == "" {
+				if err := j.StatusStorage().Clear(ctx, u.txn); err != nil {
+					return err
+				}
+			}
 		}
-		// If we are changing state, we should clear out the status, unless
-		// we are about to set it to something instead or if we are coming from a
-		// pause requested state, in which case we already cleared it out once when
-		// we entered the pause requested state and may have since set it to a pause
-		// reason which we now want to preserve.
-		noNewStatus := progress == nil || progress.StatusMessage == ""
-		if noNewStatus && ju.md.State != StatePauseRequested {
-			if err := j.StatusStorage().Clear(ctx, u.txn); err != nil {
+
+		if progress != nil {
+			var ts hlc.Timestamp
+			if hwm := progress.GetHighWater(); hwm != nil {
+				ts = *hwm
+			}
+
+			if err := j.ProgressStorage().Set(ctx, u.txn, float64(progress.GetFractionCompleted()), ts); err != nil {
+				return err
+			}
+
+			if progress.StatusMessage != beforeProgress.StatusMessage {
+				if err := j.StatusStorage().Set(ctx, u.txn, progress.StatusMessage); err != nil {
+					return err
+				}
+			}
+
+			if progress.TraceID != beforeProgress.TraceID {
+				if err := j.Messages().Record(ctx, u.txn, "trace-id", fmt.Sprintf("%d", progress.TraceID)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if v.AtLeast(clusterversion.V25_1_AddJobsColumns.Version()) {
+
+		vals := []interface{}{j.ID()}
+
+		var update strings.Builder
+
+		if payloadBytes != nil {
+			if beforePayload.Description != payload.Description {
+				if update.Len() > 0 {
+					update.WriteString(", ")
+				}
+				vals = append(vals, payload.Description)
+				fmt.Fprintf(&update, "description = $%d", len(vals))
+			}
+
+			if beforePayload.UsernameProto.Decode() != payload.UsernameProto.Decode() {
+				if update.Len() > 0 {
+					update.WriteString(", ")
+				}
+				vals = append(vals, payload.UsernameProto.Decode().Normalized())
+				fmt.Fprintf(&update, "owner = $%d", len(vals))
+			}
+
+			if beforePayload.Error != payload.Error {
+				if update.Len() > 0 {
+					update.WriteString(", ")
+				}
+				vals = append(vals, payload.Error)
+				fmt.Fprintf(&update, "error_msg = $%d", len(vals))
+			}
+
+			if beforePayload.FinishedMicros != payload.FinishedMicros {
+				if update.Len() > 0 {
+					update.WriteString(", ")
+				}
+				vals = append(vals, time.UnixMicro(payload.FinishedMicros))
+				fmt.Fprintf(&update, "finished = $%d", len(vals))
+			}
+
+		}
+		if len(vals) > 1 {
+			stmt := fmt.Sprintf("UPDATE system.jobs SET %s WHERE id = $1", update.String())
+			if _, err := u.txn.ExecEx(
+				ctx, "job-update-row", u.txn.KV(),
+				sessiondata.NodeUserSessionDataOverride,
+				stmt, vals...,
+			); err != nil {
 				return err
 			}
 		}
 	}
 
-	// NB: if ju.md.Progress was non-nil then progress has been set to the value
-	// from the updater. If it isn't set, progress has the value from the original
-	// scan.
-	if ju.md.Progress != nil {
-		var ts hlc.Timestamp
-		if hwm := progress.GetHighWater(); hwm != nil {
-			ts = *hwm
-		}
-
-		if err := j.ProgressStorage().Set(ctx, u.txn, float64(progress.GetFractionCompleted()), ts); err != nil {
-			return err
-		}
-
-		if progress.StatusMessage != beforeProgress.StatusMessage {
-			if err := j.StatusStorage().Set(ctx, u.txn, progress.StatusMessage); err != nil {
-				return err
-			}
-		}
-
-		if progress.TraceID != beforeProgress.TraceID {
-			if err := j.Messages().Record(ctx, u.txn, "trace-id", fmt.Sprintf("%d", progress.TraceID)); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Build a statement of the following form, depending on which properties
-	// need updating:
-	//
-	//   UPDATE system.jobs
-	//   SET
-	//     [status = $2,]
-	//     [owner = $y,]
-	//     [error_msg = $z]
-	//   WHERE
-	//     id = $1
-	var setters []string
-	params := []interface{}{j.ID()} // $1 is always the job ID.
-	addSetter := func(column string, value interface{}) {
-		params = append(params, value)
-		setters = append(setters, fmt.Sprintf("%s = $%d", column, len(params)))
-	}
-
-	if ju.md.State != "" {
-		addSetter("status", ju.md.State)
-	}
-	if payloadBytes != nil {
-		if beforePayload.Description != payload.Description {
-			addSetter("description", payload.Description)
-		}
-
-		beforeUser := beforePayload.UsernameProto.Decode()
-		afterUser := payload.UsernameProto.Decode()
-		if afterUser != beforeUser {
-			addSetter("owner", afterUser.Normalized())
-		}
-
-		if beforePayload.Error != payload.Error {
-			addSetter("error_msg", payload.Error)
-		}
-
-		if beforePayload.FinishedMicros != payload.FinishedMicros {
-			addSetter("finished", time.UnixMicro(payload.FinishedMicros))
-		}
-	}
-
-	if len(setters) != 0 {
-		updateStmt := fmt.Sprintf(
-			"UPDATE system.jobs SET %s WHERE id = $1",
-			strings.Join(setters, ", "),
-		)
-		n, err := u.txn.ExecEx(
-			ctx, "job-update-job", u.txn.KV(),
-			sessiondata.NodeUserSessionDataOverride,
-			updateStmt, params...,
-		)
-		if err != nil {
-			return err
-		}
-		if n != 1 {
-			return errors.Errorf(
-				"expected exactly one row affected, but %d rows affected by job update", n,
-			)
-		}
-	}
 	return nil
 }
 
@@ -407,15 +441,10 @@ func (ju *JobUpdater) PauseRequestedWithFunc(
 			return err
 		}
 	}
-	if reason != "" {
-		if err := StatusStorage(md.ID).Set(ctx, txn, fmt.Sprintf("pausing: %s", reason)); err != nil {
-			return err
-		}
-	}
 	ju.UpdateState(StatePauseRequested)
 	md.Payload.PauseReason = reason
 	ju.UpdatePayload(md.Payload)
-	log.Dev.Infof(ctx, "job %d: pause requested recorded with reason %s", md.ID, reason)
+	log.Infof(ctx, "job %d: pause requested recorded with reason %s", md.ID, reason)
 	return nil
 }
 

@@ -40,7 +40,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -68,6 +67,7 @@ var reportFrequency = settings.RegisterDurationSetting(
 	"diagnostics.reporting.interval",
 	"interval at which diagnostics data should be reported",
 	time.Hour,
+	settings.NonNegativeDuration,
 	settings.WithPublic)
 
 // Reporter is a helper struct that phones home to report usage and diagnostics.
@@ -167,7 +167,7 @@ func shouldReportDiagnostics(ctx context.Context, st *cluster.Settings) bool {
 	license, err := utilccl.GetLicense(st)
 	// If we cannot fetch the license, we do not send the report.
 	if err != nil {
-		log.Dev.Errorf(ctx, "error fetching license in shouldReportDiagnostics: %s", err)
+		log.Errorf(ctx, "error fetching license in shouldReportDiagnostics: %s", err)
 		return false
 	}
 	if license == nil {
@@ -186,7 +186,6 @@ func (r *Reporter) PeriodicallyReportDiagnostics(ctx context.Context, stopper *s
 		ctx, cancel = stopper.WithCancelOnQuiesce(ctx)
 		defer cancel()
 		defer logcrash.RecoverAndReportNonfatalPanic(ctx, &r.Settings.SV)
-		rng, _ := randutil.NewPseudoRand()
 		nextReport := r.StartTime
 
 		var timer timeutil.Timer
@@ -201,11 +200,12 @@ func (r *Reporter) PeriodicallyReportDiagnostics(ctx context.Context, stopper *s
 
 			nextReport = nextReport.Add(reportFrequency.Get(&r.Settings.SV))
 
-			timer.Reset(addJitter(nextReport.Sub(timeutil.Now()), rng))
+			timer.Reset(addJitter(nextReport.Sub(timeutil.Now())))
 			select {
 			case <-stopper.ShouldQuiesce():
 				return
 			case <-timer.C:
+				timer.Read = true
 			}
 		}
 	})
@@ -231,7 +231,7 @@ func (r *Reporter) ReportDiagnostics(ctx context.Context) {
 	license, err := utilccl.GetLicense(r.Settings)
 	if err != nil {
 		if log.V(2) {
-			log.Dev.Warningf(ctx, "failed to retrieve license while reporting diagnostics: %v", err)
+			log.Warningf(ctx, "failed to retrieve license while reporting diagnostics: %v", err)
 		}
 	}
 	url := r.buildReportingURL(report, license)
@@ -241,7 +241,7 @@ func (r *Reporter) ReportDiagnostics(ctx context.Context) {
 
 	b, err := protoutil.Marshal(report)
 	if err != nil {
-		log.Dev.Warningf(ctx, "%v", err)
+		log.Warningf(ctx, "%v", err)
 		return
 	}
 
@@ -252,7 +252,7 @@ func (r *Reporter) ReportDiagnostics(ctx context.Context) {
 		if log.V(2) {
 			// This is probably going to be relatively common in production
 			// environments where network access is usually curtailed.
-			log.Dev.Warningf(ctx, "failed to report node usage metrics: %v", err)
+			log.Warningf(ctx, "failed to report node usage metrics: %v", err)
 		}
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
@@ -266,7 +266,7 @@ func (r *Reporter) ReportDiagnostics(ctx context.Context) {
 	defer res.Body.Close()
 	b, err = io.ReadAll(res.Body)
 	if err != nil {
-		log.Dev.Warningf(ctx, "failed to report node usage metrics: status: %s, body: %s, "+
+		log.Warningf(ctx, "failed to report node usage metrics: status: %s, body: %s, "+
 			"error: %v", res.Status, b, err)
 		return
 	}
@@ -278,13 +278,10 @@ func (r *Reporter) ReportDiagnostics(ctx context.Context) {
 	r.LastSuccessfulTelemetryPing.Store(r.now().Unix())
 
 	if res.StatusCode != http.StatusOK {
-		log.Dev.Warningf(ctx, "failed to report node usage metrics: status: %s, body: %s", res.Status, b)
+		log.Warningf(ctx, "failed to report node usage metrics: status: %s, body: %s", res.Status, b)
 		return
 	}
-	err = r.SQLServer.GetReportedSQLStatsProvider().Reset(ctx)
-	if err != nil {
-		log.Dev.Warningf(ctx, "failed to reset SQL stats: %s", err)
-	}
+	r.SQLServer.GetReportedSQLStatsController().ResetLocalSQLStats(ctx)
 }
 
 // GetLastSuccessfulTelemetryPing will return the timestamp of when we last got
@@ -318,7 +315,7 @@ func (r *Reporter) CreateReport(
 
 	schema, err := r.collectSchemaInfo(ctx)
 	if err != nil {
-		log.Dev.Warningf(ctx, "error collecting schema info for diagnostic report: %+v", err)
+		log.Warningf(ctx, "error collecting schema info for diagnostic report: %+v", err)
 		schema = nil
 	}
 	info.Schema = schema
@@ -333,7 +330,7 @@ func (r *Reporter) CreateReport(
 		sessiondata.NodeUserSessionDataOverride,
 		"SELECT name FROM system.settings",
 	); err != nil {
-		log.Dev.Warningf(ctx, "failed to read settings: %s", err)
+		log.Warningf(ctx, "failed to read settings: %s", err)
 	} else {
 		info.AlteredSettings = make(map[string]string)
 		var ok bool
@@ -347,7 +344,7 @@ func (r *Reporter) CreateReport(
 		if err != nil {
 			// No need to clear AlteredSettings map since we only make best
 			// effort to populate it.
-			log.Dev.Warningf(ctx, "failed to read settings: %s", err)
+			log.Warningf(ctx, "failed to read settings: %s", err)
 		}
 	}
 
@@ -358,7 +355,7 @@ func (r *Reporter) CreateReport(
 		sessiondata.NodeUserSessionDataOverride,
 		"SELECT id, config FROM system.zones",
 	); err != nil {
-		log.Dev.Warningf(ctx, "%v", err)
+		log.Warningf(ctx, "%v", err)
 	} else {
 		info.ZoneConfigs = make(map[int64]zonepb.ZoneConfig)
 		var ok bool
@@ -370,7 +367,7 @@ func (r *Reporter) CreateReport(
 				continue
 			} else {
 				if err := protoutil.Unmarshal([]byte(*bytes), &zone); err != nil {
-					log.Dev.Warningf(ctx, "unable to parse zone config %d: %v", id, err)
+					log.Warningf(ctx, "unable to parse zone config %d: %v", id, err)
 					continue
 				}
 			}
@@ -381,14 +378,14 @@ func (r *Reporter) CreateReport(
 		if err != nil {
 			// No need to clear ZoneConfigs map since we only make best effort
 			// to populate it.
-			log.Dev.Warningf(ctx, "%v", err)
+			log.Warningf(ctx, "%v", err)
 		}
 	}
 
 	info.SqlStats, err = r.SQLServer.GetScrubbedReportingStats(ctx, 100 /* limit */, false)
 	if err != nil {
 		if log.V(2 /* level */) {
-			log.Dev.Warningf(ctx, "unexpected error encountered when getting scrubbed reporting stats: %s", err)
+			log.Warningf(ctx, "unexpected error encountered when getting scrubbed reporting stats: %s", err)
 		}
 	}
 
@@ -451,7 +448,7 @@ func (r *Reporter) populateSQLInfo(uptime int64, sql *diagnosticspb.SQLInstanceI
 // type fields. Check out `schematelemetry` package for a better data source for
 // collecting redacted schema information.
 func (r *Reporter) collectSchemaInfo(ctx context.Context) ([]descpb.TableDescriptor, error) {
-	startKey := keys.MakeSQLCodec(r.TenantID).IndexPrefix(keys.DescriptorTableID, keys.DescriptorTablePrimaryKeyIndexID)
+	startKey := keys.MakeSQLCodec(r.TenantID).TablePrefix(keys.DescriptorTableID)
 	endKey := startKey.PrefixEnd()
 	kvs, err := r.DB.Scan(ctx, startKey, endKey, 0)
 	if err != nil {
@@ -505,7 +502,7 @@ func (r *Reporter) buildReportingURL(
 func getLicenseType(ctx context.Context, settings *cluster.Settings) string {
 	licenseType, err := base.LicenseType(settings)
 	if err != nil {
-		log.Dev.Errorf(ctx, "error retrieving license type: %s", err)
+		log.Errorf(ctx, "error retrieving license type: %s", err)
 		return ""
 	}
 	return licenseType

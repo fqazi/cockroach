@@ -5,20 +5,24 @@
 
 package spec
 
-import "time"
+import (
+	"time"
+
+	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
+)
 
 // Option for MakeClusterSpec.
 type Option func(spec *ClusterSpec)
 
-// Arch requests specific CPU architecture(s).
+// Arch requests a specific CPU architecture.
 //
 // Note that it is not guaranteed that this architecture will be used (e.g. if
 // the requested machine size isn't available in this architecture).
 //
 // TODO(radu): add a flag to indicate whether it's a preference or a requirement.
-func Arch(as ArchSet) Option {
+func Arch(arch vm.CPUArch) Option {
 	return func(spec *ClusterSpec) {
-		spec.CompatibleArchs = as
+		spec.Arch = arch
 	}
 }
 
@@ -53,15 +57,6 @@ func WorkloadNodeCPU(n int) Option {
 	}
 }
 
-// WorkloadRequiresDisk should be used if the workload nodes should have the
-// exact same disk configuration as the rest of the cluster. Otherwise, all
-// workload nodes only have a boot disk.
-func WorkloadRequiresDisk() Option {
-	return func(spec *ClusterSpec) {
-		spec.WorkloadRequiresDisk = true
-	}
-}
-
 // Mem requests nodes with low/standard/high ratio of memory per CPU.
 func Mem(level MemPerCPU) Option {
 	return func(spec *ClusterSpec) {
@@ -73,20 +68,6 @@ func Mem(level MemPerCPU) Option {
 func VolumeSize(n int) Option {
 	return func(spec *ClusterSpec) {
 		spec.VolumeSize = n
-	}
-}
-
-// VolumeType sets the volume type.
-func VolumeType(volumeType string) Option {
-	return func(spec *ClusterSpec) {
-		spec.VolumeType = volumeType
-	}
-}
-
-// VolumeCount sets the volume count.
-func VolumeCount(volumeCount int) Option {
-	return func(spec *ClusterSpec) {
-		spec.VolumeCount = volumeCount
 	}
 }
 
@@ -261,6 +242,13 @@ func GCEMinCPUPlatform(platform string) Option {
 	}
 }
 
+// GCEVolumeType sets the volume type when the cluster is on GCE.
+func GCEVolumeType(volumeType string) Option {
+	return func(spec *ClusterSpec) {
+		spec.GCE.VolumeType = volumeType
+	}
+}
+
 // GCEZones is a node option which requests Geo-distributed nodes; only applies
 // when the test runs on GCE.
 //
@@ -287,14 +275,6 @@ func AWSVolumeThroughput(throughput int) Option {
 	}
 }
 
-// AWSVolumeIOPS sets the provisioned IOPS for EBS volumes when the cluster is
-// on AWS.
-func AWSVolumeIOPS(iops int) Option {
-	return func(spec *ClusterSpec) {
-		spec.AWS.VolumeIOPS = iops
-	}
-}
-
 // AWSZones is a node option which requests Geo-distributed nodes; only applies
 // when the test runs on AWS.
 //
@@ -318,38 +298,5 @@ func AWSZones(zones string) Option {
 func AzureZones(zones string) Option {
 	return func(spec *ClusterSpec) {
 		spec.Azure.Zones = zones
-	}
-}
-
-// AzureVolumeIOPS sets the provisioned IOPS for ultra-disk volumes
-// when the cluster is on Azure.
-func AzureVolumeIOPS(iops int) Option {
-	return func(spec *ClusterSpec) {
-		spec.Azure.VolumeIOPS = iops
-	}
-}
-
-// IBMMachineType sets the machine (instance) type when the cluster is on IBM.
-func IBMMachineType(machineType string) Option {
-	return func(spec *ClusterSpec) {
-		spec.IBM.MachineType = machineType
-	}
-}
-
-// IBMVolumeIOPS sets the IOPS when the cluster is on IBM.
-func IBMVolumeIOPS(iops int) Option {
-	return func(spec *ClusterSpec) {
-		spec.IBM.VolumeIOPS = iops
-	}
-}
-
-// IBMZones is a node option which requests Geo-distributed nodes; only applies
-// when the test runs on IBM.
-//
-// Note that this overrides the --zones flag and is useful for tests that
-// require running on specific zones.
-func IBMZones(zones string) Option {
-	return func(spec *ClusterSpec) {
-		spec.IBM.Zones = zones
 	}
 }

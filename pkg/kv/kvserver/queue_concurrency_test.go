@@ -112,7 +112,7 @@ func TestBaseQueueConcurrent(t *testing.T) {
 			})
 		}
 		g.Go(func() error {
-			bq.assertInvariants(func(item *replicaItem) {})
+			bq.assertInvariants()
 			return nil
 		})
 	}
@@ -140,7 +140,7 @@ func (fakeQueueImpl) shouldQueue(
 }
 
 func (fq fakeQueueImpl) process(
-	ctx context.Context, repl *Replica, confReader spanconfig.StoreReader, _ float64,
+	ctx context.Context, repl *Replica, confReader spanconfig.StoreReader,
 ) (bool, error) {
 	return fq.pr(ctx, repl, confReader)
 }

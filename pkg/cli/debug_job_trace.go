@@ -15,13 +15,10 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/cli/clierrorplus"
 	"github.com/cockroachdb/cockroach/pkg/cli/clisqlclient"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	tracezipper "github.com/cockroachdb/cockroach/pkg/util/tracing/zipper"
 	"github.com/cockroachdb/errors"
 	"github.com/spf13/cobra"
 )
-
-const debugJobTraceAppName = catconstants.InternalAppNamePrefix + "  cockroach debug job-trace"
 
 var debugJobTraceFromClusterCmd = &cobra.Command{
 	Use:   "job-trace <job_id> --url=<cluster connection string>",
@@ -38,7 +35,7 @@ func runDebugJobTrace(_ *cobra.Command, args []string) (resErr error) {
 		return err
 	}
 	ctx := context.Background()
-	sqlConn, err := makeSQLClient(ctx, debugJobTraceAppName, useSystemDb)
+	sqlConn, err := makeSQLClient(ctx, "cockroach debug job-trace", useSystemDb)
 	if err != nil {
 		return errors.Wrap(err, "could not establish connection to cluster")
 	}

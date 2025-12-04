@@ -306,80 +306,6 @@ func (c *ElementCollection[E]) FilterColumnFamily() *ElementCollection[*ColumnFa
 	return (*ElementCollection[*ColumnFamily])(ret)
 }
 
-func (e ColumnGeneratedAsIdentity) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_ColumnGeneratedAsIdentity) Element() Element {
-	return e.ColumnGeneratedAsIdentity
-}
-
-// ForEachColumnGeneratedAsIdentity iterates over elements of type ColumnGeneratedAsIdentity.
-// Deprecated
-func ForEachColumnGeneratedAsIdentity(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *ColumnGeneratedAsIdentity),
-) {
-  c.FilterColumnGeneratedAsIdentity().ForEach(fn)
-}
-
-// FindColumnGeneratedAsIdentity finds the first element of type ColumnGeneratedAsIdentity.
-// Deprecated
-func FindColumnGeneratedAsIdentity(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *ColumnGeneratedAsIdentity) {
-	if tc := c.FilterColumnGeneratedAsIdentity(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*ColumnGeneratedAsIdentity)
-	}
-	return current, target, element
-}
-
-// ColumnGeneratedAsIdentityElements filters elements of type ColumnGeneratedAsIdentity.
-func (c *ElementCollection[E]) FilterColumnGeneratedAsIdentity() *ElementCollection[*ColumnGeneratedAsIdentity] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*ColumnGeneratedAsIdentity)
-		return ok
-	})
-	return (*ElementCollection[*ColumnGeneratedAsIdentity])(ret)
-}
-
-func (e ColumnHidden) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_ColumnHidden) Element() Element {
-	return e.ColumnHidden
-}
-
-// ForEachColumnHidden iterates over elements of type ColumnHidden.
-// Deprecated
-func ForEachColumnHidden(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *ColumnHidden),
-) {
-  c.FilterColumnHidden().ForEach(fn)
-}
-
-// FindColumnHidden finds the first element of type ColumnHidden.
-// Deprecated
-func FindColumnHidden(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *ColumnHidden) {
-	if tc := c.FilterColumnHidden(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*ColumnHidden)
-	}
-	return current, target, element
-}
-
-// ColumnHiddenElements filters elements of type ColumnHidden.
-func (c *ElementCollection[E]) FilterColumnHidden() *ElementCollection[*ColumnHidden] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*ColumnHidden)
-		return ok
-	})
-	return (*ElementCollection[*ColumnHidden])(ret)
-}
-
 func (e ColumnName) element() {}
 
 // Element implements ElementGetter.
@@ -2304,6 +2230,43 @@ func (c *ElementCollection[E]) FilterSecondaryIndex() *ElementCollection[*Second
 	return (*ElementCollection[*SecondaryIndex])(ret)
 }
 
+func (e SecondaryIndexPartial) element() {}
+
+// Element implements ElementGetter.
+func (e * ElementProto_SecondaryIndexPartial) Element() Element {
+	return e.SecondaryIndexPartial
+}
+
+// ForEachSecondaryIndexPartial iterates over elements of type SecondaryIndexPartial.
+// Deprecated
+func ForEachSecondaryIndexPartial(
+	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *SecondaryIndexPartial),
+) {
+  c.FilterSecondaryIndexPartial().ForEach(fn)
+}
+
+// FindSecondaryIndexPartial finds the first element of type SecondaryIndexPartial.
+// Deprecated
+func FindSecondaryIndexPartial(
+	c *ElementCollection[Element],
+) (current Status, target TargetStatus, element *SecondaryIndexPartial) {
+	if tc := c.FilterSecondaryIndexPartial(); !tc.IsEmpty() {
+		var e Element
+		current, target, e = tc.Get(0)
+		element = e.(*SecondaryIndexPartial)
+	}
+	return current, target, element
+}
+
+// SecondaryIndexPartialElements filters elements of type SecondaryIndexPartial.
+func (c *ElementCollection[E]) FilterSecondaryIndexPartial() *ElementCollection[*SecondaryIndexPartial] {
+	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
+		_, ok := e.(*SecondaryIndexPartial)
+		return ok
+	})
+	return (*ElementCollection[*SecondaryIndexPartial])(ret)
+}
+
 func (e Sequence) element() {}
 
 // Element implements ElementGetter.
@@ -2635,43 +2598,6 @@ func (c *ElementCollection[E]) FilterTableLocalityRegionalByRow() *ElementCollec
 		return ok
 	})
 	return (*ElementCollection[*TableLocalityRegionalByRow])(ret)
-}
-
-func (e TableLocalityRegionalByRowUsingConstraint) element() {}
-
-// Element implements ElementGetter.
-func (e * ElementProto_TableLocalityRegionalByRowUsingConstraint) Element() Element {
-	return e.TableLocalityRegionalByRowUsingConstraint
-}
-
-// ForEachTableLocalityRegionalByRowUsingConstraint iterates over elements of type TableLocalityRegionalByRowUsingConstraint.
-// Deprecated
-func ForEachTableLocalityRegionalByRowUsingConstraint(
-	c *ElementCollection[Element], fn func(current Status, target TargetStatus, e *TableLocalityRegionalByRowUsingConstraint),
-) {
-  c.FilterTableLocalityRegionalByRowUsingConstraint().ForEach(fn)
-}
-
-// FindTableLocalityRegionalByRowUsingConstraint finds the first element of type TableLocalityRegionalByRowUsingConstraint.
-// Deprecated
-func FindTableLocalityRegionalByRowUsingConstraint(
-	c *ElementCollection[Element],
-) (current Status, target TargetStatus, element *TableLocalityRegionalByRowUsingConstraint) {
-	if tc := c.FilterTableLocalityRegionalByRowUsingConstraint(); !tc.IsEmpty() {
-		var e Element
-		current, target, e = tc.Get(0)
-		element = e.(*TableLocalityRegionalByRowUsingConstraint)
-	}
-	return current, target, element
-}
-
-// TableLocalityRegionalByRowUsingConstraintElements filters elements of type TableLocalityRegionalByRowUsingConstraint.
-func (c *ElementCollection[E]) FilterTableLocalityRegionalByRowUsingConstraint() *ElementCollection[*TableLocalityRegionalByRowUsingConstraint] {
-	ret := c.genericFilter(func(_ Status, _ TargetStatus, e Element) bool {
-		_, ok := e.(*TableLocalityRegionalByRowUsingConstraint)
-		return ok
-	})
-	return (*ElementCollection[*TableLocalityRegionalByRowUsingConstraint])(ret)
 }
 
 func (e TableLocalitySecondaryRegion) element() {}
@@ -3398,10 +3324,6 @@ func (e* ElementProto) SetElement(element Element) {
 			e.ElementOneOf = &ElementProto_ColumnDefaultExpression{ ColumnDefaultExpression: t}
 		case *ColumnFamily:
 			e.ElementOneOf = &ElementProto_ColumnFamily{ ColumnFamily: t}
-		case *ColumnGeneratedAsIdentity:
-			e.ElementOneOf = &ElementProto_ColumnGeneratedAsIdentity{ ColumnGeneratedAsIdentity: t}
-		case *ColumnHidden:
-			e.ElementOneOf = &ElementProto_ColumnHidden{ ColumnHidden: t}
 		case *ColumnName:
 			e.ElementOneOf = &ElementProto_ColumnName{ ColumnName: t}
 		case *ColumnNotNull:
@@ -3506,6 +3428,8 @@ func (e* ElementProto) SetElement(element Element) {
 			e.ElementOneOf = &ElementProto_SchemaParent{ SchemaParent: t}
 		case *SecondaryIndex:
 			e.ElementOneOf = &ElementProto_SecondaryIndex{ SecondaryIndex: t}
+		case *SecondaryIndexPartial:
+			e.ElementOneOf = &ElementProto_SecondaryIndexPartial{ SecondaryIndexPartial: t}
 		case *Sequence:
 			e.ElementOneOf = &ElementProto_Sequence{ Sequence: t}
 		case *SequenceOption:
@@ -3524,8 +3448,6 @@ func (e* ElementProto) SetElement(element Element) {
 			e.ElementOneOf = &ElementProto_TableLocalityPrimaryRegion{ TableLocalityPrimaryRegion: t}
 		case *TableLocalityRegionalByRow:
 			e.ElementOneOf = &ElementProto_TableLocalityRegionalByRow{ TableLocalityRegionalByRow: t}
-		case *TableLocalityRegionalByRowUsingConstraint:
-			e.ElementOneOf = &ElementProto_TableLocalityRegionalByRowUsingConstraint{ TableLocalityRegionalByRowUsingConstraint: t}
 		case *TableLocalitySecondaryRegion:
 			e.ElementOneOf = &ElementProto_TableLocalitySecondaryRegion{ TableLocalitySecondaryRegion: t}
 		case *TablePartitioning:
@@ -3578,8 +3500,6 @@ func GetElementOneOfProtos() []interface{} {
 	((*ElementProto_ColumnComputeExpression)(nil)),
 	((*ElementProto_ColumnDefaultExpression)(nil)),
 	((*ElementProto_ColumnFamily)(nil)),
-	((*ElementProto_ColumnGeneratedAsIdentity)(nil)),
-	((*ElementProto_ColumnHidden)(nil)),
 	((*ElementProto_ColumnName)(nil)),
 	((*ElementProto_ColumnNotNull)(nil)),
 	((*ElementProto_ColumnOnUpdateExpression)(nil)),
@@ -3632,6 +3552,7 @@ func GetElementOneOfProtos() []interface{} {
 	((*ElementProto_SchemaComment)(nil)),
 	((*ElementProto_SchemaParent)(nil)),
 	((*ElementProto_SecondaryIndex)(nil)),
+	((*ElementProto_SecondaryIndexPartial)(nil)),
 	((*ElementProto_Sequence)(nil)),
 	((*ElementProto_SequenceOption)(nil)),
 	((*ElementProto_SequenceOwner)(nil)),
@@ -3641,7 +3562,6 @@ func GetElementOneOfProtos() []interface{} {
 	((*ElementProto_TableLocalityGlobal)(nil)),
 	((*ElementProto_TableLocalityPrimaryRegion)(nil)),
 	((*ElementProto_TableLocalityRegionalByRow)(nil)),
-	((*ElementProto_TableLocalityRegionalByRowUsingConstraint)(nil)),
 	((*ElementProto_TableLocalitySecondaryRegion)(nil)),
 	((*ElementProto_TablePartitioning)(nil)),
 	((*ElementProto_TableSchemaLocked)(nil)),
@@ -3676,8 +3596,6 @@ func GetElementTypes() []interface{} {
 	((*ColumnComputeExpression)(nil)),
 	((*ColumnDefaultExpression)(nil)),
 	((*ColumnFamily)(nil)),
-	((*ColumnGeneratedAsIdentity)(nil)),
-	((*ColumnHidden)(nil)),
 	((*ColumnName)(nil)),
 	((*ColumnNotNull)(nil)),
 	((*ColumnOnUpdateExpression)(nil)),
@@ -3730,6 +3648,7 @@ func GetElementTypes() []interface{} {
 	((*SchemaComment)(nil)),
 	((*SchemaParent)(nil)),
 	((*SecondaryIndex)(nil)),
+	((*SecondaryIndexPartial)(nil)),
 	((*Sequence)(nil)),
 	((*SequenceOption)(nil)),
 	((*SequenceOwner)(nil)),
@@ -3739,7 +3658,6 @@ func GetElementTypes() []interface{} {
 	((*TableLocalityGlobal)(nil)),
 	((*TableLocalityPrimaryRegion)(nil)),
 	((*TableLocalityRegionalByRow)(nil)),
-	((*TableLocalityRegionalByRowUsingConstraint)(nil)),
 	((*TableLocalitySecondaryRegion)(nil)),
 	((*TablePartitioning)(nil)),
 	((*TableSchemaLocked)(nil)),

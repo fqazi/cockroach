@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"regexp"
 	"sort"
 	"sync/atomic"
 	"testing"
@@ -27,7 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/tscache"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
@@ -35,27 +33,14 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/kvclientutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/localtestcluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
-	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
-
-func checkGetResults(t *testing.T, expected map[string][]byte, results ...kv.Result) {
-	for _, result := range results {
-		require.Equal(t, 1, len(result.Rows))
-		require.Equal(t, expected[string(result.Rows[0].Key)], result.Rows[0].ValueBytes())
-	}
-	require.Len(t, expected, len(results))
-}
 
 // TestTxnDBBasics verifies that a simple transaction can be run and
 // either committed or aborted. On commit, mutations are visible; on
@@ -1057,7 +1042,6 @@ func TestTxnContinueAfterCputError(t *testing.T) {
 		ctx := context.Background()
 		s := createTestDB(t)
 		defer s.Stop()
-		kvcoord.BufferedWritesMaxBufferSize.Override(context.Background(), s.DB.SettingsValues(), 2<<10 /* 2KiB */)
 
 		txn := s.DB.NewTxn(ctx, "test txn")
 
@@ -1098,7 +1082,6 @@ func TestTxnDeleteResponse(t *testing.T) {
 		ctx := context.Background()
 		s := createTestDB(t)
 		defer s.Stop()
-		kvcoord.BufferedWritesMaxBufferSize.Override(context.Background(), s.DB.SettingsValues(), 2<<10 /* 2KiB */)
 
 		txn := s.DB.NewTxn(ctx, "test txn")
 
@@ -1612,7 +1595,6 @@ func TestTxnBasicBufferedWrites(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	s := createTestDB(t)
 	defer s.Stop()
-	kvcoord.BufferedWritesMaxBufferSize.Override(context.Background(), s.DB.SettingsValues(), 2<<10 /* 2KiB */)
 
 	testutils.RunTrueAndFalse(t, "commit", func(t *testing.T, commit bool) {
 		ctx := context.Background()
@@ -1628,7 +1610,7 @@ func TestTxnBasicBufferedWrites(t *testing.T) {
 		// doReadTryLeaf is a helper that calls readFn on the given root txn as
 		// well as a fresh leaf txn.
 		doReadTryLeaf := func(txn *kv.Txn, readFn func(*kv.Txn) error) error {
-			tis, err := txn.GetLeafTxnInputState(ctx, nil /* readsTree */)
+			tis, err := txn.GetLeafTxnInputState(ctx)
 			if err != nil {
 				return err
 			}
@@ -1794,7 +1776,6 @@ func TestTxnBufferedWritesOverlappingScan(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	s := createTestDB(t)
 	defer s.Stop()
-	kvcoord.BufferedWritesMaxBufferSize.Override(context.Background(), s.DB.SettingsValues(), 2<<10 /* 2KiB */)
 
 	extractKVs := func(rows []roachpb.KeyValue, batchResponses [][]byte) []roachpb.KeyValue {
 		if rows != nil {
@@ -2035,7 +2016,6 @@ func TestTxnBufferedWritesConditionalPuts(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	s := createTestDB(t)
 	defer s.Stop()
-	kvcoord.BufferedWritesMaxBufferSize.Override(context.Background(), s.DB.SettingsValues(), 2<<10 /* 2KiB */)
 
 	testutils.RunTrueAndFalse(t, "commit", func(t *testing.T, commit bool) {
 		ctx := context.Background()
@@ -2142,7 +2122,6 @@ func TestTxnBufferedWritesRollbackToSavepointAllBuffered(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	s := createTestDB(t)
 	defer s.Stop()
-	kvcoord.BufferedWritesMaxBufferSize.Override(context.Background(), s.DB.SettingsValues(), 2<<10 /* 2KiB */)
 
 	ctx := context.Background()
 	value1 := []byte("value1")
@@ -2202,7 +2181,6 @@ func TestTxnBufferedWriteRetriesCorrectly(t *testing.T) {
 		TestingRequestFilter: reqFilter,
 	})
 	defer s.Stop()
-	kvcoord.BufferedWritesMaxBufferSize.Override(context.Background(), s.DB.SettingsValues(), 2<<10 /* 2KiB */)
 
 	rng, _ := randutil.NewTestRand()
 
@@ -2240,7 +2218,6 @@ func TestTxnBufferedWriteReadYourOwnWrites(t *testing.T) {
 
 	s := createTestDB(t)
 	defer s.Stop()
-	kvcoord.BufferedWritesMaxBufferSize.Override(context.Background(), s.DB.SettingsValues(), 2<<10 /* 2KiB */)
 
 	value1 := []byte("value1")
 	value21 := []byte("value21")
@@ -2381,7 +2358,7 @@ func TestLeafTransactionAdmissionHeader(t *testing.T) {
 	ctx := context.Background()
 	rootTxn := kv.NewTxnWithAdmissionControl(
 		ctx, s.DB, 0 /* gatewayNodeID */, kvpb.AdmissionHeader_FROM_SQL, priority)
-	leafInputState, err := rootTxn.GetLeafTxnInputState(ctx, nil /* readsTree */)
+	leafInputState, err := rootTxn.GetLeafTxnInputState(ctx)
 	require.NoError(t, err)
 
 	rootAdmissionHeader := rootTxn.AdmissionHeader()
@@ -2393,131 +2370,4 @@ func TestLeafTransactionAdmissionHeader(t *testing.T) {
 		Source:     kvpb.AdmissionHeader_FROM_SQL,
 	}
 	require.Equal(t, expectedLeafHeader, leafHeader)
-}
-
-// TestTxnBufferedWritesOmitAbortSpanChecks verifies that transactions that use
-// buffered writes do not check the AbortSpan, while still upholding
-// read-your-own-writes semantics.
-func TestTxnBufferedWritesOmitAbortSpanChecks(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	ctx := context.Background()
-
-	var mu struct {
-		syncutil.Mutex
-		txnID uuid.UUID
-	}
-	s := createTestDBWithKnobs(t, &kvserver.StoreTestingKnobs{
-		EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
-			BeforeAbortSpanCheck: func(id uuid.UUID) {
-				mu.Lock()
-				defer mu.Unlock()
-
-				if mu.txnID == id {
-					t.Fatal("transactions using buffered writes should not check the AbortSpan")
-				}
-			},
-		},
-	})
-	defer s.Stop()
-	kvcoord.BufferedWritesMaxBufferSize.Override(context.Background(), s.DB.SettingsValues(), 2<<10 /* 2KiB */)
-
-	value1 := []byte("value1")
-	valueConflict := []byte("conflict")
-
-	keyA := []byte("keyA")
-
-	txn := kv.NewTxn(ctx, s.DB, 0 /* gatewayNodeID */)
-	txn.SetBufferedWritesEnabled(true)
-	mu.Lock()
-	mu.txnID = txn.ID()
-	mu.Unlock()
-
-	// Fix the transaction's commit timestamp.
-	_, err := txn.CommitTimestamp()
-	require.NoError(t, err)
-
-	// Put transactional value at keyA.
-	require.NoError(t, txn.Put(ctx, keyA, value1))
-
-	// Read what we just wrote.
-	b := txn.NewBatch()
-	b.Get(keyA)
-	require.NoError(t, txn.Run(ctx, b))
-	expected := map[string][]byte{
-		"keyA": value1,
-	}
-	checkGetResults(t, expected, b.Results...)
-
-	// Start another transaction that writes to keyA. This prevents us from
-	// committing at our original timestamp. Moreover, had we not been buffering
-	// our writes, this transaction would have resulted in aborting us and
-	// removing our intent.
-	err = s.DB.Txn(context.Background(), func(ctx context.Context, txn *kv.Txn) error {
-		require.NoError(t, txn.SetUserPriority(roachpb.MaxUserPriority))
-		return txn.Put(ctx, keyA, valueConflict)
-	})
-	require.NoError(t, err)
-
-	// Perform another read again. We should still see our previous write, not what
-	// the conflicting transaction wrote.
-	b = txn.NewBatch()
-	b.Get(keyA)
-	require.NoError(t, txn.Run(ctx, b))
-	expected = map[string][]byte{
-		"keyA": value1,
-	}
-	checkGetResults(t, expected, b.Results...)
-
-	// Try to commit the transaction. We should encounter a WriteTooOldError.
-	err = txn.Commit(ctx)
-	require.Error(t, err)
-	require.Regexp(t, "TransactionRetryWithProtoRefreshError: .*WriteTooOldError", err)
-}
-
-// TestTxnTracesSplitQueryIntents verifies that the split out QueryIntent
-// requests are captured in the verbose tracing of a transaction.
-func TestTxnTracesSplitQueryIntents(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	st := cluster.MakeTestingClusterSettings()
-	tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
-			Settings: st,
-		},
-	})
-	ctx := context.Background()
-	defer tc.Stopper().Stop(ctx)
-	// NB: Disable buffered writes to ensure writes are pipelined, and therefore
-	// there are QueryIntent requests to split.
-	kvcoord.BufferedWritesEnabled.Override(ctx, &st.SV, false)
-
-	db := tc.Server(0).DB()
-
-	tracer := tracing.NewTracer()
-	traceCtx, sp := tracer.StartSpanCtx(context.Background(), "test-txn", tracing.WithRecording(tracingpb.RecordingVerbose))
-
-	if err := db.Txn(traceCtx, func(ctx context.Context, txn *kv.Txn) error {
-		if err := txn.CPut(ctx, "a", "val", nil); err != nil {
-			return err
-		}
-		if err := txn.Put(ctx, "c", "d"); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	collectedSpans := sp.FinishAndGetRecording(tracingpb.RecordingVerbose)
-	dump := collectedSpans.String()
-	// dump:
-	//    0.275ms      0.171ms    sending split out pre-commit QueryIntent batch
-	found, err := regexp.MatchString(
-		// The (?s) makes "." match \n. This makes the test resilient to other log
-		// lines being interspersed.
-		`.*sending split out pre-commit QueryIntent batch`,
-		dump)
-	require.NoError(t, err)
-	require.True(t, found, "didn't match: %s", dump)
 }

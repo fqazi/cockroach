@@ -372,6 +372,7 @@ TestXXA - 1.00s
 					require.Equal(t, expRepro, actRepro)
 				}
 				assert.Equal(t, c.expIssues[curIssue].mention, req.MentionOnCreate)
+				assert.Equal(t, c.expIssues[curIssue].hasProject, req.ProjectColumnID != 0)
 				assert.Equal(t, c.expIssues[curIssue].labels, req.Labels)
 				// On next invocation, we'll check the next expected issue.
 				curIssue++
@@ -401,12 +402,9 @@ func TestListFailuresFromTestXML(t *testing.T) {
 				title:    "util/json: TestJSONErrors failed",
 				message: `=== RUN   TestJSONErrors
 --- FAIL: TestJSONErrors (0.00s)
-=== RUN   TestJSONErrors/gostd/frues
-    json_test.go:404: 
-        	Error Trace:	pkg/util/json/json_test.go:404
-        	Error:      	Expect "unable to decode JSON: invalid character 'r' in literal false (expecting 'a')" to match "trailing characters after JSON document"
-        	Test:       	TestJSONErrors/gostd/frues
---- FAIL: TestJSONErrors/gostd/frues (0.00s)`,
+=== RUN   TestJSONErrors/frues
+    json_test.go:278: expected error message to be 'trailing characters after JSON document', but was 'unable to decode JSON: invalid character 'r' in literal false (expecting 'a')'
+    --- FAIL: TestJSONErrors/frues (0.00s)`,
 				mention: []string{"@cockroachdb/unowned"},
 			}},
 		},

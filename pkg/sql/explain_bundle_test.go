@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/pgtest"
@@ -51,7 +50,6 @@ func TestExplainAnalyzeDebugWithTxnRetries(t *testing.T) {
 				TestingRequestFilter: retryFilter,
 			},
 		},
-		DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(155944),
 	})
 	defer srv.Stopper().Stop(ctx)
 	r := sqlutils.MakeSQLRunner(godb)
@@ -79,10 +77,7 @@ func TestExplainAnalyzeDebug(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	srv, godb, _ := serverutils.StartServer(t, base.TestServerArgs{
-		Insecure:          true,
-		DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(155944),
-	})
+	srv, godb, _ := serverutils.StartServer(t, base.TestServerArgs{Insecure: true})
 	defer srv.Stopper().Stop(ctx)
 	r := sqlutils.MakeSQLRunner(godb)
 	r.Exec(t, `CREATE TABLE abc (a INT PRIMARY KEY, b INT, c INT UNIQUE);
@@ -1058,9 +1053,7 @@ func findBundleDownloadURL(t *testing.T, runner *sqlutils.SQLRunner, id int) str
 	return urlTemplate[:prefixLength] + "/" + strconv.Itoa(id)
 }
 
-func downloadAndUnzipBundle(t *testing.T, url string) *zip.Reader {
-
-	// Download the zip to a BytesBuffer.
+func downloadBundle(t *testing.T, url string, dest io.Writer) {
 	httpClient := httputil.NewClientWithTimeout(30 * time.Second)
 	// Download the zip to a BytesBuffer.
 	resp, err := httpClient.Get(context.Background(), url)
@@ -1068,8 +1061,13 @@ func downloadAndUnzipBundle(t *testing.T, url string) *zip.Reader {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
+	_, _ = io.Copy(dest, resp.Body)
+}
+
+func downloadAndUnzipBundle(t *testing.T, url string) *zip.Reader {
+	// Download the zip to a BytesBuffer.
 	var buf bytes.Buffer
-	_, _ = io.Copy(&buf, resp.Body)
+	downloadBundle(t, url, &buf)
 
 	unzip, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
 	if err != nil {
@@ -1181,8 +1179,7 @@ func TestExplainClientTime(t *testing.T) {
 
 	ctx := context.Background()
 	srv, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
-		Insecure:          true,
-		DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(155944),
+		Insecure: true,
 	})
 	defer srv.Stopper().Stop(ctx)
 
@@ -1361,21 +1358,6 @@ func TestExplainBundleEnv(t *testing.T) {
 	require.NoError(t, c.PrintClusterSettings(&sb, true /* all */))
 	vars = strings.Split(sb.String(), "\n")
 	for _, line := range vars {
-		if strings.Contains(line, "unsafe") {
-			continue
-		}
-		if srv.StartedDefaultTestTenant() {
-			if strings.HasPrefix(line, "SET CLUSTER SETTING") {
-				name := strings.Split(strings.TrimPrefix(line, "SET CLUSTER SETTING "), " = ")[0]
-				sv, ok, _ := settings.LookupForLocalAccess(settings.SettingName(name), false /* forSystemTenant */)
-				require.True(t, ok)
-				if sv.Class() != settings.ApplicationLevel {
-					// Ignore cluster settings that cannot be set within the
-					// tenant.
-					continue
-				}
-			}
-		}
 		_, err := sqlDB.ExecContext(ctx, line)
 		if err != nil {
 			t.Fatalf("unexpectedly couldn't execute %s: %v", line, err)

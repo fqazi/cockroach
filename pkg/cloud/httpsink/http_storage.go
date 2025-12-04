@@ -122,7 +122,7 @@ func (h *httpStorage) openStreamAt(
 			return resp, err
 		}
 
-		log.Dev.Errorf(ctx, "HTTP:Req error: err=%s (attempt %d)", err, attempt)
+		log.Errorf(ctx, "HTTP:Req error: err=%s (attempt %d)", err, attempt)
 
 		if !errors.HasType(err, (*retryableHTTPError)(nil)) {
 			return nil, err

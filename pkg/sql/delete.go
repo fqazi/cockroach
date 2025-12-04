@@ -36,12 +36,12 @@ var _ mutationPlanNode = &deleteNode{}
 
 // deleteRun contains the run-time state of deleteNode during local execution.
 type deleteRun struct {
-	mutationOutputHelper
-	td tableDeleter
-
-	// rowsNeeded is set to true if the mutation operator needs to return the rows
-	// that were affected by the mutation.
+	td         tableDeleter
 	rowsNeeded bool
+
+	// done informs a new call to BatchedNext() that the previous call
+	// to BatchedNext() has completed the work already.
+	done bool
 
 	// resultRowBuffer is used to prepare a result row for accumulation
 	// into the row container above, when rowsNeeded is set.
@@ -61,22 +61,13 @@ type deleteRun struct {
 	// of the target table being returned, that must be passed through from the
 	// input node.
 	numPassthrough int
-
-	mustValidateOldPKValues bool
-
-	originTimestampCPutHelper row.OriginTimestampCPutHelper
 }
 
-func (r *deleteRun) init(params runParams, columns colinfo.ResultColumns) {
-	if ots := params.extendedEvalCtx.SessionData().OriginTimestampForLogicalDataReplication; ots.IsSet() {
-		r.originTimestampCPutHelper.OriginTimestamp = ots
-	}
-
+func (r *deleteRun) initRowContainer(params runParams, columns colinfo.ResultColumns) {
 	if !r.rowsNeeded {
 		return
 	}
-
-	r.rows = rowcontainer.NewRowContainer(
+	r.td.rows = rowcontainer.NewRowContainer(
 		params.p.Mon().MakeBoundAccount(),
 		colinfo.ColTypeInfoFromResCols(columns),
 	)
@@ -90,36 +81,33 @@ func (d *deleteNode) startExec(params runParams) error {
 	// cache traceKV during execution, to avoid re-evaluating it for every row.
 	d.run.traceKV = params.p.ExtendedEvalContext().Tracing.KVTracingEnabled()
 
-	d.run.init(params, d.columns)
+	d.run.initRowContainer(params, d.columns)
 
-	if err := d.run.td.init(params.ctx, params.p.txn, params.EvalContext()); err != nil {
-		return err
+	return d.run.td.init(params.ctx, params.p.txn, params.EvalContext())
+}
+
+// Next is required because batchedPlanNode inherits from planNode, but
+// batchedPlanNode doesn't really provide it. See the explanatory comments
+// in plan_batch.go.
+func (d *deleteNode) Next(params runParams) (bool, error) { panic("not valid") }
+
+// Values is required because batchedPlanNode inherits from planNode, but
+// batchedPlanNode doesn't really provide it. See the explanatory comments
+// in plan_batch.go.
+func (d *deleteNode) Values() tree.Datums { panic("not valid") }
+
+// BatchedNext implements the batchedPlanNode interface.
+func (d *deleteNode) BatchedNext(params runParams) (bool, error) {
+	if d.run.done {
+		return false, nil
 	}
 
-	// Run the mutation to completion.
+	// Advance one batch. First, clear the last batch.
+	d.run.td.clearLastBatch(params.ctx)
+	// Now consume/accumulate the rows for this batch.
+	lastBatch := false
 	for {
-		lastBatch, err := d.processBatch(params)
-		if err != nil || lastBatch {
-			return err
-		}
-	}
-}
-
-// Next implements the planNode interface.
-func (d *deleteNode) Next(_ runParams) (bool, error) {
-	return d.run.next(), nil
-}
-
-// Values implements the planNode interface.
-func (d *deleteNode) Values() tree.Datums {
-	return d.run.values()
-}
-
-func (d *deleteNode) processBatch(params runParams) (lastBatch bool, err error) {
-	// Consume/accumulate the rows for this batch.
-	lastBatch = false
-	for {
-		if err = params.p.cancelChecker.Check(); err != nil {
+		if err := params.p.cancelChecker.Check(); err != nil {
 			return false, err
 		}
 
@@ -134,11 +122,11 @@ func (d *deleteNode) processBatch(params runParams) (lastBatch bool, err error) 
 
 		// Process the deletion of the current input row,
 		// potentially accumulating the result row for later.
-		if err = d.run.processSourceRow(params, d.input.Values()); err != nil {
+		if err := d.run.processSourceRow(params, d.input.Values()); err != nil {
 			return false, err
 		}
 
-		// Are we done yet with the current SQL-level batch?
+		// Are we done yet with the current batch?
 		if d.run.td.currentBatchSize >= d.run.td.maxBatchSize ||
 			d.run.td.b.ApproximateMutationBytes() >= d.run.td.maxBatchByteSize {
 			break
@@ -149,7 +137,7 @@ func (d *deleteNode) processBatch(params runParams) (lastBatch bool, err error) 
 		if !lastBatch {
 			// We only run/commit the batch if there were some rows processed
 			// in this batch.
-			if err = d.run.td.flushAndStartNewBatch(params.ctx); err != nil {
+			if err := d.run.td.flushAndStartNewBatch(params.ctx); err != nil {
 				return false, err
 			}
 		}
@@ -157,13 +145,17 @@ func (d *deleteNode) processBatch(params runParams) (lastBatch bool, err error) 
 
 	if lastBatch {
 		d.run.td.setRowsWrittenLimit(params.extendedEvalCtx.SessionData())
-		if err = d.run.td.finalize(params.ctx); err != nil {
+		if err := d.run.td.finalize(params.ctx); err != nil {
 			return false, err
 		}
-		// Possibly initiate a run of CREATE STATISTICS.
-		params.ExecCfg().StatsRefresher.NotifyMutation(params.ctx, d.run.td.tableDesc(), int(d.run.rowsAffected()))
+		// Remember we're done for the next call to BatchedNext().
+		d.run.done = true
 	}
-	return lastBatch, nil
+
+	// Possibly initiate a run of CREATE STATISTICS.
+	params.ExecCfg().StatsRefresher.NotifyMutation(d.run.td.tableDesc(), d.run.td.lastBatchSize)
+
+	return d.run.td.lastBatchSize > 0, nil
 }
 
 // processSourceRow processes one row from the source for deletion and, if
@@ -195,60 +187,68 @@ func (r *deleteRun) processSourceRow(params runParams, sourceVals tree.Datums) e
 
 	// Queue the deletion in the KV batch.
 	if err := r.td.row(
-		params.ctx, deleteVals, pm, vh, r.originTimestampCPutHelper, r.mustValidateOldPKValues, r.traceKV,
+		params.ctx, deleteVals, pm, vh, false /* mustValidateOldPKValues */, r.traceKV,
 	); err != nil {
 		return err
 	}
-	r.onModifiedRow()
-	if !r.rowsNeeded {
-		return nil
-	}
 
-	// Result rows must be accumulated.
-	//
-	// The new values can include all columns, so the values may contain
-	// additional columns for every newly dropped column not visible. We do not
-	// want them to be available for RETURNING.
-	//
-	// r.rows.NumCols() is guaranteed to only contain the requested
-	// public columns.
-	largestRetIdx := -1
-	for i := range r.rowIdxToRetIdx {
-		retIdx := r.rowIdxToRetIdx[i]
-		if retIdx >= 0 {
-			if retIdx >= largestRetIdx {
-				largestRetIdx = retIdx
+	// If result rows need to be accumulated, do it.
+	if r.td.rows != nil {
+		// The new values can include all columns, so the values may contain
+		// additional columns for every newly dropped column not visible. We do not
+		// want them to be available for RETURNING.
+		//
+		// r.rows.NumCols() is guaranteed to only contain the requested
+		// public columns.
+		largestRetIdx := -1
+		for i := range r.rowIdxToRetIdx {
+			retIdx := r.rowIdxToRetIdx[i]
+			if retIdx >= 0 {
+				if retIdx >= largestRetIdx {
+					largestRetIdx = retIdx
+				}
+				r.resultRowBuffer[retIdx] = deleteVals[i]
 			}
-			r.resultRowBuffer[retIdx] = deleteVals[i]
+		}
+
+		// At this point we've extracted all the RETURNING values that are part
+		// of the target table. We must now extract the columns in the RETURNING
+		// clause that refer to other tables (from the USING clause of the delete).
+		if r.numPassthrough > 0 {
+			passthroughBegin := len(r.td.rd.FetchCols)
+			passthroughEnd := passthroughBegin + r.numPassthrough
+			passthroughValues := deleteVals[passthroughBegin:passthroughEnd]
+
+			for i := 0; i < r.numPassthrough; i++ {
+				largestRetIdx++
+				r.resultRowBuffer[largestRetIdx] = passthroughValues[i]
+			}
+
+		}
+
+		if _, err := r.td.rows.AddRow(params.ctx, r.resultRowBuffer); err != nil {
+			return err
 		}
 	}
 
-	// At this point we've extracted all the RETURNING values that are part
-	// of the target table. We must now extract the columns in the RETURNING
-	// clause that refer to other tables (from the USING clause of the delete).
-	if r.numPassthrough > 0 {
-		passthroughBegin := len(r.td.rd.FetchCols)
-		passthroughEnd := passthroughBegin + r.numPassthrough
-		passthroughValues := deleteVals[passthroughBegin:passthroughEnd]
-
-		for i := 0; i < r.numPassthrough; i++ {
-			largestRetIdx++
-			r.resultRowBuffer[largestRetIdx] = passthroughValues[i]
-		}
-
-	}
-	return r.addRow(params.ctx, r.resultRowBuffer)
+	return nil
 }
+
+// BatchedCount implements the batchedPlanNode interface.
+func (d *deleteNode) BatchedCount() int { return d.run.td.lastBatchSize }
+
+// BatchedValues implements the batchedPlanNode interface.
+func (d *deleteNode) BatchedValues(rowIdx int) tree.Datums { return d.run.td.rows.At(rowIdx) }
 
 func (d *deleteNode) Close(ctx context.Context) {
 	d.input.Close(ctx)
-	d.run.close(ctx)
+	d.run.td.close(ctx)
 	*d = deleteNode{}
 	deleteNodePool.Put(d)
 }
 
 func (d *deleteNode) rowsWritten() int64 {
-	return d.run.rowsAffected()
+	return d.run.td.rowsWritten
 }
 
 func (d *deleteNode) indexRowsWritten() int64 {
@@ -258,14 +258,6 @@ func (d *deleteNode) indexRowsWritten() int64 {
 func (d *deleteNode) indexBytesWritten() int64 {
 	// No bytes counted as written for a deletion.
 	return 0
-}
-
-func (d *deleteNode) returnsRowsAffected() bool {
-	return !d.run.rowsNeeded
-}
-
-func (d *deleteNode) kvCPUTime() int64 {
-	return d.run.td.kvCPUTime
 }
 
 func (d *deleteNode) enableAutoCommit() {

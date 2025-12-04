@@ -51,10 +51,10 @@ func TestRandomizedCast(t *testing.T) {
 	}
 	var numTypePairs = rng.Intn(10) + 1
 	numRows := 1 + rng.Intn(coldata.BatchSize()) + rng.Intn(3)*coldata.BatchSize()
-	log.Dev.Infof(ctx, "num rows = %d", numRows)
+	log.Infof(ctx, "num rows = %d", numRows)
 	for run := 0; run < numTypePairs; run++ {
 		from, to := getValidSupportedCast()
-		log.Dev.Infof(ctx, "%s to %s", from.String(), to.String())
+		log.Infof(ctx, "%s to %s", from.String(), to.String())
 		input := colexectestutils.Tuples{}
 		output := colexectestutils.Tuples{}
 		fromConverter := colconv.GetDatumToPhysicalFn(from)

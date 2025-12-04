@@ -26,7 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecpb"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/base64"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil"
@@ -35,7 +34,7 @@ import (
 )
 
 func init() {
-	if numOperators != 67 {
+	if numOperators != 65 {
 		// This error occurs when an operator has been added or removed in
 		// pkg/sql/opt/exec/explain/factory.opt. If an operator is added at the
 		// end of factory.opt, simply adjust the hardcoded value above. If an
@@ -178,7 +177,21 @@ type planGistDecoder struct {
 func DecodePlanGistToRows(
 	ctx context.Context, evalCtx *eval.Context, gist string, catalog cat.Catalog,
 ) (_ []string, retErr error) {
-	defer errorutil.MaybeCatchPanic(&retErr, nil /* errCallback */)
+	defer func() {
+		if r := recover(); r != nil {
+			// This code allows us to propagate internal errors without having
+			// to add error checks everywhere throughout the code. This is only
+			// possible because the code does not update shared state and does
+			// not manipulate locks.
+			if ok, e := errorutil.ShouldCatch(r); ok {
+				retErr = e
+			} else {
+				// Other panic objects can't be considered "safe" and thus are
+				// propagated as crashes that terminate the session.
+				panic(r)
+			}
+		}
+	}()
 
 	flags := Flags{HideValues: true, Deflake: DeflakeAll, OnlyShape: true}
 	ob := NewOutputBuilder(flags)
@@ -632,11 +645,6 @@ func (u *unknownTable) HomeRegionColName() (colName string, ok bool) {
 	return "", false
 }
 
-// RegionalByRowUsingConstraint is part of the cat.Table interface.
-func (ot *unknownTable) RegionalByRowUsingConstraint() cat.ForeignKeyConstraint {
-	return nil
-}
-
 // GetDatabaseID is part of the cat.Table interface.
 func (u *unknownTable) GetDatabaseID() descpb.ID {
 	return 0
@@ -778,10 +786,6 @@ func (u *unknownIndex) ImplicitPartitioningColumnCount() int {
 
 func (u *unknownIndex) GeoConfig() geopb.Config {
 	return geopb.Config{}
-}
-
-func (u *unknownIndex) VecConfig() *vecpb.Config {
-	return nil
 }
 
 func (u *unknownIndex) Version() descpb.IndexDescriptorVersion {

@@ -23,7 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/geo/twkb"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/parserutils"
+	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins/builtinconstants"
@@ -37,6 +37,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/golang/geo/s1"
 	"github.com/twpayne/go-geom"
@@ -252,25 +253,6 @@ var lengthOverloadGeometry1 = geometryOverload1(
 		info: `Returns the length of the given geometry.
 
 Note ST_Length is only valid for LineString - use ST_Perimeter for Polygon.`,
-		libraryUsage: usesGEOS,
-	},
-	volatility.Immutable,
-)
-
-var length3DOverloadGeometry1 = geometryOverload1(
-	func(_ context.Context, _ *eval.Context, g *tree.DGeometry) (tree.Datum, error) {
-		ret, err := geomfn.Length3D(g.Geometry)
-		if err != nil {
-			return nil, err
-		}
-		return tree.NewDFloat(tree.DFloat(ret)), nil
-	},
-	types.Float,
-	infoBuilder{
-		info: `Returns the 3-dimensional or 2-dimensional length of the geometry.
-
-Note ST_3DLength is only valid for LineString or MultiLineString.
-For 2-D lines it will return the 2-D length (same as ST_Length and ST_Length2D)`,
 		libraryUsage: usesGEOS,
 	},
 	volatility.Immutable,
@@ -2199,10 +2181,11 @@ Flags shown square brackets after the geometry type have the following meaning:
 		tree.Overload{
 			Types:      tree.ParamTypes{{Name: "geometry", Typ: types.Geometry}, {Name: "npoints", Typ: types.Int4}},
 			ReturnType: tree.FixedReturnType(types.Geometry),
-			Fn: func(_ context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+			Fn: func(_ context.Context, _ *eval.Context, args tree.Datums) (tree.Datum, error) {
 				geometry := tree.MustBeDGeometry(args[0]).Geometry
 				npoints := int(tree.MustBeDInt(args[1]))
-				generatedPoints, err := geomfn.GenerateRandomPoints(geometry, npoints, evalCtx.GetRNG())
+				seed := timeutil.Now().Unix()
+				generatedPoints, err := geomfn.GenerateRandomPoints(geometry, npoints, rand.New(rand.NewSource(seed)))
 				if err != nil {
 					if errors.Is(err, geomfn.ErrGenerateRandomPointsInvalidPoints) {
 						return tree.DNull, nil
@@ -3142,10 +3125,6 @@ The requested number of points must be not larger than 65336.`,
 	"st_length2d": makeBuiltin(
 		defProps(),
 		lengthOverloadGeometry1,
-	),
-	"st_3dlength": makeBuiltin(
-		defProps(),
-		length3DOverloadGeometry1,
 	),
 	"st_perimeter": makeBuiltin(
 		defProps(),
@@ -7986,7 +7965,7 @@ func applyGeoindexConfigStorageParams(
 	ctx context.Context, evalCtx *eval.Context, cfg geopb.Config, params string,
 ) (geopb.Config, error) {
 	indexDesc := &descpb.IndexDescriptor{GeoConfig: cfg}
-	stmt, err := parserutils.ParseOne(
+	stmt, err := parser.ParseOne(
 		fmt.Sprintf("CREATE INDEX t_idx ON t USING GIST(geom) WITH (%s)", params),
 	)
 	if err != nil {

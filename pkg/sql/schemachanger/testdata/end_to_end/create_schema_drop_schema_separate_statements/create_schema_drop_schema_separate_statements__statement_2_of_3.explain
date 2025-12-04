@@ -8,7 +8,7 @@ Schema change plan for DROP SCHEMA ‹""›.‹sc›; following CREATE SCHEMA �
  ├── StatementPhase
  │    └── Stage 1 of 1 in StatementPhase
  │         ├── 6 elements transitioning toward ABSENT
- │         │    ├── PUBLIC → ABSENT  Namespace:{DescID: 104 (sc-), Name: "sc"}
+ │         │    ├── PUBLIC → ABSENT  Namespace:{DescID: 104 (sc-), Name: "sc", ReferencedDescID: 100 (defaultdb)}
  │         │    ├── PUBLIC → ABSENT  Owner:{DescID: 104 (sc-)}
  │         │    ├── PUBLIC → ABSENT  UserPrivileges:{DescID: 104 (sc-), Name: "admin"}
  │         │    ├── PUBLIC → ABSENT  UserPrivileges:{DescID: 104 (sc-), Name: "root"}

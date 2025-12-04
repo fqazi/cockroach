@@ -58,7 +58,7 @@ func (im *IndexBackfillerMergePlanner) MergeIndexes(
 		g.Add(sourceIndexSpan)
 		g.Sub(progress.CompletedSpans[i]...)
 		spansToDo[i] = g.Slice()
-		if len(spansToDo[i]) > 0 {
+		if len(spansToDo) > 0 {
 			hasToDo = true
 		}
 	}
@@ -137,8 +137,10 @@ func (im *IndexBackfillerMergePlanner) plan(
 			ctx, &extEvalCtx, nil /* planner */, txn.KV(), FullDistribution,
 		)
 
-		spec := initIndexBackfillMergerSpec(*tableDesc.TableDesc(), addedIndexes, temporaryIndexes, mergeTimestamp)
-		var err error
+		spec, err := initIndexBackfillMergerSpec(*tableDesc.TableDesc(), addedIndexes, temporaryIndexes, mergeTimestamp)
+		if err != nil {
+			return err
+		}
 		p, err = im.execCfg.DistSQLPlanner.createIndexBackfillerMergePhysicalPlan(ctx, planCtx, spec, todoSpanList)
 		return err
 	}); err != nil {

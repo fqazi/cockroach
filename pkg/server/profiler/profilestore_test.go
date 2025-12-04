@@ -8,6 +8,7 @@ package profiler
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -207,7 +208,7 @@ func TestCleanupLastRampup(t *testing.T) {
 	}
 }
 
-func populate(t *testing.T, dirName string, fileNames []string) []os.DirEntry {
+func populate(t *testing.T, dirName string, fileNames []string) []os.FileInfo {
 	for _, fn := range fileNames {
 		f, err := os.Create(filepath.Join(dirName, fn))
 		if err != nil {
@@ -220,7 +221,7 @@ func populate(t *testing.T, dirName string, fileNames []string) []os.DirEntry {
 	}
 
 	// Retrieve the file list for the remainder of the test.
-	files, err := os.ReadDir(dirName)
+	files, err := ioutil.ReadDir(dirName)
 	if err != nil {
 		t.Fatal(err)
 	}

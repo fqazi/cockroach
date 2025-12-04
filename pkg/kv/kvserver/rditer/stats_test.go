@@ -6,12 +6,12 @@
 package rditer
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/stretchr/testify/require"
 )
@@ -36,11 +36,11 @@ func TestComputeStats(t *testing.T) {
 	createRangeData(t, eng, desc)
 	nowNanos := time.Now().UnixNano()
 
-	userOnly, err := ComputeStatsForRangeUserOnly(t.Context(), &desc, eng, fs.UnknownReadCategory, nowNanos)
+	userOnly, err := ComputeStatsForRangeUserOnly(context.Background(), &desc, eng, nowNanos)
 	require.NoError(t, err)
-	nonUserOnly, err := ComputeStatsForRangeExcludingUser(t.Context(), &desc, eng, fs.UnknownReadCategory, nowNanos)
+	nonUserOnly, err := ComputeStatsForRangeExcludingUser(context.Background(), &desc, eng, nowNanos)
 	require.NoError(t, err)
-	all, err := ComputeStatsForRange(t.Context(), &desc, eng, fs.UnknownReadCategory, nowNanos)
+	all, err := ComputeStatsForRange(context.Background(), &desc, eng, nowNanos)
 	require.NoError(t, err)
 
 	userPlusNonUser := userOnly

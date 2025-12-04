@@ -32,7 +32,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
-	"github.com/cockroachdb/cockroach/pkg/sql/unsafesql"
 	"github.com/cockroachdb/errors"
 )
 
@@ -122,15 +121,6 @@ func (p *planner) HasPrivilege(
 		return false, errors.AssertionFailedf("cannot use CheckPrivilege without a txn")
 	}
 
-	// Do a safety check on the object, if it is considered unsafe
-	// does the caller have the appropriate session data to access it?
-	if p.objectIsUnsafe(ctx, privilegeObject) {
-		unsafeOverride := p.ExecCfg().EvalContextTestingKnobs.UnsafeOverride
-		if err := unsafesql.CheckInternalsAccess(ctx, p.SessionData(), p.stmt.AST, p.extendedEvalCtx.Annotations, &p.ExecCfg().Settings.SV, unsafeOverride); err != nil {
-			return false, err
-		}
-	}
-
 	// root, admin and node user should always have privileges, except NOSQLLOGIN.
 	// This allows us to short-circuit privilege checks for
 	// virtual object such that we don't have to query the system.privileges
@@ -157,7 +147,7 @@ func (p *planner) HasPrivilege(
 	// permission check).
 	p.maybeAuditSensitiveTableAccessEvent(privilegeObject, privilegeKind)
 
-	privs, err := p.getImmutablePrivilegeDescriptor(ctx, privilegeObject)
+	privs, err := p.getPrivilegeDescriptor(ctx, privilegeObject)
 	if err != nil {
 		return false, err
 	}
@@ -210,7 +200,7 @@ func (p *planner) HasAnyPrivilege(
 		return true, nil
 	}
 
-	privs, err := p.getImmutablePrivilegeDescriptor(ctx, privilegeObject)
+	privs, err := p.getPrivilegeDescriptor(ctx, privilegeObject)
 	if err != nil {
 		return false, err
 	}
@@ -374,7 +364,7 @@ func (p *planner) getOwnerOfPrivilegeObject(
 	if d, ok := privilegeObject.(catalog.TableDescriptor); ok && d.IsVirtualTable() {
 		return username.NodeUserName(), nil
 	}
-	privDesc, err := p.getImmutablePrivilegeDescriptor(ctx, privilegeObject)
+	privDesc, err := p.getPrivilegeDescriptor(ctx, privilegeObject)
 	if err != nil {
 		return username.SQLUsername{}, err
 	}
@@ -657,20 +647,17 @@ func (p *planner) UserHasRoleOption(
 		return false, errors.AssertionFailedf("cannot use HasRoleOption without a txn")
 	}
 
-	// Skip non-admin inherited role options for validation.
-	if !slices.Contains(roleoption.NonAdminInheritedOptions, roleOption) {
-		if user.IsRootUser() || user.IsNodeUser() {
-			return true, nil
-		}
+	if user.IsRootUser() || user.IsNodeUser() {
+		return true, nil
+	}
 
-		hasAdmin, err := p.UserHasAdminRole(ctx, user)
-		if err != nil {
-			return false, err
-		}
-		if hasAdmin {
-			// Superusers have all role privileges.
-			return true, nil
-		}
+	hasAdmin, err := p.UserHasAdminRole(ctx, user)
+	if err != nil {
+		return false, err
+	}
+	if hasAdmin {
+		// Superusers have all role privileges.
+		return true, nil
 	}
 
 	hasRolePrivilege, err := p.InternalSQLTxn().QueryRowEx(
@@ -948,33 +935,6 @@ func (p *planner) HasViewActivityOrViewActivityRedactedRole(
 	}
 
 	return false, false, nil
-}
-
-// objectIsUnsafe checks if the privilege object is considered unsafe for external usage.
-// Unsafe objects are any system tables, and crdb_internal tables which are not listed as externally supported.
-func (p *planner) objectIsUnsafe(ctx context.Context, privilegeObject privilege.Object) bool {
-	if p.skipUnsafeInternalsCheck {
-		return false
-	}
-
-	d, ok := privilegeObject.(catalog.TableDescriptor)
-	if !ok {
-		return false
-	}
-
-	// All system descriptors are considered unsafe
-	if catalog.IsSystemDescriptor(d) {
-		return true
-	}
-
-	// Unsupported crdb_internal tables are considered unsafe.
-	if d.GetParentSchemaID() == catconstants.CrdbInternalID {
-		if _, ok := SupportedCRDBInternalTables[d.GetName()]; !ok {
-			return true
-		}
-	}
-
-	return false
 }
 
 func insufficientPrivilegeError(

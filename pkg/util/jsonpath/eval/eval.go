@@ -144,23 +144,6 @@ func jsonpathQuery(
 	return ctx.eval(expr.Path, ctx.root, !ctx.strict /* unwrap */)
 }
 
-// eval evaluates a JSONPath expression against a JSON value and returns a
-// slice of results.
-//
-// Return value semantics are critical for proper JSONPath behavior:
-//   - nil slice: Path evaluation failed or path does not exist (e.g., $.nonexistent)
-//     In comparisons: returns unknown/null in strict mode, false in lax mode
-//   - Empty slice ([]json.JSON{}): Path exists but contains no items (e.g., empty array [])
-//     In comparisons: returns false in lax mode (no items to compare).
-//   - Non-empty slice: Path found one or more matching items.
-//
-// This distinction is essential for JSONPath comparison operations to match
-// PostgreSQL behavior.
-//
-// Many of jsonpath operations require automatic unwrapping of arrays in lax
-// mode. If the input value is an array the operation is performed not on the
-// array itself, but on all of its members one by one. The unwrap parameter
-// indicates whether array unwrapping is needed.
 func (ctx *jsonpathCtx) eval(
 	jsonPath jsonpath.Path, jsonValue json.JSON, unwrap bool,
 ) ([]json.JSON, error) {
@@ -236,8 +219,7 @@ func (ctx *jsonpathCtx) executeAnyItem(
 	jsonPath jsonpath.Path, jsonValue json.JSON, unwrapNext bool,
 ) ([]json.JSON, error) {
 	if jsonValue.Len() == 0 {
-		// Return empty slice (not nil) to indicate "empty array found" vs "path not found".
-		return []json.JSON{}, nil
+		return nil, nil
 	}
 	var agg []json.JSON
 	processItem := func(item json.JSON) error {
@@ -252,6 +234,8 @@ func (ctx *jsonpathCtx) executeAnyItem(
 		agg = append(agg, evalResults...)
 		return nil
 	}
+	// TODO(normanchenn): Consider creating some kind of unified iterator interface
+	// for json arrays and objects.
 	switch jsonValue.Type() {
 	case json.ArrayJSONType:
 		for i := 0; i < jsonValue.Len(); i++ {
@@ -267,17 +251,14 @@ func (ctx *jsonpathCtx) executeAnyItem(
 			}
 		}
 	case json.ObjectJSONType:
-		iter, err := jsonValue.ObjectIter()
-		if err != nil {
-			return nil, errors.Wrapf(err, "getting iterator for json object")
-		}
+		iter, _ := jsonValue.ObjectIter()
 		for iter.Next() {
 			if err := processItem(iter.Value()); err != nil {
 				return nil, err
 			}
 		}
 	default:
-		return nil, errors.AssertionFailedf("executeAnyItem called with type: %s", jsonValue.Type())
+		panic(errors.AssertionFailedf("executeAnyItem called with type: %s", jsonValue.Type()))
 	}
 	return agg, nil
 }
@@ -293,11 +274,6 @@ func (ctx *jsonpathCtx) evalAndUnwrapResult(
 		return nil, err
 	}
 	if unwrap && !ctx.strict {
-		// If evalResults is nil, preserve nil to indicate path evaluation
-		// failure.
-		if evalResults == nil {
-			return nil, nil
-		}
 		var agg []json.JSON
 		for _, j := range evalResults {
 			if j.Type() == json.ArrayJSONType {
@@ -310,12 +286,6 @@ func (ctx *jsonpathCtx) evalAndUnwrapResult(
 			} else {
 				agg = append(agg, j)
 			}
-		}
-		// If agg is nil, return an empty slice to distinguish empty arrays
-		// from missing paths. Note that agg can be nil even if evalResults is
-		// non-nil if unwrapping an argument produces an empty array.
-		if agg == nil {
-			return []json.JSON{}, nil
 		}
 		return agg, nil
 	}

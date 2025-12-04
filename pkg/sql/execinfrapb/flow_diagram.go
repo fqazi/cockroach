@@ -740,13 +740,6 @@ func (s *TTLSpec) summary() (string, []string) {
 }
 
 // summary implements the diagramCellType interface.
-func (s *InspectSpec) summary() (string, []string) {
-	return "INSPECT", []string{
-		fmt.Sprintf("JobID: %d", s.JobID),
-	}
-}
-
-// summary implements the diagramCellType interface.
 func (s *HashGroupJoinerSpec) summary() (string, []string) {
 	_, details := s.HashJoinerSpec.summary()
 	if len(s.JoinOutputColumns) > 0 {
@@ -785,12 +778,6 @@ func (i *IngestStoppedSpec) summary() (string, []string) {
 }
 
 // summary implements the diagramCellType interface.
-func (i *IngestFileSpec) summary() (string, []string) {
-	detail := fmt.Sprintf("ingest %d SSTs", len(i.SSTs))
-	return "IngestFileSpec", []string{detail}
-}
-
-// summary implements the diagramCellType interface.
 func (m *CompactBackupsSpec) summary() (string, []string) {
 	var spanStr strings.Builder
 	if len(m.Spans) > 0 {
@@ -811,18 +798,6 @@ func (m *CompactBackupsSpec) summary() (string, []string) {
 		spanStr.String(),
 	}
 	return "CompactBackupsSpec", details
-}
-
-func (m *BulkMergeSpec) summary() (string, []string) {
-	return "BulkMerge", nil
-}
-
-func (m *MergeCoordinatorSpec) summary() (string, []string) {
-	return "MergeCoordinator", nil
-}
-
-func (m *MergeLoopbackSpec) summary() (string, []string) {
-	return "MergeLoopback", nil
 }
 
 type diagramCell struct {

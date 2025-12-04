@@ -42,9 +42,6 @@ dump_json() {
   fi
 }
 
-# NB: if you're trying to trigger a weekly roachtest, need to use
-# 'Cockroach_Nightlies_RoachtestWeeklyBazel' as the buildType below.
-
 json_payload=$(jq -n \
   --arg branch_name "$pr" \
   --arg tests "$tests" \
@@ -57,7 +54,6 @@ json_payload=$(jq -n \
     property: [
       {name: "env.ARM_PROBABILITY", value: "0"},
       {name: "env.COCKROACH_EA_PROBABILITY", value: "0"},
-      {name: "env.SELECT_PROBABILITY", value: "1.0"},
       {name: "env.DEBUG", value: $envDebug},
       {name: "env.COUNT", value: $envCount},
       {name: "env.TESTS", value: $tests}

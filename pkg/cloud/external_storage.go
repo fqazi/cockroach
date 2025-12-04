@@ -9,7 +9,6 @@ import (
 	"context"
 	"database/sql/driver"
 	"io"
-	"net/http"
 	"net/url"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
@@ -188,7 +187,6 @@ type EarlyBootExternalStorageContext struct {
 	Options         []ExternalStorageOption
 	Limiters        Limiters
 	MetricsRecorder *Metrics
-	HttpMiddleware  HttpMiddleware
 }
 
 // ExternalStorageOptions rolls up the Options into a struct.
@@ -208,8 +206,6 @@ type ExternalStorageOptions struct {
 	AzureStorageTestingKnobs base.ModuleTestingKnobs
 	ClientName               string
 }
-
-type HttpMiddleware func(http.RoundTripper) http.RoundTripper
 
 // ExternalStorageConstructor is a function registered to create instances
 // of a given external storage implementation.

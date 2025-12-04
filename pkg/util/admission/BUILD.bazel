@@ -4,10 +4,7 @@ go_library(
     name = "admission",
     srcs = [
         "admission.go",
-        "cpu_time_token_filler.go",
-        "cpu_time_token_granter.go",
         "disk_bandwidth.go",
-        "elastic_cpu_grant_coordinator.go",
         "elastic_cpu_granter.go",
         "elastic_cpu_work_handle.go",
         "elastic_cpu_work_queue.go",
@@ -19,7 +16,6 @@ go_library(
         "scheduler_latency_listener.go",
         "sequencer.go",
         "snapshot_queue.go",
-        "store_grant_coordinator.go",
         "store_token_estimation.go",
         "testing_knobs.go",
         "tokens_linear_model.go",
@@ -47,21 +43,17 @@ go_library(
         "//pkg/util/syncutil",
         "//pkg/util/timeutil",
         "//pkg/util/tracing",
-        "@com_github_cockroachdb_crlib//crtime",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_logtags//:logtags",
         "@com_github_cockroachdb_pebble//:pebble",
         "@com_github_cockroachdb_redact//:redact",
         "@com_github_cockroachdb_tokenbucket//:tokenbucket",
-        "@com_github_olekukonko_tablewriter//:tablewriter",
     ],
 )
 
 go_test(
     name = "admission_test",
     srcs = [
-        "cpu_time_token_filler_test.go",
-        "cpu_time_token_granter_test.go",
         "disk_bandwidth_test.go",
         "elastic_cpu_granter_test.go",
         "elastic_cpu_work_handle_test.go",

@@ -125,6 +125,11 @@ func (b *BatchEncoder) PrepareBatch(ctx context.Context, p row.Putter, start, en
 	}
 	for _, ind := range b.rh.TableDesc.WritableNonPrimaryIndexes() {
 		b.resetBuffers()
+		// TODO(cucaroach): COPY doesn't need ForcePut support but the encoder
+		// will need to support it eventually.
+		if ind.ForcePut() {
+			colexecerror.InternalError(errors.AssertionFailedf("vector encoder doesn't support ForcePut yet"))
+		}
 		if err := b.encodeSecondaryIndex(ctx, ind); err != nil {
 			return err
 		}
@@ -479,13 +484,6 @@ func (b *BatchEncoder) encodeSecondaryIndex(ctx context.Context, ind catalog.Ind
 	return b.checkMemory()
 }
 
-func (b *BatchEncoder) useCPutForSecondary(ind catalog.Index) bool {
-	if ind.ForcePut() {
-		return false
-	}
-	return ind.IsUnique() || b.useCPutsOnNonUniqueIndexes
-}
-
 func (b *BatchEncoder) encodeSecondaryIndexNoFamilies(ind catalog.Index, kys []roachpb.Key) error {
 	for row := 0; row < b.count; row++ {
 		// Elided partial index keys will be empty.
@@ -512,7 +510,7 @@ func (b *BatchEncoder) encodeSecondaryIndexNoFamilies(ind catalog.Index, kys []r
 	if err := b.writeColumnValues(kys, values, ind, cols); err != nil {
 		return err
 	}
-	if b.useCPutForSecondary(ind) {
+	if ind.IsUnique() || b.useCPutsOnNonUniqueIndexes {
 		b.p.CPutBytesEmpty(kys, values)
 	} else {
 		b.p.PutBytes(kys, values)
@@ -578,13 +576,13 @@ func (b *BatchEncoder) encodeSecondaryIndexWithFamilies(
 		// include encoded primary key columns. For other families,
 		// use the tuple encoding for the value.
 		if familyID == 0 {
-			if b.useCPutForSecondary(ind) {
+			if ind.IsUnique() || b.useCPutsOnNonUniqueIndexes {
 				b.p.CPutBytesEmpty(kys, values)
 			} else {
 				b.p.PutBytes(kys, values)
 			}
 		} else {
-			if b.useCPutForSecondary(ind) {
+			if ind.IsUnique() || b.useCPutsOnNonUniqueIndexes {
 				b.p.CPutTuplesEmpty(kys, values)
 			} else {
 				b.p.PutTuples(kys, values)

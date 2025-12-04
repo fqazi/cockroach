@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
@@ -32,7 +33,7 @@ func TestJoinReaderUsesBatchLimit(t *testing.T) {
 	ctx := context.Background()
 	recCh := make(chan tracingpb.Recording, 1)
 	joinQuery := "SELECT count(1) FROM (SELECT * FROM test.b NATURAL INNER LOOKUP JOIN test.a)"
-	srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{
+	s, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{
 		Knobs: base.TestingKnobs{
 			SQLExecutor: &sql.ExecutorTestingKnobs{
 				// Get a recording for the join query.
@@ -49,8 +50,7 @@ func TestJoinReaderUsesBatchLimit(t *testing.T) {
 			},
 		},
 	})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	defer s.Stopper().Stop(ctx)
 
 	// Disable the usage of the streamer since this test is designed for the old
 	// non-streamer code path.
@@ -96,13 +96,9 @@ func TestJoinReaderUsesBatchLimit(t *testing.T) {
 	// were on the lookup side. We expect more than one of them (it would be only
 	// one if there was no limit on the size of results).
 	rec := <-recCh
-	desc := desctestutils.TestingGetPublicTableDescriptor(kvDB, s.Codec(), "test", "a")
+	desc := desctestutils.TestingGetPublicTableDescriptor(kvDB, keys.SystemSQLCodec, "test", "a")
 	tableID := desc.TableDesc().ID
 	sp, ok := rec.FindSpan("join reader")
 	require.True(t, ok)
-	var tenantPrefix string
-	if srv.StartedDefaultTestTenant() {
-		tenantPrefix = fmt.Sprintf("/Tenant/%s", serverutils.TestTenantID())
-	}
-	require.Greater(t, tracing.CountLogMessages(sp, fmt.Sprintf("Scan %s/Table/%d", tenantPrefix, tableID)), 1)
+	require.Greater(t, tracing.CountLogMessages(sp, fmt.Sprintf("Scan /Table/%d", tableID)), 1)
 }
