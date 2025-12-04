@@ -31,7 +31,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
-	pbtypes "github.com/gogo/protobuf/types"
 )
 
 const (
@@ -84,8 +83,6 @@ type streamIngestionFrontier struct {
 	// replicatedTimeAtLastPositiveLagNodeCheck records the replicated time the
 	// last time the lagging node checker detected a lagging node.
 	replicatedTimeAtLastPositiveLagNodeCheck hlc.Timestamp
-
-	rangeStats replicationutils.AggregateRangeStatsCollector
 }
 
 var _ execinfra.Processor = &streamIngestionFrontier{}
@@ -141,9 +138,6 @@ func newStreamIngestionFrontierProcessor(
 			return crosscluster.StreamReplicationConsumerHeartbeatFrequency.Get(&flowCtx.Cfg.Settings.SV)
 		}),
 		persistedReplicatedTime: spec.ReplicatedTimeAtStart,
-		rangeStats: replicationutils.NewAggregateRangeStatsCollector(
-			int(spec.NumIngestionProcessors),
-		),
 	}
 	if err := sf.Init(
 		ctx,
@@ -190,10 +184,6 @@ func (sf *streamIngestionFrontier) Next() (
 			if meta.Err != nil {
 				sf.MoveToDrainingAndLogError(nil /* err */)
 			}
-			if err := sf.maybeCollectRangeStats(sf.Ctx(), meta); err != nil {
-				sf.MoveToDrainingAndLogError(err)
-				break
-			}
 			return nil, meta
 		}
 		if row == nil {
@@ -207,13 +197,13 @@ func (sf *streamIngestionFrontier) Next() (
 		}
 
 		if err := sf.maybeUpdateProgress(); err != nil {
-			log.Dev.Errorf(sf.Ctx(), "failed to update progress: %+v", err)
+			log.Errorf(sf.Ctx(), "failed to update progress: %+v", err)
 			sf.MoveToDrainingAndLogError(err)
 			break
 		}
 
 		if err := sf.maybePersistFrontierEntries(); err != nil {
-			log.Dev.Errorf(sf.Ctx(), "failed to persist frontier entries: %+v", err)
+			log.Errorf(sf.Ctx(), "failed to persist frontier entries: %+v", err)
 		}
 
 		if err := sf.maybeCheckForLaggingNodes(); err != nil {
@@ -235,7 +225,7 @@ func (sf *streamIngestionFrontier) Next() (
 		case <-sf.heartbeatSender.StoppedChan:
 			err := sf.heartbeatSender.Wait()
 			if err != nil {
-				log.Dev.Errorf(sf.Ctx(), "heartbeat sender exited with error: %s", err)
+				log.Errorf(sf.Ctx(), "heartbeat sender exited with error: %s", err)
 			}
 			sf.MoveToDrainingAndLogError(err)
 			return nil, sf.DrainHelper()
@@ -245,7 +235,7 @@ func (sf *streamIngestionFrontier) Next() (
 }
 
 func (sf *streamIngestionFrontier) MoveToDrainingAndLogError(err error) {
-	log.Dev.Infof(sf.Ctx(), "gracefully draining with error %s", err)
+	log.Infof(sf.Ctx(), "gracefully draining with error %s", err)
 	sf.MoveToDraining(err)
 }
 
@@ -256,10 +246,10 @@ func (sf *streamIngestionFrontier) close() {
 	defer sf.frontier.Release()
 
 	if err := sf.heartbeatSender.Stop(); err != nil {
-		log.Dev.Errorf(sf.Ctx(), "heartbeat sender exited with error: %s", err)
+		log.Errorf(sf.Ctx(), "heartbeat sender exited with error: %s", err)
 	}
 	if err := sf.client.Close(sf.Ctx()); err != nil {
-		log.Dev.Errorf(sf.Ctx(), "client exited with error: %s", err)
+		log.Errorf(sf.Ctx(), "client exited with error: %s", err)
 	}
 	if sf.InternalClose() {
 		sf.metrics.RunningCount.Dec(1)
@@ -337,10 +327,7 @@ func (sf *streamIngestionFrontier) maybeUpdateProgress() error {
 
 	replicatedTime := f.Frontier()
 	sf.lastPartitionUpdate = timeutil.Now()
-	log.Dev.VInfof(ctx, 2, "persisting replicated time of %s", replicatedTime)
-
-	sf.aggregateAndUpdateRangeMetrics()
-
+	log.VInfof(ctx, 2, "persisting replicated time of %s", replicatedTime)
 	if err := registry.UpdateJobWithTxn(ctx, jobID, nil /* txn */, func(
 		txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater,
 	) error {
@@ -421,33 +408,6 @@ func (sf *streamIngestionFrontier) maybeUpdateProgress() error {
 	return nil
 }
 
-func (sf *streamIngestionFrontier) maybeCollectRangeStats(
-	ctx context.Context, meta *execinfrapb.ProducerMetadata,
-) error {
-	if meta.BulkProcessorProgress == nil {
-		log.Dev.VInfof(ctx, 2, "received non-progress producer meta: %v", meta)
-		return nil
-	}
-
-	var stats streampb.StreamEvent_RangeStats
-	if err := pbtypes.UnmarshalAny(&meta.BulkProcessorProgress.ProgressDetails, &stats); err != nil {
-		return errors.Wrap(err, "unable to unmarshal progress details")
-	}
-
-	sf.rangeStats.Add(meta.BulkProcessorProgress.ProcessorID, &stats)
-	return nil
-}
-
-// aggregateAndUpdateRangeMetrics aggregates the range stats collected from each
-// of the ingestion processors and updates the corresponding metrics.
-func (sf *streamIngestionFrontier) aggregateAndUpdateRangeMetrics() {
-	aggRangeStats, _, _ := sf.rangeStats.RollupStats()
-	if aggRangeStats.RangeCount != 0 {
-		sf.metrics.ScanningRanges.Update(aggRangeStats.ScanningRangeCount)
-		sf.metrics.CatchupRanges.Update(aggRangeStats.LaggingRangeCount)
-	}
-}
-
 // maybePersistFrontierEntries periodically persists the current state of the
 // frontier to the `system.job_info` table. This information is used to hydrate
 // the execution details that can be requested for the C2C ingestion job. Note,
@@ -517,7 +477,7 @@ func (sf *streamIngestionFrontier) handleLaggingNodeError(ctx context.Context, e
 	case !errors.Is(err, ErrNodeLagging):
 		return err
 	case sf.replicatedTimeAtLastPositiveLagNodeCheck.Less(sf.persistedReplicatedTime):
-		log.Dev.Infof(ctx, "detected a lagging node: %s. Don't forward error because replicated time at last check %s is less than current replicated time %s", err, sf.replicatedTimeAtLastPositiveLagNodeCheck, sf.persistedReplicatedTime)
+		log.Infof(ctx, "detected a lagging node: %s. Don't forward error because replicated time at last check %s is less than current replicated time %s", err, sf.replicatedTimeAtLastPositiveLagNodeCheck, sf.persistedReplicatedTime)
 		sf.replicatedTimeAtLastPositiveLagNodeCheck = sf.persistedReplicatedTime
 		return nil
 	case sf.replicatedTimeAtLastPositiveLagNodeCheck.Equal(sf.persistedReplicatedTime):

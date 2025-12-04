@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
-	mockcluster "github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster/mock"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
@@ -329,7 +328,7 @@ func TestExport(t *testing.T) {
 			makePromQueryRange(barStat.Query, []string{"1", "2", "3"}, 5, barTS, false),
 		})
 		mockTest := getMockTest(t, ctrl, true, statsFileDest)
-		mockCluster := mockcluster.NewMockCluster(ctrl)
+		mockCluster := NewMockCluster(ctrl)
 		mockTest.EXPECT().Name().Return("mock_name")
 		mockTest.EXPECT().GetRunId().Return("mock_id").AnyTimes()
 		mockCluster.EXPECT().Cloud().Times(1).Return(spec.GCE)
@@ -377,7 +376,7 @@ func TestExport(t *testing.T) {
 			makePromQueryRange(barStat.Query, []string{"1", "2", "3"}, 5, barTS, false),
 		})
 		mockTest := getMockTest(t, ctrl, false, statsFileDest)
-		mockCluster := mockcluster.NewMockCluster(ctrl)
+		mockCluster := NewMockCluster(ctrl)
 		statsWriter = func(ctx context.Context, tt test.Test, c cluster.Cluster, buffer *bytes.Buffer, dest string) error {
 			require.Equal(t, mockTest, tt)
 			require.Equal(t, mockCluster, c)

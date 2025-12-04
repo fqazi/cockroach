@@ -8,7 +8,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"io"
 	"sync"
 	"time"
 
@@ -34,7 +33,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
-	"storj.io/drpc/drpcclient"
 )
 
 // ErrClusterInitialized is reported when the Bootstrap RPC is run on
@@ -196,8 +194,8 @@ func (s *initServer) ServeAndWait(
 		return s.inspectedDiskState, false, nil
 	}
 
-	log.Dev.Info(ctx, "no stores initialized")
-	log.Dev.Info(ctx, "awaiting `cockroach init` or join with an already initialized node")
+	log.Info(ctx, "no stores initialized")
+	log.Info(ctx, "awaiting `cockroach init` or join with an already initialized node")
 
 	// If we end up joining a bootstrapped cluster, the resulting init state
 	// will be passed through this channel.
@@ -261,9 +259,9 @@ func (s *initServer) ServeAndWait(
 				return nil, false, err
 			}
 
-			log.Dev.Infof(ctx, "cluster %s has been created", state.clusterID)
-			log.Dev.Infof(ctx, "allocated node ID: n%d (for self)", state.nodeID)
-			log.Dev.Infof(ctx, "active cluster version: %s", state.clusterVersion)
+			log.Infof(ctx, "cluster %s has been created", state.clusterID)
+			log.Infof(ctx, "allocated node ID: n%d (for self)", state.nodeID)
+			log.Infof(ctx, "active cluster version: %s", state.clusterVersion)
 
 			return state, true, nil
 		case result := <-joinCh:
@@ -284,9 +282,9 @@ func (s *initServer) ServeAndWait(
 
 			state := result.state
 
-			log.Dev.Infof(ctx, "joined cluster %s through join rpc", state.clusterID)
-			log.Dev.Infof(ctx, "received node ID: %d", state.nodeID)
-			log.Dev.Infof(ctx, "received cluster version: %s", state.clusterVersion)
+			log.Infof(ctx, "joined cluster %s through join rpc", state.clusterID)
+			log.Infof(ctx, "received node ID: %d", state.nodeID)
+			log.Infof(ctx, "received cluster version: %s", state.clusterVersion)
 
 			return state, true, nil
 		case <-stopper.ShouldQuiesce():
@@ -325,7 +323,7 @@ func (s *initServer) Bootstrap(
 
 	state, err := bootstrapCluster(ctx, s.inspectedDiskState.uninitializedEngines, s.config)
 	if err != nil {
-		log.Dev.Errorf(ctx, "bootstrap: %v", err)
+		log.Errorf(ctx, "bootstrap: %v", err)
 		s.mu.rejectErr = errInternalBootstrapError
 		return nil, s.mu.rejectErr
 	}
@@ -372,9 +370,9 @@ func (s *initServer) startJoinLoop(ctx context.Context, stopper *stop.Stopper) (
 			// Try the next node if unsuccessful.
 
 			if grpcutil.IsWaitingForInit(err) {
-				log.Dev.Infof(ctx, "%s is itself waiting for init, will retry", addr)
+				log.Infof(ctx, "%s is itself waiting for init, will retry", addr)
 			} else {
-				log.Dev.Warningf(ctx, "outgoing join rpc to %s unsuccessful: %v", addr, err.Error())
+				log.Warningf(ctx, "outgoing join rpc to %s unsuccessful: %v", addr, err.Error())
 			}
 			continue
 		}
@@ -418,9 +416,9 @@ func (s *initServer) startJoinLoop(ctx context.Context, stopper *stop.Stopper) (
 				// logging. See grpcutil.connectionRefusedRe.
 
 				if grpcutil.IsWaitingForInit(err) {
-					log.Dev.Infof(ctx, "%s is itself waiting for init, will retry", addr)
+					log.Infof(ctx, "%s is itself waiting for init, will retry", addr)
 				} else {
-					log.Dev.Warningf(ctx, "outgoing join rpc to %s unsuccessful: %v", addr, err.Error())
+					log.Warningf(ctx, "outgoing join rpc to %s unsuccessful: %v", addr, err.Error())
 				}
 				continue
 			}
@@ -450,15 +448,27 @@ func (s *initServer) startJoinLoop(ctx context.Context, stopper *stop.Stopper) (
 func (s *initServer) attemptJoinTo(
 	ctx context.Context, addr string,
 ) (*kvpb.JoinNodeResponse, error) {
-	conn, initClient, err := s.newNodeClient(ctx, addr)
+	dialOpts, err := s.config.getDialOpts(ctx, addr, rpcbase.SystemClass)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	conn, err := grpc.DialContext(ctx, addr, dialOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		_ = conn.Close() // nolint:grpcconnclose
+	}()
 
 	latestVersion := s.config.latestVersion
 	req := &kvpb.JoinNodeRequest{
 		BinaryVersion: &latestVersion,
+	}
+
+	var initClient kvpb.RPCClusterClient
+	if !rpcbase.TODODRPC {
+		initClient = kvpb.NewGRPCInternalClientAdapter(conn)
 	}
 	resp, err := initClient.Join(ctx, req)
 	if err != nil {
@@ -473,7 +483,7 @@ func (s *initServer) attemptJoinTo(
 		// to be changed as well.
 
 		if status.Code() == codes.PermissionDenied {
-			log.Dev.Infof(ctx, "%s is running a version higher than our binary version %s", addr, req.BinaryVersion.String())
+			log.Infof(ctx, "%s is running a version higher than our binary version %s", addr, req.BinaryVersion.String())
 			return nil, ErrIncompatibleBinaryVersion
 		}
 
@@ -567,32 +577,6 @@ func assertEnginesEmpty(engines []storage.Engine) error {
 	return nil
 }
 
-func (s *initServer) newNodeClient(
-	ctx context.Context, addr string,
-) (io.Closer, kvpb.RPCNodeClient, error) {
-	if !s.config.useDRPC {
-		dialOpts, err := s.config.getGRPCDialOpts(ctx, addr, rpcbase.SystemClass)
-		if err != nil {
-			return nil, nil, err
-		}
-		conn, err := grpc.DialContext(ctx, addr, dialOpts...)
-		if err != nil {
-			return nil, nil, err
-		}
-		return conn, kvpb.NewGRPCInternalClientAdapter(conn), nil
-	}
-
-	dialOpts, err := s.config.getDRPCDialOpts(ctx, addr, rpcbase.SystemClass)
-	if err != nil {
-		return nil, nil, err
-	}
-	conn, err := drpcclient.DialContext(ctx, addr, dialOpts...)
-	if err != nil {
-		return nil, nil, err
-	}
-	return conn, kvpb.NewDRPCNodeClientAdapter(conn), nil
-}
-
 // initServerCfg is a thin wrapper around the server Config object, exposing
 // only the fields needed by the init server.
 type initServerCfg struct {
@@ -602,11 +586,8 @@ type initServerCfg struct {
 	defaultSystemZoneConfig zonepb.ZoneConfig
 	defaultZoneConfig       zonepb.ZoneConfig
 
-	// getGRPCDialOpts retrieves the gRPC dial options to use to issue Join RPCs.
-	getGRPCDialOpts func(ctx context.Context, target string, class rpcbase.ConnectionClass) ([]grpc.DialOption, error)
-
-	// getDRPCDialOpts retrieves the DRPC dial options to use to issue Join RPCs.
-	getDRPCDialOpts func(ctx context.Context, target string, class rpcbase.ConnectionClass) ([]drpcclient.DialOption, error)
+	// getDialOpts retrieves the gRPC dial options to use to issue Join RPCs.
+	getDialOpts func(ctx context.Context, target string, class rpcbase.ConnectionClass) ([]grpc.DialOption, error)
 
 	// bootstrapAddresses is a list of node addresses (populated using --join
 	// addresses) that is used to form a connected graph/network of CRDB servers.
@@ -620,13 +601,6 @@ type initServerCfg struct {
 	// not be true.
 	bootstrapAddresses []util.UnresolvedAddr
 
-	// useDRPC determines whether to use DRPC for internode communication
-	// instead of gRPC.
-	//
-	// NB: This configuration option is provided via a CLI flag and is not
-	// controlled by the "rpc.experimental_drpc.enabled" cluster setting.
-	useDRPC bool
-
 	// testingKnobs is used for internal test controls only.
 	testingKnobs base.TestingKnobs
 }
@@ -634,8 +608,7 @@ type initServerCfg struct {
 func newInitServerConfig(
 	ctx context.Context,
 	cfg Config,
-	getGRPCDialOpts func(context.Context, string, rpcbase.ConnectionClass) ([]grpc.DialOption, error),
-	getDRPCDialOpts func(context.Context, string, rpcbase.ConnectionClass) ([]drpcclient.DialOption, error),
+	getDialOpts func(context.Context, string, rpcbase.ConnectionClass) ([]grpc.DialOption, error),
 ) initServerCfg {
 	latestVersion := cfg.Settings.Version.LatestVersion()
 	minSupportedVersion := cfg.Settings.Version.MinSupportedVersion()
@@ -661,7 +634,7 @@ func newInitServerConfig(
 		}
 	}
 	if latestVersion.Less(minSupportedVersion) {
-		log.Dev.Fatalf(ctx, "binary version (%s) less than min supported version (%s)",
+		log.Fatalf(ctx, "binary version (%s) less than min supported version (%s)",
 			latestVersion, minSupportedVersion)
 	}
 
@@ -672,9 +645,7 @@ func newInitServerConfig(
 		latestVersion:           latestVersion,
 		defaultSystemZoneConfig: cfg.DefaultSystemZoneConfig,
 		defaultZoneConfig:       cfg.DefaultZoneConfig,
-		getGRPCDialOpts:         getGRPCDialOpts,
-		getDRPCDialOpts:         getDRPCDialOpts,
-		useDRPC:                 cfg.UseDRPC,
+		getDialOpts:             getDialOpts,
 		bootstrapAddresses:      bootstrapAddresses,
 		testingKnobs:            cfg.TestingKnobs,
 	}
@@ -696,7 +667,6 @@ func inspectEngines(
 		// Once cached settings are loaded from any engine we can stop.
 		if len(initialSettingsKVs) == 0 {
 			var err error
-			// TODO(sep-raft-log): inspect only the log engines here.
 			initialSettingsKVs, err = loadCachedSettingsKVs(ctx, eng)
 			if err != nil {
 				return nil, err

@@ -16,8 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/workload/faker"
 )
 
-// The spec can be found at https://www.tpc.org/tpc_documents_current_versions/pdf/tpc-h_v2.17.1.pdf.
-
 const alphanumericLen64 = `abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890, `
 
 // randInt returns a random value between x and y inclusively, with a mean of
@@ -112,9 +110,9 @@ var randPartNames = [...]string{
 	"hot", "indian", "ivory", "khaki", "lace", "lavender", "lawn", "lemon", "light", "lime", "linen",
 	"magenta", "maroon", "medium", "metallic", "midnight", "mint", "misty", "moccasin", "navajo",
 	"navy", "olive", "orange", "orchid", "pale", "papaya", "peach", "peru", "pink", "plum", "powder",
-	"puff", "purple", "red", "rose", "rosy", "royal", "saddle", "salmon", "sandy", "seashell", "sienna",
-	"sky", "slate", "smoke", "snow", "spring", "steel", "tan", "thistle", "tomato", "turquoise", "violet",
-	"wheat", "white", "yellow",
+	"puff", "purple", "red", "rose", "rosy", "royal", "saddle", "salmon", "sandy", "seashell",
+	"sienna", "sky", "slate", "smoke", "snow", "spring", "steel", "tan", "thistle", "tomato",
+	"turquoise", "violet", "wheat", "white", "yellow",
 }
 
 const maxPartNameLen = 10
@@ -240,8 +238,8 @@ func randType(rng *rand.Rand, a *bufalloc.ByteAllocator) []byte {
 }
 
 var containerSyllables = [][]string{
-	{"SM", "LG", "MED", "JUMBO", "WRAP"},
-	{"CASE", "BOX", "BAG", "JAR", "PKG", "PACK", "CAN", "DRUM"},
+	{"SM", "MED", "JUMBO", "WRAP"},
+	{"BOX", "BAG", "JAR", "PKG", "PACK", "CAN", "DRUM"},
 }
 
 const maxContainerLen = 10
@@ -259,7 +257,7 @@ func randSegment(rng *rand.Rand) []byte {
 }
 
 var priorities = []string{
-	"1-URGENT", "2-HIGH", "3-MEDIUM", "4-NOT SPECIFIED", "5-LOW",
+	"1-URGENT", "2-HIGH", "3-MEDIUM", "4-NOT SPECIFIED",
 }
 
 func randPriority(rng *rand.Rand) []byte {
@@ -267,7 +265,9 @@ func randPriority(rng *rand.Rand) []byte {
 }
 
 var instructions = []string{
-	"DELIVER IN PERSON", "COLLECT COD", "NONE", "TAKE BACK RETURN",
+	"DELIVER IN PERSON",
+	"COLLECT COD", "NONE",
+	"TAKE BACK RETURN",
 }
 
 func randInstruction(rng *rand.Rand) []byte {

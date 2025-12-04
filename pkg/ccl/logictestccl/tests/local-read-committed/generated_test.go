@@ -71,7 +71,7 @@ func TestMain(m *testing.M) {
 	serverutils.InitTestClusterFactory(testcluster.TestClusterFactory)
 
 	defer serverutils.TestingSetDefaultTenantSelectionOverride(
-		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(156124),
+		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(76378),
 	)()
 
 	os.Exit(m.Run())
@@ -361,13 +361,6 @@ func TestReadCommittedLogic_bytes(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "bytes")
-}
-
-func TestReadCommittedLogic_canary_stats(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "canary_stats")
 }
 
 func TestReadCommittedLogic_cascade(
@@ -1091,13 +1084,6 @@ func TestReadCommittedLogic_insert(
 	runLogicTest(t, "insert")
 }
 
-func TestReadCommittedLogic_inspect(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "inspect")
-}
-
 func TestReadCommittedLogic_int_size(
 	t *testing.T,
 ) {
@@ -1210,13 +1196,6 @@ func TestReadCommittedLogic_jsonb_path_exists(
 	runLogicTest(t, "jsonb_path_exists")
 }
 
-func TestReadCommittedLogic_jsonb_path_exists_index_acceleration(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "jsonb_path_exists_index_acceleration")
-}
-
 func TestReadCommittedLogic_jsonb_path_match(
 	t *testing.T,
 ) {
@@ -1292,13 +1271,6 @@ func TestReadCommittedLogic_lookup_join_spans(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "lookup_join_spans")
-}
-
-func TestReadCommittedLogic_ltree(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "ltree")
 }
 
 func TestReadCommittedLogic_manual_retry(
@@ -2064,13 +2036,6 @@ func TestReadCommittedLogic_show_indexes(
 	runLogicTest(t, "show_indexes")
 }
 
-func TestReadCommittedLogic_show_inspect_errors(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_inspect_errors")
-}
-
 func TestReadCommittedLogic_show_transfer_state(
 	t *testing.T,
 ) {
@@ -2125,13 +2090,6 @@ func TestReadCommittedLogic_srfs(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "srfs")
-}
-
-func TestReadCommittedLogic_statement_hint_builtins(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "statement_hint_builtins")
 }
 
 func TestReadCommittedLogic_statement_source(
@@ -3028,6 +2986,13 @@ func TestReadCommittedExecBuild_fk_read_committed(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "fk_read_committed")
+}
+
+func TestReadCommittedExecBuild_geospatial(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runExecBuildLogicTest(t, "geospatial")
 }
 
 func TestReadCommittedExecBuild_select_for_update_read_committed(

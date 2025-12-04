@@ -60,8 +60,6 @@ type Catalog struct {
 
 	users       map[username.SQLUsername]roleMembership
 	currentUser username.SQLUsername
-
-	sessionVars map[string]string
 }
 
 type roleMembership struct {
@@ -535,14 +533,6 @@ func (tc *Catalog) LeaseByStableID(ctx context.Context, id cat.StableID) (uint64
 	return 1, nil
 }
 
-// ForEachSessionVar applies the given function to the session variable
-// name-value pairs determined by previous SET statements.
-func (tc *Catalog) ForEachSessionVar(fn func(name string, value string)) {
-	for k, v := range tc.sessionVars {
-		fn(k, v)
-	}
-}
-
 // ExecuteMultipleDDL parses the given semicolon-separated DDL SQL statements
 // and applies each of them to the test catalog.
 func (tc *Catalog) ExecuteMultipleDDL(sql string) error {
@@ -559,11 +549,6 @@ func (tc *Catalog) ExecuteMultipleDDL(sql string) error {
 	}
 
 	return nil
-}
-
-// DisableUnsafeInternalCheck is part of the cat.Catalog interface.
-func (tc *Catalog) DisableUnsafeInternalCheck() func() {
-	return func() {}
 }
 
 // ExecuteDDL parses the given DDL SQL statement and creates objects in the test

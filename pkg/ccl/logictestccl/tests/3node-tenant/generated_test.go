@@ -27,7 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 )
 
-const configIdx = 11
+const configIdx = 10
 
 var logicTestDir string
 var cclLogicTestDir string
@@ -71,7 +71,7 @@ func TestMain(m *testing.M) {
 	serverutils.InitTestClusterFactory(testcluster.TestClusterFactory)
 
 	defer serverutils.TestingSetDefaultTenantSelectionOverride(
-		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(156124),
+		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(76378),
 	)()
 
 	os.Exit(m.Run())
@@ -356,13 +356,6 @@ func TestTenantLogic_bytes(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "bytes")
-}
-
-func TestTenantLogic_canary_stats(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "canary_stats")
 }
 
 func TestTenantLogic_cascade(
@@ -1072,13 +1065,6 @@ func TestTenantLogic_insert(
 	runLogicTest(t, "insert")
 }
 
-func TestTenantLogic_inspect(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "inspect")
-}
-
 func TestTenantLogic_int_size(
 	t *testing.T,
 ) {
@@ -1198,13 +1184,6 @@ func TestTenantLogic_jsonb_path_exists(
 	runLogicTest(t, "jsonb_path_exists")
 }
 
-func TestTenantLogic_jsonb_path_exists_index_acceleration(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "jsonb_path_exists_index_acceleration")
-}
-
 func TestTenantLogic_jsonb_path_match(
 	t *testing.T,
 ) {
@@ -1273,13 +1252,6 @@ func TestTenantLogic_lookup_join_spans(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "lookup_join_spans")
-}
-
-func TestTenantLogic_ltree(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "ltree")
 }
 
 func TestTenantLogic_manual_retry(
@@ -2059,13 +2031,6 @@ func TestTenantLogic_show_indexes(
 	runLogicTest(t, "show_indexes")
 }
 
-func TestTenantLogic_show_inspect_errors(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_inspect_errors")
-}
-
 func TestTenantLogic_show_var(
 	t *testing.T,
 ) {
@@ -2113,13 +2078,6 @@ func TestTenantLogic_srfs(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "srfs")
-}
-
-func TestTenantLogic_statement_hint_builtins(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "statement_hint_builtins")
 }
 
 func TestTenantLogic_statement_source(

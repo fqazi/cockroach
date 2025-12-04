@@ -216,7 +216,7 @@ func (w *windower) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerMetadata) {
 		case windowerEmittingRows:
 			w.runningState, row, meta = w.emitRow()
 		default:
-			log.Dev.Fatalf(w.Ctx(), "unsupported state: %d", w.runningState)
+			log.Fatalf(w.Ctx(), "unsupported state: %d", w.runningState)
 		}
 
 		if row == nil && meta == nil {
@@ -722,10 +722,7 @@ func (w *windower) populateNextOutputRow() (bool, error) {
 		copy(w.outputRow, inputRow[:len(w.inputTypes)])
 		for windowFnIdx, windowFn := range w.windowFns {
 			windowFnRes := w.windowValues[w.partitionIdx][windowFnIdx][rowIdx]
-			encWindowFnRes, err := rowenc.DatumToEncDatum(w.outputTypes[windowFn.outputColIdx], windowFnRes)
-			if err != nil {
-				return false, err
-			}
+			encWindowFnRes := rowenc.DatumToEncDatum(w.outputTypes[windowFn.outputColIdx], windowFnRes)
 			w.outputRow[windowFn.outputColIdx] = encWindowFnRes
 		}
 		w.rowsInBucketEmitted++

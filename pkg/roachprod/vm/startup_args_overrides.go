@@ -85,64 +85,19 @@ func WithDisksInitializedFile(disksInitializedFile string) WithDisksInitializedF
 	return WithDisksInitializedFileOverride{DisksInitializedFile: disksInitializedFile}
 }
 
-// WithFilesystemOverride is an override for the Filesystem field.
-type WithFilesystemOverride struct {
-	Filesystem Filesystem
+// WithZfsOverride is an override for the Zfs field.
+type WithZfsOverride struct {
+	Zfs bool
 }
 
-// apply applies the Filesystem override to the StartupArgs.
-func (o WithFilesystemOverride) apply(args *StartupArgs) {
-	args.Filesystem = o.Filesystem
+// apply applies the Zfs override to the StartupArgs.
+func (o WithZfsOverride) apply(args *StartupArgs) {
+	args.Zfs = o.Zfs
 }
 
-// WithFilesystem overrides the Filesystem field.
-func WithFilesystem(filesystem Filesystem) WithFilesystemOverride {
-	return WithFilesystemOverride{Filesystem: filesystem}
-}
-
-// WithExtraMountOptsOverride is an override for the ExtraMountOpts field.
-type WithExtraMountOptsOverride struct {
-	ExtraMountOpts string
-}
-
-// apply applies the ExtraMountOpts override to the StartupArgs.
-func (o WithExtraMountOptsOverride) apply(args *StartupArgs) {
-	args.ExtraMountOpts = o.ExtraMountOpts
-}
-
-// WithExtraMountOpts overrides the ExtraMountOpts field.
-func WithExtraMountOpts(extraMountOpts string) WithExtraMountOptsOverride {
-	return WithExtraMountOptsOverride{ExtraMountOpts: extraMountOpts}
-}
-
-// WithBootDiskOnlyOverride is an override for the BootDiskOnly field.
-type WithBootDiskOnlyOverride struct {
-	BootDiskOnly bool
-}
-
-// apply applies the BootDiskOnly override to the StartupArgs.
-func (o WithBootDiskOnlyOverride) apply(args *StartupArgs) {
-	args.BootDiskOnly = o.BootDiskOnly
-}
-
-// WithBootDiskOnly overrides the BootDiskOnly field.
-func WithBootDiskOnly(bootDiskOnly bool) WithBootDiskOnlyOverride {
-	return WithBootDiskOnlyOverride{BootDiskOnly: bootDiskOnly}
-}
-
-// WithUseMultipleDisksOverride is an override for the UseMultipleDisks field.
-type WithUseMultipleDisksOverride struct {
-	UseMultipleDisks bool
-}
-
-// apply applies the UseMultipleDisks override to the StartupArgs.
-func (o WithUseMultipleDisksOverride) apply(args *StartupArgs) {
-	args.UseMultipleDisks = o.UseMultipleDisks
-}
-
-// WithUseMultipleDisks overrides the UseMultipleDisks field.
-func WithUseMultipleDisks(useMultipleDisks bool) WithUseMultipleDisksOverride {
-	return WithUseMultipleDisksOverride{UseMultipleDisks: useMultipleDisks}
+// WithZfs overrides the Zfs field.
+func WithZfs(zfs bool) WithZfsOverride {
+	return WithZfsOverride{Zfs: zfs}
 }
 
 // WithEnableFIPSOverride is an override for the EnableFIPS field.

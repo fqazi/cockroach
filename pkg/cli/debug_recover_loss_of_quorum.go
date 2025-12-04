@@ -58,7 +58,7 @@ func (l *confirmActionFlag) String() string {
 	case prompt:
 		return "p"
 	}
-	log.Dev.Fatalf(context.Background(), "unknown confirm action flag value %d", *l)
+	log.Fatalf(context.Background(), "unknown confirm action flag value %d", *l)
 	return ""
 }
 
@@ -825,7 +825,6 @@ func applyRecoveryToLocalStore(
 		defer store.Close() //nolint:deferloop
 		defer batch.Close() //nolint:deferloop
 
-		// TODO(sep-raft-log): StoreIdent is in the LogEngine.
 		storeIdent, err := kvstorage.ReadStoreIdent(ctx, store)
 		if err != nil {
 			return err
@@ -845,7 +844,6 @@ func applyRecoveryToLocalStore(
 	}
 
 	updateTime := timeutil.Now()
-	// TODO(sep-raft-log): batches need to work with the split log/state engines.
 	prepReport, err := loqrecovery.PrepareUpdateReplicas(
 		ctx, nodeUpdates, uuid.DefaultGenerator, updateTime, localNodeID, batches)
 	if err != nil {

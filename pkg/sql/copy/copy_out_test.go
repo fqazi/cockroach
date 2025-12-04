@@ -24,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
+	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 )
@@ -45,12 +46,12 @@ func TestCopyOutTransaction(t *testing.T) {
 	`)
 	require.NoError(t, err)
 
-	pgURL, cleanupGoDB := s.PGUrl(
-		t,
+	pgURL, cleanupGoDB, err := s.PGUrlE(
 		serverutils.CertsDirPrefix("StartServer"),
 		serverutils.User(username.RootUser),
 	)
-	defer cleanupGoDB()
+	require.NoError(t, err)
+	s.AppStopper().AddCloser(stop.CloserFn(func() { cleanupGoDB() }))
 	config, err := pgx.ParseConfig(pgURL.String())
 	require.NoError(t, err)
 
@@ -124,12 +125,12 @@ func TestCopyOutRandom(t *testing.T) {
 
 	// Use pgx for this next bit as it allows selecting rows by raw values.
 	// Furthermore, it handles CopyTo!
-	pgURL, cleanupGoDB := s.PGUrl(
-		t,
+	pgURL, cleanupGoDB, err := s.PGUrlE(
 		serverutils.CertsDirPrefix("StartServer"),
 		serverutils.User(username.RootUser),
 	)
-	defer cleanupGoDB()
+	require.NoError(t, err)
+	s.AppStopper().AddCloser(stop.CloserFn(func() { cleanupGoDB() }))
 	config, err := pgx.ParseConfig(pgURL.String())
 	require.NoError(t, err)
 	config.Database = sqlutils.TestDB

@@ -14,7 +14,6 @@ go_test(
         "//pkg/ccl",
         "//pkg/ccl/kvccl/kvtenantccl",
         "//pkg/ccl/partitionccl",
-        "//pkg/clusterversion",
         "//pkg/config/zonepb",
         "//pkg/jobs/jobspb",
         "//pkg/roachpb",

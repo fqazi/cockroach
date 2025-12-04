@@ -56,8 +56,10 @@ func (f MultiRegionTestClusterFactory) WithSchemaLockDisabled() sctest.TestServe
 	return f
 }
 
-// Start implements the sctest.TestServerFactory interface.
-func (f MultiRegionTestClusterFactory) Start(ctx context.Context, t *testing.T) sctest.TestServer {
+// Run implements the sctest.TestServerFactory interface.
+func (f MultiRegionTestClusterFactory) Run(
+	ctx context.Context, t *testing.T, fn func(_ serverutils.TestServerInterface, _ *gosql.DB),
+) {
 	const numServers = 3
 	knobs := base.TestingKnobs{
 		SQLEvalContext: &eval.TestingKnobs{
@@ -81,19 +83,6 @@ func (f MultiRegionTestClusterFactory) Start(ctx context.Context, t *testing.T) 
 	}
 	sql.CreateTableWithSchemaLocked.Override(ctx, &st.SV, !f.schemaLockedDisabled)
 	c, db, _ := multiregionccltestutils.TestingCreateMultiRegionCluster(t, numServers, knobs, multiregionccltestutils.WithSettings(st))
-	return sctest.TestServer{
-		Server: c.Server(0),
-		DB:     db,
-		Stopper: func(t *testing.T) {
-			c.Stopper().Stop(ctx)
-		},
-	}
-}
-
-func (f MultiRegionTestClusterFactory) Run(
-	ctx context.Context, t *testing.T, fn func(s serverutils.TestServerInterface, tdb *gosql.DB),
-) {
-	s := f.Start(ctx, t)
-	defer s.Stopper(t)
-	fn(s.Server, s.DB)
+	defer c.Stopper().Stop(ctx)
+	fn(c.Server(0), db)
 }

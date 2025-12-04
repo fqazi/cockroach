@@ -7,6 +7,7 @@ package backup
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
 	"math/rand"
 	"strings"
@@ -21,9 +22,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
-	"github.com/cockroachdb/cockroach/pkg/sql/physicalplan"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -167,7 +168,7 @@ func (s dbSplitAndScatterer) split(
 	}
 	for r := retry.StartWithCtx(ctx, retryOpts); r.Next(); {
 		if err = s.db.AdminSplit(ctx, newSplitKey, expirationTime); err != nil {
-			log.Dev.VInfof(
+			log.VInfof(
 				ctx, 1, "attempt %d failed to split at key %s: %v", r.CurrentAttempt(), newSplitKey, err,
 			)
 			continue
@@ -225,7 +226,7 @@ func (s dbSplitAndScatterer) scatter(
 			// this could break entirely and not start failing the tests,
 			// but on the bright side, it doesn't affect correctness, only
 			// throughput.
-			log.Dev.Errorf(ctx, "failed to scatter span [%s,%s): %+v",
+			log.Errorf(ctx, "failed to scatter span [%s,%s): %+v",
 				newScatterKey, newScatterKey.Next(), pErr.GoError())
 		}
 		return 0, nil
@@ -246,6 +247,15 @@ func (s dbSplitAndScatterer) findDestination(res *kvpb.AdminScatterResponse) roa
 	}
 
 	return roachpb.NodeID(0)
+}
+
+func routingDatumsForSQLInstance(
+	sqlInstanceID base.SQLInstanceID,
+) (rowenc.EncDatum, rowenc.EncDatum) {
+	routingBytes := roachpb.Key(fmt.Sprintf("node%d", sqlInstanceID))
+	startDatum := rowenc.DatumToEncDatum(types.Bytes, tree.NewDBytes(tree.DBytes(routingBytes)))
+	endDatum := rowenc.DatumToEncDatum(types.Bytes, tree.NewDBytes(tree.DBytes(routingBytes.Next())))
+	return startDatum, endDatum
 }
 
 type entryNode struct {
@@ -357,7 +367,6 @@ func (gssp *generativeSplitAndScatterProcessor) Start(ctx context.Context) {
 	}); err != nil {
 		gssp.scatterErr = err
 		cancel()
-		close(gssp.doneScatterCh)
 		close(workerDone)
 	}
 }
@@ -383,13 +392,13 @@ func (gssp *generativeSplitAndScatterProcessor) Next() (
 		// The routing datums informs the router which output stream should be used.
 		routingDatum, ok := gssp.routingDatumCache.getRoutingDatum(scatteredEntry.node)
 		if !ok {
-			routingDatum, _ = physicalplan.RoutingDatumsForSQLInstance(base.SQLInstanceID(scatteredEntry.node))
+			routingDatum, _ = routingDatumsForSQLInstance(base.SQLInstanceID(scatteredEntry.node))
 			gssp.routingDatumCache.putRoutingDatum(scatteredEntry.node, routingDatum)
 		}
 
 		row := rowenc.EncDatumRow{
 			routingDatum,
-			rowenc.DatumToEncDatumUnsafe(types.Bytes, tree.NewDBytes(tree.DBytes(entryBytes))),
+			rowenc.DatumToEncDatum(types.Bytes, tree.NewDBytes(tree.DBytes(entryBytes))),
 		}
 		return row, nil
 	}
@@ -459,7 +468,7 @@ func runGenerativeSplitAndScatter(
 	doneScatterCh chan<- entryNode,
 	cache *routingDatumCache,
 ) error {
-	log.Dev.Infof(ctx, "Running generative split and scatter with %d total spans, %d chunk size, %d nodes",
+	log.Infof(ctx, "Running generative split and scatter with %d total spans, %d chunk size, %d nodes",
 		spec.NumEntries, spec.ChunkSize, spec.NumNodes)
 	g := ctxgroup.WithContext(ctx)
 
@@ -588,17 +597,17 @@ func runGenerativeSplitAndScatter(
 							if len(cachedNodeIDs) > 0 {
 								hash.Reset()
 								if _, err := hash.Write(scatterKey); err != nil {
-									log.Dev.Warningf(ctx, "scatter returned node 0. Route span starting at %s to current node %v because of hash error: %v",
+									log.Warningf(ctx, "scatter returned node 0. Route span starting at %s to current node %v because of hash error: %v",
 										scatterKey, nodeID, err)
 								} else {
 									hashedKey := int(hash.Sum32())
 									nodeID = cachedNodeIDs[hashedKey%len(cachedNodeIDs)]
 								}
 
-								log.Dev.Warningf(ctx, "scatter returned node 0. "+
+								log.Warningf(ctx, "scatter returned node 0. "+
 									"Random route span starting at %s node %v", scatterKey, nodeID)
 							} else {
-								log.Dev.Warningf(ctx, "scatter returned node 0. "+
+								log.Warningf(ctx, "scatter returned node 0. "+
 									"Route span starting at %s to current node %v", scatterKey, nodeID)
 							}
 							chunkDestination = nodeID
@@ -606,7 +615,7 @@ func runGenerativeSplitAndScatter(
 							// TODO(rui): OptionalNodeID only returns a node if the sql server runs
 							// in the same process as the kv server (e.g., not serverless). Figure
 							// out how to handle this error in serverless restore.
-							log.Dev.Warningf(ctx, "scatter returned node 0. "+
+							log.Warningf(ctx, "scatter returned node 0. "+
 								"Route span starting at %s to default stream", scatterKey)
 						}
 					}
@@ -661,7 +670,7 @@ func runGenerativeSplitAndScatter(
 				for i, importEntry := range importSpanChunk.entries {
 					nextChunkIdx := i + 1
 
-					log.Dev.VInfof(ctx, 2, "processing a span [%s,%s)", importEntry.Span.Key, importEntry.Span.EndKey)
+					log.VInfof(ctx, 2, "processing a span [%s,%s)", importEntry.Span.Key, importEntry.Span.EndKey)
 					var splitKey roachpb.Key
 					if nextChunkIdx < len(importSpanChunk.entries) {
 						// Split at the next entry.
@@ -733,6 +742,24 @@ func newRoutingDatumCache() routingDatumCache {
 var splitAndScatterOutputTypes = []*types.T{
 	types.Bytes, // Span key for the range router
 	types.Bytes, // RestoreDataEntry bytes
+}
+
+// routingSpanForSQLInstance provides the mapping to be used during distsql planning
+// when setting up the output router.
+func routingSpanForSQLInstance(sqlInstanceID base.SQLInstanceID) ([]byte, []byte, error) {
+	var alloc tree.DatumAlloc
+	startDatum, endDatum := routingDatumsForSQLInstance(sqlInstanceID)
+
+	startBytes, endBytes := make([]byte, 0), make([]byte, 0)
+	startBytes, err := startDatum.Encode(splitAndScatterOutputTypes[0], &alloc, catenumpb.DatumEncoding_ASCENDING_KEY, startBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	endBytes, err = endDatum.Encode(splitAndScatterOutputTypes[0], &alloc, catenumpb.DatumEncoding_ASCENDING_KEY, endBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	return startBytes, endBytes, nil
 }
 
 func init() {

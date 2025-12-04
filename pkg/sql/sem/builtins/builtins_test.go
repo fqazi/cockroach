@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins/builtinconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins/builtinsregistry"
@@ -87,17 +86,8 @@ func TestSerialNormalizationWithUniqueUnorderedID(t *testing.T) {
 					},
 				},
 			}
-			srv, db, _ := serverutils.StartServer(t, params)
-			defer srv.Stopper().Stop(ctx)
-
-			if srv.DeploymentMode().IsExternal() {
-				// If we're in the external-process mode, then disable rate
-				// limiting for it (we're going to slam the server with load,
-				// and we don't want for queries to be artificially delayed).
-				require.NoError(t, srv.GrantTenantCapabilities(
-					ctx, serverutils.TestTenantID(),
-					map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.ExemptFromRateLimiting: "true"}))
-			}
+			s, db, _ := serverutils.StartServer(t, params)
+			defer s.Stopper().Stop(ctx)
 
 			tdb := sqlutils.MakeSQLRunner(db)
 			// Create a new table with serial primary key i (unordered_rowid) and int j (index).

@@ -8,10 +8,9 @@ package execbuilder
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
+	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/exec"
-	"github.com/cockroachdb/cockroach/pkg/sql/opt/exec/explain"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/norm"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/props"
@@ -26,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree/treecmp"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -41,8 +39,6 @@ type buildScalarCtx struct {
 	// If a ColumnID is not in the map, it cannot appear in the expression.
 	ivarMap colOrdMap
 }
-
-var emptyBuildScalarCtx buildScalarCtx
 
 type buildFunc func(b *Builder, ctx *buildScalarCtx, scalar opt.ScalarExpr) (tree.TypedExpr, error)
 
@@ -373,13 +369,6 @@ func (b *Builder) buildCast(ctx *buildScalarCtx, scalar opt.ScalarExpr) (tree.Ty
 	return tree.NewTypedCastExpr(input, cast.Typ), nil
 }
 
-const assnCastFnName = "crdb_internal.assignment_cast"
-
-var (
-	assnCastFuncRef                  = tree.WrapFunction(assnCastFnName)
-	assnCastProps, assnCastOverloads = builtinsregistry.GetBuiltinProperties(assnCastFnName)
-)
-
 // buildAssignmentCast builds an AssignmentCastExpr with input i and type T into
 // a built-in function call crdb_internal.assignment_cast(i, NULL::T).
 func (b *Builder) buildAssignmentCast(
@@ -398,15 +387,21 @@ func (b *Builder) buildAssignmentCast(
 		return input, nil
 	}
 
+	const fnName = "crdb_internal.assignment_cast"
+	funcRef, err := b.wrapBuiltinFunction(fnName)
+	if err != nil {
+		return nil, err
+	}
+	props, overloads := builtinsregistry.GetBuiltinProperties(fnName)
 	return tree.NewTypedFuncExpr(
-		assnCastFuncRef,
+		funcRef,
 		0, /* aggQualifier */
 		tree.TypedExprs{input, tree.NewTypedCastExpr(tree.DNull, cast.Typ)},
 		nil, /* filter */
 		nil, /* windowDef */
 		cast.Typ,
-		assnCastProps,
-		&assnCastOverloads[0],
+		props,
+		&overloads[0],
 	), nil
 }
 
@@ -678,7 +673,7 @@ func (b *Builder) buildExistsSubquery(
 		stmtProps := []*physical.Required{{Presentation: physical.Presentation{aliasedCol}}}
 
 		// Create an wrapRootExprFn that wraps input in a Limit and a Project.
-		wrapRootExpr := func(f *norm.Factory, e memo.RelExpr) memo.RelExpr {
+		wrapRootExpr := func(f *norm.Factory, e memo.RelExpr) opt.Expr {
 			return f.ConstructProject(
 				f.ConstructLimit(
 					e,
@@ -696,9 +691,7 @@ func (b *Builder) buildExistsSubquery(
 			params,
 			stmts,
 			stmtProps,
-			nil, /* stmtStr */
-			make([]string, len(stmts)),
-			nil,  /* stmtASTs */
+			nil,  /* stmtStr */
 			true, /* allowOuterWithRefs */
 			wrapRootExpr,
 			0, /* resultBufferID */
@@ -765,7 +758,7 @@ func (b *Builder) buildSubquery(
 				if homeRegion != gatewayRegion {
 					return nil, pgerror.Newf(pgcode.QueryNotRunningInHomeRegion,
 						`%s. Try running the query from region '%s'. %s`,
-						sqlerrors.QueryNotRunningInHomeRegionMessagePrefix,
+						execinfra.QueryNotRunningInHomeRegionMessagePrefix,
 						homeRegion,
 						sqlerrors.EnforceHomeRegionFurtherInfo,
 					)
@@ -824,9 +817,7 @@ func (b *Builder) buildSubquery(
 			params,
 			stmts,
 			stmtProps,
-			nil, /* stmtStr */
-			make([]string, len(stmts)),
-			nil,  /* stmtASTs */
+			nil,  /* stmtStr */
 			true, /* allowOuterWithRefs */
 			nil,  /* wrapRootExpr */
 			0,    /* resultBufferID */
@@ -905,7 +896,7 @@ func (b *Builder) buildSubquery(
 			if err != nil {
 				return err
 			}
-			err = fn(plan, nil /* routineStatsBuilder */, "" /* stmtForDistSQLDiagram */, true /* isFinalPlan */)
+			err = fn(plan, "" /* stmtForDistSQLDiagram */, true /* isFinalPlan */)
 			if err != nil {
 				return err
 			}
@@ -1021,8 +1012,6 @@ func (b *Builder) buildUDF(ctx *buildScalarCtx, scalar opt.ScalarExpr) (tree.Typ
 		udf.Def.Body,
 		udf.Def.BodyProps,
 		udf.Def.BodyStmts,
-		udf.Def.BodyTags,
-		udf.Def.BodyASTs,
 		false, /* allowOuterWithRefs */
 		nil,   /* wrapRootExpr */
 		udf.Def.ResultBufferID,
@@ -1096,8 +1085,6 @@ func (b *Builder) initRoutineExceptionHandler(
 			action.Body,
 			action.BodyProps,
 			action.BodyStmts,
-			action.BodyTags,
-			nil,   /* stmtASTs */
 			false, /* allowOuterWithRefs */
 			nil,   /* wrapRootExpr */
 			0,     /* resultBufferID */
@@ -1126,7 +1113,7 @@ func (b *Builder) initRoutineExceptionHandler(
 	blockState.ExceptionHandler = exceptionHandler
 }
 
-type wrapRootExprFn func(f *norm.Factory, e memo.RelExpr) memo.RelExpr
+type wrapRootExprFn func(f *norm.Factory, e memo.RelExpr) opt.Expr
 
 // buildRoutinePlanGenerator returns a tree.RoutinePlanFn that can plan the
 // statements in a routine that has one or more arguments.
@@ -1147,8 +1134,6 @@ func (b *Builder) buildRoutinePlanGenerator(
 	stmts []memo.RelExpr,
 	stmtProps []*physical.Required,
 	stmtStr []string,
-	stmtTags []string,
-	stmtASTs []tree.Statement,
 	allowOuterWithRefs bool,
 	wrapRootExpr wrapRootExprFn,
 	resultBufferID memo.RoutineResultBufferID,
@@ -1182,8 +1167,6 @@ func (b *Builder) buildRoutinePlanGenerator(
 	//
 	// Note: we put o outside of the function so we allocate it only once.
 	var o xform.Optimizer
-	var gistFactory explain.PlanGistFactory
-	var latencyRecorder = sqlstats.NewStatementLatencyRecorder()
 	originalMemo := b.mem
 	planGen := func(
 		ctx context.Context,
@@ -1191,48 +1174,32 @@ func (b *Builder) buildRoutinePlanGenerator(
 		resultWriter tree.RoutineResultWriter,
 		args tree.Datums,
 		fn tree.RoutinePlanGeneratedFunc,
-	) (retErr error) {
-		// This is the same panic-catching logic that exists in o.Optimize()
-		// below. It's required here because it's possible for factory functions
-		// to panic below, like CopyAndReplaceDefault.
-		defer errorutil.MaybeCatchPanic(&retErr, func(caughtErr error) {
-			log.VEventf(ctx, 1, "%v", caughtErr)
-		})
-
-		dbName := b.evalCtx.SessionData().Database
-		appName := b.evalCtx.SessionData().ApplicationName
-		// TODO(yuzefovich): look into computing fingerprintFormat lazily.
-		fingerprintFormat := tree.FmtHideConstants | tree.FmtFlags(tree.QueryFormattingForFingerprintsMask.Get(&b.evalCtx.Settings.SV))
-		for i := range stmts {
-			latencyRecorder.Reset()
-			var builder *sqlstats.RecordedStatementStatsBuilder
-			var statsBuilderWithLatencies tree.RoutineStatsBuilder
-			sqlstats.RecordStatementPhase(latencyRecorder, sqlstats.StatementStarted)
-			sqlstats.RecordStatementPhase(latencyRecorder, sqlstats.StatementStartParsing)
-			stmt := stmts[i]
-			props := stmtProps[i]
-			var tag string
-			// Theoretically, stmts and stmtTags should have the same length,
-			// but just to avoid an out-of-bounds panic, we have this check.
-			if i < len(stmtTags) {
-				tag = stmtTags[i]
-			}
-			if i < len(stmtASTs) && stmtASTs[i] != nil {
-				fingerprint := tree.FormatStatementHideConstants(stmtASTs[i], fingerprintFormat)
-				fpId := appstatspb.ConstructStatementFingerprintID(fingerprint, b.evalCtx.TxnImplicit, dbName)
-				summary := tree.FormatStatementSummary(stmtASTs[i], fingerprintFormat)
-				stmtType := stmtASTs[i].StatementType()
-				builder = sqlstats.NewRecordedStatementStatsBuilder(
-					fpId, dbName, fingerprint, summary, stmtType, appName,
-				)
-
-				statsBuilderWithLatencies = &sqlstats.StatsBuilderWithLatencyRecorder{
-					StatsBuilder:    builder,
-					LatencyRecorder: latencyRecorder,
+	) (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				// This code allows us to propagate internal errors without
+				// having to add error checks everywhere throughout the code.
+				// This is only possible because the code does not update shared
+				// state and does not manipulate locks.
+				//
+				// This is the same panic-catching logic that exists in
+				// o.Optimize() below. It's required here because it's possible
+				// for factory functions to panic below, like
+				// CopyAndReplaceDefault.
+				if ok, e := errorutil.ShouldCatch(r); ok {
+					err = e
+					log.VEventf(ctx, 1, "%v", err)
+				} else {
+					// Other panic objects can't be considered "safe" and thus
+					// are propagated as crashes that terminate the session.
+					panic(r)
 				}
 			}
-			sqlstats.RecordStatementPhase(latencyRecorder, sqlstats.StatementEndParsing)
-			sqlstats.RecordStatementPhase(latencyRecorder, sqlstats.StatementStartPlanning)
+		}()
+
+		for i := range stmts {
+			stmt := stmts[i]
+			props := stmtProps[i]
 			o.Init(ctx, b.evalCtx, b.catalog)
 			f := o.Factory()
 
@@ -1280,7 +1247,7 @@ func (b *Builder) buildRoutinePlanGenerator(
 			f.CopyAndReplace(originalMemo, stmt, props, replaceFn)
 
 			if wrapRootExpr != nil {
-				wrapped := wrapRootExpr(f, f.Memo().RootExpr())
+				wrapped := wrapRootExpr(f, f.Memo().RootExpr().(memo.RelExpr)).(memo.RelExpr)
 				f.Memo().SetRoot(wrapped, props)
 			}
 
@@ -1304,14 +1271,9 @@ func (b *Builder) buildRoutinePlanGenerator(
 				tailCalls = make(map[opt.ScalarExpr]struct{})
 				memo.ExtractTailCalls(optimizedExpr, tailCalls)
 			}
+
 			// Build the memo into a plan.
 			ef := ref.(exec.Factory)
-			if builder != nil && !b.evalCtx.SessionData().DisablePlanGists {
-				gistFactory.Reset()
-				gistFactory.Init(ef)
-				ef = &gistFactory
-			}
-
 			eb := New(ctx, ef, &o, f.Memo(), b.catalog, optimizedExpr, b.semaCtx, b.evalCtx, false /* allowAutoCommit */, b.IsANSIDML)
 			eb.withExprs = withExprs
 			eb.disableTelemetry = true
@@ -1325,10 +1287,6 @@ func (b *Builder) buildRoutinePlanGenerator(
 				eb.addRoutineResultBuffer(resultBufferID, resultWriter)
 			}
 			plan, err := eb.Build()
-			if gistFactory.Initialized() {
-				planGist := gistFactory.PlanGist()
-				builder.PlanGist(planGist.String(), planGist.Hash())
-			}
 			if err != nil {
 				if errors.IsAssertionFailure(err) {
 					// Enhance the error with the EXPLAIN (OPT, VERBOSE) of the
@@ -1349,40 +1307,14 @@ func (b *Builder) buildRoutinePlanGenerator(
 			if i < len(stmtStr) {
 				stmtForDistSQLDiagram = stmtStr[i]
 			}
-			incrementRoutineStmtCounter(b.evalCtx.StartedRoutineStatementCounters, dbName, appName, tag)
-			sqlstats.RecordStatementPhase(latencyRecorder, sqlstats.StatementEndPlanning)
-			err = fn(plan, statsBuilderWithLatencies, stmtForDistSQLDiagram, isFinalPlan)
+			err = fn(plan, stmtForDistSQLDiagram, isFinalPlan)
 			if err != nil {
 				return err
 			}
-			incrementRoutineStmtCounter(b.evalCtx.ExecutedRoutineStatementCounters, dbName, appName, tag)
 		}
 		return nil
 	}
 	return planGen
-}
-
-func incrementRoutineStmtCounter(
-	counters eval.RoutineStatementCounters, dbName string, appName string, stmtTag string,
-) {
-	switch stmtTag {
-	case "INSERT":
-		if counters.InsertCount != nil {
-			counters.InsertCount.Inc(dbName, appName)
-		}
-	case "UPDATE":
-		if counters.UpdateCount != nil {
-			counters.UpdateCount.Inc(dbName, appName)
-		}
-	case "SELECT":
-		if counters.SelectCount != nil {
-			counters.SelectCount.Inc(dbName, appName)
-		}
-	case "DELETE":
-		if counters.DeleteCount != nil {
-			counters.DeleteCount.Inc(dbName, appName)
-		}
-	}
 }
 
 func (b *Builder) addRoutineResultBuffer(
@@ -1419,10 +1351,28 @@ func (b *Builder) buildTxnControl(
 	}
 	gen := func(
 		ctx context.Context, evalArgs tree.Datums,
-	) (con tree.StoredProcContinuation, retErr error) {
-		defer errorutil.MaybeCatchPanic(&retErr, func(caughtErr error) {
-			log.VEventf(ctx, 1, "%v", caughtErr)
-		})
+	) (con tree.StoredProcContinuation, err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				// This code allows us to propagate internal errors without
+				// having to add error checks everywhere throughout the code.
+				// This is only possible because the code does not update shared
+				// state and does not manipulate locks.
+				//
+				// This is the same panic-catching logic that exists in
+				// o.Optimize() below. It's required here because it's possible
+				// for factory functions to panic below, like
+				// CopyAndReplaceDefault.
+				if ok, e := errorutil.ShouldCatch(r); ok {
+					err = e
+					log.VEventf(ctx, 1, "%v", err)
+				} else {
+					// Other panic objects can't be considered "safe" and thus
+					// are propagated as crashes that terminate the session.
+					panic(r)
+				}
+			}
+		}()
 		// Build the plan for the "continuation" procedure that will resume
 		// execution of the parent stored procedure in a new transaction.
 		var f norm.Factory

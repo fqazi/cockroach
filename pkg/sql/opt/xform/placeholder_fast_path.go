@@ -28,10 +28,24 @@ const maxRowCountForPlaceholderFastPath = 10
 // PlaceholderScan.
 //
 // If this function succeeds, the memo will be considered fully optimized.
-func (o *Optimizer) TryPlaceholderFastPath() (ok bool, retErr error) {
-	defer errorutil.MaybeCatchPanic(&retErr, nil /* errCallback */)
+func (o *Optimizer) TryPlaceholderFastPath() (ok bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			// This code allows us to propagate internal errors without having to add
+			// error checks everywhere throughout the code. This is only possible
+			// because the code does not update shared state and does not manipulate
+			// locks.
+			if shouldCatch, e := errorutil.ShouldCatch(r); shouldCatch {
+				err = e
+			} else {
+				// Other panic objects can't be considered "safe" and thus are
+				// propagated as crashes that terminate the session.
+				panic(r)
+			}
+		}
+	}()
 
-	root := o.mem.RootExpr()
+	root := o.mem.RootExpr().(memo.RelExpr)
 
 	rootRelProps := root.Relational()
 	// We are dealing with a memo that still contains placeholders. The statistics

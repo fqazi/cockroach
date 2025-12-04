@@ -16,10 +16,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
@@ -762,7 +763,7 @@ func TestEngineScan1(t *testing.T) {
 	for i, t := range testCases {
 		sortedKeys[i] = string(t.key.Key)
 	}
-	slices.Sort(sortedKeys)
+	sort.Strings(sortedKeys)
 
 	keyvals, err := Scan(context.Background(), engine, roachpb.Key("chinese"), roachpb.Key("german"), 0)
 	if err != nil {
@@ -1071,10 +1072,7 @@ func TestCreateCheckpoint(t *testing.T) {
 }
 
 func mustInitTestEnv(t testing.TB, baseFS vfs.FS, dir string) *fs.Env {
-	settings := cluster.MakeTestingClusterSettings()
-	e, err := fs.InitEnv(context.Background(), baseFS, dir, fs.EnvConfig{
-		Version: settings.Version,
-	}, nil /* statsCollector */)
+	e, err := fs.InitEnv(context.Background(), baseFS, dir, fs.EnvConfig{}, nil /* statsCollector */)
 	require.NoError(t, err)
 	return e
 }
@@ -1185,6 +1183,34 @@ func TestCreateCheckpoint_SpanConstrained(t *testing.T) {
 	}
 }
 
+func TestIngestDelayLimit(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	s := cluster.MakeTestingClusterSettings()
+
+	max, ramp := time.Second*5, time.Second*5/10
+
+	for _, tc := range []struct {
+		exp           time.Duration
+		fileCount     int64
+		sublevelCount int32
+	}{
+		{0, 0, 0},
+		{0, 19, -1},
+		{0, 20, -1},
+		{ramp, 21, -1},
+		{ramp * 2, 22, -1},
+		{ramp * 2, 22, 22},
+		{ramp * 2, 55, 22},
+		{max, 55, -1},
+	} {
+		var m pebble.Metrics
+		m.Levels[0].TablesCount = tc.fileCount
+		m.Levels[0].Sublevels = tc.sublevelCount
+		require.Equal(t, tc.exp, calculatePreIngestDelay(s, &m))
+	}
+}
+
 func TestEngineFS(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1282,7 +1308,7 @@ func TestEngineFS(t *testing.T) {
 			if err != nil {
 				break
 			}
-			slices.Sort(result)
+			sort.Strings(result)
 			got := strings.Join(result, ",")
 			want := s[3]
 			if got != want {
@@ -1431,7 +1457,7 @@ func TestFS(t *testing.T) {
 				t.Helper()
 
 				got, err := e.List(dir)
-				slices.Sort(got)
+				sort.Strings(got)
 				require.NoError(t, err)
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("e.List(%q) = %#v, want %#v", dir, got, want)
@@ -1581,7 +1607,7 @@ func TestScanLocks(t *testing.T) {
 	for k := range locks {
 		keys = append(keys, roachpb.Key(k))
 	}
-	slices.SortFunc(keys, roachpb.Key.Compare)
+	sort.Slice(keys, func(i, j int) bool { return bytes.Compare(keys[i], keys[j]) < 0 })
 
 	testcases := map[string]struct {
 		from        roachpb.Key

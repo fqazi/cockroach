@@ -59,10 +59,6 @@ type BackupRestoreTestingKnobs struct {
 
 	RestoreDistSQLRetryPolicy *retry.Options
 
-	// RestoreRetryProgressThreshold allows configuring the threshold at which
-	// the restore will no longer fast fail after a certain number of retries.
-	RestoreRetryProgressThreshold float32
-
 	RunBeforeRestoreFlow func() error
 
 	RunAfterRestoreFlow func() error
@@ -78,22 +74,6 @@ type BackupRestoreTestingKnobs struct {
 	RunAfterRestoreProcDrains func()
 
 	RunBeforeResolvingCompactionDest func() error
-
-	// RunBeforeSendingDownloadSpan is called within the retry loop of the
-	// download span worker before sending the download span request.
-	RunBeforeSendingDownloadSpan func() error
-
-	// RunBeforeDownloadCleanup is called before we cleanup after all external
-	// files have been download.
-	RunBeforeDownloadCleanup func() error
-
-	// AfterAddRemoteSST is called after a remote SST is linked to pebble during
-	// the link phase of online restore.
-	AfterAddRemoteSST func() error
-
-	// AfterRevertRestoreDropDescriptors is called after a reverting restore
-	// drops its descriptors.
-	AfterRevertRestoreDropDescriptors func() error
 }
 
 var _ base.ModuleTestingKnobs = &BackupRestoreTestingKnobs{}

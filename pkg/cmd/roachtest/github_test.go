@@ -2,11 +2,13 @@
 //
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
+
 package main
 
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,12 +33,12 @@ import (
 
 var (
 	teamsYaml = `cockroachdb/unowned:
- aliases:
-   cockroachdb/rfc-prs: other
+  aliases:
+    cockroachdb/rfc-prs: other
 cockroachdb/test-eng:
- label: T-testeng
+  label: T-testeng
 cockroachdb/dev-inf:
- label: T-dev-inf`
+  label: T-dev-inf`
 
 	validTeamsFn   = func() (team.Map, error) { return loadYamlTeams(teamsYaml) }
 	invalidTeamsFn = func() (team.Map, error) { return loadYamlTeams("invalid yaml") }
@@ -89,7 +91,7 @@ func TestShouldPost(t *testing.T) {
 
 		ti := &testImpl{spec: testSpec}
 		ti.mu.failures = c.failures
-		github := &githubIssues{disable: c.disableIssues, dryRun: false}
+		github := &githubIssues{disable: c.disableIssues}
 
 		skipReason := github.shouldPost(ti)
 		require.Equal(t, c.expectedReason, skipReason)
@@ -121,7 +123,6 @@ func TestCreatePostRequest(t *testing.T) {
 	type githubIssueOpts struct {
 		failures        []failure
 		loadTeamsFailed bool
-		message         string
 	}
 
 	datadriven.Walk(t, datapathutils.TestDataPath(t, "github"), func(t *testing.T, path string) {
@@ -153,9 +154,10 @@ func TestCreatePostRequest(t *testing.T) {
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
 			if d.Cmd == "post" {
 				github := &githubIssues{
-					teamLoader: teamLoadFn,
+					vmCreateOpts: vmOpts,
+					cluster:      testClusterImpl,
+					teamLoader:   teamLoadFn,
 				}
-				issueInfo := newGithubIssueInfo(testClusterImpl, vmOpts)
 
 				// See: `formatFailure` which formats failures for roachtests. Try to
 				// follow it here.
@@ -169,13 +171,12 @@ func TestCreatePostRequest(t *testing.T) {
 					// on where this test is run and prone to flaking.
 					fmt.Fprintf(&b, "%v", f.squashedErr)
 				}
-				message := b.String() + testCase.message
+				message := b.String()
 
-				params := getTestParameters(ti, issueInfo.cluster, issueInfo.vmCreateOpts)
+				params := getTestParameters(ti, github.cluster, github.vmCreateOpts)
 				req, err := github.createPostRequest(
 					testName, ti.start, ti.end, testSpec, testCase.failures,
 					message, roachtestutil.UsingRuntimeAssertions(ti), ti.goCoverEnabled, params,
-					issueInfo,
 				)
 				if testCase.loadTeamsFailed {
 					// Assert that if TEAMS.yaml cannot be loaded then function errors.
@@ -184,7 +185,7 @@ func TestCreatePostRequest(t *testing.T) {
 				}
 				require.NoError(t, err)
 
-				post, _, err := formatPostRequest(req)
+				post, err := formatPostRequest(req)
 				require.NoError(t, err)
 
 				return post
@@ -225,8 +226,6 @@ func TestCreatePostRequest(t *testing.T) {
 						case "lose-error-object":
 							// Lose the error object which should make our flake detection fail.
 							refError = errors.Newf("%s", redact.SafeString(refError.Error()))
-						case "node-fatal":
-							refError = errors.Newf(`(monitor.go:267).Wait: monitor failure: dial tcp 127.0.0.1:29000: connect: connection refused`)
 						}
 					}
 				}
@@ -249,21 +248,55 @@ func TestCreatePostRequest(t *testing.T) {
 				ti.spec.CockroachBinary = registry.RuntimeAssertionsCockroach
 			case "set-coverage-enabled-build":
 				ti.goCoverEnabled = true
-			case "add-additional-info":
-				msg_type := d.CmdArgs[0].Vals[0]
-				switch msg_type {
-				case "ip-node-info":
-					testCase.message = fmt.Sprintf("%s\n%s", testCase.message, `| Node | Public IP | Private IP |
-| --- | --- | --- |
-| teamcity-1758834520-01-n1cpu4-0001 | 34.139.44.53 | 10.142.0.2 |`)
-				case "fatal-logs":
-					testCase.message = fmt.Sprintf("%s\n%s", testCase.message, `F250826 19:49:07.194443 3106 sql/sem/builtins/builtins.go:6063 ⋮ [T1,Vsystem,n1,client=127.0.0.1:54552,hostssl,user=‹roachprod›] 250  force_log_fatal(): ‹oops›`)
-				default:
-					return fmt.Sprintf("unknown additional info argument: %s", msg_type)
-				}
 			}
 
 			return "ok"
 		})
 	})
+}
+
+// formatPostRequest returns a string representation of the rendered PostRequest.
+// Additionally, it also includes labels, as well as a link that can be followed
+// to open the issue in Github.
+func formatPostRequest(req issues.PostRequest) (string, error) {
+	data := issues.TemplateData{
+		PostRequest:      req,
+		Parameters:       req.ExtraParams,
+		CondensedMessage: issues.CondensedMessage(req.Message),
+		Branch:           "test_branch",
+		Commit:           "test_SHA",
+		PackageNameShort: strings.TrimPrefix(req.PackageName, issues.CockroachPkgPrefix),
+	}
+
+	formatter := issues.UnitTestFormatter
+	r := &issues.Renderer{}
+	if err := formatter.Body(r, data); err != nil {
+		return "", err
+	}
+
+	var post strings.Builder
+	post.WriteString(r.String())
+
+	// Github labels are normally not part of the rendered issue body, but we want to
+	// still test that they are correctly set so append them here.
+	post.WriteString("\n------\nLabels:\n")
+	for _, label := range req.Labels {
+		post.WriteString(fmt.Sprintf("- <code>%s</code>\n", label))
+	}
+
+	u, err := url.Parse("https://github.com/cockroachdb/cockroach/issues/new")
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Add("title", formatter.Title(data))
+	q.Add("body", post.String())
+	// Adding a template parameter is required to be able to view the rendered
+	// template on GitHub, otherwise it just takes you to the template selection
+	// page.
+	q.Add("template", "none")
+	u.RawQuery = q.Encode()
+	post.WriteString(fmt.Sprintf("Rendered:\n%s", u.String()))
+
+	return post.String(), nil
 }

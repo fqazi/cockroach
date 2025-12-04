@@ -12,7 +12,6 @@ begin transaction #1
 checking for feature: ALTER TABLE
 increment telemetry for sql.schema.alter_table
 increment telemetry for sql.schema.alter_table.add_column
-increment telemetry for sql.schema.qualifcation.unique
 increment telemetry for sql.schema.new_column_type.varbit_25_
 increment telemetry for sql.schema.alter_table.add_column
 increment telemetry for sql.schema.new_column_type.bit_25_
@@ -57,6 +56,7 @@ upsert descriptor #104
   +      type:
   +        family: BitFamily
   +        oid: 1562
+  +        visibleType: 10
   +        width: 25
   +    direction: ADD
   +    mutationId: 1
@@ -216,6 +216,7 @@ upsert descriptor #104
   +      type:
   +        family: BitFamily
   +        oid: 1562
+  +        visibleType: 10
   +        width: 25
   +    direction: ADD
   +    mutationId: 1
@@ -398,7 +399,7 @@ upsert descriptor #104
   -  version: "2"
   +  version: "3"
 persist all catalog changes to storage
-update progress of schema change job #1: "Pending: Backfilling index (1 operation) — PostCommit phase (stage 2 of 8)."
+update progress of schema change job #1: "PostCommitPhase stage 2 of 8 with 1 BackfillType op pending"
 commit transaction #3
 begin transaction #4
 ## PostCommitPhase stage 2 of 8 with 1 BackfillType op
@@ -491,7 +492,7 @@ upsert descriptor #104
   -  version: "3"
   +  version: "4"
 persist all catalog changes to storage
-update progress of schema change job #1: "Pending: Updating schema metadata (1 operation) — PostCommit phase (stage 5 of 8)."
+update progress of schema change job #1: "PostCommitPhase stage 5 of 8 with 1 MutationType op pending"
 commit transaction #6
 begin transaction #7
 ## PostCommitPhase stage 5 of 8 with 3 MutationType ops
@@ -509,7 +510,7 @@ upsert descriptor #104
   -  version: "4"
   +  version: "5"
 persist all catalog changes to storage
-update progress of schema change job #1: "Pending: Merging index (1 operation) — PostCommit phase (stage 6 of 8)."
+update progress of schema change job #1: "PostCommitPhase stage 6 of 8 with 1 BackfillType op pending"
 commit transaction #7
 begin transaction #8
 ## PostCommitPhase stage 6 of 8 with 1 BackfillType op
@@ -540,7 +541,7 @@ upsert descriptor #104
   -  version: "5"
   +  version: "6"
 persist all catalog changes to storage
-update progress of schema change job #1: "Pending: Validating index (1 operation) — PostCommit phase (stage 8 of 8)."
+update progress of schema change job #1: "PostCommitPhase stage 8 of 8 with 1 ValidationType op pending"
 commit transaction #9
 begin transaction #10
 ## PostCommitPhase stage 8 of 8 with 1 ValidationType op
@@ -557,6 +558,7 @@ upsert descriptor #104
   +    type:
   +      family: BitFamily
   +      oid: 1562
+  +      visibleType: 10
   +      width: 25
   +  - id: 4
   +    name: fb
@@ -606,6 +608,7 @@ upsert descriptor #104
   -      type:
   -        family: BitFamily
   -        oid: 1562
+  -        visibleType: 10
   -        width: 25
   -    direction: ADD
   -    mutationId: 1
@@ -684,7 +687,7 @@ persist all catalog changes to storage
 adding table for stats refresh: 104
 create job #2 (non-cancelable: true): "GC for ALTER TABLE defaultdb.public.bittab ADD COLUMN vb VARBIT(25) NOT NULL UNIQUE, ADD COLUMN fb BIT(25) NOT NULL"
   descriptor IDs: [104]
-update progress of schema change job #1: "Pending: Updating schema metadata (1 operation) — PostCommitNonRevertible phase (stage 2 of 2)."
+update progress of schema change job #1: "PostCommitNonRevertiblePhase stage 2 of 2 with 1 MutationType op pending"
 set schema change job #1 to non-cancellable
 commit transaction #11
 notified job registry to adopt jobs: [2]

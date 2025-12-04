@@ -11,8 +11,8 @@ import slpb "github.com/cockroachdb/cockroach/pkg/kv/kvserver/storeliveness/stor
 // Liveness state to be combined into a per-node view. It powers the inspectz
 // Store Liveness functionality.
 type InspectAllStoreLiveness interface {
-	InspectAllSupportFrom() ([]slpb.InspectSupportFromStatesPerStore, error)
-	InspectAllSupportFor() ([]slpb.InspectSupportForStatesPerStore, error)
+	InspectAllSupportFrom() ([]slpb.SupportStatesPerStore, error)
+	InspectAllSupportFor() ([]slpb.SupportStatesPerStore, error)
 }
 
 // StoresForStoreLiveness is a wrapper around Stores that implements
@@ -27,35 +27,29 @@ func MakeStoresForStoreLiveness(stores *Stores) *StoresForStoreLiveness {
 }
 
 // InspectAllSupportFrom implements the InspectAllStoreLiveness interface. It
-// iterates over all stores and aggregates their SupportFrom states.
-func (sfsl *StoresForStoreLiveness) InspectAllSupportFrom() (
-	[]slpb.InspectSupportFromStatesPerStore,
-	error,
-) {
+// iterates over all stores and aggregates their SupportFrom SupportStates.
+func (sfsl *StoresForStoreLiveness) InspectAllSupportFrom() ([]slpb.SupportStatesPerStore, error) {
 	stores := (*Stores)(sfsl)
-	var sfsps []slpb.InspectSupportFromStatesPerStore
+	var sspf []slpb.SupportStatesPerStore
 	err := stores.VisitStores(
 		func(s *Store) error {
-			sfsps = append(sfsps, s.storeLiveness.InspectSupportFrom())
+			sspf = append(sspf, s.storeLiveness.InspectSupportFrom())
 			return nil
 		},
 	)
-	return sfsps, err
+	return sspf, err
 }
 
 // InspectAllSupportFor implements the InspectAllStoreLiveness interface. It
-// iterates over all stores and aggregates their SupportFor states.
-func (sfsl *StoresForStoreLiveness) InspectAllSupportFor() (
-	[]slpb.InspectSupportForStatesPerStore,
-	error,
-) {
+// iterates over all stores and aggregates their SupportFor SupportStates.
+func (sfsl *StoresForStoreLiveness) InspectAllSupportFor() ([]slpb.SupportStatesPerStore, error) {
 	stores := (*Stores)(sfsl)
-	var sfsps []slpb.InspectSupportForStatesPerStore
+	var sspf []slpb.SupportStatesPerStore
 	err := stores.VisitStores(
 		func(s *Store) error {
-			sfsps = append(sfsps, s.storeLiveness.InspectSupportFor())
+			sspf = append(sspf, s.storeLiveness.InspectSupportFor())
 			return nil
 		},
 	)
-	return sfsps, err
+	return sspf, err
 }

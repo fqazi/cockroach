@@ -75,7 +75,7 @@ func (ctx *jsonpathCtx) evalOperation(
 	case jsonpath.OpPlus, jsonpath.OpMinus:
 		return ctx.evalUnaryArithmetic(op, jsonValue)
 	default:
-		return nil, errors.AssertionFailedf("unhandled operation type")
+		panic(errors.AssertionFailedf("unhandled operation type"))
 	}
 }
 
@@ -98,7 +98,7 @@ func (ctx *jsonpathCtx) evalBoolean(
 	case jsonpath.OpStartsWith:
 		return ctx.evalPredicate(op, jsonValue, evalStartsWithFunc, true /* evalRight */, false /* unwrapRight */)
 	default:
-		return jsonpathBoolUnknown, errors.AssertionFailedf("unhandled operation type")
+		panic(errors.AssertionFailedf("unhandled operation type"))
 	}
 }
 
@@ -224,7 +224,7 @@ func (ctx *jsonpathCtx) evalLogical(
 		}
 		return jsonpathBoolTrue, nil
 	default:
-		return jsonpathBoolUnknown, errors.AssertionFailedf("unhandled logical operation type")
+		panic(errors.AssertionFailedf("unhandled logical operation type"))
 	}
 
 	rightOp, ok := op.Right.(jsonpath.Operation)
@@ -247,7 +247,7 @@ func (ctx *jsonpathCtx) evalLogical(
 		}
 		return rightBool, nil
 	default:
-		return jsonpathBoolUnknown, errors.AssertionFailedf("unhandled logical operation type")
+		panic(errors.AssertionFailedf("unhandled logical operation type"))
 	}
 }
 
@@ -288,16 +288,6 @@ func (ctx *jsonpathCtx) evalPredicate(
 		// the exec function once for each item in the left argument. Currently,
 		// this only includes OpLikeRegex.
 		right = append(right, nil)
-	}
-
-	// In lax mode, if either operand is empty (empty array unwrapped),
-	// no items to compare means no matches found -> false
-	// Note: For OpLikeRegex, evalRight is false and right contains [nil], so we only check left
-	if !ctx.strict && len(left) == 0 {
-		return jsonpathBoolFalse, nil
-	}
-	if !ctx.strict && evalRight && len(right) == 0 {
-		return jsonpathBoolFalse, nil
 	}
 
 	errored := false
@@ -359,7 +349,7 @@ func evalComparisonFunc(operation jsonpath.Operation, l, r json.JSON) (jsonpathB
 		// Don't evaluate non-scalar types.
 		return jsonpathBoolUnknown, nil
 	default:
-		return jsonpathBoolUnknown, errors.AssertionFailedf("unhandled json type")
+		panic(errors.AssertionFailedf("unhandled json type"))
 	}
 
 	var res bool
@@ -377,7 +367,7 @@ func evalComparisonFunc(operation jsonpath.Operation, l, r json.JSON) (jsonpathB
 	case jsonpath.OpCompGreaterEqual:
 		res = cmp >= 0
 	default:
-		return jsonpathBoolUnknown, errors.AssertionFailedf("unhandled jsonpath comparison type")
+		panic(errors.AssertionFailedf("unhandled jsonpath comparison type"))
 	}
 	if res {
 		return jsonpathBoolTrue, nil
@@ -473,7 +463,7 @@ func performArithmetic(
 		}
 		_, err = tree.DecimalCtx.Rem(&res, leftNum, rightNum)
 	default:
-		return nil, errors.AssertionFailedf("unhandled jsonpath arithmetic type")
+		panic(errors.AssertionFailedf("unhandled jsonpath arithmetic type"))
 	}
 	if err != nil {
 		return nil, err

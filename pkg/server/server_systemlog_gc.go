@@ -8,7 +8,7 @@ package server
 import (
 	"context"
 	"fmt"
-	"math/rand"
+	math_rand "math/rand"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
@@ -202,9 +202,9 @@ func runSystemLogGC(
 		}
 
 		if rowsAffected, err := runSystemLogGCForOneTable(ctx, sqlServer, st, gcConfig); err != nil {
-			log.Dev.Warningf(ctx, "error garbage collecting %s.%s: %v", gcConfig.table, gcConfig.timestampCol, err)
+			log.Warningf(ctx, "error garbage collecting %s.%s: %v", gcConfig.table, gcConfig.timestampCol, err)
 		} else {
-			log.Dev.Infof(ctx, "garbage collected %d rows from %s.%s", rowsAffected, gcConfig.table, gcConfig.timestampCol)
+			log.Infof(ctx, "garbage collected %d rows from %s.%s", rowsAffected, gcConfig.table, gcConfig.timestampCol)
 		}
 	}
 }
@@ -288,5 +288,5 @@ func startSystemLogsGC(ctx context.Context, sqlServer *SQLServer) error {
 // jitteredInterval returns a randomly jittered (+/-25%) duration
 // from the interval.
 func jitteredInterval(interval time.Duration) time.Duration {
-	return time.Duration(float64(interval) * (0.75 + 0.5*rand.Float64()))
+	return time.Duration(float64(interval) * (0.75 + 0.5*math_rand.Float64()))
 }

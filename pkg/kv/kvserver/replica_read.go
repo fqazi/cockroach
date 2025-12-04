@@ -71,7 +71,7 @@ func (r *Replica) executeReadOnlyBatch(
 	// TODO(irfansharif): It's unfortunate that in this read-only code path,
 	// we're stuck with a ReadWriter because of the way evaluateBatch is
 	// designed.
-	rw := r.store.StateEngine().NewReadOnly(storage.StandardDurability)
+	rw := r.store.TODOEngine().NewReadOnly(storage.StandardDurability)
 	if !rw.ConsistentIterators() {
 		// This is not currently needed for correctness, but future optimizations
 		// may start relying on this, so we assert here.
@@ -93,10 +93,7 @@ func (r *Replica) executeReadOnlyBatch(
 		return nil, g, nil, kvpb.NewError(err)
 	}
 	if util.RaceEnabled {
-		spans := g.LatchSpans()
-		spans.AddForbiddenMatcher(overlapsUnreplicatedRangeIDLocalKeys)
-		spans.AddForbiddenMatcher(overlapsStoreLocalKeys)
-		rw = spanset.NewReadWriterAt(rw, spans, ba.Timestamp)
+		rw = spanset.NewReadWriterAt(rw, g.LatchSpans(), ba.Timestamp)
 	}
 	defer rw.Close()
 
@@ -150,7 +147,6 @@ func (r *Replica) executeReadOnlyBatch(
 			// conflicts for by using collectSpansRead as done below in the
 			// non-error path.
 			if !g.CheckOptimisticNoLatchConflicts() {
-				log.Eventf(ctx, "optimistic evaluation failed with %s", pErr)
 				return nil, g, nil, kvpb.NewError(kvpb.NewOptimisticEvalConflictsError())
 			}
 		}
@@ -232,7 +228,7 @@ func (r *Replica) executeReadOnlyBatch(
 			intents,
 			allowSyncProcessing,
 		); err != nil {
-			log.KvExec.Warningf(ctx, "%v", err)
+			log.Warningf(ctx, "%v", err)
 		}
 	}
 
@@ -544,7 +540,7 @@ func (r *Replica) handleReadOnlyLocalEvalResult(
 	}
 
 	if !lResult.IsZero() {
-		log.KvExec.Fatalf(ctx, "unhandled field in LocalEvalResult: %s", pretty.Diff(lResult, result.LocalResult{}))
+		log.Fatalf(ctx, "unhandled field in LocalEvalResult: %s", pretty.Diff(lResult, result.LocalResult{}))
 	}
 	return nil
 }

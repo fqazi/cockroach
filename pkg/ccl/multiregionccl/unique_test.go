@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
@@ -27,10 +28,10 @@ import (
 func TestValidateUniqueConstraints(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	srv, db, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(context.Background())
-	s := srv.ApplicationLayer()
+	// This test fails when run within a tenant. More investigation is
+	// required. Tracked with #76378.
+	s, db, kvDB := serverutils.StartServer(t, base.TestServerArgs{DefaultTestTenant: base.TODOTestTenantDisabled})
+	defer s.Stopper().Stop(context.Background())
 	r := sqlutils.MakeSQLRunner(db)
 
 	// Create two tables and a view.
@@ -56,7 +57,7 @@ CREATE TABLE u (
 	insertValuesT := func(values []tree.Datum) {
 		// Get the table descriptor and primary index of t.
 		tableDesc := desctestutils.TestingGetTableDescriptor(
-			kvDB, s.Codec(), "test", "public", "t",
+			kvDB, keys.SystemSQLCodec, "test", "public", "t",
 		)
 		primaryIndex := tableDesc.GetPrimaryIndex()
 
@@ -66,7 +67,7 @@ CREATE TABLE u (
 
 		// Construct the primary index entry to insert.
 		primaryIndexEntry, err := rowenc.EncodePrimaryIndex(
-			s.Codec(), tableDesc, primaryIndex, colIDtoRowIndex, values, true, /* includeEmpty */
+			keys.SystemSQLCodec, tableDesc, primaryIndex, colIDtoRowIndex, values, true, /* includeEmpty */
 		)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(primaryIndexEntry))
@@ -81,7 +82,7 @@ CREATE TABLE u (
 	insertValuesU := func(values []tree.Datum) {
 		// Get the table descriptor and indexes of u.
 		tableDesc := desctestutils.TestingGetTableDescriptor(
-			kvDB, s.Codec(), "test", "public", "u",
+			kvDB, keys.SystemSQLCodec, "test", "public", "u",
 		)
 		primaryIndex := tableDesc.GetPrimaryIndex()
 		secondaryIndex := tableDesc.PublicNonPrimaryIndexes()[0]
@@ -93,12 +94,12 @@ CREATE TABLE u (
 
 		// Construct the primary and secondary index entries to insert.
 		primaryIndexEntry, err := rowenc.EncodePrimaryIndex(
-			s.Codec(), tableDesc, primaryIndex, colIDtoRowIndex, values, true, /* includeEmpty */
+			keys.SystemSQLCodec, tableDesc, primaryIndex, colIDtoRowIndex, values, true, /* includeEmpty */
 		)
 		require.NoError(t, err)
 		require.Equal(t, 1, len(primaryIndexEntry))
 		secondaryIndexEntry, err := rowenc.EncodeSecondaryIndex(
-			context.Background(), s.Codec(), tableDesc, secondaryIndex,
+			context.Background(), keys.SystemSQLCodec, tableDesc, secondaryIndex,
 			colIDtoRowIndex, values, rowenc.EmptyVectorIndexEncodingHelper, true, /* includeEmpty */
 		)
 		require.NoError(t, err)

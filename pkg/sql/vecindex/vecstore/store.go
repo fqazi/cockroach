@@ -8,7 +8,6 @@ package vecstore
 import (
 	"context"
 	"slices"
-	"sync/atomic"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
@@ -38,12 +37,6 @@ type Store struct {
 
 	// readOnly is true if the store does not accept writes.
 	readOnly bool
-
-	// isDeterministic is true if the store should generate new partition keys
-	// using a deterministic algorithm.
-	isDeterministic bool
-	// keyGen generates new partition keys deterministically.
-	keyGen atomic.Uint64
 
 	codec   keys.SQLCodec
 	tableID catid.DescID
@@ -105,7 +98,6 @@ func New(
 	defaultCodec keys.SQLCodec,
 	tableID catid.DescID,
 	indexID catid.IndexID,
-	isDeterministic bool,
 ) (ps *Store, err error) {
 	ps = &Store{
 		db:             db,
@@ -118,10 +110,6 @@ func New(
 		minConsistency: kvpb.INCONSISTENT,
 		emptyVec:       make(vector.T, quantizer.GetDims()),
 	}
-	if isDeterministic {
-		ps.isDeterministic = true
-		ps.keyGen.Store(1)
-	}
 
 	err = db.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
 		tableDesc, err := txn.Descriptors().ByIDWithLeased(txn.KV()).Get().Table(ctx, tableID)
@@ -132,7 +120,7 @@ func New(
 		if ext := tableDesc.ExternalRowData(); ext != nil {
 			// The table is external, so use the external codec and table ID. Also set
 			// the index to read-only.
-			log.Dev.VInfof(ctx, 2,
+			log.VInfof(ctx, 2,
 				"table %d is external, using read-only mode for vector index %d",
 				tableDesc.GetID(), indexID,
 			)
@@ -197,7 +185,7 @@ func (s *Store) RunTransaction(ctx context.Context, fn func(txn cspann.Txn) erro
 
 		err = fn(&tx)
 		if err != nil {
-			log.Dev.Errorf(ctx, "error in RunTransaction: %v", err)
+			log.Errorf(ctx, "error in RunTransaction: %v", err)
 			return err
 		}
 
@@ -208,11 +196,6 @@ func (s *Store) RunTransaction(ctx context.Context, fn func(txn cspann.Txn) erro
 // MakePartitionKey is part of the cspann.Store interface. It allocates a new
 // unique partition key.
 func (s *Store) MakePartitionKey() cspann.PartitionKey {
-	if s.isDeterministic {
-		// Generate new partition keys by incrementing an atomic.
-		return cspann.PartitionKey(s.keyGen.Add(1))
-	}
-
 	instanceID := s.kv.Context().NodeID.SQLInstanceID()
 	return cspann.PartitionKey(unique.GenerateUniqueUnorderedID(unique.ProcessUniqueID(instanceID)))
 }
@@ -381,58 +364,6 @@ func (s *Store) TryUpdatePartitionMetadata(
 		return remapConditionFailedError(err)
 	}
 	return nil
-}
-
-// TryStartMerge is part of the cspann.Store interface. It updates the state of
-// the given partition to Merging, as long as the "ifReady" partition is in the
-// Ready state.
-func (s *Store) TryStartMerge(
-	ctx context.Context,
-	treeKey cspann.TreeKey,
-	partitionKey cspann.PartitionKey,
-	expected cspann.PartitionMetadata,
-	ifReadyKey cspann.PartitionKey,
-) error {
-	if s.ReadOnly() {
-		return errors.AssertionFailedf("cannot start merge in read-only mode")
-	}
-
-	return s.kv.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-		b := txn.NewBatch()
-
-		// Conditionally update the partition's metadata state to Merging.
-		metadata := expected
-		metadata.StateDetails.MakeMerging()
-
-		metadataKey := vecencoding.EncodeMetadataKey(s.prefix, treeKey, partitionKey)
-		encodedMetadata := vecencoding.EncodeMetadataValue(metadata)
-		encodedExpected := vecencoding.EncodeMetadataValue(expected)
-
-		var roachval roachpb.Value
-		roachval.SetBytes(encodedExpected)
-		b.CPut(metadataKey, encodedMetadata, roachval.TagAndDataBytes())
-
-		// Ensure that other partition remains in the Ready state.
-		ifReadyMetadataKey := vecencoding.EncodeMetadataKey(s.prefix, treeKey, ifReadyKey)
-		b.Get(ifReadyMetadataKey)
-
-		if err := txn.Run(ctx, b); err != nil {
-			err = remapConditionFailedError(err)
-			return errors.Wrapf(err, "starting merge for partition %d, with ifReady partition %d",
-				partitionKey, ifReadyKey)
-		}
-
-		ifReadyMetadata, err := s.getMetadataFromKVResult(partitionKey, &b.Results[1])
-		if err != nil {
-			return err
-		}
-		if ifReadyMetadata.StateDetails.State != cspann.ReadyState {
-			return errors.Wrapf(cspann.NewConditionFailedError(ifReadyMetadata),
-				"ifReady partition is not in the Ready state")
-		}
-
-		return nil
-	})
 }
 
 // TryAddToPartition is part of the cspann.Store interface. It adds vectors to

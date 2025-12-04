@@ -137,9 +137,8 @@ func TestShowFingerprintsDuringSchemaChange(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	srv, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
 
 	sqlDB := sqlutils.MakeSQLRunner(db)
 	sqlDB.Exec(t, `CREATE DATABASE d`)
@@ -236,7 +235,7 @@ func TestShowTenantFingerprintsProtectsTimestamp(t *testing.T) {
 			t,
 			spanconfigptsreader.TestingRefreshPTSState(ctx, ptsReader, asOf),
 		)
-		require.NoError(t, repl.TestingReadProtectedTimestamps(ctx))
+		require.NoError(t, repl.ReadProtectedTimestampsForTesting(ctx))
 	}
 	gcTestTableRange := func() {
 		row := tenantSQL.QueryRow(t, "SELECT range_id FROM [SHOW RANGES FROM TABLE test.foo]")

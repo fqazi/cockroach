@@ -19,16 +19,7 @@ import (
 func (bq *baseQueue) testingAdd(
 	ctx context.Context, repl replicaInQueue, priority float64,
 ) (bool, error) {
-	return bq.addInternal(ctx, repl.Desc(), repl.ReplicaID(), priority, noopProcessCallback)
-}
-
-// testingAddWithCallback is the same as testingAdd, but allows the caller to
-// register a process callback that will be invoked when the replica is enqueued
-// or processed.
-func (bq *baseQueue) testingAddWithCallback(
-	ctx context.Context, repl replicaInQueue, priority float64, cb processCallback,
-) (bool, error) {
-	return bq.addInternal(ctx, repl.Desc(), repl.ReplicaID(), priority, cb)
+	return bq.addInternal(ctx, repl.Desc(), repl.ReplicaID(), priority)
 }
 
 func forceScanAndProcess(ctx context.Context, s *Store, q *baseQueue) error {
@@ -50,7 +41,7 @@ func forceScanAndProcess(ctx context.Context, s *Store, q *baseQueue) error {
 
 func mustForceScanAndProcess(ctx context.Context, s *Store, q *baseQueue) {
 	if err := forceScanAndProcess(ctx, s, q); err != nil {
-		log.KvDistribution.Fatalf(ctx, "%v", err)
+		log.Fatalf(ctx, "%v", err)
 	}
 }
 

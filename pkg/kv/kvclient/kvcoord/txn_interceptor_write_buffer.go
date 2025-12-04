@@ -40,22 +40,36 @@ var BufferedWritesEnabled = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"kv.transaction.write_buffering.enabled",
 	"if enabled, transactional writes are buffered on the client",
-	metamorphic.ConstantWithTestBool("kv.transaction.write_buffering.enabled", true /* defaultValue */),
+	metamorphic.ConstantWithTestBool("kv.transaction.write_buffering.enabled", false /* defaultValue */),
 	settings.WithPublic,
 )
 
-var bufferedWritesScanTransformEnabled = settings.RegisterBoolSetting(
+var unsupportedInProductionBuildErr = errors.New("this option is not supported in production builds")
+
+var BufferedWritesScanTransformEnabled = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"kv.transaction.write_buffering.transformations.scans.enabled",
 	"if enabled, locking scans and reverse scans with replicated durability are transformed to unreplicated durability",
-	metamorphic.ConstantWithTestBool("kv.transaction.write_buffering.transformations.scans.enabled", true /* defaultValue */),
+	metamorphic.ConstantWithTestBool("kv.transaction.write_buffering.transformations.scans.enabled", false /* defaultValue */),
+	settings.WithValidateBool(func(_ *settings.Values, enabled bool) error {
+		if enabled && !buildutil.CrdbTestBuild {
+			return unsupportedInProductionBuildErr
+		}
+		return nil
+	}),
 )
 
-var bufferedWritesGetTransformEnabled = settings.RegisterBoolSetting(
+var BufferedWritesGetTransformEnabled = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"kv.transaction.write_buffering.transformations.get.enabled",
 	"if enabled, locking get requests with replicated durability are transformed to unreplicated durability",
-	metamorphic.ConstantWithTestBool("kv.transaction.write_buffering.transformations.get.enabled", true /* defaultValue */),
+	metamorphic.ConstantWithTestBool("kv.transaction.write_buffering.transformations.get.enabled", false /* defaultValue */),
+	settings.WithValidateBool(func(_ *settings.Values, enabled bool) error {
+		if enabled && !buildutil.CrdbTestBuild {
+			return unsupportedInProductionBuildErr
+		}
+		return nil
+	}),
 )
 
 const defaultBufferSize = 1 << 22 // 4MB
@@ -198,8 +212,6 @@ type txnWriteBuffer struct {
 	// `flushed` tracks whether the buffer has been previously flushed.
 	flushed bool
 
-	pipelineEnabler pipelineEnabler
-
 	// flushOnNextBatch, if set, indicates that write buffering has just been
 	// disabled, and the interceptor should flush any buffered writes when it
 	// sees the next BatchRequest.
@@ -235,14 +247,6 @@ type txnWriteBuffer struct {
 type transformConfig struct {
 	transformScans bool
 	transformGets  bool
-}
-
-type pipelineEnabler interface {
-	enableImplicitPipelining()
-}
-
-func (twb *txnWriteBuffer) init(pe pipelineEnabler) {
-	twb.pipelineEnabler = pe
 }
 
 func (twb *txnWriteBuffer) setEnabled(enabled bool) {
@@ -290,8 +294,8 @@ func (twb *txnWriteBuffer) SendLocked(
 	// We check if scan transforms are enabled once and use that answer until the
 	// end of SendLocked.
 	cfg := transformConfig{
-		transformScans: bufferedWritesScanTransformEnabled.Get(&twb.st.SV),
-		transformGets:  bufferedWritesGetTransformEnabled.Get(&twb.st.SV),
+		transformScans: BufferedWritesScanTransformEnabled.Get(&twb.st.SV),
+		transformGets:  BufferedWritesGetTransformEnabled.Get(&twb.st.SV),
 	}
 
 	if twb.batchRequiresFlush(ctx, ba, cfg) {
@@ -493,8 +497,8 @@ func unsupportedOptionError(m kvpb.Method, option string) error {
 // size if the writes from the supplied batch request are buffered.
 func (twb *txnWriteBuffer) estimateSize(ba *kvpb.BatchRequest, cfg transformConfig) int64 {
 	var scratch bufferedWrite
-	scratch.vals = scratch.valsScratch[:1]
 	estimate := int64(0)
+	scratch.vals = make([]bufferedValue, 1)
 	for _, ru := range ba.Requests {
 		req := ru.GetInner()
 		switch t := req.(type) {
@@ -601,7 +605,7 @@ func (twb *txnWriteBuffer) adjustError(
 				// For requests that were not transformed, attributing an error to them
 				// shouldn't confuse the client.
 				if baIdx == pErr.Index.Index && record.transformed {
-					log.KvExec.Warningf(ctx, "error index %d is part of a transformed request", pErr.Index.Index)
+					log.Warningf(ctx, "error index %d is part of a transformed request", pErr.Index.Index)
 					pErr.Index = nil
 					return pErr
 				} else if baIdx == pErr.Index.Index {
@@ -626,7 +630,7 @@ func (twb *txnWriteBuffer) adjustErrorUponFlush(
 		if pErr.Index.Index < int32(numBuffered) {
 			// If the error belongs to a request because part of the buffer flush, nil
 			// out the index.
-			log.KvExec.Warningf(ctx, "error index %d is part of the buffer flush", pErr.Index.Index)
+			log.Warningf(ctx, "error index %d is part of the buffer flush", pErr.Index.Index)
 			pErr.Index = nil
 		} else {
 			// Otherwise, adjust the error index to hide the impact of any flushed
@@ -669,6 +673,7 @@ func (twb *txnWriteBuffer) populateLeafInputState(
 				continue
 			}
 		}
+		// TODO(yuzefovich): optimize allocation of vals slices.
 		vals := make([]roachpb.BufferedWrite_Val, 0, len(bw.vals))
 		for _, v := range bw.vals {
 			vals = append(vals, roachpb.BufferedWrite_Val{
@@ -696,6 +701,7 @@ func (twb *txnWriteBuffer) initializeLeaf(tis *roachpb.LeafTxnInputState) {
 	// We have some buffered writes, so they must be enabled on the root.
 	twb.enabled = true
 	for _, bw := range tis.BufferedWrites {
+		// TODO(yuzefovich): optimize allocation of vals slices.
 		vals := make([]bufferedValue, 0, len(bw.Vals))
 		for _, bv := range bw.Vals {
 			vals = append(vals, bufferedValue{
@@ -792,11 +798,6 @@ func (twb *txnWriteBuffer) rollbackToSavepointLocked(ctx context.Context, s save
 		}
 		// Rollback writes by truncating the buffered values.
 		it.Cur().vals = bufferedVals[:idx]
-		if idx == 0 {
-			// Since we lost references to all values, ensure that the scratch
-			// space is also reset.
-			it.Cur().valsScratch[0] = bufferedValue{}
-		}
 		if it.Cur().empty() {
 			// All writes have been rolled back and we hold no locks; we should remove
 			// this key from the buffer entirely.
@@ -1313,7 +1314,7 @@ func (twb *txnWriteBuffer) mergeResponseWithRequestRecords(
 	ctx context.Context, rr requestRecords, br *kvpb.BatchResponse,
 ) (_ *kvpb.BatchResponse, pErr *kvpb.Error) {
 	if rr.Empty() && br == nil {
-		log.KvExec.Fatal(ctx, "unexpectedly found no transformations and no batch response")
+		log.Fatal(ctx, "unexpectedly found no transformations and no batch response")
 	} else if rr.Empty() {
 		return br, nil
 	}
@@ -1325,7 +1326,7 @@ func (twb *txnWriteBuffer) mergeResponseWithRequestRecords(
 		brResp := kvpb.ResponseUnion{}
 		if !record.stripped {
 			if len(br.Responses) == 0 {
-				log.KvExec.Fatal(ctx, "unexpectedly found a non-stripped request and no batch response")
+				log.Fatal(ctx, "unexpectedly found a non-stripped request and no batch response")
 			}
 			// If the request wasn't stripped from the batch we sent to KV, we
 			// received a response for it, which then needs to be combined with
@@ -1377,11 +1378,6 @@ func (rr requestRecord) toResp(
 	var ru kvpb.ResponseUnion
 	switch req := rr.origRequest.(type) {
 	case *kvpb.ConditionalPutRequest:
-		if !rr.stripped && br.GetInner().Header().ResumeSpan != nil {
-			return kvpb.ResponseUnion{},
-				kvpb.NewError(errors.AssertionFailedf("unexpected non-nil ResumeSpan for ConditionalPutRequest"))
-		}
-
 		// Evaluate the condition.
 		evalFn := mvcceval.MaybeConditionFailedError
 		if twb.testingOverrideCPutEvalFn != nil {
@@ -1395,6 +1391,11 @@ func (rr requestRecord) toResp(
 			// We only use the response from KV if there wasn't already a
 			// buffered value for this key that our transaction wrote
 			// previously.
+			// TODO(yuzefovich): for completeness, we should check whether
+			// ResumeSpan is non-nil, in which case the response from KV is
+			// incomplete. This can happen when MaxSpanRequestKeys and/or
+			// TargetBytes limits are set on the batch, and SQL currently
+			// doesn't do that for batches with CPuts.
 			val = br.GetInner().(*kvpb.GetResponse).Value
 		}
 
@@ -1425,12 +1426,12 @@ func (rr requestRecord) toResp(
 		twb.addToBuffer(req.Key, req.Value, req.Sequence, req.KVNemesisSeq, dla)
 
 	case *kvpb.PutRequest:
-		if !rr.stripped && br.GetInner().Header().ResumeSpan != nil {
-			return kvpb.ResponseUnion{},
-				kvpb.NewError(errors.AssertionFailedf("unexpected non-nil ResumeSpan for PutRequest"))
-		}
-
 		var dla *bufferedDurableLockAcquisition
+		// TODO(yuzefovich): for completeness, we should check whether
+		// ResumeSpan is non-nil if we transformed the request, in which case
+		// the response from KV is incomplete. This can happen when
+		// MaxSpanRequestKeys and/or TargetBytes limits are set on the batch,
+		// and SQL currently doesn't do that for batches with Puts.
 		if rr.transformed && exclusionTimestampRequired {
 			dla = &bufferedDurableLockAcquisition{
 				str: lock.Exclusive,
@@ -1515,10 +1516,10 @@ func (rr requestRecord) toResp(
 		// a lock, we add it to the buffer since we may need to flush it as
 		// replicated lock.
 		if rr.transformed {
+
 			transformedGetResponse := br.GetInner().(*kvpb.GetResponse)
 			valueWasPresent := transformedGetResponse.Value.IsPresent()
-			lockShouldHaveBeenAcquired := (valueWasPresent || req.LockNonExisting) &&
-				transformedGetResponse.ResumeSpan == nil
+			lockShouldHaveBeenAcquired := valueWasPresent || req.LockNonExisting
 
 			if lockShouldHaveBeenAcquired {
 				dla := &bufferedDurableLockAcquisition{
@@ -1668,11 +1669,10 @@ func (twb *txnWriteBuffer) addToBuffer(
 	} else {
 		twb.bufferIDAlloc++
 		bw := &bufferedWrite{
-			id:          twb.bufferIDAlloc,
-			key:         key,
-			valsScratch: [1]bufferedValue{{val: val, seq: seq, kvNemesisSeq: kvNemSeq}},
+			id:   twb.bufferIDAlloc,
+			key:  key,
+			vals: []bufferedValue{{val: val, seq: seq, kvNemesisSeq: kvNemSeq}},
 		}
-		bw.vals = bw.valsScratch[:1]
 		if lockInfo != nil {
 			bw.acquireLock(lockInfo)
 		}
@@ -1747,14 +1747,7 @@ func (twb *txnWriteBuffer) flushBufferAndSendBatch(
 	// Once we've flushed the buffer, we disable write buffering going forward. We
 	// do this even if the buffer is empty since once we've called this function,
 	// our buffer no longer represents all of the writes in the transaction.
-	log.VEventf(ctx, 2, "disabling write buffering")
-	if twb.pipelineEnabler != nil {
-		// We enable pipelining, but only after this request returns.
-		//
-		// TODO(ssd): Consider enabling pipelining for this batch as well once we
-		// have more discipline around the invariants of the batches we are sending.
-		defer twb.pipelineEnabler.enableImplicitPipelining()
-	}
+	log.VEventf(ctx, 2, "disabling write buffering for this epoch")
 	twb.flushed = true
 
 	numKeysBuffered := twb.buffer.Len()
@@ -1762,7 +1755,7 @@ func (twb *txnWriteBuffer) flushBufferAndSendBatch(
 		return twb.wrapped.SendLocked(ctx, ba) // nothing to flush
 	}
 
-	endTxnArg, hasEndTxn := ba.GetArg(kvpb.EndTxn)
+	_, hasEndTxn := ba.GetArg(kvpb.EndTxn)
 	if !hasEndTxn {
 		// We're flushing the buffer even though the batch doesn't contain an EndTxn
 		// request. That means we buffered some writes and decided to disable write
@@ -1771,18 +1764,13 @@ func (twb *txnWriteBuffer) flushBufferAndSendBatch(
 	}
 
 	midTxnFlush := !hasEndTxn
-	splitBatchRequired := separateBatchIsNeeded(ba, endTxnArg)
 
 	// Flush all buffered writes by pre-pending them to the requests being sent
 	// in the batch.
 	//
 	// TODO(ssd): We can maintain the revision count in the buffer as well to
 	// allocate this more accurately.
-	numReqs := numKeysBuffered
-	if !splitBatchRequired {
-		numReqs += len(ba.Requests)
-	}
-	reqs := make([]kvpb.RequestUnion, 0, numReqs)
+	reqs := make([]kvpb.RequestUnion, 0, numKeysBuffered+len(ba.Requests))
 	it := twb.buffer.MakeIter()
 	numRevisionsBuffered := 0
 	for it.First(); it.Valid(); it.Next() {
@@ -1812,92 +1800,16 @@ func (twb *txnWriteBuffer) flushBufferAndSendBatch(
 		}
 	})
 
-	if splitBatchRequired {
-		flushBatch := ba.ShallowCopy()
-		clearBatchRequestOptions(flushBatch)
-		flushBatch.Requests = reqs
-
-		log.VEventf(ctx, 2, "flushing %d buffered requests in separate batch: %v", len(reqs), ba)
-		br, pErr := twb.wrapped.SendLocked(ctx, flushBatch)
-		if pErr != nil {
-			pErr.Index = nil
-			return nil, pErr
-		}
-		if err := requireAllFlushedRequestsProcessed(br.Responses); err != nil {
-			return nil, kvpb.NewError(err)
-		}
-
-		// We've written intents now, so this should be false.
-		ba.HasBufferedAllPrecedingWrites = false
-		ba.UpdateTxn(br.Txn)
-
-		return twb.wrapped.SendLocked(ctx, ba)
-	} else {
-		ba = ba.ShallowCopy()
-		ba.Requests = append(reqs, ba.Requests...)
-
-		log.VEventf(ctx, 2, "flushing %d buffered requests in batch: %v", len(reqs), ba)
-		br, pErr := twb.wrapped.SendLocked(ctx, ba)
-		if pErr != nil {
-			return nil, twb.adjustErrorUponFlush(ctx, numRevisionsBuffered, pErr)
-		}
-		if err := requireAllFlushedRequestsProcessed(br.Responses[0:numRevisionsBuffered]); err != nil {
-			return nil, kvpb.NewError(err)
-		}
-		// Strip out responses for all the flushed buffered writes.
-		br.Responses = br.Responses[numRevisionsBuffered:]
-		return br, nil
-	}
-}
-
-func requireAllFlushedRequestsProcessed(responses []kvpb.ResponseUnion) error {
-	for _, resp := range responses {
-		if resp.GetInner().Header().ResumeSpan != nil {
-			return errors.AssertionFailedf("response from buffered request has non-nil resume span")
-		}
-	}
-	return nil
-}
-
-// separateBatchIsNeeded returns true if BatchRequest contains any options that
-// require us to flush buffered requests using a separate batch.
-//
-// NB: If you are updating this function, you need to update
-// clearBatchRequestOptions as well.
-func separateBatchIsNeeded(ba *kvpb.BatchRequest, optEndTxn kvpb.Request) bool {
-	if optEndTxn != nil {
-		// TODO(#153513): This should really be fixed server-side. Currently, if we
-		// send an EndTxn with Prepare, it will be erroneously evaluated as a 1PC
-		// commit.
-		if optEndTxn.(*kvpb.EndTxnRequest).Prepare {
-			return true
-		}
+	ba = ba.ShallowCopy()
+	ba.Requests = append(reqs, ba.Requests...)
+	br, pErr := twb.wrapped.SendLocked(ctx, ba)
+	if pErr != nil {
+		return nil, twb.adjustErrorUponFlush(ctx, numRevisionsBuffered, pErr)
 	}
 
-	return ba.MightStopEarly() ||
-		ba.ReadConsistency != 0 ||
-		ba.WaitPolicy != 0 ||
-		ba.WriteOptions != nil && (*ba.WriteOptions != kvpb.WriteOptions{}) ||
-		ba.IsReverse
-}
-
-// clearBatchRequestOptions clears any options that should not be present on a
-// batch used to send previously buffered requests.
-//
-// NB: If you are updating this function, you need to update
-// separateBatchIsNeeded as well.
-func clearBatchRequestOptions(ba *kvpb.BatchRequest) {
-	// If read consistency is set to anything but CONSISTENT, our flush will fail
-	// because we only allow inconsistent reads for read only requests.
-	ba.ReadConsistency = 0
-	// If WaitPolicy is set to SkipLocked, our request may fail validation.
-	ba.WaitPolicy = 0
-	// Reset options that could result in an early batch return.
-	ba.MaxSpanRequestKeys = 0
-	ba.TargetBytes = 0
-	ba.ReturnElasticCPUResumeSpans = false
-	ba.IsReverse = false
-	ba.WriteOptions = nil
+	// Strip out responses for all the flushed buffered writes.
+	br.Responses = br.Responses[numRevisionsBuffered:]
+	return br, nil
 }
 
 // hasBufferedWrites returns whether the interceptor has buffered any writes
@@ -1919,10 +1831,9 @@ func (twb *txnWriteBuffer) testingBufferedWritesAsSlice() []bufferedWrite {
 	it := twb.buffer.MakeIter()
 	for it.First(); it.Valid(); it.Next() {
 		bw := *it.Cur()
-		// Scrub the id/endKey/valsScratch for the benefit of tests.
+		// Scrub the id/endKey for the benefit of tests.
 		bw.id = 0
 		bw.endKey = nil
-		bw.valsScratch[0] = bufferedValue{}
 		writes = append(writes, bw)
 	}
 	return writes
@@ -1947,9 +1858,10 @@ type bufferedWrite struct {
 
 	// lki stores information about locks that have been acquired for this key.
 	// NB: In the future it may also cache previously read values of this key.
-	lki         *lockedKeyInfo
-	vals        []bufferedValue  // sorted in increasing sequence number order
-	valsScratch [1]bufferedValue // used as initial space for vals
+	lki *lockedKeyInfo
+	// TODO(arul): instead of this slice, consider adding a small (fixed size,
+	// maybe 1) array instead.
+	vals []bufferedValue // sorted in increasing sequence number order
 }
 
 func (bw *bufferedWrite) size() int64 {

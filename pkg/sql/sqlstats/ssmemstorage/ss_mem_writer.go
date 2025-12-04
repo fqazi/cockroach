@@ -80,9 +80,6 @@ func (s *Container) RecordStatement(ctx context.Context, value *sqlstats.Recorde
 	if value.Generic {
 		stats.mu.data.GenericCount++
 	}
-	if value.AppliedStmtHints {
-		stats.mu.data.StmtHintsCount++
-	}
 	if value.AutoRetryCount == 0 {
 		stats.mu.data.FirstAttemptCount++
 	} else if int64(value.AutoRetryCount) > stats.mu.data.MaxRetries {
@@ -100,7 +97,6 @@ func (s *Container) RecordStatement(ctx context.Context, value *sqlstats.Recorde
 	stats.mu.data.BytesRead.Record(stats.mu.data.Count, float64(value.BytesRead))
 	stats.mu.data.RowsRead.Record(stats.mu.data.Count, float64(value.RowsRead))
 	stats.mu.data.RowsWritten.Record(stats.mu.data.Count, float64(value.RowsWritten))
-	stats.mu.data.KVCPUTimeNanos.Record(stats.mu.data.Count, float64(value.KVCPUTimeNanos))
 	stats.mu.data.LastExecTimestamp = s.getTimeNow()
 	stats.mu.data.Nodes = util.CombineUnique(stats.mu.data.Nodes, value.Nodes)
 	stats.mu.data.KVNodeIDs = util.CombineUnique(stats.mu.data.KVNodeIDs, value.KVNodeIDs)
@@ -240,7 +236,6 @@ func (s *Container) RecordTransaction(ctx context.Context, value *sqlstats.Recor
 	stats.mu.data.RowsRead.Record(stats.mu.data.Count, float64(value.RowsRead))
 	stats.mu.data.RowsWritten.Record(stats.mu.data.Count, float64(value.RowsWritten))
 	stats.mu.data.BytesRead.Record(stats.mu.data.Count, float64(value.BytesRead))
-	stats.mu.data.KVCPUTimeNanos.Record(stats.mu.data.Count, float64(value.KVCPUTimeNanos.Nanoseconds()))
 
 	if value.CollectedExecStats {
 		stats.mu.data.ExecStats.Count++
@@ -249,8 +244,7 @@ func (s *Container) RecordTransaction(ctx context.Context, value *sqlstats.Recor
 		stats.mu.data.ExecStats.ContentionTime.Record(stats.mu.data.ExecStats.Count, value.ExecStats.ContentionTime.Seconds())
 		stats.mu.data.ExecStats.NetworkMessages.Record(stats.mu.data.ExecStats.Count, float64(value.ExecStats.DistSQLNetworkMessages))
 		stats.mu.data.ExecStats.MaxDiskUsage.Record(stats.mu.data.ExecStats.Count, float64(value.ExecStats.MaxDiskUsage))
-		stats.mu.data.ExecStats.CPUSQLNanos.Record(stats.mu.data.ExecStats.Count, float64(value.ExecStats.SQLCPUTime.Nanoseconds()))
-		stats.mu.data.ExecStats.AdmissionWaitTime.Record(stats.mu.data.ExecStats.Count, float64(value.ExecStats.AdmissionWaitTime.Nanoseconds()))
+		stats.mu.data.ExecStats.CPUSQLNanos.Record(stats.mu.data.ExecStats.Count, float64(value.ExecStats.CPUTime.Nanoseconds()))
 
 		stats.mu.data.ExecStats.MVCCIteratorStats.StepCount.Record(stats.mu.data.ExecStats.Count, float64(value.ExecStats.MvccSteps))
 		stats.mu.data.ExecStats.MVCCIteratorStats.StepCountInternal.Record(stats.mu.data.ExecStats.Count, float64(value.ExecStats.MvccStepsInternal))
@@ -278,8 +272,4 @@ func (s *Container) recordTransactionHighLevelStats(
 		return
 	}
 	s.txnCounts.recordTransactionCounts(transactionTimeSec, committed, implicit)
-}
-
-func (s *Container) ApplicationName() string {
-	return s.appName
 }

@@ -96,23 +96,27 @@ func AppendFile(assetPath, dstPath string) error {
 	return errors.CombineErrors(err, f.Close())
 }
 
-// AssetReadDir mimics os.ReadDir, returning a list of []os.DirEntry for the
-// specified directory.
-func AssetReadDir(name string) ([]os.DirEntry, error) {
+// AssetReadDir mimics ioutil.ReadDir, returning a list of []os.FileInfo for
+// the specified directory.
+func AssetReadDir(name string) ([]os.FileInfo, error) {
 	entries, err := testCerts.ReadDir(name)
 	if err != nil {
 		return nil, err
 	}
-	filtered_entries := make([]os.DirEntry, 0, len(entries))
+	infos := make([]os.FileInfo, 0, len(entries))
 	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			return nil, err
+		}
 		if strings.HasSuffix(e.Name(), ".md") ||
 			strings.HasSuffix(e.Name(), ".sh") ||
 			strings.HasSuffix(e.Name(), ".cnf") {
 			continue
 		}
-		filtered_entries = append(filtered_entries, e)
+		infos = append(infos, &fileInfo{inner: info})
 	}
-	return filtered_entries, nil
+	return infos, nil
 }
 
 // AssetStat wraps Stat().

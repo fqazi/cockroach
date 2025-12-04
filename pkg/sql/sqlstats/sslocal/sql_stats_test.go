@@ -7,8 +7,10 @@ package sslocal_test
 
 import (
 	"context"
+	gosql "database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -34,6 +36,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/sslocal"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/ssmemstorage"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util"
@@ -327,7 +330,7 @@ func TestNodeLocalInMemoryViewDoesNotReturnPersistedStats(t *testing.T) {
 	withApp1 := sqlstatstestutil.StatementFilter{App: "app1"}
 	sqlstatstestutil.WaitForStatementEntriesAtLeast(t, obsConn, 1, withApp1)
 
-	obsConn.CheckQueryResults(t, `
+	sqlDB.CheckQueryResults(t, `
 SELECT
   key, count
 FROM
@@ -341,7 +344,7 @@ WHERE
 	server.SQLServer().(*sql.Server).GetSQLStatsProvider().MaybeFlush(ctx, tc.ApplicationLayer(0).AppStopper())
 
 	// Check that the in-memory stats now do not contain the flushed stats.
-	obsConn.CheckQueryResults(t, `
+	sqlDB.CheckQueryResults(t, `
 SELECT
   key, count
 FROM
@@ -353,7 +356,7 @@ WHERE
 	sqlDB.Exec(t, "SELECT 1 WHERE 1 = 1")
 	sqlstatstestutil.WaitForStatementEntriesAtLeast(t, obsConn, 1, withApp1)
 
-	obsConn.CheckQueryResults(t, `
+	sqlDB.CheckQueryResults(t, `
 SELECT
   key, count
 FROM
@@ -449,20 +452,20 @@ func TestExplicitTxnFingerprintAccounting(t *testing.T) {
 		Settings: st,
 	})
 
-	sqlStats := sslocal.NewSQLStats(
+	sqlStats := sslocal.New(
 		st,
 		sqlstats.MaxMemSQLStatsStmtFingerprints,
 		sqlstats.MaxMemSQLStatsTxnFingerprints,
 		nil, /* curMemoryBytesCount */
 		nil, /* maxMemoryBytesHist */
-		nil, /* discardedStatsCount */
 		monitor,
 		nil, /* reportingSink */
 		nil, /* knobs */
 	)
 
-	ingester := sslocal.NewSQLStatsIngester(st, nil /* knobs */, sslocal.NewIngesterMetrics(), sqlStats)
-	ingester.Start(ctx, stopper)
+	// TODO(xinhaoz): We'll come back and add the sql stats sink once we
+	// enable the SQL stats ingestion for sql stats.
+	ingester := sslocal.NewSQLStatsIngester(nil /* testing knobs */)
 
 	appStats := sqlStats.GetApplicationStats("" /* appName */)
 	statsCollector := sslocal.NewStatsCollector(
@@ -471,6 +474,8 @@ func TestExplicitTxnFingerprintAccounting(t *testing.T) {
 		ingester,
 		sessionphase.NewTimes(),
 		sqlStats.GetCounters(),
+		false, /* underOuterTxn */
+		nil,   /* knobs */
 	)
 
 	recordStats := func(testCase *tc) {
@@ -479,19 +484,22 @@ func TestExplicitTxnFingerprintAccounting(t *testing.T) {
 		statsCollector.StartTransaction()
 		for _, fingerprint := range testCase.fingerprints {
 			stmtFingerprintID := appstatspb.ConstructStatementFingerprintID(fingerprint, testCase.implicit, "defaultdb")
-			statsCollector.RecordStatement(ctx, &sqlstats.RecordedStmtStats{
+			err := statsCollector.RecordStatement(ctx, &sqlstats.RecordedStmtStats{
 				FingerprintID: stmtFingerprintID,
 				Query:         fingerprint,
 				ImplicitTxn:   testCase.implicit,
 			})
+			require.NoError(t, err)
 			txnFingerprintIDHash.Add(uint64(stmtFingerprintID))
 		}
 
 		txnFingerprintID = appstatspb.TransactionFingerprintID(txnFingerprintIDHash.Sum())
-		statsCollector.RecordTransaction(ctx, &sqlstats.RecordedTxnStats{
+		statsCollector.EndTransaction(ctx, txnFingerprintID)
+		err := statsCollector.RecordTransaction(ctx, &sqlstats.RecordedTxnStats{
 			FingerprintID:  txnFingerprintID,
 			UserNormalized: username.RootUser,
 		})
+		require.NoError(t, err)
 	}
 
 	for _, tc := range testCases {
@@ -575,25 +583,26 @@ func TestAssociatingStmtStatsWithTxnFingerprint(t *testing.T) {
 		require.NoError(t, err)
 
 		// Construct the SQL Stats machinery.
-		sqlStats := sslocal.NewSQLStats(
+		sqlStats := sslocal.New(
 			st,
 			sqlstats.MaxMemSQLStatsStmtFingerprints,
 			sqlstats.MaxMemSQLStatsTxnFingerprints,
 			nil,
 			nil,
-			nil, /* discardedStatsCount */
 			monitor,
 			nil,
 			nil,
 		)
-		ingester := sslocal.NewSQLStatsIngester(st, nil /* knobs */, sslocal.NewIngesterMetrics(), sqlStats)
+		ingester := sslocal.NewSQLStatsIngester(nil /* knobs */)
 		appStats := sqlStats.GetApplicationStats("" /* appName */)
 		statsCollector := sslocal.NewStatsCollector(
 			st,
 			appStats,
 			ingester,
 			sessionphase.NewTimes(),
-			sqlStats.GetCounters(),
+			nil,
+			false,
+			nil,
 		)
 
 		ingester.Start(ctx, stopper)
@@ -603,18 +612,21 @@ func TestAssociatingStmtStatsWithTxnFingerprint(t *testing.T) {
 			txnFingerprintIDHash := util.MakeFNV64()
 			for _, fingerprint := range txn.stmtFingerprints {
 				stmtFingerprintID := appstatspb.ConstructStatementFingerprintID(fingerprint, false, "defaultdb")
-				statsCollector.RecordStatement(ctx, &sqlstats.RecordedStmtStats{
+				err := statsCollector.RecordStatement(ctx, &sqlstats.RecordedStmtStats{
 					FingerprintID: stmtFingerprintID,
 					Query:         fingerprint,
 				})
+				require.NoError(t, err)
 				txnFingerprintIDHash.Add(uint64(stmtFingerprintID))
 			}
 
 			transactionFingerprintID := appstatspb.TransactionFingerprintID(txnFingerprintIDHash.Sum())
-			statsCollector.RecordTransaction(ctx, &sqlstats.RecordedTxnStats{
+			statsCollector.EndTransaction(ctx, transactionFingerprintID)
+			err := statsCollector.RecordTransaction(ctx, &sqlstats.RecordedTxnStats{
 				FingerprintID:  transactionFingerprintID,
 				UserNormalized: username.RootUser,
 			})
+			require.NoError(t, err)
 
 			// Make sure we see the counts we expect.
 			expectedCount := txn.expectedStatsCountWhenEnabled
@@ -752,13 +764,12 @@ func TestTransactionServiceLatencyOnExtendedProtocol(t *testing.T) {
 			}
 		},
 	}
-	srv := serverutils.StartServerOnly(t, params)
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	s := serverutils.StartServerOnly(t, params)
+	defer s.Stopper().Stop(ctx)
+	ts := s.ApplicationLayer()
 
-	pgURL, cleanupGoDB := s.PGUrl(
-		t, serverutils.CertsDirPrefix("StartServer"), serverutils.User(username.RootUser),
-	)
+	pgURL, cleanupGoDB := pgurlutils.PGUrl(
+		t, ts.AdvSQLAddr(), "StartServer", url.User(username.RootUser))
 	defer cleanupGoDB()
 	c, err := pgx.Connect(ctx, pgURL.String())
 	require.NoError(t, err, "error connecting with pg url")
@@ -1242,6 +1253,241 @@ func TestEnhancedFingerprintCreation(t *testing.T) {
 		// We expect this one fingerprint to have been executed n times.
 		sqlstatstestutil.WaitForStatementEntriesAtLeast(t, obsConn, 1,
 			sqlstatstestutil.StatementFilter{App: "app1", Query: tc.fingerprint, ExecCount: len(tc.stmts)})
+	}
+}
+
+func TestSQLStatsIdleLatencies(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	srv, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	defer srv.Stopper().Stop(ctx)
+	s := srv.ApplicationLayer()
+
+	// Max limit safety check on the expected idle latency in seconds. Mostly a
+	// paranoia check.
+	const idleLatCap float64 = 30
+
+	testCases := []struct {
+		name     string
+		stmtLats map[string]float64
+		txnLat   float64
+		ops      func(*testing.T, *gosql.DB)
+	}{
+		{
+			name:     "no latency",
+			stmtLats: map[string]float64{"SELECT _": 0},
+			txnLat:   0,
+			ops: func(t *testing.T, db *gosql.DB) {
+				tx, err := db.Begin()
+				require.NoError(t, err)
+				_, err = tx.Exec("SELECT 1")
+				require.NoError(t, err)
+				err = tx.Commit()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:     "no latency (implicit txn)",
+			stmtLats: map[string]float64{"SELECT _": 0},
+			txnLat:   0,
+			ops: func(t *testing.T, db *gosql.DB) {
+				// These 100ms don't count because we're not in an explicit
+				// transaction.
+				time.Sleep(100 * time.Millisecond)
+				_, err := db.Exec("SELECT 1")
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:     "no latency - prepared statement (implicit txn)",
+			stmtLats: map[string]float64{"SELECT _::INT8": 0},
+			txnLat:   0,
+			ops: func(t *testing.T, db *gosql.DB) {
+				stmt, err := db.Prepare("SELECT $1::INT")
+				require.NoError(t, err)
+				time.Sleep(100 * time.Millisecond)
+				_, err = stmt.Exec(1)
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:     "simple statement",
+			stmtLats: map[string]float64{"SELECT _": 0.1},
+			txnLat:   0.2,
+			ops: func(t *testing.T, db *gosql.DB) {
+				tx, err := db.Begin()
+				require.NoError(t, err)
+				time.Sleep(100 * time.Millisecond)
+				_, err = tx.Exec("SELECT 1")
+				require.NoError(t, err)
+				time.Sleep(100 * time.Millisecond)
+				err = tx.Commit()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:     "simple statement with rollback",
+			stmtLats: map[string]float64{"SELECT _": 0.1},
+			txnLat:   0.2,
+			ops: func(t *testing.T, db *gosql.DB) {
+				tx, err := db.Begin()
+				require.NoError(t, err)
+				time.Sleep(100 * time.Millisecond)
+				_, err = tx.Exec("SELECT 1")
+				require.NoError(t, err)
+				time.Sleep(100 * time.Millisecond)
+				err = tx.Rollback()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:     "compound statement",
+			stmtLats: map[string]float64{"SELECT _": 0.1, "SELECT count(*) FROM crdb_internal.statement_statistics": 0},
+			txnLat:   0.2,
+			ops: func(t *testing.T, db *gosql.DB) {
+				tx, err := db.Begin()
+				require.NoError(t, err)
+				time.Sleep(100 * time.Millisecond)
+				_, err = tx.Exec("SELECT 1; SELECT count(*) FROM crdb_internal.statement_statistics")
+				require.NoError(t, err)
+				time.Sleep(100 * time.Millisecond)
+				err = tx.Commit()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:     "multiple statements - slow generation",
+			stmtLats: map[string]float64{"SELECT pg_sleep(_)": 0, "SELECT _": 0},
+			txnLat:   0,
+			ops: func(t *testing.T, db *gosql.DB) {
+				tx, err := db.Begin()
+				require.NoError(t, err)
+				_, err = tx.Exec("SELECT pg_sleep(1)")
+				require.NoError(t, err)
+				_, err = tx.Exec("SELECT 1")
+				require.NoError(t, err)
+				err = tx.Commit()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:     "prepared statement",
+			stmtLats: map[string]float64{"SELECT _::INT8": 0.1},
+			txnLat:   0.2,
+			ops: func(t *testing.T, db *gosql.DB) {
+				stmt, err := db.Prepare("SELECT $1::INT")
+				require.NoError(t, err)
+				tx, err := db.Begin()
+				require.NoError(t, err)
+				time.Sleep(100 * time.Millisecond)
+				_, err = tx.Stmt(stmt).Exec(1)
+				require.NoError(t, err)
+				time.Sleep(100 * time.Millisecond)
+				err = tx.Commit()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:     "prepared statement inside transaction",
+			stmtLats: map[string]float64{"SELECT _::INT8": 0.1},
+			txnLat:   0.2,
+			ops: func(t *testing.T, db *gosql.DB) {
+				tx, err := db.Begin()
+				require.NoError(t, err)
+				stmt, err := tx.Prepare("SELECT $1::INT")
+				require.NoError(t, err)
+				time.Sleep(100 * time.Millisecond)
+				_, err = stmt.Exec(1)
+				require.NoError(t, err)
+				time.Sleep(100 * time.Millisecond)
+				err = tx.Commit()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:     "multiple transactions",
+			stmtLats: map[string]float64{"SELECT _": 0.1},
+			txnLat:   0.2,
+			ops: func(t *testing.T, db *gosql.DB) {
+				for i := 0; i < 3; i++ {
+					tx, err := db.Begin()
+					require.NoError(t, err)
+					time.Sleep(100 * time.Millisecond)
+					_, err = tx.Exec("SELECT 1")
+					require.NoError(t, err)
+					time.Sleep(100 * time.Millisecond)
+					err = tx.Commit()
+					require.NoError(t, err)
+				}
+			},
+		},
+	}
+
+	// Observer connection.
+	obsConn := sqlutils.MakeSQLRunner(s.SQLConn(t))
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Make a separate connection to the database, to isolate the stats
+			// we'll observe.
+			// Note that we're not using pgx here because it *always* prepares
+			// statement, and we want to test our client latency measurements
+			// both with and without prepared statements.
+			opsDB := s.SQLConn(t)
+
+			// Set a unique application name for our session, so we can find our
+			// stats easily.
+			appName := redact.RedactableString(t.Name())
+			_, err := opsDB.Exec("SET application_name = $1", appName)
+			require.NoError(t, err)
+
+			// Run the test operations.
+			tc.ops(t, opsDB)
+
+			appFilter := sqlstatstestutil.StatementFilter{App: string(appName)}
+			sqlstatstestutil.WaitForStatementEntriesAtLeast(t, obsConn, len(tc.stmtLats), appFilter)
+
+			// Look for the latencies we expect.
+			t.Run("stmt", func(t *testing.T) {
+				actual := make(map[string]float64)
+				rows, err := db.Query(`
+					SELECT metadata->>'query', statistics->'statistics'->'idleLat'->'mean'
+					  FROM crdb_internal.statement_statistics
+					 WHERE app_name = $1`, appName)
+				require.NoError(t, err)
+				for rows.Next() {
+					var query string
+					var latency float64
+					err = rows.Scan(&query, &latency)
+					require.NoError(t, err)
+					actual[query] = latency
+				}
+				require.NoError(t, rows.Err())
+				// Ensure that all test case statements have at least the
+				// minimum expected idle latency and do not exceed the safety
+				// check cap.
+				for tc_stmt, tc_latency := range tc.stmtLats {
+					require.GreaterOrEqual(t, actual[tc_stmt], tc_latency)
+					require.Less(t, actual[tc_stmt], idleLatCap)
+				}
+			})
+
+			t.Run("txn", func(t *testing.T) {
+				var actual float64
+				row := db.QueryRow(`
+					SELECT statistics->'statistics'->'idleLat'->'mean'
+					  FROM crdb_internal.transaction_statistics
+					 WHERE app_name = $1`, appName)
+				err := row.Scan(&actual)
+				require.NoError(t, err)
+				// Ensure the test case transaction has at least the minimum
+				// expected idle latency and do not exceed the safety check cap.
+				require.GreaterOrEqual(t, actual, tc.txnLat)
+				require.Less(t, actual, idleLatCap)
+			})
+		})
 	}
 }
 
@@ -1807,125 +2053,14 @@ func BenchmarkSqlStatsDrain(b *testing.B) {
 	for _, bc := range benchCase {
 		b.Run(fmt.Sprintf("drainsql-%d", bc.statsCount), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				b.StopTimer()
 				sqlStats := createNewSqlStats()
 				populateSqlStats(b, sqlStats, bc.statsCount)
-				b.StartTimer()
+				b.ResetTimer()
 				sqlStats.DrainStats(ctx)
 			}
+
 		})
 	}
-}
-
-func TestTransactionLatencies(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	ctx := context.Background()
-
-	type capturedStats struct {
-		syncutil.Mutex
-		txnStats  []*sqlstats.RecordedTxnStats
-		stmtCount int
-	}
-	stats := &capturedStats{}
-	var params base.TestServerArgs
-	params.Knobs.SQLExecutor = &sql.ExecutorTestingKnobs{
-		AfterExecute: func(ctx context.Context, stmt string, isInternal bool, err error) {
-			if isInternal {
-				return
-			}
-			stats.Lock()
-			defer stats.Unlock()
-			stats.stmtCount++
-		},
-		OnRecordTxnFinish: func(isInternal bool, phaseTimes *sessionphase.Times, stmt string, txnStats *sqlstats.RecordedTxnStats) {
-			if isInternal {
-				return
-			}
-			stats.Lock()
-			defer stats.Unlock()
-			stats.txnStats = append(stats.txnStats, txnStats)
-		},
-	}
-
-	s := serverutils.StartServerOnly(t, params)
-	defer s.Stopper().Stop(ctx)
-
-	verifyTxnStats := func(t *testing.T, lastTxnStats *sqlstats.RecordedTxnStats, expectedIdleLatency time.Duration, totalTxnTime time.Duration) {
-		// txn idle latency should be >= expectedIdleLatency.
-		require.GreaterOrEqual(t, lastTxnStats.IdleLatency, expectedIdleLatency)
-		// txn service latency should be >= txn idle latency.
-		require.GreaterOrEqual(t, lastTxnStats.ServiceLatency, lastTxnStats.IdleLatency)
-		// txn service latency should be <= txn time.
-		require.LessOrEqual(t, lastTxnStats.ServiceLatency, time.Duration(lastTxnStats.TransactionTimeSec*float64(time.Second)))
-		// txn time should be roughly equal to the time we tracked (within 2%).
-		// Note(alyshan): Most test runs the difference is < 1%, but under stress it can be > 1%.
-		require.InDelta(t, totalTxnTime.Seconds(), lastTxnStats.TransactionTimeSec, totalTxnTime.Seconds()*0.05)
-	}
-
-	db := sqlutils.MakeSQLRunner(s.SQLConn(t))
-	// Create a test table
-	db.Exec(t, "CREATE TABLE test_idle (id INT)")
-	t.Run("simple statements", func(t *testing.T) {
-		startTime := time.Now()
-		db.Exec(t, "BEGIN")
-		for i := 0; i < 10; i++ {
-			db.Exec(t, "INSERT INTO test_idle VALUES (1)")
-			time.Sleep(100 * time.Millisecond)
-		}
-		db.Exec(t, "COMMIT")
-		endTime := time.Now()
-		totalTxnTime := endTime.Sub(startTime)
-
-		stats.Lock()
-		defer stats.Unlock()
-		lastTxnStats := stats.txnStats[len(stats.txnStats)-1]
-		verifyTxnStats(t, lastTxnStats, time.Second, totalTxnTime)
-	})
-
-	t.Run("with intermediate observer statements", func(t *testing.T) {
-		startTime := time.Now()
-		db.Exec(t, "BEGIN")
-		// This mimics the behaviour of the cockroach sql cli.
-		for i := 0; i < 10; i++ {
-			db.Exec(t, "SHOW SYNTAX 'INSERT INTO test_idle VALUES (1)'")
-			db.Exec(t, "INSERT INTO test_idle VALUES (1)")
-			db.Exec(t, "SHOW LAST QUERY STATISTICS")
-			db.Exec(t, "SHOW TRANSACTION STATUS")
-			// SHOW DATABASE is not an observer statement, but we include it here since it mimics
-			// the behaviour of the cockroach sql cli.
-			// TODO(alyshan): Investigate why SHOW DATABASE is not an observer statement.
-			db.Exec(t, "SHOW DATABASE")
-			time.Sleep(100 * time.Millisecond)
-		}
-		db.Exec(t, "COMMIT")
-		endTime := time.Now()
-		totalTxnTime := endTime.Sub(startTime)
-
-		stats.Lock()
-		defer stats.Unlock()
-		lastTxnStats := stats.txnStats[len(stats.txnStats)-1]
-		verifyTxnStats(t, lastTxnStats, time.Second, totalTxnTime)
-	})
-
-	t.Run("prepare/bind statements", func(t *testing.T) {
-		startTime := time.Now()
-		db.Exec(t, "BEGIN")
-		for i := 0; i < 10; i++ {
-			// Placeholders invoke prepare/bind.
-			db.Exec(t, "INSERT INTO test_idle VALUES ($1)", i)
-			time.Sleep(100 * time.Millisecond)
-		}
-		db.Exec(t, "COMMIT")
-		endTime := time.Now()
-		totalTxnTime := endTime.Sub(startTime)
-
-		stats.Lock()
-		defer stats.Unlock()
-		lastTxnStats := stats.txnStats[len(stats.txnStats)-1]
-		verifyTxnStats(t, lastTxnStats, time.Second, totalTxnTime)
-	})
-
 }
 
 func createNewSqlStats() *sslocal.SQLStats {
@@ -1936,13 +2071,12 @@ func createNewSqlStats() *sslocal.SQLStats {
 	})
 	sqlstats.MaxMemSQLStatsStmtFingerprints.Override(context.Background(), &st.SV, 100000)
 	sqlstats.MaxMemSQLStatsTxnFingerprints.Override(context.Background(), &st.SV, 100000)
-	sqlStats := sslocal.NewSQLStats(
+	sqlStats := sslocal.New(
 		st,
 		sqlstats.MaxMemSQLStatsStmtFingerprints,
 		sqlstats.MaxMemSQLStatsTxnFingerprints,
 		nil, /* curMemoryBytesCount */
 		nil, /* maxMemoryBytesHist */
-		nil, /* discardedStatsCount */
 		monitor,
 		nil, /* reportingSink */
 		nil, /* knobs */

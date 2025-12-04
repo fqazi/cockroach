@@ -21,9 +21,12 @@ import (
 // NewTempEngine creates a new engine for DistSQL processors to use when
 // the working set is larger than can be stored in memory.
 func NewTempEngine(
-	ctx context.Context, tempStorage base.TempStorageConfig, diskWriteStats disk.WriteStatsManager,
+	ctx context.Context,
+	tempStorage base.TempStorageConfig,
+	storeSpec base.StoreSpec,
+	diskWriteStats disk.WriteStatsManager,
 ) (diskmap.Factory, vfs.FS, error) {
-	return newTempEngine(ctx, tempStorage, diskWriteStats)
+	return newTempEngine(ctx, tempStorage, storeSpec, diskWriteStats)
 }
 
 type tempEngine struct {
@@ -34,7 +37,7 @@ type tempEngine struct {
 // Close implements the diskmap.Factory interface.
 func (r *tempEngine) Close() {
 	if err := r.db.Close(); err != nil {
-		log.Dev.Fatalf(context.TODO(), "%v", err)
+		log.Fatalf(context.TODO(), "%v", err)
 	}
 	r.env.Close()
 }
@@ -50,7 +53,10 @@ func (r *tempEngine) NewSortedDiskMultiMap() diskmap.SortedDiskMap {
 }
 
 func newTempEngine(
-	ctx context.Context, tempStorage base.TempStorageConfig, diskWriteStats disk.WriteStatsManager,
+	ctx context.Context,
+	tempStorage base.TempStorageConfig,
+	storeSpec base.StoreSpec,
+	diskWriteStats disk.WriteStatsManager,
 ) (*tempEngine, vfs.FS, error) {
 	var baseFS vfs.FS
 	var dir string
@@ -59,9 +65,6 @@ func newTempEngine(
 		cacheSize = 8 << 20 // 8 MiB, smaller for in-memory, still non-zero
 		baseFS = vfs.NewMem()
 	} else {
-		if tempStorage.Path == "" {
-			return nil, nil, errors.AssertionFailedf("no path specified for temp storage")
-		}
 		baseFS = vfs.Default
 		dir = tempStorage.Path
 	}
@@ -69,8 +72,7 @@ func newTempEngine(
 		RW: fs.ReadWrite,
 		// Adopt the encryption options of the provided store spec so that
 		// temporary data is encrypted if the store is encrypted.
-		EncryptionOptions: tempStorage.Encryption,
-		Version:           tempStorage.Settings.Version,
+		EncryptionOptions: storeSpec.EncryptionOptions,
 	}, diskWriteStats)
 	if err != nil {
 		return nil, nil, err

@@ -40,7 +40,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/trigram"
 	"github.com/cockroachdb/cockroach/pkg/util/vector"
@@ -372,22 +371,34 @@ func TestInvertedIndexKey(t *testing.T) {
 		expectedKeysExcludingEmptyArray int
 	}{
 		{
-			value:                           tree.NewDArrayFromDatums(types.Int, tree.Datums{}),
+			value: &tree.DArray{
+				ParamTyp: types.Int,
+				Array:    tree.Datums{},
+			},
 			expectedKeys:                    1,
 			expectedKeysExcludingEmptyArray: 0,
 		},
 		{
-			value:                           tree.NewDArrayFromDatums(types.Int, tree.Datums{tree.NewDInt(1)}),
+			value: &tree.DArray{
+				ParamTyp: types.Int,
+				Array:    tree.Datums{tree.NewDInt(1)},
+			},
 			expectedKeys:                    1,
 			expectedKeysExcludingEmptyArray: 1,
 		},
 		{
-			value:                           tree.NewDArrayFromDatums(types.String, tree.Datums{tree.NewDString("foo")}),
+			value: &tree.DArray{
+				ParamTyp: types.Int,
+				Array:    tree.Datums{tree.NewDString("foo")},
+			},
 			expectedKeys:                    1,
 			expectedKeysExcludingEmptyArray: 1,
 		},
 		{
-			value: tree.NewDArrayFromDatums(types.Int, tree.Datums{tree.NewDInt(1), tree.NewDInt(2), tree.NewDInt(1)}),
+			value: &tree.DArray{
+				ParamTyp: types.Int,
+				Array:    tree.Datums{tree.NewDInt(1), tree.NewDInt(2), tree.NewDInt(1)},
+			},
 			// The keys should be deduplicated.
 			expectedKeys:                    2,
 			expectedKeysExcludingEmptyArray: 2,
@@ -974,8 +985,8 @@ func TestEncodeOverlapsArrayInvertedIndexSpans(t *testing.T) {
 
 		rightArr, _ := right.(*tree.DArray)
 		// An inverted expression can only be generated if the value array is
-		// non-empty or contains at least one non-NULL element.
-		ok := rightArr.Len() > 0 && rightArr.HasNonNulls()
+		// non-empty or contains atleast one non-NULL element.
+		ok := rightArr.Len() > 0 && rightArr.HasNonNulls
 		// A unique span expression can be guaranteed when the input is of
 		// the form:
 		// Array A && Array containing one or more entries of same non-null
@@ -1077,6 +1088,7 @@ func TestEncodeTrigramInvertedIndexSpans(t *testing.T) {
 
 	runTest := func(indexedValue, value string, searchType trigramSearchType,
 		expectContainsKeys, expected, expectUnique bool) {
+		t.Logf("test case: %s %s %v %t %t %t", indexedValue, value, searchType, expectContainsKeys, expected, expectUnique)
 		keys, err := EncodeInvertedIndexTableKeys(tree.NewDString(indexedValue), nil, descpb.LatestIndexDescriptorVersion)
 		require.NoError(t, err)
 
@@ -1285,13 +1297,15 @@ func TestDecodeKeyVals(t *testing.T) {
 // write leaf keys, so that's what's tested here.
 func TestVectorEncoding(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
 	srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
 	codec := srv.ApplicationLayer().Codec()
 	runner := sqlutils.MakeSQLRunner(sqlDB)
 	defer srv.Stopper().Stop(ctx)
+
+	// Enable vector indexes.
+	runner.Exec(t, `SET CLUSTER SETTING feature.vector_index.enabled = true`)
 
 	runner.Exec(t, `CREATE TABLE prefix_cols (
   a INT PRIMARY KEY,
@@ -1377,13 +1391,15 @@ func TestVectorEncoding(t *testing.T) {
 
 func TestVectorCompositeEncoding(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
 	srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
 	codec := srv.ApplicationLayer().Codec()
 	runner := sqlutils.MakeSQLRunner(sqlDB)
 	defer srv.Stopper().Stop(ctx)
+
+	// Enable vector indexes.
+	runner.Exec(t, `SET CLUSTER SETTING feature.vector_index.enabled = true`)
 
 	runner.Exec(t, `CREATE TABLE prefix_cols (
   a INT PRIMARY KEY,

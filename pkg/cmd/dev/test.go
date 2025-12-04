@@ -96,12 +96,6 @@ pkg/kv/kvserver:kvserver_test) instead.`,
 
     dev test pkg/server -- --test_env=COCKROACH_RANDOM_SEED=1234
         Run a test with a specified seed by passing the --test_env flag directly to bazel
-
-    Test-relevant environment variables:
-        COCKROACH_RANDOM_SEED=n                             Set a seed for the random number generator.
-        COCKROACH_TEST_TENANT=(shared|external|disabled)    Specify or disable randomized tenant testing.
-        COCKROACH_TEST_DRPC=(enabled|disabled)              Enable/Disable DRPC (gRPC replacement).
-        COCKROACH_FORCE_RUN_SKIPPED_TESTS=true              Ignore skip.UnderStress and friends.
 `,
 		Args: cobra.MinimumNArgs(0),
 		RunE: runE,
@@ -393,6 +387,9 @@ func (d *dev) test(cmd *cobra.Command, commandLine []string) error {
 	args = append(args, d.getTestOutputArgs(verbose, showLogs, streamOutput)...)
 	args = append(args, additionalBazelArgs...)
 	logCommand("bazel", args...)
+	if stress {
+		d.warnAboutChangeInStressBehavior(timeout)
+	}
 
 	// Do not log --build_event_binary_file=... because it is not relevant to the actual call
 	// from the user perspective.

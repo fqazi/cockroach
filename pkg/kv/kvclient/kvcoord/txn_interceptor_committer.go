@@ -404,7 +404,7 @@ func mergeIntoSpans(s []roachpb.Span, ws []roachpb.SequencedWrite) ([]roachpb.Sp
 	for i, w := range ws {
 		m[len(s)+i] = roachpb.Span{Key: w.Key}
 	}
-	return roachpb.MergeSpans(m)
+	return roachpb.MergeSpans(&m)
 }
 
 // isTxnCommitImplicit determines whether the transaction has satisfied the
@@ -509,7 +509,7 @@ func (tc *txnCommitter) makeTxnCommitExplicitAsync(
 		tc.mu.Lock()
 		defer tc.mu.Unlock()
 		if err := makeTxnCommitExplicitLocked(ctx, tc.wrapped, txn, lockSpans); err != nil {
-			log.Dev.Errorf(ctx, "making txn commit explicit failed for %s: %v", txn, err)
+			log.Errorf(ctx, "making txn commit explicit failed for %s: %v", txn, err)
 		}
 	}
 
@@ -550,9 +550,9 @@ func makeTxnCommitExplicitLocked(
 				return nil
 			}
 		case *kvpb.TransactionRetryError:
-			logFunc := log.Dev.Errorf
+			logFunc := log.Errorf
 			if util.RaceEnabled {
-				logFunc = log.Dev.Fatalf
+				logFunc = log.Fatalf
 			}
 			logFunc(ctx, "unexpected retry error when making commit explicit for %s: %v", txn, t)
 		}

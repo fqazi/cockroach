@@ -603,17 +603,15 @@ func (oc *optCatalog) LeaseByStableID(ctx context.Context, stableID cat.StableID
 
 // GetDependencyDigest is part of the cat.Catalog interface.
 func (oc *optCatalog) GetDependencyDigest() cat.DependencyDigest {
-	// The stats and hints caches may not be setup in some tests like
+	// The stats cache may not be setup in some tests like
 	// TestPortalsDestroyedOnTxnFinish. In which case always
 	// return the empty digest.
-	if oc.planner.ExecCfg().TableStatsCache == nil ||
-		oc.planner.ExecCfg().StatementHintsCache == nil {
+	if oc.planner.ExecCfg().TableStatsCache == nil {
 		return cat.DependencyDigest{}
 	}
 	return cat.DependencyDigest{
 		LeaseGeneration: oc.planner.Descriptors().GetLeaseGeneration(),
 		StatsGeneration: oc.planner.execCfg.TableStatsCache.GetGeneration(),
-		HintsGeneration: oc.planner.execCfg.StatementHintsCache.GetGeneration(),
 		SystemConfig:    oc.planner.execCfg.SystemConfig.GetSystemConfig(),
 		CurrentDatabase: oc.planner.CurrentDatabase(),
 		SearchPath:      oc.planner.SessionData().SearchPath,
@@ -742,11 +740,6 @@ func (oc *optCatalog) getZoneConfig(desc catalog.TableDescriptor) (cat.Zone, err
 
 func (oc *optCatalog) codec() keys.SQLCodec {
 	return oc.planner.ExecCfg().Codec
-}
-
-// DisableUnsafeInternalCheck forwards the call to the planner.
-func (oc *optCatalog) DisableUnsafeInternalCheck() func() {
-	return oc.planner.DisableUnsafeInternalsCheck()
 }
 
 // optView is a wrapper around catalog.TableDescriptor that implements
@@ -1760,7 +1753,7 @@ func (oi *optIndex) init(
 				valueEncBuf, nil, /* prefixDatums */
 			)
 			if err != nil {
-				log.Dev.Fatalf(context.TODO(), "error while decoding partition tuple: %+v %+v",
+				log.Fatalf(context.TODO(), "error while decoding partition tuple: %+v %+v",
 					oi.tab.desc, oi.tab.desc.GetDependsOnTypes())
 			}
 			op.datums = append(op.datums, t.Datums)
@@ -2086,7 +2079,7 @@ func (os *optTableStat) init(
 				)
 			}
 			// For release builds, skip over the stat and log a warning.
-			log.Dev.Warningf(ctx, "skipping stat %d due to failed type check: %v", stat.StatisticID, err)
+			log.Warningf(ctx, "skipping stat %d due to failed type check: %v", stat.StatisticID, err)
 			return false, nil
 		}
 	}

@@ -626,7 +626,7 @@ func importPlanHook(
 			}
 		}
 
-		var tableDetails jobspb.ImportDetails_Table
+		var tableDetails []jobspb.ImportDetails_Table
 		var typeDetails []jobspb.ImportDetails_Type
 		jobDesc, err := importJobDescription(ctx, p, importStmt, filenamePatterns, opts)
 		if err != nil {
@@ -650,9 +650,8 @@ func importPlanHook(
 		// Check if the table has any vector indexes
 		for _, idx := range found.NonDropIndexes() {
 			if idx.GetType() == idxtype.VECTOR {
-				return errors.WithHint(unimplemented.NewWithIssueDetail(145227, "import.vector-index",
-					"IMPORT INTO is not supported for tables with vector indexes"),
-					"Consider dropping the vector index before importing, then recreating it afterwards.")
+				return unimplemented.NewWithIssueDetail(145227, "import.vector-index",
+					"IMPORT INTO is not supported for tables with vector indexes")
 			}
 		}
 
@@ -712,13 +711,13 @@ func importPlanHook(
 			}
 			if len(typeDescs) > 0 {
 				typeDetails = make([]jobspb.ImportDetails_Type, 0, len(typeDescs))
-				for _, typeDesc := range typeDescs {
-					typeDetails = append(typeDetails, jobspb.ImportDetails_Type{Desc: typeDesc.TypeDesc()})
-				}
+			}
+			for _, typeDesc := range typeDescs {
+				typeDetails = append(typeDetails, jobspb.ImportDetails_Type{Desc: typeDesc.TypeDesc()})
 			}
 		}
 
-		tableDetails = jobspb.ImportDetails_Table{Desc: &found.TableDescriptor, TargetCols: intoCols}
+		tableDetails = []jobspb.ImportDetails_Table{{Desc: &found.TableDescriptor, TargetCols: intoCols}}
 
 		// Store the primary region of the database being imported into. This is
 		// used during job execution to evaluate certain default expressions and
@@ -747,7 +746,7 @@ func importPlanHook(
 			// This should never be true as we have parsed these file names in an
 			// earlier step of import.
 			if err != nil {
-				log.Dev.Warningf(ctx, "failed to collect file specific import telemetry for %s", uri)
+				log.Warningf(ctx, "failed to collect file specific import telemetry for %s", uri)
 				continue
 			}
 
@@ -768,8 +767,7 @@ func importPlanHook(
 			URIs:                  files,
 			Format:                format,
 			ParentID:              db.GetID(),
-			Table:                 tableDetails,
-			Tables:                []jobspb.ImportDetails_Table{tableDetails},
+			Tables:                tableDetails,
 			Types:                 typeDetails,
 			DatabasePrimaryRegion: databasePrimaryRegion,
 		}
@@ -809,7 +807,7 @@ func importPlanHook(
 					return
 				}
 				if cleanupErr := sj.CleanupOnRollback(ctx); cleanupErr != nil {
-					log.Dev.Errorf(ctx, "failed to cleanup job: %v", cleanupErr)
+					log.Errorf(ctx, "failed to cleanup job: %v", cleanupErr)
 				}
 			}()
 			jobID := p.ExecCfg().JobRegistry.MakeJobID()

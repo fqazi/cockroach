@@ -70,7 +70,7 @@ func emitHelper(
 		output.Push(nil /* row */, &execinfrapb.ProducerMetadata{
 			Err: errors.AssertionFailedf("not allowed to pause and switch to another portal"),
 		})
-		log.Dev.Fatalf(ctx, "not allowed to pause and switch to another portal")
+		log.Fatalf(ctx, "not allowed to pause and switch to another portal")
 		return false
 	case execinfra.DrainRequested:
 		log.VEventf(ctx, 1, "no more rows required. drain requested.")
@@ -82,7 +82,7 @@ func emitHelper(
 		output.ProducerDone()
 		return false
 	default:
-		log.Dev.Fatalf(ctx, "unexpected consumerStatus: %d", consumerStatus)
+		log.Fatalf(ctx, "unexpected consumerStatus: %d", consumerStatus)
 		return false
 	}
 }
@@ -100,7 +100,6 @@ func NewProcessor(
 	ctx context.Context,
 	flowCtx *execinfra.FlowCtx,
 	processorID int32,
-	stageID int32,
 	core *execinfrapb.ProcessorCoreUnion,
 	post *execinfrapb.PostProcessSpec,
 	inputs []execinfra.RowSource,
@@ -122,7 +121,7 @@ func NewProcessor(
 		if err := checkNumIn(inputs, 0); err != nil {
 			return nil, err
 		}
-		return newTableReader(ctx, flowCtx, processorID, stageID, core.TableReader, post)
+		return newTableReader(ctx, flowCtx, processorID, core.TableReader, post)
 	}
 	if core.Filterer != nil {
 		if err := checkNumIn(inputs, 1); err != nil {
@@ -380,12 +379,6 @@ func NewProcessor(
 		}
 		return NewTTLProcessor(ctx, flowCtx, processorID, *core.Ttl)
 	}
-	if core.Inspect != nil {
-		if err := checkNumIn(inputs, 0); err != nil {
-			return nil, err
-		}
-		return NewInspectProcessor(ctx, flowCtx, processorID, *core.Inspect)
-	}
 	if core.LogicalReplicationWriter != nil {
 		if err := checkNumIn(inputs, 0); err != nil {
 			return nil, err
@@ -422,45 +415,6 @@ func NewProcessor(
 		}
 		return NewCompactBackupsProcessor(ctx, flowCtx, processorID, *core.CompactBackups, post)
 	}
-	if core.BulkMerge != nil {
-		if err := checkNumIn(inputs, 1); err != nil {
-			return nil, err
-		}
-		if NewBulkMergeProcessor == nil {
-			return nil, errors.New("BulkMerge processor unimplemented")
-		}
-		return NewBulkMergeProcessor(ctx, flowCtx, processorID, *core.BulkMerge, post, inputs[0])
-	}
-	if core.MergeCoordinator != nil {
-		if err := checkNumIn(inputs, 1); err != nil {
-			return nil, err
-		}
-		if NewMergeCoordinatorProcessor == nil {
-			return nil, errors.New("MergeCoordinator processor unimplemented")
-		}
-		return NewMergeCoordinatorProcessor(
-			ctx, flowCtx, processorID, *core.MergeCoordinator, post, inputs[0],
-		)
-	}
-	if core.MergeLoopback != nil {
-		if err := checkNumIn(inputs, 0); err != nil {
-			return nil, err
-		}
-		if NewMergeLoopbackProcessor == nil {
-			return nil, errors.New("MergeLoopback processor unimplemented")
-		}
-		return NewMergeLoopbackProcessor(ctx, flowCtx, processorID, *core.MergeLoopback, post)
-	}
-	if core.IngestFile != nil {
-		if err := checkNumIn(inputs, 0); err != nil {
-			return nil, err
-		}
-		if NewIngestFileProcessor == nil {
-			return nil, errors.New("IngestFile processor unimplemented")
-		}
-		return NewIngestFileProcessor(ctx, flowCtx, processorID, *core.IngestFile)
-	}
-
 	return nil, errors.Errorf("unsupported processor core %q", core)
 }
 
@@ -472,32 +426,6 @@ var NewCloudStorageTestProcessor func(context.Context, *execinfra.FlowCtx, int32
 
 // NewIngestStoppedProcessor is implemented in the non-free (CCL) codebase and then injected here via runtime initialization.
 var NewIngestStoppedProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.IngestStoppedSpec, *execinfrapb.PostProcessSpec) (execinfra.Processor, error)
-
-var NewBulkMergeProcessor func(
-	context.Context,
-	*execinfra.FlowCtx,
-	int32,
-	execinfrapb.BulkMergeSpec,
-	*execinfrapb.PostProcessSpec,
-	execinfra.RowSource,
-) (execinfra.Processor, error)
-
-var NewMergeCoordinatorProcessor func(
-	context.Context,
-	*execinfra.FlowCtx,
-	int32,
-	execinfrapb.MergeCoordinatorSpec,
-	*execinfrapb.PostProcessSpec,
-	execinfra.RowSource,
-) (execinfra.Processor, error)
-
-var NewMergeLoopbackProcessor func(
-	context.Context,
-	*execinfra.FlowCtx,
-	int32,
-	execinfrapb.MergeLoopbackSpec,
-	*execinfrapb.PostProcessSpec,
-) (execinfra.Processor, error)
 
 // NewBackupDataProcessor is implemented in the non-free (CCL) codebase and then injected here via runtime initialization.
 var NewBackupDataProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.BackupDataSpec, *execinfrapb.PostProcessSpec) (execinfra.Processor, error)
@@ -520,8 +448,6 @@ var NewStreamIngestionFrontierProcessor func(context.Context, *execinfra.FlowCtx
 // NewTTLProcessor is implemented in the non-free (CCL) codebase and then injected here via runtime initialization.
 var NewTTLProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.TTLSpec) (execinfra.Processor, error)
 
-var NewInspectProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.InspectSpec) (execinfra.Processor, error)
-
 // NewGenerativeSplitAndScatterProcessor is implemented in the non-free (CCL) codebase and then injected here via runtime initialization.
 var NewGenerativeSplitAndScatterProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.GenerativeSplitAndScatterSpec, *execinfrapb.PostProcessSpec) (execinfra.Processor, error)
 
@@ -530,5 +456,3 @@ var NewLogicalReplicationWriterProcessor func(context.Context, *execinfra.FlowCt
 var NewLogicalReplicationOfflineScanProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.LogicalReplicationOfflineScanSpec, *execinfrapb.PostProcessSpec) (execinfra.Processor, error)
 
 var NewCompactBackupsProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.CompactBackupsSpec, *execinfrapb.PostProcessSpec) (execinfra.Processor, error)
-
-var NewIngestFileProcessor func(context.Context, *execinfra.FlowCtx, int32, execinfrapb.IngestFileSpec) (execinfra.Processor, error)

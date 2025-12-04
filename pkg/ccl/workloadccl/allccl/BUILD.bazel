@@ -9,7 +9,6 @@ go_library(
         "//pkg/ccl/workloadccl/roachmartccl",
         "//pkg/workload/bank",
         "//pkg/workload/bulkingest",
-        "//pkg/workload/conflict",
         "//pkg/workload/connectionlatency",
         "//pkg/workload/debug",
         "//pkg/workload/examples",
@@ -33,7 +32,6 @@ go_library(
         "//pkg/workload/ttlbench",
         "//pkg/workload/ttllogger",
         "//pkg/workload/vecann",
-        "//pkg/workload/workload_generator",
         "//pkg/workload/ycsb",
     ],
 )
@@ -60,6 +58,7 @@ go_test(
         "//pkg/testutils/skip",
         "//pkg/testutils/sqlutils",
         "//pkg/testutils/testcluster",
+        "//pkg/util",
         "//pkg/util/bufalloc",
         "//pkg/util/leaktest",
         "//pkg/util/log",

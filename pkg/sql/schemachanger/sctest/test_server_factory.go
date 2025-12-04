@@ -25,13 +25,6 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-// TestServer is a test cluster and associated test database.
-type TestServer struct {
-	Server  serverutils.TestServerInterface
-	DB      *gosql.DB
-	Stopper func(t *testing.T)
-}
-
 // TestServerFactory constructs test clusters for declarative schema changer
 // end-to-end tests.
 type TestServerFactory interface {
@@ -55,12 +48,6 @@ type TestServerFactory interface {
 		t *testing.T,
 		fn func(s serverutils.TestServerInterface, tdb *gosql.DB),
 	)
-
-	// Start creates a test cluster and returns a TestServer.
-	Start(
-		ctx context.Context,
-		t *testing.T,
-	) TestServer
 }
 
 // SingleNodeTestClusterFactory is the vanilla implementation of
@@ -98,15 +85,8 @@ func (f SingleNodeTestClusterFactory) WithSchemaLockDisabled() TestServerFactory
 
 // Run implements the TestServerFactory interface.
 func (f SingleNodeTestClusterFactory) Run(
-	ctx context.Context, t *testing.T, fn func(s serverutils.TestServerInterface, tdb *gosql.DB),
+	ctx context.Context, t *testing.T, fn func(_ serverutils.TestServerInterface, _ *gosql.DB),
 ) {
-	s := f.Start(ctx, t)
-	defer s.Stopper(t)
-	fn(s.Server, s.DB)
-}
-
-// Start implements the TestServerFactory interface.
-func (f SingleNodeTestClusterFactory) Start(ctx context.Context, t *testing.T) TestServer {
 	args := base.TestServerArgs{
 		Knobs: base.TestingKnobs{
 			SQLEvalContext: &eval.TestingKnobs{
@@ -117,7 +97,8 @@ func (f SingleNodeTestClusterFactory) Start(ctx context.Context, t *testing.T) T
 				UseTransactionalDescIDGenerator: true,
 			},
 		},
-		DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142814),
+		// TODO(postamar): remove this
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 	}
 	if f.server != nil {
 		args.Knobs.Server = f.server
@@ -132,14 +113,10 @@ func (f SingleNodeTestClusterFactory) Start(ctx context.Context, t *testing.T) T
 	}
 	sql.CreateTableWithSchemaLocked.Override(ctx, &args.Settings.SV, !f.schemaLockedDisabled)
 	s, db, _ := serverutils.StartServer(t, args)
-
-	return TestServer{
-		Server: s,
-		DB:     db,
-		Stopper: func(t *testing.T) {
-			s.Stopper().Stop(ctx)
-		},
-	}
+	defer func() {
+		s.Stopper().Stop(ctx)
+	}()
+	fn(s, db)
 }
 
 // OldVersionKey is the version key used by the WithMixedVersion method
@@ -171,7 +148,7 @@ func newJobsKnobs() *jobs.TestingKnobs {
 		defer injectedFailures.Unlock()
 		if _, ok := injectedFailures.m[orig.ID]; !ok {
 			injectedFailures.m[orig.ID] = struct{}{}
-			log.Dev.Infof(context.Background(), "injecting failure while marking job succeeded")
+			log.Infof(context.Background(), "injecting failure while marking job succeeded")
 			return errors.New("injected failure when marking succeeded")
 		}
 		return nil

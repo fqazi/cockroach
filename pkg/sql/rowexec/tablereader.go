@@ -54,8 +54,6 @@ type tableReader struct {
 	contentionEventsListener  execstats.ContentionEventsListener
 	scanStatsListener         execstats.ScanStatsListener
 	tenantConsumptionListener execstats.TenantConsumptionListener
-
-	stageID int32
 }
 
 var _ execinfra.Processor = &tableReader{}
@@ -76,7 +74,6 @@ func newTableReader(
 	ctx context.Context,
 	flowCtx *execinfra.FlowCtx,
 	processorID int32,
-	stageID int32,
 	spec *execinfrapb.TableReaderSpec,
 	post *execinfrapb.PostProcessSpec,
 ) (*tableReader, error) {
@@ -96,7 +93,6 @@ func newTableReader(
 	tr.limitHint = rowinfra.RowLimit(execinfra.LimitHint(spec.LimitHint, post))
 	tr.parallelize = spec.Parallelize
 	tr.maxTimestampAge = time.Duration(spec.MaxTimestampAgeNanos)
-	tr.stageID = stageID
 
 	// Make sure the key column types are hydrated. The fetched column types
 	// will be hydrated in ProcessorBase.Init below.
@@ -187,7 +183,7 @@ func (tr *tableReader) generateTrailingMeta() []execinfrapb.ProducerMetadata {
 // Start is part of the RowSource interface.
 func (tr *tableReader) Start(ctx context.Context) {
 	if tr.FlowCtx.Txn == nil {
-		log.Dev.Fatalf(ctx, "tableReader outside of txn")
+		log.Fatalf(ctx, "tableReader outside of txn")
 	}
 
 	// Keep ctx assignment so we remember StartInternal can make a new one.
@@ -267,7 +263,6 @@ func (tr *tableReader) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerMetadata
 			meta := execinfrapb.GetProducerMeta()
 			meta.Metrics = execinfrapb.GetMetricsMeta()
 			meta.Metrics.RowsRead = tr.rowsRead
-			meta.Metrics.StageID = tr.stageID
 			tr.rowsRead = 0
 			return nil, meta
 		}
@@ -347,9 +342,7 @@ func (tr *tableReader) generateMeta() []execinfrapb.ProducerMetadata {
 	meta := execinfrapb.GetProducerMeta()
 	meta.Metrics = execinfrapb.GetMetricsMeta()
 	meta.Metrics.BytesRead = tr.fetcher.GetBytesRead()
-	meta.Metrics.KVCPUTime = tr.fetcher.GetKVCPUTime()
 	meta.Metrics.RowsRead = tr.rowsRead
-	meta.Metrics.StageID = tr.stageID
 	return append(trailingMeta, *meta)
 }
 

@@ -54,7 +54,7 @@ func (s *settingsCacheWriter) SnapshotKVs(ctx context.Context, kvs []roachpb.Key
 		defer s.doneWriting()
 		for toWrite, ok := s.getToWrite(); ok; toWrite, ok = s.getToWrite() {
 			if err := storeCachedSettingsKVs(ctx, s.eng, toWrite); err != nil {
-				log.Dev.Warningf(ctx, "failed to write settings snapshot: %v", err)
+				log.Warningf(ctx, "failed to write settings snapshot: %v", err)
 			}
 		}
 	}); err != nil {
@@ -120,9 +120,9 @@ func storeCachedSettingsKVs(ctx context.Context, eng storage.Engine, kvs []roach
 }
 
 // loadCachedSettingsKVs loads locally stored cached settings.
-func loadCachedSettingsKVs(ctx context.Context, reader storage.Reader) ([]roachpb.KeyValue, error) {
+func loadCachedSettingsKVs(ctx context.Context, eng storage.Engine) ([]roachpb.KeyValue, error) {
 	var settingsKVs []roachpb.KeyValue
-	if err := reader.MVCCIterate(ctx, keys.LocalStoreCachedSettingsKeyMin,
+	if err := eng.MVCCIterate(ctx, keys.LocalStoreCachedSettingsKeyMin,
 		keys.LocalStoreCachedSettingsKeyMax, storage.MVCCKeyAndIntentsIterKind,
 		storage.IterKeyTypePointsOnly, fs.UnknownReadCategory,
 		func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
@@ -159,7 +159,7 @@ func initializeCachedSettings(
 		settingKey := settings.InternalKey(settingKeyS)
 		log.VEventf(ctx, 1, "loaded cached setting: %s -> %+v", settingKey, val)
 		if err := updater.Set(ctx, settingKey, val); err != nil {
-			log.Dev.Warningf(ctx, "setting %q to %v failed: %+v", settingKey, val, err)
+			log.Warningf(ctx, "setting %q to %v failed: %+v", settingKey, val, err)
 		}
 	}
 	updater.ResetRemaining(ctx)

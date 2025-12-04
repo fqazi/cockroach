@@ -22,6 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/bufalloc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -46,13 +47,6 @@ func TestAllRegisteredImportFixture(t *testing.T) {
 	sqlMemoryPoolSize := int64(1000 << 20) // 1GiB
 
 	for _, meta := range workload.Registered() {
-		if meta.Name == `workload_generator` {
-			// This will take its schema generation data from flags at run time,
-			// so static checks are not valid. (This is done separately from the
-			// switch below to avoid calling gen.Tables() which would print an
-			// error.)
-			continue
-		}
 		meta := meta
 		gen := meta.New()
 		hasInitialData := len(gen.Tables()) != 0
@@ -66,15 +60,15 @@ func TestAllRegisteredImportFixture(t *testing.T) {
 			continue
 		}
 
-		// This test is big enough that it causes timeout issues under heavy
-		// configs, so only run one workload. Doing any more than this doesn't
-		// get us enough to be worth the hassle.
-		if skip.Duress() && meta.Name != `bank` {
+		// This test is big enough that it causes timeout issues under race, so only
+		// run one workload. Doing any more than this doesn't get us enough to be
+		// worth the hassle.
+		if util.RaceEnabled && meta.Name != `bank` {
 			continue
 		}
 
 		switch meta.Name {
-		case `startrek`, `roachmart`, `ttlbench`:
+		case `startrek`, `roachmart`, `interleavedpartitioned`, `ttlbench`:
 			// These don't work with IMPORT.
 			continue
 		case `tpch`:
@@ -91,6 +85,9 @@ func TestAllRegisteredImportFixture(t *testing.T) {
 
 			ctx := context.Background()
 			s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
+				// The test tenant needs to be disabled for this test until
+				// we address #75449.
+				DefaultTestTenant: base.TODOTestTenantDisabled,
 				UseDatabase:       "d",
 				SQLMemoryPoolSize: sqlMemoryPoolSize,
 			})
@@ -123,10 +120,10 @@ func TestAllRegisteredSetup(t *testing.T) {
 			continue
 		}
 
-		// This test is big enough that it causes timeout issues under heavy
-		// configs, so only run one workload. Doing any more than this doesn't
-		// get us enough to be worth the hassle.
-		if skip.Duress() && meta.Name != `bank` {
+		// This test is big enough that it causes timeout issues under race, so only
+		// run one workload. Doing any more than this doesn't get us enough to be
+		// worth the hassle.
+		if util.RaceEnabled && meta.Name != `bank` {
 			continue
 		}
 
@@ -141,26 +138,29 @@ func TestAllRegisteredSetup(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+		case `interleavedpartitioned`:
+			// This require a specific node locality setup.
+			continue
 		case `ttlbench`:
 			continue
 		case `vecann`:
 			// This requires downloading from a GCP bucket and storing in the
 			// machine's ~/.cache directory.
 			continue
-		case `workload_generator`:
-			// This will take its schema generation data from flags at run time, so static checks are not valid.
-			continue
 		}
 
 		t.Run(meta.Name, func(t *testing.T) {
 			defer log.Scope(t).Close(t)
 			ctx := context.Background()
-			srv, db, _ := serverutils.StartServer(t, base.TestServerArgs{
-				UseDatabase: "d",
+			s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
+				// Need to disable the test tenant here until we resolve
+				// #75449 as this test makes use of import through a fixture.
+				DefaultTestTenant: base.TODOTestTenantDisabled,
+				UseDatabase:       "d",
 			})
-			defer srv.Stopper().Stop(ctx)
+			defer s.Stopper().Stop(ctx)
 			sqlutils.MakeSQLRunner(db).Exec(t, `CREATE DATABASE d`)
-			sqlutils.MakeSQLRunner(srv.SystemLayer().SQLConn(t)).Exec(t, `SET CLUSTER SETTING kv.range_merge.queue.enabled = false`)
+			sqlutils.MakeSQLRunner(db).Exec(t, `SET CLUSTER SETTING kv.range_merge.queue.enabled = false`)
 
 			var l workloadsql.InsertsDataLoader
 			if _, err := workloadsql.Setup(ctx, db, gen, l); err != nil {
@@ -292,8 +292,8 @@ func TestDeterministicInitialData(t *testing.T) {
 		`sqlsmith`:   0xcbf29ce484222325,
 		`startrek`:   0xa0249fbdf612734c,
 		`tpcc`:       0xccfecd06eed59975,
-		`tpch`:       0x95bafd37ccb1eb7d,
-		`ycsb`:       0xa00a7efc9d3b8532,
+		`tpch`:       0xcd2abbd021ed895d,
+		`ycsb`:       0x0e6012ee6491a0fb,
 	}
 
 	var a bufalloc.ByteAllocator

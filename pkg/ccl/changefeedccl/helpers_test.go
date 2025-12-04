@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -26,7 +27,6 @@ import (
 	"time"
 
 	apd "github.com/cockroachdb/apd/v3"
-	"github.com/cockroachdb/changefeedpb"
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdctest"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
@@ -42,7 +42,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
@@ -54,14 +53,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util"
-	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
-	"github.com/cockroachdb/cockroach/pkg/util/log/logtestutils"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
-	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
@@ -118,15 +114,15 @@ func readNextMessages(
 			return nil, ctx.Err()
 		}
 		if log.V(1) {
-			log.Changefeed.Infof(context.Background(), "about to read a message (%d out of %d)", len(actual), numMessages)
+			log.Infof(context.Background(), "about to read a message (%d out of %d)", len(actual), numMessages)
 		}
 		m, err := f.Next()
 		if log.V(1) {
 			if m != nil {
-				log.Changefeed.Infof(context.Background(), `msg %s: %s->%s (%s) (%s)`,
+				log.Infof(context.Background(), `msg %s: %s->%s (%s) (%s)`,
 					m.Topic, m.Key, m.Value, m.Resolved, timeutil.Since(lastMessage))
 			} else {
-				log.Changefeed.Infof(context.Background(), `err %v`, err)
+				log.Infof(context.Background(), `err %v`, err)
 			}
 		}
 		lastMessage = timeutil.Now()
@@ -360,20 +356,12 @@ func assertPayloadsBaseErr(
 	}()
 
 	if log.V(1) {
-		log.Changefeed.Infof(ctx, "expected messages: \n%s", strings.Join(expected, "\n"))
+		log.Infof(ctx, "expected messages: \n%s", strings.Join(expected, "\n"))
 	}
 
 	actual, err := readNextMessages(ctx, f, len(expected))
 	if err != nil {
 		return err
-	}
-	// Detect if this is a protobuf feed and format accordingly.
-	useProtobuf := false
-	if ef, ok := f.(cdctest.EnterpriseTestFeed); ok {
-		details, _ := ef.Details()
-		if details.Opts[changefeedbase.OptFormat] == string(changefeedbase.OptFormatProtobuf) {
-			useProtobuf = true
-		}
 	}
 
 	if didForceEnriched {
@@ -387,45 +375,8 @@ func assertPayloadsBaseErr(
 	}
 
 	var actualFormatted []string
-	for i, m := range actual {
-		if useProtobuf {
-			var msg changefeedpb.Message
-			if err := protoutil.Unmarshal(m.Value, &msg); err != nil {
-				return err
-			}
-
-			switch env := msg.GetData().(type) {
-			case *changefeedpb.Message_Bare:
-				m.Value, err = gojson.Marshal(env.Bare)
-				if err != nil {
-					return err
-				}
-			case *changefeedpb.Message_Wrapped:
-				m.Value, err = gojson.Marshal(env.Wrapped)
-				if err != nil {
-					return err
-				}
-			case *changefeedpb.Message_Enriched:
-				m.Value, err = gojson.Marshal(env.Enriched)
-				if err != nil {
-					return err
-				}
-
-			default:
-				return errors.Newf("unexpected message type: %T", env)
-			}
-			var key changefeedpb.Key
-			if err := protoutil.Unmarshal(m.Key, &key); err != nil {
-				return err
-			}
-			m.Key, err = gojson.Marshal(key.Key)
-			if err != nil {
-				return err
-			}
-			actual[i] = m
-		}
+	for _, m := range actual {
 		actualFormatted = append(actualFormatted, m.String())
-
 	}
 
 	if perKeyOrdered {
@@ -825,8 +776,6 @@ type feedTestOptions struct {
 	debugUseAfterFinish          bool
 	clusterName                  string
 	locality                     roachpb.Locality
-	forceKafkaV1ConnectionCheck  bool
-	allowChangefeedErr           bool
 }
 
 type feedTestOption func(opts *feedTestOptions)
@@ -845,12 +794,6 @@ var feedTestNoExternalConnection = func(opts *feedTestOptions) { opts.forceNoExt
 // tests randomly choose between the root user connection or a test user connection where the test user
 // has privileges to create changefeeds on tables in the default database `d` only.
 var feedTestUseRootUserConnection = func(opts *feedTestOptions) { opts.forceRootUserConnection = true }
-
-// feedTestForceKafkaV1ConnectionCheck is a feedTestOption that will force the connection check
-// inside Dial() when using a Kafka v1 sink.
-var feedTestForceKafkaV1ConnectionCheck = func(opts *feedTestOptions) {
-	opts.forceKafkaV1ConnectionCheck = true
-}
 
 var feedTestForceSink = func(sinkType string) feedTestOption {
 	return feedTestRestrictSinks(sinkType)
@@ -892,14 +835,6 @@ func (opts feedTestOptions) omitSinks(sinks ...string) feedTestOptions {
 	return res
 }
 
-// feedTestwithSettings is a feedTestOption that allows the caller to set
-// the cluster settings used by the test server.
-func feedTestwithSettings(s *cluster.Settings) feedTestOption {
-	return func(opts *feedTestOptions) {
-		opts.settings = s
-	}
-}
-
 // withArgsFn is a feedTestOption that allow the caller to modify the
 // TestServerArgs before they are used to create the test server. Note
 // that in multi-tenant tests, these will only apply to the kvServer
@@ -913,73 +848,6 @@ func withArgsFn(fn updateArgsFn) feedTestOption {
 // testing, these knobs are applied to both the kv and sql nodes.
 func withKnobsFn(fn updateKnobsFn) feedTestOption {
 	return func(opts *feedTestOptions) { opts.knobsFn = fn }
-}
-
-// withAllowChangefeedErr is a feedTestOption that will allow changefeed errors
-// to occur without causing the test to fail.
-func withAllowChangefeedErr(
-	reason string, /*for documentation only*/
-) feedTestOption {
-	return func(opts *feedTestOptions) {
-		opts.allowChangefeedErr = true
-	}
-}
-
-func requireNoFeedsFail(t *testing.T) (fn updateKnobsFn) {
-	t.Helper()
-	ignoreErrs := []string{
-		`schema change occurred`,
-		`cannot update progress on cancel-requested job`,
-		`cannot update progress on pause-requested job`,
-		`result is ambiguous`,
-		`query execution canceled`,
-		`node unavailable; try another peer`,
-		`was truncated`,
-		`connection refused`,
-		`connection reset by peer`,
-		`knobs.RaiseRetryableError`,
-		`test error`,
-		`context canceled`,
-	}
-	shouldIgnoreErr := func(err error) bool {
-		if err == nil || errors.Is(err, context.Canceled) || grpcutil.IsClosedConnection(err) {
-			return true
-		}
-		for _, ignoreErr := range ignoreErrs {
-			if testutils.IsError(err, ignoreErr) {
-				return true
-			}
-		}
-		return false
-	}
-
-	fn = func(knobs *base.TestingKnobs) {
-		if knobs.DistSQL == nil {
-			knobs.DistSQL = &execinfra.TestingKnobs{}
-		}
-		if knobs.DistSQL.(*execinfra.TestingKnobs).Changefeed == nil {
-			knobs.DistSQL.(*execinfra.TestingKnobs).Changefeed = &TestingKnobs{}
-		}
-		handleErr := func(err error) error {
-			t.Helper()
-
-			if shouldIgnoreErr(err) {
-				return err
-			}
-			t.Errorf("requireNoFeedsFail: unexpected error: %v", err)
-			return err
-		}
-		cfKnobs := knobs.DistSQL.(*execinfra.TestingKnobs).Changefeed.(*TestingKnobs)
-		if cfKnobs.HandleDistChangefeedError != nil {
-			originalHandler := cfKnobs.HandleDistChangefeedError
-			cfKnobs.HandleDistChangefeedError = func(err error) error {
-				return originalHandler(handleErr(err))
-			}
-		} else {
-			cfKnobs.HandleDistChangefeedError = handleErr
-		}
-	}
-	return fn
 }
 
 // Silence the linter.
@@ -999,25 +867,11 @@ func newTestOptions() feedTestOptions {
 	}
 }
 
-func makeOptions(t *testing.T, opts ...feedTestOption) feedTestOptions {
+func makeOptions(opts ...feedTestOption) feedTestOptions {
 	options := newTestOptions()
 	for _, o := range opts {
 		o(&options)
 	}
-
-	if !options.allowChangefeedErr {
-		knobsFn := requireNoFeedsFail(t)
-		if options.knobsFn == nil {
-			options.knobsFn = knobsFn
-		} else {
-			orig := options.knobsFn
-			options.knobsFn = func(knobs *base.TestingKnobs) {
-				orig(knobs)
-				knobsFn(knobs)
-			}
-		}
-	}
-
 	return options
 }
 
@@ -1221,14 +1075,6 @@ func maybeForceEnrichedEnvelope(
 				return create, args, false, nil
 			}
 		}
-		if strings.EqualFold(opt.Key.String(), "full_table_name") {
-			// TODO(#145927): full_table_name is not supported in enriched envelopes.
-			switch f.(type) {
-			case *webhookFeedFactory:
-				t.Logf("did not force enriched envelope for %s because full_table_name was specified for webhook sink", create)
-				return create, args, false, nil
-			}
-		}
 		if strings.EqualFold(opt.Key.String(), "envelope") {
 			envelopeKV = &opt
 		}
@@ -1327,7 +1173,7 @@ type TestServerWithSystem struct {
 func makeSystemServer(
 	t *testing.T, opts ...feedTestOption,
 ) (testServer TestServerWithSystem, cleanup func()) {
-	options := makeOptions(t, opts...)
+	options := makeOptions(opts...)
 	return makeSystemServerWithOptions(t, options)
 }
 
@@ -1354,7 +1200,7 @@ func makeSystemServerWithOptions(
 func makeTenantServer(
 	t *testing.T, opts ...feedTestOption,
 ) (testServer TestServerWithSystem, cleanup func()) {
-	options := makeOptions(t, opts...)
+	options := makeOptions(opts...)
 	return makeTenantServerWithOptions(t, options)
 }
 func makeTenantServerWithOptions(
@@ -1381,7 +1227,7 @@ func makeTenantServerWithOptions(
 func makeServer(
 	t *testing.T, opts ...feedTestOption,
 ) (testServer TestServerWithSystem, cleanup func()) {
-	options := makeOptions(t, opts...)
+	options := makeOptions(opts...)
 	return makeServerWithOptions(t, options)
 }
 
@@ -1396,8 +1242,8 @@ func makeServerWithOptions(
 	return makeSystemServerWithOptions(t, options)
 }
 
-func randomSinkType(t *testing.T, opts ...feedTestOption) string {
-	options := makeOptions(t, opts...)
+func randomSinkType(opts ...feedTestOption) string {
+	options := makeOptions(opts...)
 	return randomSinkTypeWithOptions(options)
 }
 
@@ -1461,7 +1307,7 @@ func makeFeedFactory(
 	db *gosql.DB,
 	testOpts ...feedTestOption,
 ) (factory cdctest.TestFeedFactory, sinkCleanup func()) {
-	options := makeOptions(t, testOpts...)
+	options := makeOptions(testOpts...)
 	return makeFeedFactoryWithOptions(t, sinkType, s, db, options)
 }
 
@@ -1493,12 +1339,10 @@ func makeFeedFactoryWithOptions(
 	}
 	switch sinkType {
 	case "kafka":
-		f := makeKafkaFeedFactoryWithConnectionCheck(t, srvOrCluster, db, options.forceKafkaV1ConnectionCheck)
+		f := makeKafkaFeedFactory(t, srvOrCluster, db)
 		userDB, cleanup := getInitialDBForEnterpriseFactory(t, s, db, options)
 		f.(*kafkaFeedFactory).configureUserDB(userDB)
-		return f, func() {
-			cleanup()
-		}
+		return f, func() { cleanup() }
 	case "cloudstorage":
 		if options.externalIODir == "" {
 			t.Fatalf("expected externalIODir option to be set")
@@ -1522,23 +1366,17 @@ func makeFeedFactoryWithOptions(
 		f := makeWebhookFeedFactory(srvOrCluster, db)
 		userDB, cleanup := getInitialDBForEnterpriseFactory(t, s, db, options)
 		f.(*webhookFeedFactory).enterpriseFeedFactory.configureUserDB(userDB)
-		return f, func() {
-			cleanup()
-		}
+		return f, func() { cleanup() }
 	case "pubsub":
 		f := makePubsubFeedFactory(srvOrCluster, db)
 		userDB, cleanup := getInitialDBForEnterpriseFactory(t, s, db, options)
 		f.(*pubsubFeedFactory).enterpriseFeedFactory.configureUserDB(userDB)
-		return f, func() {
-			cleanup()
-		}
+		return f, func() { cleanup() }
 	case "pulsar":
 		f := makePulsarFeedFactory(srvOrCluster, db)
 		userDB, cleanup := getInitialDBForEnterpriseFactory(t, s, db, options)
 		f.(*pulsarFeedFactory).enterpriseFeedFactory.configureUserDB(userDB)
-		return f, func() {
-			cleanup()
-		}
+		return f, func() { cleanup() }
 	case "sinkless":
 		pgURLForUserSinkless := func(u string, pass ...string) (url.URL, func()) {
 			t.Logf("pgURL %s %s", sinkType, u)
@@ -1630,12 +1468,6 @@ func createUserWithDefaultPrivilege(
 		if err != nil {
 			t.Fatal(err)
 		}
-		if priv == "CHANGEFEED" {
-			_, err = rootDB.Exec(fmt.Sprintf(`GRANT %s ON DATABASE d TO %s`, priv, user))
-			if err != nil {
-				t.Fatal(err)
-			}
-		}
 	}
 }
 
@@ -1667,9 +1499,8 @@ func cdcTestNamedWithSystem(
 	t *testing.T, name string, testFn cdcTestWithSystemFn, testOpts ...feedTestOption,
 ) {
 	t.Helper()
-	options := makeOptions(t, testOpts...)
+	options := makeOptions(testOpts...)
 	cleanupCloudStorage := addCloudStorageOptions(t, &options)
-	defer cleanupCloudStorage()
 	TestingClearSchemaRegistrySingleton()
 
 	sinkType := randomSinkTypeWithOptions(options)
@@ -1740,20 +1571,68 @@ func forceTableGCAtTimestamp(
 	}
 }
 
+// All structured logs should contain this property which stores the snake_cased
+// version of the name of the message struct
+type BaseEventStruct struct {
+	EventType string
+}
+
+var cmLogRe = regexp.MustCompile(`event_log\.go`)
+
+func checkStructuredLogs(t *testing.T, eventType string, startTime int64) []string {
+	var matchingEntries []string
+	testutils.SucceedsSoon(t, func() error {
+		log.FlushFiles()
+		entries, err := log.FetchEntriesFromFiles(startTime,
+			math.MaxInt64, 10000, cmLogRe, log.WithMarkedSensitiveData)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, e := range entries {
+			jsonPayload := []byte(e.Message)
+			var baseStruct BaseEventStruct
+			if err := gojson.Unmarshal(jsonPayload, &baseStruct); err != nil {
+				continue
+			}
+			if baseStruct.EventType != eventType {
+				continue
+			}
+
+			matchingEntries = append(matchingEntries, e.Message)
+		}
+
+		return nil
+	})
+
+	return matchingEntries
+}
+
+func checkContinuousChangefeedLogs(t *testing.T, startTime int64) []eventpb.ChangefeedEmittedBytes {
+	logs := checkStructuredLogs(t, "changefeed_emitted_bytes", startTime)
+	matchingEntries := make([]eventpb.ChangefeedEmittedBytes, len(logs))
+
+	for i, m := range logs {
+		jsonPayload := []byte(m)
+		var event eventpb.ChangefeedEmittedBytes
+		if err := gojson.Unmarshal(jsonPayload, &event); err != nil {
+			t.Errorf("unmarshalling %q: %v", m, err)
+		}
+		matchingEntries[i] = event
+	}
+
+	return matchingEntries
+}
+
 // verifyLogsWithEmittedBytes fetches changefeed_emitted_bytes telemetry logs produced
 // after startTime for a particular job and asserts that at least one message has positive emitted bytes.
 // This function also asserts the LoggingInterval and Closing fields of
 // each message.
 func verifyLogsWithEmittedBytesAndMessages(
-	t *testing.T,
-	jobID jobspb.JobID,
-	logSpy *logtestutils.StructuredLogSpy[eventpb.ChangefeedEmittedBytes],
-	sv *settings.Values,
-	interval int64,
-	closing bool,
+	t *testing.T, jobID jobspb.JobID, startTime int64, interval int64, closing bool,
 ) {
 	testutils.SucceedsSoon(t, func() error {
-		emittedBytesLogs := logSpy.GetUnreadLogs(getChangefeedLoggingChannel(sv))
+		emittedBytesLogs := checkContinuousChangefeedLogs(t, startTime)
 		if len(emittedBytesLogs) == 0 {
 			return errors.New("no logs found")
 		}
@@ -1777,6 +1656,37 @@ func verifyLogsWithEmittedBytesAndMessages(
 		}
 		return nil
 	})
+}
+
+func checkCreateChangefeedLogs(t *testing.T, startTime int64) []eventpb.CreateChangefeed {
+	return checkStructuredChangefeedLogs[eventpb.CreateChangefeed](t, `create_changefeed`, startTime)
+}
+
+func checkAlterChangefeedLogs(t *testing.T, startTime int64) []eventpb.AlterChangefeed {
+	return checkStructuredChangefeedLogs[eventpb.AlterChangefeed](t, `alter_changefeed`, startTime)
+}
+
+func checkChangefeedFailedLogs(t *testing.T, startTime int64) []eventpb.ChangefeedFailed {
+	return checkStructuredChangefeedLogs[eventpb.ChangefeedFailed](t, `changefeed_failed`, startTime)
+}
+
+func checkChangefeedCanceledLogs(t *testing.T, startTime int64) []eventpb.ChangefeedCanceled {
+	return checkStructuredChangefeedLogs[eventpb.ChangefeedCanceled](t, `changefeed_canceled`, startTime)
+}
+
+func checkStructuredChangefeedLogs[E any](t *testing.T, name string, startTime int64) []E {
+	var matchingEntries []E
+
+	for _, m := range checkStructuredLogs(t, name, startTime) {
+		jsonPayload := []byte(m)
+		var event E
+		if err := gojson.Unmarshal(jsonPayload, &event); err != nil {
+			t.Errorf("unmarshalling %q: %v", m, err)
+		}
+		matchingEntries = append(matchingEntries, event)
+	}
+
+	return matchingEntries
 }
 
 func checkS3Credentials(t *testing.T) (bucket string, accessKey string, secretKey string) {

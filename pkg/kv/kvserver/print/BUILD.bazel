@@ -11,7 +11,6 @@ go_library(
     deps = [
         "//pkg/keys",
         "//pkg/kv/kvserver/kvserverpb",
-        "//pkg/kv/kvserver/kvstorage/wag/wagpb",
         "//pkg/kv/kvserver/raftlog",
         "//pkg/raft/raftpb",
         "//pkg/roachpb",
@@ -23,7 +22,6 @@ go_library(
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_pebble//:pebble",
         "@com_github_gogo_protobuf//proto",
-        "@com_github_kr_text//:text",
     ],
 )
 
@@ -32,7 +30,6 @@ go_test(
     srcs = ["debug_print_test.go"],
     embed = [":print"],
     deps = [
-        "//pkg/kv/kvserver/concurrency/lock",
         "//pkg/kv/kvserver/kvserverpb",
         "//pkg/roachpb",
         "//pkg/storage",
@@ -41,7 +38,6 @@ go_test(
         "//pkg/util/hlc",
         "//pkg/util/leaktest",
         "//pkg/util/log",
-        "//pkg/util/uuid",
         "@com_github_cockroachdb_pebble//:pebble",
         "@com_github_stretchr_testify//require",
     ],

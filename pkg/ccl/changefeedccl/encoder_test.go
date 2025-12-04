@@ -232,7 +232,7 @@ func TestEncoders(t *testing.T) {
 			targets := changefeedbase.Targets{}
 			targets.Add(changefeedbase.Target{
 				Type:              jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY,
-				DescID:            tableDesc.GetID(),
+				TableID:           tableDesc.GetID(),
 				StatementTimeName: changefeedbase.StatementTimeName(tableDesc.GetName()),
 			})
 
@@ -383,7 +383,7 @@ func TestAvroEncoderWithTLS(t *testing.T) {
 			targets := changefeedbase.Targets{}
 			targets.Add(changefeedbase.Target{
 				Type:              jobspb.ChangefeedTargetSpecification_PRIMARY_FAMILY_ONLY,
-				DescID:            tableDesc.GetID(),
+				TableID:           tableDesc.GetID(),
 				StatementTimeName: changefeedbase.StatementTimeName(tableDesc.GetName()),
 			})
 
@@ -726,10 +726,7 @@ func TestAvroSchemaNaming(t *testing.T) {
 
 	}
 
-	// TODO(#150537): This test sometimes encounters errors like "CHANGEFEED
-	// created on a table with a single column family (drivers) cannot now
-	// target a table with 2 families". Why?
-	cdcTest(t, testFn, feedTestForceSink("kafka"), feedTestUseRootUserConnection, withAllowChangefeedErr("inexplicable errors"))
+	cdcTest(t, testFn, feedTestForceSink("kafka"), feedTestUseRootUserConnection)
 }
 
 func TestAvroSchemaNamespace(t *testing.T) {
@@ -882,7 +879,7 @@ func TestAvroMigrateToUnsupportedColumn(t *testing.T) {
 		}
 	}
 
-	cdcTest(t, testFn, feedTestForceSink("kafka"), withAllowChangefeedErr("checks error manually"))
+	cdcTest(t, testFn, feedTestForceSink("kafka"))
 }
 
 func TestAvroLedger(t *testing.T) {
@@ -966,7 +963,7 @@ func BenchmarkEncoders(b *testing.B) {
 	var targets changefeedbase.Targets
 	targets.Add(changefeedbase.Target{
 		Type:              0,
-		DescID:            42,
+		TableID:           42,
 		FamilyName:        "primary",
 		StatementTimeName: "table",
 	})
@@ -994,9 +991,6 @@ func BenchmarkEncoders(b *testing.B) {
 	rowAndWrapped := []changefeedbase.EnvelopeType{
 		changefeedbase.OptEnvelopeRow, changefeedbase.OptEnvelopeWrapped,
 	}
-	wrappedBareEnriched := []changefeedbase.EnvelopeType{
-		changefeedbase.OptEnvelopeWrapped, changefeedbase.OptEnvelopeBare, changefeedbase.OptEnvelopeEnriched,
-	}
 
 	for _, tc := range []struct {
 		format         changefeedbase.FormatType
@@ -1016,12 +1010,6 @@ func BenchmarkEncoders(b *testing.B) {
 			supportsDiff:   false,
 			envelopes:      rowOnly,
 		},
-		{
-			format:         changefeedbase.OptFormatProtobuf,
-			benchEncodeKey: false,
-			supportsDiff:   true,
-			envelopes:      wrappedBareEnriched,
-		},
 	} {
 		b.Run(string(tc.format), func(b *testing.B) {
 			for numKeyCols := 1; numKeyCols <= maxKeyCols; numKeyCols++ {
@@ -1029,15 +1017,12 @@ func BenchmarkEncoders(b *testing.B) {
 				b.Logf("column types: %v, keys: %v", colTypes, colTypes[:numKeyCols])
 
 				if tc.benchEncodeKey {
-					testutils.RunValues(b, "envelope", tc.envelopes,
-						func(t *testing.B, envelope changefeedbase.EnvelopeType) {
-							b.Run(fmt.Sprintf("encodeKey/%dcols/envelope=%s", numKeyCols, envelope),
-								func(b *testing.B) {
-									opts := changefeedbase.EncodingOptions{Format: tc.format, Envelope: envelope}
-									bench(b, encodeKey, opts, updatedRows, prevRows)
-								},
-							)
-						})
+					b.Run(fmt.Sprintf("encodeKey/%dcols", numKeyCols),
+						func(b *testing.B) {
+							opts := changefeedbase.EncodingOptions{Format: tc.format}
+							bench(b, encodeKey, opts, updatedRows, prevRows)
+						},
+					)
 				}
 
 				for _, envelope := range tc.envelopes {
@@ -1284,7 +1269,7 @@ func TestJsonRountrip(t *testing.T) {
 			// In this case, we can just compare strings.
 			if isFloatOrDecimal(test.datum.ResolvedType()) {
 				require.Equal(t, d.String(), j.String())
-			} else if dArr, ok := test.datum.(*tree.DArray); ok && isFloatOrDecimal(dArr.ParamTyp) {
+			} else if dArr, ok := tree.AsDArray(test.datum); ok && isFloatOrDecimal(dArr.ParamTyp) {
 				require.Equal(t, d.String(), j.String())
 			} else {
 				cmp, err := d.Compare(j)

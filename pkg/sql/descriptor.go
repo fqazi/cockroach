@@ -27,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/regions"
-	"github.com/cockroachdb/cockroach/pkg/sql/schemaobjectlimit"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -207,13 +206,6 @@ func (p *planner) createDescriptor(
 			"expected new descriptor, not a modification of version %d",
 			descriptor.OriginalVersion())
 	}
-
-	if err := schemaobjectlimit.CheckMaxSchemaObjects(
-		ctx, p.InternalSQLTxn(), p.Descriptors(), p.execCfg.TableStatsCache, p.execCfg.Settings, 1,
-	); err != nil {
-		return err
-	}
-
 	b := p.Txn().NewBatch()
 	kvTrace := p.ExtendedEvalContext().Tracing.KVTracingEnabled()
 	if err := p.Descriptors().WriteDescToBatch(ctx, kvTrace, descriptor, b); err != nil {

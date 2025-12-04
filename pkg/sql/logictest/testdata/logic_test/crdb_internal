@@ -1,6 +1,6 @@
 # 3node-tenant is blocked from running this file due to heavy reliance on
 # unavailable node IDs in this test.
-# LogicTest: !3node-tenant-default-configs !local-prepared local-leased-descriptors default-configs
+# LogicTest: !3node-tenant-default-configs
 
 query error database "crdb_internal" does not exist
 ALTER DATABASE crdb_internal RENAME TO not_crdb_internal
@@ -261,10 +261,10 @@ SELECT * FROM crdb_internal.session_trace WHERE span_idx < 0
 ----
 span_idx  message_idx  timestamp  duration  operation  loc  tag  message age
 
-query TTTBBBTTTT colnames
+query TTTBTTTT colnames
 SELECT * FROM crdb_internal.cluster_settings WHERE variable = ''
 ----
-variable  value  type  public  sensitive  reportable  description  default_value  origin  key
+variable  value  type  public  description  default_value  origin  key
 
 query TI colnames
 SELECT * FROM crdb_internal.feature_usage WHERE feature_name = ''
@@ -276,15 +276,15 @@ SELECT * FROM crdb_internal.session_variables WHERE variable = ''
 ----
 variable  value  hidden
 
-query TTITTTTTTBTBTTTII colnames
+query TTITTTTTTBTBTT colnames
 SELECT * FROM crdb_internal.node_queries WHERE node_id < 0
 ----
-query_id  txn_id  node_id  session_id  user_name  start  query  client_address  application_name  distributed  phase  full_scan  plan_gist  database  isolation_level  num_txn_retries  num_txn_auto_retries
+query_id  txn_id  node_id  session_id  user_name  start  query  client_address  application_name  distributed  phase  full_scan  plan_gist  database
 
-query TTITTTTTTBTBTTTII colnames
+query TTITTTTTTBTBTT colnames
 SELECT * FROM crdb_internal.cluster_queries WHERE node_id < 0
 ----
-query_id  txn_id  node_id  session_id  user_name  start  query  client_address  application_name  distributed  phase  full_scan  plan_gist  database  isolation_level  num_txn_retries  num_txn_auto_retries
+query_id  txn_id  node_id  session_id  user_name  start  query  client_address  application_name  distributed  phase  full_scan  plan_gist  database
 
 query TITTTTIIITTTT colnames
 SELECT  * FROM crdb_internal.node_transactions WHERE node_id < 0
@@ -349,15 +349,15 @@ user root
 statement ok
 REVOKE SYSTEM VIEWACTIVITYREDACTED FROM testuser
 
-query ITTTTTTTITTTIITTIIIT colnames
+query ITTTTTTTITTTIITTIII colnames
 SELECT * FROM crdb_internal.node_sessions WHERE node_id < 0
 ----
-node_id  session_id  user_name  client_address  application_name  active_queries  last_active_query  num_txns_executed  session_start  active_query_start  kv_txn  alloc_bytes  max_alloc_bytes  status  session_end  pg_backend_pid  trace_id  goroutine_id  authentication_method  isolation_level
+node_id  session_id  user_name  client_address  application_name  active_queries  last_active_query  num_txns_executed  session_start  active_query_start  kv_txn  alloc_bytes  max_alloc_bytes  status  session_end  pg_backend_pid  trace_id  goroutine_id  authentication_method
 
-query ITTTTTTTITTTIITTIIIT colnames
+query ITTTTTTTITTTIITTIII colnames
 SELECT * FROM crdb_internal.cluster_sessions WHERE node_id < 0
 ----
-node_id  session_id  user_name  client_address  application_name  active_queries  last_active_query  num_txns_executed  session_start  active_query_start  kv_txn  alloc_bytes  max_alloc_bytes  status  session_end  pg_backend_pid  trace_id  goroutine_id  authentication_method  isolation_level
+node_id  session_id  user_name  client_address  application_name  active_queries  last_active_query  num_txns_executed  session_start  active_query_start  kv_txn  alloc_bytes  max_alloc_bytes  status  session_end  pg_backend_pid  trace_id  goroutine_id  authentication_method
 
 query IIITTTI colnames
 SELECT * FROM crdb_internal.node_contention_events WHERE table_id < 0
@@ -597,7 +597,7 @@ select crdb_internal.get_vmodule()
 query T
 SELECT crdb_internal.release_series(crdb_internal.node_executable_version())
 ----
-26.1
+25.3
 
 query error version '1.0' not supported
 SELECT crdb_internal.release_series('1.0')
@@ -760,7 +760,7 @@ SELECT * FROM crdb_internal.check_consistency(true, b'\x02', b'\x04')
 query T
 SELECT crdb_internal.release_series(crdb_internal.node_executable_version())
 ----
-26.1
+25.3
 
 user root
 
@@ -1772,30 +1772,5 @@ SELECT * FROM crdb_internal.create_type_statements WHERE descriptor_name = 'enum
 query ITTITTT
 SELECT * FROM crdb_internal.create_type_statements WHERE descriptor_id = (('other_db.public.enum1'::regtype::int) - 100000)
 ----
-
-subtest end
-
-subtest cluster_inspect_errors_view
-
-query TT colnames
-SELECT column_name, data_type
-FROM information_schema.columns
-WHERE table_schema = 'crdb_internal' AND table_name = 'cluster_inspect_errors'
-ORDER BY ordinal_position
-----
-column_name                 data_type
-error_id                   uuid
-job_id                     bigint
-error_type                 text
-aost                       timestamp with time zone
-database_id                oid
-schema_id                  oid
-id                         oid
-primary_key                text
-details                    jsonb
-crdb_internal_expiration   timestamp with time zone
-
-statement ok
-SELECT count(*) FROM crdb_internal.cluster_inspect_errors
 
 subtest end

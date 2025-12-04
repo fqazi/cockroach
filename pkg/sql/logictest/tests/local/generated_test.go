@@ -48,7 +48,7 @@ func TestMain(m *testing.M) {
 	serverutils.InitTestClusterFactory(testcluster.TestClusterFactory)
 
 	defer serverutils.TestingSetDefaultTenantSelectionOverride(
-		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(156124),
+		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(76378),
 	)()
 
 	os.Exit(m.Run())
@@ -155,13 +155,6 @@ func TestLogic_alter_default_privileges_with_grant_option(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "alter_default_privileges_with_grant_option")
-}
-
-func TestLogic_alter_external_connection(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "alter_external_connection")
 }
 
 func TestLogic_alter_primary_key(
@@ -325,13 +318,6 @@ func TestLogic_bytes(
 	runLogicTest(t, "bytes")
 }
 
-func TestLogic_canary_stats(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "canary_stats")
-}
-
 func TestLogic_cascade(
 	t *testing.T,
 ) {
@@ -484,13 +470,6 @@ func TestLogic_connect_privilege(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "connect_privilege")
-}
-
-func TestLogic_constrained_stats(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "constrained_stats")
 }
 
 func TestLogic_crdb_internal(
@@ -1179,13 +1158,6 @@ func TestLogic_insert(
 	runLogicTest(t, "insert")
 }
 
-func TestLogic_inspect(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "inspect")
-}
-
 func TestLogic_int_size(
 	t *testing.T,
 ) {
@@ -1312,13 +1284,6 @@ func TestLogic_jsonb_path_exists(
 	runLogicTest(t, "jsonb_path_exists")
 }
 
-func TestLogic_jsonb_path_exists_index_acceleration(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "jsonb_path_exists_index_acceleration")
-}
-
 func TestLogic_jsonb_path_match(
 	t *testing.T,
 ) {
@@ -1408,13 +1373,6 @@ func TestLogic_lookup_join_spans(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "lookup_join_spans")
-}
-
-func TestLogic_ltree(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "ltree")
 }
 
 func TestLogic_manual_retry(
@@ -2236,13 +2194,6 @@ func TestLogic_show_indexes(
 	runLogicTest(t, "show_indexes")
 }
 
-func TestLogic_show_inspect_errors(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_inspect_errors")
-}
-
 func TestLogic_show_ranges(
 	t *testing.T,
 ) {
@@ -2341,13 +2292,6 @@ func TestLogic_srfs(
 	runLogicTest(t, "srfs")
 }
 
-func TestLogic_statement_hint_builtins(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "statement_hint_builtins")
-}
-
 func TestLogic_statement_source(
 	t *testing.T,
 ) {
@@ -2416,13 +2360,6 @@ func TestLogic_subquery_correlated(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "subquery_correlated")
-}
-
-func TestLogic_swap_mutation(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "swap_mutation")
 }
 
 func TestLogic_synthetic_privileges(

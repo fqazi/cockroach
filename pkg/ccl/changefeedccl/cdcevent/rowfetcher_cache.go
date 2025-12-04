@@ -28,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 )
 
@@ -75,7 +74,7 @@ func (f *dbTableDescFetcher) FetchTableDesc(
 ) (catalog.TableDescriptor, error) {
 	// Retrieve the target TableDescriptor from the lease manager. No caching
 	// is attempted because the lease manager does its own caching.
-	desc, err := f.leaseMgr.Acquire(ctx, lease.TimestampToReadTimestamp(ts), tableID)
+	desc, err := f.leaseMgr.Acquire(ctx, ts, tableID)
 	if err != nil {
 		// Manager can return all kinds of errors during chaos, but based on
 		// its usage, none of them should ever be terminal.
@@ -186,7 +185,7 @@ func watchedFamilesFromTarget(targets changefeedbase.Targets) (map[watchedFamily
 	}
 	watchedFamilies := make(map[watchedFamily]struct{}, targets.Size)
 	err := targets.EachTarget(func(t changefeedbase.Target) error {
-		watchedFamilies[watchedFamily{tableID: t.DescID, familyName: t.FamilyName}] = struct{}{}
+		watchedFamilies[watchedFamily{tableID: t.TableID, familyName: t.FamilyName}] = struct{}{}
 		return nil
 	})
 	if err != nil {
@@ -319,7 +318,7 @@ func (c *rowFetcherCache) RowFetcherForColumnFamily(
 			Alloc:             &c.a,
 			Spec:              &spec,
 			TraceKV:           c.rfArgs.traceKV,
-			TraceKVEvery:      &util.EveryN[crtime.Mono]{N: c.rfArgs.traceKVLogFrequency},
+			TraceKVEvery:      &util.EveryN{N: c.rfArgs.traceKVLogFrequency},
 		},
 	); err != nil {
 		return nil, nil, err

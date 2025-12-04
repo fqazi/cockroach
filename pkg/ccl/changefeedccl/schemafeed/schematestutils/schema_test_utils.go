@@ -145,9 +145,10 @@ func FetchDescVersionModificationTime(
 	tableName string,
 	version int,
 ) hlc.Timestamp {
-	db := s.SQLConn(t, serverutils.DBName(dbName))
+	db := serverutils.OpenDBConn(
+		t, s.SQLAddr(), dbName, false, s.AppStopper())
 
-	tblKey := s.Codec().IndexPrefix(keys.DescriptorTableID, keys.DescriptorTablePrimaryKeyIndexID)
+	tblKey := s.Codec().TablePrefix(keys.DescriptorTableID)
 	header := kvpb.RequestHeader{
 		Key:    tblKey,
 		EndKey: tblKey.PrefixEnd(),

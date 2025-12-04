@@ -57,7 +57,7 @@ type RemoteExecutionFunc func(
 	ctx context.Context,
 	l *logger.Logger,
 	clusterName, SSHOptions, processTag string,
-	secure install.SecureOption,
+	secure bool,
 	cmdArray []string,
 	options install.RunOptions,
 ) ([]install.RunResultDetails, error)
@@ -156,7 +156,7 @@ func remoteWorker(
 
 			runResult, err := execFunc(
 				cmdCtx, log, clusterNode, "" /* SSHOptions */, "", /* processTag */
-				install.SimpleSecureOption(false), command.Args, runOptions,
+				false /* secure */, command.Args, runOptions,
 			)
 			duration := timeutil.Since(start)
 

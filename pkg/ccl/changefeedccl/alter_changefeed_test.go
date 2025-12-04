@@ -57,7 +57,7 @@ func TestAlterChangefeedAddTargetPrivileges(t *testing.T) {
 	ctx := context.Background()
 
 	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142799),
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 		Knobs: base.TestingKnobs{
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			DistSQL: &execinfra.TestingKnobs{
@@ -336,7 +336,7 @@ func TestAlterChangefeedAddTargetFamily(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "helpers_test=1")
+	require.NoError(t, log.SetVModule("helpers_test=1"))
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
@@ -394,7 +394,7 @@ func TestAlterChangefeedSwitchFamily(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "helpers_test=1")
+	require.NoError(t, log.SetVModule("helpers_test=1"))
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
@@ -514,7 +514,7 @@ func TestAlterChangefeedDropTargetAfterTableDrop(t *testing.T) {
 		})
 	}
 
-	cdcTest(t, testFn, feedTestEnterpriseSinks, feedTestNoExternalConnection, withAllowChangefeedErr("error is expected when dropping"))
+	cdcTest(t, testFn, feedTestEnterpriseSinks, feedTestNoExternalConnection)
 }
 
 func TestAlterChangefeedDropTargetFamily(t *testing.T) {
@@ -1273,8 +1273,7 @@ func TestAlterChangefeedAlterTableName(t *testing.T) {
 
 		expectResolvedTimestamp(t, testFeed)
 
-		sqlDB.Exec(t, `ALTER TABLE movr.users RENAME TO movr.riders`)
-		sqlDB.CheckQueryResultsRetry(t, "SELECT count(*) FROM [SHOW TABLES FROM movr] WHERE table_name = 'riders'", [][]string{{"1"}})
+		waitForSchemaChange(t, sqlDB, `ALTER TABLE movr.users RENAME TO movr.riders`)
 
 		var tsLogical string
 		sqlDB.QueryRow(t, `SELECT cluster_logical_timestamp()`).Scan(&tsLogical)
@@ -1316,7 +1315,7 @@ func TestAlterChangefeedAddTargetsDuringSchemaChangeError(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	// Set verbose log to confirm whether or not we hit the same nil row issue as in #140669
-	testutils.SetVModule(t, "kv_feed=2,changefeed_processors=2")
+	require.NoError(t, log.SetVModule("kv_feed=2,changefeed_processors=2"))
 
 	rnd, seed := randutil.NewPseudoRand()
 	t.Logf("random seed: %d", seed)
@@ -1349,8 +1348,7 @@ func TestAlterChangefeedAddTargetsDuringSchemaChangeError(t *testing.T) {
 			return nil
 		}
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo
-WITH resolved = '1s', no_initial_scan, min_checkpoint_frequency='1ns'`)
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '1s', no_initial_scan`)
 		jobFeed := testFeed.(cdctest.EnterpriseTestFeed)
 		jobRegistry := s.Server.JobRegistry().(*jobs.Registry)
 
@@ -1520,27 +1518,25 @@ func TestAlterChangefeedAddTargetsDuringBackfill(t *testing.T) {
 
 		// Emit resolved events for the majority of spans. Be extra paranoid and ensure that
 		// we have at least 1 span for which we don't emit resolvedFoo timestamp (to force checkpointing).
-		// We however also need to ensure there's at least one span that isn't filtered out.
-		var allowedOne, haveGaps bool
-		knobs.FilterSpanWithMutation = func(r *jobspb.ResolvedSpan) (filter bool, _ error) {
+		haveGaps := false
+		knobs.FilterSpanWithMutation = func(r *jobspb.ResolvedSpan) (bool, error) {
 			rndMu.Lock()
 			defer rndMu.Unlock()
-			defer func() {
-				t.Logf("resolved span: %s@%s, filter: %t", r.Span, r.Timestamp, filter)
-			}()
 
 			if r.Span.Equal(fooTableSpan) {
-				return true, nil
-			}
-			if !allowedOne {
-				allowedOne = true
+				// Do not emit resolved events for the entire table span.
+				// We "simulate" large table by splitting single table span into many parts, so
+				// we want to resolve those sub-spans instead of the entire table span.
+				// However, we have to emit something -- otherwise the entire changefeed
+				// machine would not work.
+				r.Span.EndKey = fooTableSpan.Key.Next()
 				return false, nil
 			}
-			if !haveGaps {
-				haveGaps = true
-				return true, nil
+			if haveGaps {
+				return rndMu.rnd.Intn(10) > 7, nil
 			}
-			return rndMu.rnd.Intn(10) > 7, nil
+			haveGaps = true
+			return true, nil
 		}
 
 		// Checkpoint progress frequently, and set the checkpoint size limit.
@@ -1550,8 +1546,7 @@ func TestAlterChangefeedAddTargetsDuringBackfill(t *testing.T) {
 			context.Background(), &s.Server.ClusterSettings().SV, maxCheckpointSize)
 
 		registry := s.Server.JobRegistry().(*jobs.Registry)
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo
-WITH resolved = '100ms', min_checkpoint_frequency='1ns'`)
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '100ms'`)
 
 		g := ctxgroup.WithContext(context.Background())
 		g.Go(func() error {
@@ -1590,10 +1585,8 @@ WITH resolved = '100ms', min_checkpoint_frequency='1ns'`)
 
 		// Collect spans we attempt to resolve after when we resume.
 		var resolvedFoo []roachpb.Span
-		knobs.FilterSpanWithMutation = func(r *jobspb.ResolvedSpan) (filter bool, _ error) {
-			defer func() {
-				t.Logf("resolved span: %s@%s, filter: %t", r.Span, r.Timestamp, filter)
-			}()
+		knobs.FilterSpanWithMutation = func(r *jobspb.ResolvedSpan) (bool, error) {
+			t.Logf("resolved span: %#v", r)
 			if !r.Span.Equal(fooTableSpan) {
 				resolvedFoo = append(resolvedFoo, r.Span)
 			}
@@ -1889,7 +1882,7 @@ func TestAlterChangefeedAccessControl(t *testing.T) {
 		})
 		// jobController can access the job, but will hit an error re-creating the changefeed.
 		asUser(t, f, `jobController`, func(userDB *sqlutils.SQLRunner) {
-			userDB.ExpectErr(t, `pq: user "jobcontroller" requires the CHANGEFEED privilege on all target tables to be able to run an enterprise changefeed`, fmt.Sprintf(`ALTER CHANGEFEED %d DROP table_b`, currentFeed.JobID()))
+			userDB.ExpectErr(t, "pq: user jobcontroller requires the CHANGEFEED privilege on all target tables to be able to run an enterprise changefeed", fmt.Sprintf(`ALTER CHANGEFEED %d DROP table_b`, currentFeed.JobID()))
 		})
 		asUser(t, f, `userWithSomeGrants`, func(userDB *sqlutils.SQLRunner) {
 			userDB.ExpectErr(t, "does not have privileges for job", fmt.Sprintf(`ALTER CHANGEFEED %d ADD table_b`, currentFeed.JobID()))
@@ -1984,7 +1977,7 @@ func TestAlterChangefeedRandomizedTargetChanges(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "helpers_test=1")
+	require.NoError(t, log.SetVModule("helpers_test=1"))
 
 	rnd, _ := randutil.NewPseudoRand()
 

@@ -348,18 +348,8 @@ message RemoteProducerMetadata {
     // IndexBytesWritten is the number of primary and secondary index bytes
     // modified while executing a statement.
     optional int64 index_bytes_written = 6 [(gogoproto.nullable) = false];
-    // Stage identifier that produced these metrics. This is used to aggregate
-    // row counts across distributed table reader processors for misestimate
-    // logging. Note that other disk-reading processors (index and lookup joins,
-    // inverted joins, zigzag joins) do not set this field. This is safe because
-    // we enumerate physical plan stages starting at 1, so the default value of
-    // 0 isn't conflated with any actual plan stage.
-    optional int32 stage_id = 4 [(gogoproto.nullable) = false, (gogoproto.customname) = "StageID"];
-    // KVCPUTime is the total cpu time reported by KV BatchResponses. This is
-    // representative of the "synchronous" portion of work performed by KV.
-    // See the CPUTime field in the kvpb.BatchResponse_Header.
-    optional int64 kv_cpu_time = 7 [(gogoproto.nullable) = false, (gogoproto.customname) = "KVCPUTime"];
-    // NEXT ID: 8
+    reserved 4;
+    // NEXT ID: 7
   }
   oneof value {
     RangeInfos range_info = 1;

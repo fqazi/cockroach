@@ -169,14 +169,14 @@ func TestCancelCopyTo(t *testing.T) {
 	ctx := context.Background()
 	skip.UnderStress(t, "flaky")
 
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	s := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
 
-	pgURL, cleanup := s.PGUrl(
+	pgURL, cleanup := pgurlutils.PGUrl(
 		t,
-		serverutils.CertsDirPrefix("TestCancelCopyTo"),
-		serverutils.User(username.RootUser),
+		s.AdvSQLAddr(),
+		"TestCancelCopyTo",
+		url.User(username.RootUser),
 	)
 	defer cleanup()
 

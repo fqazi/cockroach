@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/dd"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -791,38 +790,51 @@ func TestDataDriven(t *testing.T) {
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
 			switch d.Cmd {
 			case "requests":
-				keyDist := dd.ScanArg[string](t, d, "key_dist")
-				spanDist := dd.ScanArg[string](t, d, "span_dist")
-				weightDist := dd.ScanArg[string](t, d, "weight_dist")
+				var keyDist, spanDist, weightDist string
+				var keyIMax, spanIMax, weightIMax int
+				var rangeRequestPercent, requestCount int
 
-				keyIMax := dd.ScanArg[uint64](t, d, "key_max")
-				spanIMax := dd.ScanArg[uint64](t, d, "span_max")
-				weightIMax := dd.ScanArg[uint64](t, d, "weight_max")
+				d.ScanArgs(t, "key_dist", &keyDist)
+				d.ScanArgs(t, "span_dist", &spanDist)
+				d.ScanArgs(t, "weight_dist", &weightDist)
 
-				rangeRequestPercent := dd.ScanArg[int](t, d, "range_request_percent")
-				requestCount := dd.ScanArg[int](t, d, "request_count")
+				d.ScanArgs(t, "key_max", &keyIMax)
+				d.ScanArgs(t, "span_max", &spanIMax)
+				d.ScanArgs(t, "weight_max", &weightIMax)
+
+				d.ScanArgs(t, "range_request_percent", &rangeRequestPercent)
+				d.ScanArgs(t, "request_count", &requestCount)
 
 				reqConfigs = append(reqConfigs, requestConfig{
 					startKeyGeneratorType:   parseGeneratorType(keyDist),
-					startKeyGeneratorIMax:   keyIMax,
+					startKeyGeneratorIMax:   uint64(keyIMax),
 					spanLengthGeneratorType: parseGeneratorType(spanDist),
-					spanLengthGeneratorIMax: spanIMax,
+					spanLengthGeneratorIMax: uint64(spanIMax),
 					weightGeneratorType:     parseGeneratorType(weightDist),
-					weightGeneratorIMax:     weightIMax,
+					weightGeneratorIMax:     uint64(weightIMax),
 					rangeRequestPercent:     float64(rangeRequestPercent) / 100.0,
 					numRequests:             requestCount,
 				})
 				return ""
 			case "finder":
+				var weighted bool
+				d.ScanArgs(t, "weighted", &weighted)
+
 				findConfig = &finderConfig{
-					weighted: dd.ScanArg[bool](t, d, "weighted"),
+					weighted: weighted,
 				}
 				decConfig = nil
 			case "decider":
-				duration := dd.ScanArg[int](t, d, "duration")
-				retentionSeconds := dd.ScanArg[int](t, d, "retention")
-				objective := dd.ScanArg[string](t, d, "objective")
-				threshold := dd.ScanArg[int](t, d, "threshold")
+				var duration int
+				var threshold int
+				var retentionSeconds, durationSeconds int
+				var objective string
+
+				d.ScanArgs(t, "duration", &duration)
+				d.ScanArgs(t, "retention", &retentionSeconds)
+				d.ScanArgs(t, "duration", &durationSeconds)
+				d.ScanArgs(t, "objective", &objective)
+				d.ScanArgs(t, "threshold", &threshold)
 				splitObj := parseObjType(objective)
 
 				decConfig = &deciderConfig{
@@ -833,17 +845,21 @@ func TestDataDriven(t *testing.T) {
 				}
 				findConfig = nil
 			case "eval":
-				seed := dd.ScanArg[uint64](t, d, "seed")
-				iterations := dd.ScanArg[int](t, d, "iterations")
-				showTiming := dd.ScanArgOr(t, d, "timing", false)
-				cartesian := dd.ScanArgOr(t, d, "cartesian", false)
-				all := dd.ScanArgOr(t, d, "all", false)
-				showLastState := dd.ScanArgOr(t, d, "show_last", false)
-
-				var mixCount int
+				var seed uint64
+				var iterations, mixCount int
+				var showTiming, cartesian, all, showLastState bool
+				var mix string
 				var mixT mixType
-				if mix, ok := dd.ScanArgOpt[string](t, d, "mix"); ok {
-					mixCount = dd.ScanArg[int](t, d, "mix_count")
+
+				d.ScanArgs(t, "seed", &seed)
+				d.ScanArgs(t, "iterations", &iterations)
+				d.MaybeScanArgs(t, "timing", &showTiming)
+				d.MaybeScanArgs(t, "cartesian", &cartesian)
+				d.MaybeScanArgs(t, "all", &all)
+				d.MaybeScanArgs(t, "show_last", &showLastState)
+				if d.HasArg("mix") {
+					d.ScanArgs(t, "mix", &mix)
+					d.ScanArgs(t, "mix_count", &mixCount)
 					switch mix {
 					case "sequential":
 						mixT = sequential

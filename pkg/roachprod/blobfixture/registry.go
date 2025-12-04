@@ -57,7 +57,7 @@ type Registry struct {
 // for all fixture data and metadata. See the comment on the uri field for the
 // structure of a fixture directory.
 func NewRegistry(ctx context.Context, uri url.URL) (*Registry, error) {
-	supportedSchemes := map[string]bool{"gs": true, "s3": true, "azure-blob": true}
+	supportedSchemes := map[string]bool{"gs": true, "s3": true, "azure": true}
 	if !supportedSchemes[uri.Scheme] {
 		return nil, errors.Errorf("unsupported scheme %q", uri.Scheme)
 	}
@@ -333,14 +333,11 @@ func (s *ScratchHandle) SetReadyAt(ctx context.Context) error {
 }
 
 // SetFingerprint sets the fingerprint for the fixture.
-func (s *ScratchHandle) SetFingerprint(
-	ctx context.Context, fingerprint map[string]string, asOf string,
-) error {
+func (s *ScratchHandle) SetFingerprint(ctx context.Context, fingerprint map[string]string) error {
 	s.metadata.Fingerprint = fingerprint
-	s.metadata.FingerprintTime = asOf
 	if err := s.registry.upsertMetadata(s.metadata); err != nil {
 		return err
 	}
-	s.logger.Printf("fixture '%s' fingerprint set to '%s' with asOf time %s ", s.metadata.DataPath, s.metadata.Fingerprint, s.metadata.FingerprintTime)
+	s.logger.Printf("fixture '%s' fingerprint set to '%s'", s.metadata.DataPath, s.metadata.Fingerprint)
 	return nil
 }

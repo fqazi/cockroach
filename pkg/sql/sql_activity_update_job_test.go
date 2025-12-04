@@ -781,7 +781,6 @@ func TestSqlActivityUpdaterDataDriven(t *testing.T) {
 		defer muStubTime.RUnlock()
 		return muStubTime.stubTime
 	}
-	sqlStatsKnobs.SynchronousSQLStats = true
 
 	// Use random name to keep isolated during stress tests.
 	rng, _ := randutil.NewTestRand()

@@ -8,9 +8,8 @@ package storage
 import (
 	"context"
 	"fmt"
-	"maps"
 	"math/rand"
-	"slices"
+	"sort"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -18,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -68,7 +66,7 @@ func assertEqImpl(
 		// NOTE: we use ComputeStats for the lock table stats because it is not
 		// supported by ComputeStatsForIter.
 		compLockMS, err := ComputeStats(
-			t.Context(), rw, fs.UnknownReadCategory, lockKeyMin, lockKeyMax, ms.LastUpdateNanos)
+			context.Background(), rw, lockKeyMin, lockKeyMax, ms.LastUpdateNanos)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1742,7 +1740,7 @@ var mvccStatsTests = []struct {
 	{
 		name: "ComputeStats",
 		fn: func(r Reader, start, end roachpb.Key, nowNanos int64) (enginepb.MVCCStats, error) {
-			return ComputeStats(context.Background(), r, fs.UnknownReadCategory, start, end, nowNanos)
+			return ComputeStats(context.Background(), r, start, end, nowNanos)
 		},
 	},
 	{
@@ -1847,7 +1845,10 @@ func (s *randomTest) step(t *testing.T) {
 	s.cycle++
 
 	if s.actionNames == nil {
-		s.actionNames = slices.Sorted(maps.Keys(s.actions))
+		for name := range s.actions {
+			s.actionNames = append(s.actionNames, name)
+		}
+		sort.Strings(s.actionNames)
 	}
 	actName := s.actionNames[s.rng.Intn(len(s.actionNames))]
 

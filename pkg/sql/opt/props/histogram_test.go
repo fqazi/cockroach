@@ -29,7 +29,7 @@ func TestEqEstimate(t *testing.T) {
 	evalCtx := eval.MakeTestingEvalContext(cluster.MakeTestingClusterSettings())
 
 	emptyHist := &Histogram{}
-	emptyHist.Init(&evalCtx, opt.ColumnID(1), []cat.HistogramBucket{}, 0 /* resolution */)
+	emptyHist.Init(&evalCtx, opt.ColumnID(1), []cat.HistogramBucket{})
 
 	if eq := emptyHist.EqEstimate(ctx, tree.NewDInt(0)); eq != 0 {
 		t.Errorf("expected %f but found %f", 0.0, eq)
@@ -45,7 +45,7 @@ func TestEqEstimate(t *testing.T) {
 		{NumRange: 40, DistinctRange: 7, NumEq: 35, UpperBound: tree.NewDInt(42)},
 	}
 	h := &Histogram{}
-	h.Init(&evalCtx, opt.ColumnID(1), histData, 0 /* resolution */)
+	h.Init(&evalCtx, opt.ColumnID(1), histData)
 
 	testData := []struct {
 		datum    tree.Datum
@@ -139,7 +139,7 @@ func TestCanFilter(t *testing.T) {
 	}
 
 	h := Histogram{}
-	h.Init(&evalCtx, opt.ColumnID(1), []cat.HistogramBucket{}, 0 /* resolution */)
+	h.Init(&evalCtx, opt.ColumnID(1), []cat.HistogramBucket{})
 	for _, tc := range testData {
 		c := constraint.ParseConstraint(&evalCtx, tc.constraint)
 		colIdx, _, ok := h.CanFilter(ctx, &c)
@@ -170,7 +170,7 @@ func TestHistogram(t *testing.T) {
 		{NumRange: 40, DistinctRange: 7, NumEq: 35, UpperBound: tree.NewDInt(42)},
 	}
 	h := &Histogram{}
-	h.Init(&evalCtx, opt.ColumnID(1), histData, 0 /* resolution */)
+	h.Init(&evalCtx, opt.ColumnID(1), histData)
 	count, expected := h.ValuesCount(), float64(91)
 	if count != expected {
 		t.Fatalf("expected %f but found %f", expected, count)
@@ -1178,9 +1178,10 @@ func BenchmarkHistogram(b *testing.B) {
 		case types.StringFamily:
 			return tree.NewDString(strconv.Itoa(i * 2))
 		case types.ArrayFamily:
-			arr := tree.NewDArrayFromDatums(
-				t.ArrayContents(), tree.Datums{makeDatum(t.ArrayContents(), i)},
-			)
+			arr := tree.NewDArray(t.ArrayContents())
+			arr.Array = make(tree.Datums, 1)
+			arr.HasNonNulls = true
+			arr.Array[0] = makeDatum(t.ArrayContents(), i)
 			return arr
 		}
 		panic(errors.AssertionFailedf("unsupported type"))
@@ -1212,7 +1213,7 @@ func BenchmarkHistogram(b *testing.B) {
 			for _, bucketCount := range bucketCounts {
 				b.Run(fmt.Sprintf("buckets=%v", bucketCount), func(b *testing.B) {
 					h := Histogram{}
-					h.Init(&evalCtx, opt.ColumnID(1), makeBuckets(typ, bucketCount), 0 /* resolution */)
+					h.Init(&evalCtx, opt.ColumnID(1), makeBuckets(typ, bucketCount))
 					c := makeConstraint(typ, bucketCount)
 					b.Run("DistinctValuesCount", func(b *testing.B) {
 						for i := 0; i < b.N; i++ {

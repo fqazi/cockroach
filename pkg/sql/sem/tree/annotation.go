@@ -53,8 +53,5 @@ func (a *Annotations) Set(idx AnnotationIdx, annotation interface{}) {
 
 // Get an annotation from the container.
 func (a *Annotations) Get(idx AnnotationIdx) interface{} {
-	if len(*a) < int(idx) {
-		return nil
-	}
 	return (*a)[idx-1]
 }

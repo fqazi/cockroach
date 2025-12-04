@@ -78,14 +78,6 @@ func Attributes(attrs roachpb.Attributes) ConfigOption {
 	}
 }
 
-// TestingLogger overrides the logger.
-func TestingLogger(logger pebble.LoggerAndTracer) ConfigOption {
-	return func(cfg *engineConfig) error {
-		cfg.opts.LoggerAndTracer = logger
-		return nil
-	}
-}
-
 // storeSize configures the maximum allowable size for a store.
 // Can be specified either as a percentage of total capacity or
 // an absolute byte size; if both are specified, the percentage takes
@@ -223,16 +215,6 @@ func MemtableSize(bytes uint64) ConfigOption {
 	}
 }
 
-// MemTableStopWritesThreshold configures the number of memtables that can be
-// queued before Pebble will induce a write stall, preventing all batch commits
-// from proceeding until a flush completes.
-func MemTableStopWritesThreshold(n int) ConfigOption {
-	return func(cfg *engineConfig) error {
-		cfg.opts.MemTableStopWritesThreshold = n
-		return nil
-	}
-}
-
 // L0CompactionThreshold configures the amount of L0 read-amplification
 // necessary to trigger an L0 compaction.
 func L0CompactionThreshold(n int) ConfigOption {
@@ -304,14 +286,12 @@ func makeExternalWALDir(
 	env, err := fs.InitEnv(context.Background(), defaultFS, externalDir.Path, fs.EnvConfig{
 		RW:                engineCfg.env.RWMode(),
 		EncryptionOptions: externalDir.Encryption,
-		Version:           engineCfg.settings.Version,
 	}, diskWriteStats)
 	if err != nil {
 		return wal.Dir{}, err
 	}
 	engineCfg.afterClose = append(engineCfg.afterClose, env.Close)
 	return wal.Dir{
-		Lock:    env.DirectoryLock,
 		FS:      env,
 		Dirname: externalDir.Path,
 	}, nil
@@ -373,7 +353,7 @@ func WALFailover(
 				return nil
 			}
 		default:
-			panic(errors.AssertionFailedf("unreachable"))
+			panic("unreachable")
 		}
 	}
 
@@ -401,7 +381,7 @@ func WALFailover(
 	case storageconfig.WALFailoverAmongStores:
 		// Fallthrough
 	default:
-		panic(errors.AssertionFailedf("unreachable"))
+		panic("unreachable")
 	}
 
 	// Either
@@ -560,7 +540,7 @@ func Open(
 	var cfg engineConfig
 	cfg.env = env
 	cfg.settings = settings
-	cfg.opts = DefaultPebbleOptionsForOpen(&cfg.settings.SV)
+	cfg.opts = DefaultPebbleOptions()
 	cfg.opts.FS = env
 	cfg.opts.ReadOnly = env.IsReadOnly()
 	for _, opt := range opts {

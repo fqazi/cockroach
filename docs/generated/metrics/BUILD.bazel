@@ -6,6 +6,5 @@ genrule(
     visibility = [
         ":__pkg__",
         "//pkg/gen:__pkg__",
-        "//pkg/roachprod/agents/opentelemetry:__pkg__",
     ],
 )

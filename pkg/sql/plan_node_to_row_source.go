@@ -16,7 +16,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/optional"
 	"github.com/cockroachdb/errors"
 )
@@ -26,9 +28,7 @@ type planNodeToRowSource struct {
 
 	input execinfra.RowSource
 
-	// rowsAffected is true if the wrapped planNode will return a single row with
-	// a single integer column indicating the number of rows affected.
-	rowsAffected bool
+	fastPath bool
 
 	node        planNode
 	params      runParams
@@ -55,20 +55,21 @@ var planNodeToRowSourcePool = sync.Pool{
 }
 
 func newPlanNodeToRowSource(
-	source planNode, params runParams, firstNotWrapped planNode,
+	source planNode, params runParams, fastPath bool, firstNotWrapped planNode,
 ) (*planNodeToRowSource, error) {
 	p := planNodeToRowSourcePool.Get().(*planNodeToRowSource)
 	*p = planNodeToRowSource{
 		ProcessorBase:   p.ProcessorBase,
-		rowsAffected:    resultIsRowsAffected(source),
+		fastPath:        fastPath,
 		node:            source,
 		params:          params,
 		firstNotWrapped: firstNotWrapped,
 		row:             p.row,
 	}
-	if p.rowsAffected {
-		// The node returns a single integer value with the number of rows affected.
-		// TODO(drewk): consider using a global singleton to avoid allocating.
+	if fastPath {
+		// If our node is a "fast path node", it means that we're set up to
+		// just return a row count meaning we'll output a single row with a
+		// single INT column.
 		p.outputTypes = []*types.T{types.Int}
 	} else {
 		p.outputTypes = getTypesFromResultColumns(planColumns(source))
@@ -212,13 +213,51 @@ func (p *planNodeToRowSource) Start(ctx context.Context) {
 }
 
 func init() {
-	colexec.IsRowsAffectedNode = func(rs execinfra.RowSource) bool {
+	colexec.IsFastPathNode = func(rs execinfra.RowSource) bool {
 		p, ok := rs.(*planNodeToRowSource)
-		return ok && p.rowsAffected
+		return ok && p.fastPath
 	}
 }
 
 func (p *planNodeToRowSource) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerMetadata) {
+	if p.State == execinfra.StateRunning && p.fastPath {
+		var count int
+		// If our node is a "fast path node", it means that we're set up to just
+		// return a row count. So trigger the fast path and return the row count as
+		// a row with a single column.
+		fastPath, ok := p.node.(planNodeFastPath)
+
+		if ok {
+			var res bool
+			if count, res = fastPath.FastPathResults(); res {
+				if p.params.extendedEvalCtx.Tracing.Enabled() {
+					log.VEvent(p.params.ctx, 2, "fast path completed")
+				}
+			} else {
+				// Fall back to counting the rows.
+				count = 0
+				ok = false
+			}
+		}
+
+		if !ok {
+			// If we have no fast path to trigger, fall back to counting the rows
+			// by Nexting our source until exhaustion.
+			next, err := p.node.Next(p.params)
+			for ; next; next, err = p.node.Next(p.params) {
+				count++
+			}
+			if err != nil {
+				p.MoveToDraining(err)
+				return nil, p.DrainHelper()
+			}
+		}
+		p.MoveToDraining(nil /* err */)
+		// Return the row count the only way we can: as a single-column row with
+		// the count inside.
+		return rowenc.EncDatumRow{rowenc.EncDatum{Datum: tree.NewDInt(tree.DInt(count))}}, nil
+	}
+
 	for p.State == execinfra.StateRunning {
 		valid, err := p.node.Next(p.params)
 		if err != nil || !valid {
@@ -228,11 +267,7 @@ func (p *planNodeToRowSource) Next() (rowenc.EncDatumRow, *execinfrapb.ProducerM
 
 		for i, datum := range p.node.Values() {
 			if datum != nil {
-				p.row[i], err = rowenc.DatumToEncDatum(p.outputTypes[i], datum)
-				if err != nil {
-					p.MoveToDraining(err)
-					return nil, p.DrainHelper()
-				}
+				p.row[i] = rowenc.DatumToEncDatum(p.outputTypes[i], datum)
 			}
 		}
 		// ProcessRow here is required to deal with projections, which won't be
@@ -262,7 +297,6 @@ func (p *planNodeToRowSource) trailingMetaCallback() []execinfrapb.ProducerMetad
 			metrics.RowsWritten = m.rowsWritten()
 			metrics.IndexRowsWritten = m.indexRowsWritten()
 			metrics.IndexBytesWritten = m.indexBytesWritten()
-			metrics.KVCPUTime = m.kvCPUTime()
 			meta = []execinfrapb.ProducerMetadata{{Metrics: metrics}}
 		}
 	}

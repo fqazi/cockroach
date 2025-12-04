@@ -23,6 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rafttrace"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/split"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -64,10 +65,7 @@ func loadInitializedReplicaForTesting(
 	if !desc.IsInitialized() {
 		return nil, errors.AssertionFailedf("can not load with uninitialized descriptor: %s", desc)
 	}
-	state, err := kvstorage.LoadReplicaState(
-		ctx, store.StateEngine(), store.LogEngine(),
-		store.StoreID(), desc, replicaID,
-	)
+	state, err := kvstorage.LoadReplicaState(ctx, store.TODOEngine(), store.StoreID(), desc, replicaID)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +79,7 @@ func loadInitializedReplicaForTesting(
 func newInitializedReplica(
 	store *Store, loaded kvstorage.LoadedReplicaState, waitForPrevLeaseToExpire bool,
 ) (*Replica, error) {
-	r := newUninitializedReplicaWithoutRaftGroup(store, loaded.FullReplicaID())
+	r := newUninitializedReplicaWithoutRaftGroup(store, loaded.ReplState.Desc.RangeID, loaded.ReplicaID)
 	r.raftMu.Lock()
 	defer r.raftMu.Unlock()
 	r.mu.Lock()
@@ -101,8 +99,10 @@ func newInitializedReplica(
 //
 // TODO(#94912): we actually have another initialization path which should be
 // refactored: Replica.initFromSnapshotLockedRaftMuLocked().
-func newUninitializedReplica(store *Store, id roachpb.FullReplicaID) (*Replica, error) {
-	r := newUninitializedReplicaWithoutRaftGroup(store, id)
+func newUninitializedReplica(
+	store *Store, rangeID roachpb.RangeID, replicaID roachpb.ReplicaID,
+) (*Replica, error) {
+	r := newUninitializedReplicaWithoutRaftGroup(store, rangeID, replicaID)
 	r.raftMu.Lock()
 	defer r.raftMu.Unlock()
 	r.mu.Lock()
@@ -118,35 +118,34 @@ func newUninitializedReplica(store *Store, id roachpb.FullReplicaID) (*Replica, 
 // newUninitializedReplica() instead. This only exists for
 // newInitializedReplica() to avoid creating the Raft group twice (once when
 // creating the uninitialized replica, and once when initializing it).
-func newUninitializedReplicaWithoutRaftGroup(store *Store, id roachpb.FullReplicaID) *Replica {
-	uninitState := kvstorage.UninitializedReplicaState(id.RangeID)
+func newUninitializedReplicaWithoutRaftGroup(
+	store *Store, rangeID roachpb.RangeID, replicaID roachpb.ReplicaID,
+) *Replica {
+	uninitState := stateloader.UninitializedReplicaState(rangeID)
 	r := &Replica{
 		AmbientContext: store.cfg.AmbientCtx,
-		RangeID:        id.RangeID,
-		replicaID:      id.ReplicaID,
+		RangeID:        rangeID,
+		replicaID:      replicaID,
 		creationTime:   timeutil.Now(),
 		store:          store,
-		abortSpan:      abortspan.New(id.RangeID),
+		abortSpan:      abortspan.New(rangeID),
 		concMgr: concurrency.NewManager(concurrency.Config{
-			NodeDesc:                          store.nodeDesc,
-			RangeDesc:                         uninitState.Desc,
-			Settings:                          store.ClusterSettings(),
-			DB:                                store.DB(),
-			Clock:                             store.Clock(),
-			Stopper:                           store.Stopper(),
-			IntentResolver:                    store.intentResolver,
-			TxnWaitMetrics:                    store.txnWaitMetrics,
-			SlowLatchGauge:                    store.metrics.SlowLatchRequests,
-			LatchWaitDurations:                store.metrics.LatchWaitDurations,
-			LocksShedDueToMemoryLimit:         store.metrics.LocksShedDueToMemoryLimit,
-			NumLockShedDueToMemoryLimitEvents: store.metrics.NumLockShedDueToMemoryLimitEvents,
-
-			DisableTxnPushing: store.TestingKnobs().DontPushOnLockConflictError,
-			TxnWaitKnobs:      store.TestingKnobs().TxnWaitKnobs,
+			NodeDesc:           store.nodeDesc,
+			RangeDesc:          uninitState.Desc,
+			Settings:           store.ClusterSettings(),
+			DB:                 store.DB(),
+			Clock:              store.Clock(),
+			Stopper:            store.Stopper(),
+			IntentResolver:     store.intentResolver,
+			TxnWaitMetrics:     store.txnWaitMetrics,
+			SlowLatchGauge:     store.metrics.SlowLatchRequests,
+			LatchWaitDurations: store.metrics.LatchWaitDurations,
+			DisableTxnPushing:  store.TestingKnobs().DontPushOnLockConflictError,
+			TxnWaitKnobs:       store.TestingKnobs().TxnWaitKnobs,
 		}),
 		allocatorToken: &plan.AllocatorToken{},
 	}
-	r.sideTransportClosedTimestamp.init(store.cfg.ClosedTimestampReceiver, id.RangeID)
+	r.sideTransportClosedTimestamp.init(store.cfg.ClosedTimestampReceiver, rangeID)
 	r.cachedClosedTimestampPolicy.Store(new(ctpb.RangeClosedTimestampPolicy))
 
 	r.mu.pendingLeaseRequest = makePendingLeaseRequest(r)
@@ -166,9 +165,9 @@ func newUninitializedReplicaWithoutRaftGroup(store *Store, id roachpb.FullReplic
 			// Expose proposal data for external test packages.
 			return store.cfg.TestingKnobs.TestingProposalSubmitFilter(kvserverbase.ProposalFilterArgs{
 				Ctx:        p.Context(),
-				RangeID:    id.RangeID,
+				RangeID:    rangeID,
 				StoreID:    store.StoreID(),
-				ReplicaID:  id.ReplicaID,
+				ReplicaID:  replicaID,
 				Cmd:        p.command,
 				QuotaAlloc: p.quotaAlloc,
 				CmdID:      p.idKey,
@@ -197,7 +196,7 @@ func newUninitializedReplicaWithoutRaftGroup(store *Store, id roachpb.FullReplic
 	// NB: state will be loaded when the replica gets initialized.
 	r.shMu.state = uninitState
 
-	r.rangeStr.store(id.ReplicaID, uninitState.Desc)
+	r.rangeStr.store(replicaID, uninitState.Desc)
 	// Add replica log tag - the value is rangeStr.String().
 	r.AmbientContext.AddLogTag("r", &r.rangeStr)
 	r.raftCtx = logtags.AddTag(r.AnnotateCtx(context.Background()), "raft", nil /* value */)
@@ -206,19 +205,19 @@ func newUninitializedReplicaWithoutRaftGroup(store *Store, id roachpb.FullReplic
 	// r.AmbientContext.AddLogTag("@", fmt.Sprintf("%x", unsafe.Pointer(r)))
 
 	r.raftMu.rangefeedCTLagObserver = newRangeFeedCTLagObserver()
-	r.raftMu.stateLoader = kvstorage.MakeStateLoader(id.RangeID)
+	r.raftMu.stateLoader = stateloader.Make(rangeID)
 
 	// Initialize all the components of the log storage. The state of the log
 	// storage, such as RaftTruncatedState and the last entry ID, will be loaded
 	// when the replica is initialized.
 	sideloaded := logstore.NewDiskSideloadStorage(
 		store.cfg.Settings,
-		id.RangeID,
+		rangeID,
 		// NB: sideloaded log entries are persisted in the state engine so that they
 		// can be ingested to the state machine locally, when being applied.
 		store.StateEngine().GetAuxiliaryDir(),
 		store.limiters.BulkIOWriteRate,
-		store.StateEngine().Env(),
+		store.StateEngine(),
 	)
 	r.logStorage = &replicaLogStorage{
 		ctx:                r.raftCtx,
@@ -230,20 +229,20 @@ func newUninitializedReplicaWithoutRaftGroup(store *Store, id roachpb.FullReplic
 	r.logStorage.mu.RWMutex = (*syncutil.RWMutex)(&r.mu.ReplicaMutex)
 	r.logStorage.raftMu.Mutex = &r.raftMu.Mutex
 	r.logStorage.ls = &logstore.LogStore{
-		RangeID:     id.RangeID,
+		RangeID:     rangeID,
 		Engine:      store.LogEngine(),
 		Sideload:    sideloaded,
 		StateLoader: r.raftMu.stateLoader.StateLoader,
 		// NOTE: use the same SyncWaiter loop for all raft log writes performed by a
 		// given range ID, to ensure that callbacks are processed in order.
-		SyncWaiter: store.syncWaiters[int(id.RangeID)%len(store.syncWaiters)],
+		SyncWaiter: store.syncWaiters[int(rangeID)%len(store.syncWaiters)],
 		Settings:   store.cfg.Settings,
 		DisableSyncLogWriteToss: buildutil.CrdbTestBuild &&
 			store.TestingKnobs().DisableSyncLogWriteToss,
 	}
 
-	r.splitQueueThrottle = util.EveryMono(splitQueueThrottleDuration)
-	r.mergeQueueThrottle = util.EveryMono(mergeQueueThrottleDuration)
+	r.splitQueueThrottle = util.Every(splitQueueThrottleDuration)
+	r.mergeQueueThrottle = util.Every(mergeQueueThrottleDuration)
 
 	onTrip := func() {
 		telemetry.Inc(telemetryTripAsync)
@@ -287,7 +286,7 @@ func newUninitializedReplicaWithoutRaftGroup(store *Store, id roachpb.FullReplic
 func (r *Replica) setStartKeyLocked(startKey roachpb.RKey) {
 	r.mu.AssertHeld()
 	if r.startKey != nil {
-		log.KvExec.Fatalf(
+		log.Fatalf(
 			r.AnnotateCtx(context.Background()),
 			"start key written twice: was %s, now %s", r.startKey, startKey,
 		)
@@ -435,17 +434,17 @@ func (r *Replica) setDescRaftMuLocked(ctx context.Context, desc *roachpb.RangeDe
 
 func (r *Replica) setDescLockedRaftMuLocked(ctx context.Context, desc *roachpb.RangeDescriptor) {
 	if desc.RangeID != r.RangeID {
-		log.KvExec.Fatalf(ctx, "range descriptor ID (%d) does not match replica's range ID (%d)",
+		log.Fatalf(ctx, "range descriptor ID (%d) does not match replica's range ID (%d)",
 			desc.RangeID, r.RangeID)
 	}
 	if r.shMu.state.Desc.IsInitialized() &&
 		(desc == nil || !desc.IsInitialized()) {
-		log.KvExec.Fatalf(ctx, "cannot replace initialized descriptor with uninitialized one: %+v -> %+v",
+		log.Fatalf(ctx, "cannot replace initialized descriptor with uninitialized one: %+v -> %+v",
 			r.shMu.state.Desc, desc)
 	}
 	if r.shMu.state.Desc.IsInitialized() &&
 		!r.shMu.state.Desc.StartKey.Equal(desc.StartKey) {
-		log.KvExec.Fatalf(ctx, "attempted to change replica's start key from %s to %s",
+		log.Fatalf(ctx, "attempted to change replica's start key from %s to %s",
 			r.shMu.state.Desc.StartKey, desc.StartKey)
 	}
 
@@ -462,7 +461,7 @@ func (r *Replica) setDescLockedRaftMuLocked(ctx context.Context, desc *roachpb.R
 	//   3) Various unit tests do not provide a valid descriptor.
 	replDesc, found := desc.GetReplicaDescriptor(r.StoreID())
 	if found && replDesc.ReplicaID != r.replicaID {
-		log.KvExec.Fatalf(ctx, "attempted to change replica's ID from %d to %d",
+		log.Fatalf(ctx, "attempted to change replica's ID from %d to %d",
 			r.replicaID, replDesc.ReplicaID)
 	}
 
@@ -472,7 +471,7 @@ func (r *Replica) setDescLockedRaftMuLocked(ctx context.Context, desc *roachpb.R
 	if desc.IsInitialized() && r.mu.tenantID == (roachpb.TenantID{}) {
 		_, tenantID, err := keys.DecodeTenantPrefix(desc.StartKey.AsRawKey())
 		if err != nil {
-			log.KvExec.Fatalf(ctx, "failed to decode tenant prefix from key for "+
+			log.Fatalf(ctx, "failed to decode tenant prefix from key for "+
 				"replica %v: %v", r, err)
 		}
 		r.mu.tenantID = tenantID
@@ -507,7 +506,7 @@ func (r *Replica) setDescLockedRaftMuLocked(ctx context.Context, desc *roachpb.R
 	for _, span := range []roachpb.Span{keys.NodeLivenessSpan, keys.MetaSpan} {
 		rspan, err := keys.SpanAddr(span)
 		if err != nil {
-			log.KvExec.Fatalf(ctx, "can't resolve system span %s: %s", span, err)
+			log.Fatalf(ctx, "can't resolve system span %s: %s", span, err)
 		}
 		if _, err := desc.RSpan().Intersect(rspan); err == nil {
 			r.store.scheduler.AddPriorityID(desc.RangeID)

@@ -29,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/workload"
-	"github.com/cockroachdb/cockroach/pkg/workload/changefeeds"
 	"github.com/cockroachdb/cockroach/pkg/workload/histogram"
 	"github.com/cockroachdb/cockroach/pkg/workload/histogram/exporter"
 	"github.com/cockroachdb/cockroach/pkg/workload/workloadsql"
@@ -105,20 +104,6 @@ var secure = securityFlags.Bool("secure", false,
 		"For example when using root, certs/client.root.crt certs/client.root.key should exist.")
 var user = securityFlags.String("user", "root", "Specify a user to run the workload as")
 var password = securityFlags.String("password", "", "Optionally specify a password for the user")
-
-// Options relating to the optional changefeed.
-var (
-	changefeed = runFlags.Bool("changefeed", false,
-		"Optionally run a changefeed over the tables")
-	changefeedStartDelay = runFlags.Duration("changefeed-start-delay", 0*time.Second,
-		"How long to wait before starting the changefeed")
-	changefeedMaxRate = runFlags.Float64(
-		"changefeed-max-rate", 0, "Maximum frequency of changefeed ingestion. If 0, no limit.")
-	changefeedResolvedTarget = runFlags.Duration("changefeed-resolved-target", 5*time.Second,
-		"The target frequency of resolved messages. O to disable resolved reporting and accept server defaults.")
-	changefeedCursor = runFlags.String("changefeed-cursor", "",
-		"The cursor to start the changefeed from. If empty, the changefeed will start from the current cluster logical timestamp.")
-)
 
 func init() {
 
@@ -393,7 +378,7 @@ func startPProfEndPoint(ctx context.Context) {
 	go func() {
 		err := http.ListenAndServe(":"+strconv.Itoa(*pprofport), nil)
 		if err != nil {
-			log.Dev.Errorf(ctx, "%v", err)
+			log.Errorf(ctx, "%v", err)
 		}
 	}()
 }
@@ -417,7 +402,7 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 		return err
 	}
 	if *doInit || *drop {
-		log.Dev.Info(ctx, `DEPRECATION: `+
+		log.Info(ctx, `DEPRECATION: `+
 			`the --init flag on "workload run" will no longer be supported after 19.2`)
 		for {
 			err = runInitImpl(ctx, gen, initDB, dbName)
@@ -427,7 +412,7 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 			if !*tolerateErrors {
 				return err
 			}
-			log.Dev.Infof(ctx, "retrying after error during init: %v", err)
+			log.Infof(ctx, "retrying after error during init: %v", err)
 		}
 	}
 
@@ -438,12 +423,6 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 		// Create a limiter using maxRate specified on the command line and
 		// with allowed burst of 1 at the maximum allowed rate.
 		limiter = rate.NewLimiter(rate.Limit(*maxRate), 1)
-	}
-	var changefeedLimiter *rate.Limiter
-	if *changefeedMaxRate > 0 {
-		ratePerSecond := *changefeedMaxRate
-		burst := max(int(ratePerSecond), 1)
-		changefeedLimiter = rate.NewLimiter(rate.Limit(ratePerSecond), burst)
 	}
 
 	maybeLogRandomSeed(ctx, gen)
@@ -476,13 +455,13 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 			fmt.Sprintf(":%d", *prometheusPort),
 			promhttp.HandlerFor(reg.Gatherer(), promhttp.HandlerOpts{}),
 		); err != nil {
-			log.Dev.Errorf(context.Background(), "error serving prometheus: %v", err)
+			log.Errorf(context.Background(), "error serving prometheus: %v", err)
 		}
 	}()
 
 	var ops workload.QueryLoad
 	prepareStart := timeutil.Now()
-	log.Dev.Infof(ctx, "creating load generator...")
+	log.Infof(ctx, "creating load generator...")
 
 	prepareCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -502,28 +481,21 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 		var err error
 		for retry.Next() {
 			if err != nil {
-				log.Dev.Warningf(ctx, "retrying after error while creating load: %v", err)
+				log.Warningf(ctx, "retrying after error while creating load: %v", err)
 			}
 			ops, err = o.Ops(ctx, urls, reg)
-			if err != nil && !*tolerateErrors {
-				return errors.Wrapf(err, "failed to initialize the load generator")
-			}
-
-			if *changefeed {
-				log.Dev.Infof(ctx, "adding changefeed to query load...")
-				err = changefeeds.AddChangefeedToQueryLoad(ctx, gen.(workload.ConnFlagser), dbName, *changefeedResolvedTarget, *changefeedCursor, urls, reg, &ops)
-				if err != nil && !*tolerateErrors {
-					return errors.Wrapf(err, "failed to initialize changefeed")
-				}
-			}
 			if err == nil {
 				return nil
+			}
+			err = errors.Wrapf(err, "failed to initialize the load generator")
+			if !*tolerateErrors {
+				return err
 			}
 		}
 		if ctx.Err() != nil {
 			// Don't retry endlessly. Note that this retry loop is not under the
 			// control of --duration, so we're avoiding retrying endlessly.
-			log.Dev.Errorf(ctx, "Attempt to create load generator failed. "+
+			log.Errorf(ctx, "Attempt to create load generator failed. "+
 				"It's been more than %s since we started trying to create the load generator "+
 				"so we're giving up. Last failure: %s\nStacks:\n%s", prepareTimeout, err, <-stacksCh)
 		}
@@ -531,7 +503,7 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 	}(prepareCtx); prepareErr != nil {
 		return prepareErr
 	}
-	log.Dev.Infof(ctx, "creating load generator... done (took %s)", timeutil.Since(prepareStart))
+	log.Infof(ctx, "creating load generator... done (took %s)", timeutil.Since(prepareStart))
 
 	start := timeutil.Now()
 	errCh := make(chan error)
@@ -555,17 +527,8 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 	workersCtx, cancelWorkers := context.WithCancel(ctx)
 	defer cancelWorkers()
 	var wg sync.WaitGroup
-	wg.Add(len(ops.WorkerFns) + len(ops.ChangefeedFns))
+	wg.Add(len(ops.WorkerFns))
 	go func() {
-		for _, workFn := range ops.ChangefeedFns {
-			go func(workFn func(context.Context) error) {
-				if *changefeedStartDelay > 0 {
-					time.Sleep(*changefeedStartDelay)
-				}
-				workerRun(workersCtx, errCh, &wg, changefeedLimiter, workFn)
-			}(workFn)
-		}
-
 		// If a ramp period was specified, start all the workers gradually
 		// with a new context.
 		var rampCtx context.Context
@@ -619,12 +582,12 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 			formatter.outputError(err)
 			if *tolerateErrors {
 				if everySecond.ShouldLog() {
-					log.Dev.Errorf(ctx, "%v", err)
+					log.Errorf(ctx, "%v", err)
 				}
 				continue
 			}
 			// Log the error with %+v so we get the stack trace.
-			log.Dev.Errorf(ctx, "workload run error: %+v", err)
+			log.Errorf(ctx, "workload run error: %+v", err)
 			return err
 
 		case <-ticker.C:
@@ -633,15 +596,8 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 				formatter.outputTick(startElapsed, t)
 				if t.Exporter != nil && rampDone == nil {
 					if err := t.Exporter.SnapshotAndWrite(t.Hist, t.Now, t.Elapsed, &t.Name); err != nil {
-						log.Dev.Warningf(ctx, "histogram: %v", err)
+						log.Warningf(ctx, "histogram: %v", err)
 					}
-				}
-				// TODO(ssd): Ugly hack. Until we support something other than
-				// histograms here, for this particular metric, if we reset the
-				// histogram. We don't reset the Cumulative histogram which lets us see
-				// pMax.
-				if t.Name == "changefeed-resolved" {
-					t.Hist.Reset()
 				}
 			})
 
@@ -665,7 +621,7 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 				formatter.outputTotal(startElapsed, t)
 				if t.Exporter != nil {
 					if err := t.Exporter.SnapshotAndWrite(t.Hist, t.Now, t.Elapsed, &t.Name); err != nil {
-						log.Dev.Warningf(ctx, "histogram: %v", err)
+						log.Warningf(ctx, "histogram: %v", err)
 					}
 				}
 				if ops.ResultHist == `` || ops.ResultHist == t.Name {
@@ -697,7 +653,7 @@ func runRun(gen workload.Generator, urls []string, dbName string) error {
 // if a seed is being used.
 func maybeLogRandomSeed(ctx context.Context, gen workload.Generator) {
 	if randomSeed := gen.Meta().RandomSeed; randomSeed != nil {
-		log.Dev.Infof(ctx, "%s", randomSeed.LogMessage())
+		log.Infof(ctx, "%s", randomSeed.LogMessage())
 	}
 }
 
@@ -767,7 +723,7 @@ func closeExporter(ctx context.Context, metricsExporter exporter.Exporter, file 
 	if metricsExporter != nil {
 		if err := metricsExporter.Close(func() error {
 			if file == nil {
-				log.Dev.Infof(ctx, "no file to close")
+				log.Infof(ctx, "no file to close")
 				return nil
 			}
 
@@ -779,7 +735,7 @@ func closeExporter(ctx context.Context, metricsExporter exporter.Exporter, file 
 
 			return renameTempFile(file, *histograms)
 		}); err != nil {
-			log.Dev.Warningf(ctx, "failed to close metrics exporter: %v", err)
+			log.Warningf(ctx, "failed to close metrics exporter: %v", err)
 		}
 	}
 }

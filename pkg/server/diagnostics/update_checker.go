@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -75,7 +74,6 @@ func (u *UpdateChecker) PeriodicallyCheckForUpdates(ctx context.Context, stopper
 		SpanOpt:  stop.SterileRootSpan,
 	}, func(ctx context.Context) {
 		defer logcrash.RecoverAndReportNonfatalPanic(ctx, &u.Settings.SV)
-		rng, _ := randutil.NewPseudoRand()
 		nextUpdateCheck := u.StartTime
 
 		var timer timeutil.Timer
@@ -86,7 +84,7 @@ func (u *UpdateChecker) PeriodicallyCheckForUpdates(ctx context.Context, stopper
 
 			nextUpdateCheck = u.maybeCheckForUpdates(ctx, now, nextUpdateCheck, runningTime)
 
-			timer.Reset(addJitter(nextUpdateCheck.Sub(timeutil.Now()), rng))
+			timer.Reset(addJitter(nextUpdateCheck.Sub(timeutil.Now())))
 			select {
 			case <-stopper.ShouldQuiesce():
 				return
@@ -119,7 +117,7 @@ func (u *UpdateChecker) CheckForUpdates(ctx context.Context) bool {
 
 	if res.StatusCode != http.StatusOK {
 		b, err := io.ReadAll(res.Body)
-		log.Dev.Infof(ctx, "failed to check for updates: status: %s, body: %s, error: %v",
+		log.Infof(ctx, "failed to check for updates: status: %s, body: %s, error: %v",
 			res.Status, b, err)
 		return false
 	}
@@ -131,7 +129,7 @@ func (u *UpdateChecker) CheckForUpdates(ctx context.Context) bool {
 
 	err = decoder.Decode(&r)
 	if err != nil && err != io.EOF {
-		log.Dev.Warningf(ctx, "error decoding updates info: %v", err)
+		log.Warningf(ctx, "error decoding updates info: %v", err)
 		return false
 	}
 
@@ -142,7 +140,7 @@ func (u *UpdateChecker) CheckForUpdates(ctx context.Context) bool {
 		r.Details = r.Details[len(r.Details)-updateMaxVersionsToReport:]
 	}
 	for _, v := range r.Details {
-		log.Dev.Infof(ctx, "a new version is available: %s, details: %s", v.Version, v.Details)
+		log.Infof(ctx, "a new version is available: %s, details: %s", v.Version, v.Details)
 	}
 	return true
 }

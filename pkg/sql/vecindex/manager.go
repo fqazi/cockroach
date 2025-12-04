@@ -19,6 +19,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/cspann/quantize"
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/vecindex/vecstore"
+	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -112,7 +113,7 @@ func (m *Manager) Get(
 		} else {
 			// This is the expected "fast" path; don't emit an event.
 			if log.V(2) {
-				log.Dev.Infof(ctx, "config for index %d of table %d found in cache", indexID, tableID)
+				log.Infof(ctx, "config for index %d of table %d found in cache", indexID, tableID)
 			}
 		}
 		return e.idx, e.err
@@ -135,8 +136,7 @@ func (m *Manager) Get(
 		}
 		// TODO(drewk): use the config to populate the index options as well.
 		quantizer := quantize.NewRaBitQuantizer(int(config.Dims), config.Seed, config.DistanceMetric)
-		store, err := vecstore.New(
-			ctx, m.db, quantizer, m.codec, tableID, indexID, config.IsDeterministic)
+		store, err := vecstore.New(ctx, m.db, quantizer, m.codec, tableID, indexID)
 		if err != nil {
 			return nil, err
 		}
@@ -219,6 +219,13 @@ func (m *Manager) getVecConfig(
 	config := idxDesc.GetVecConfig()
 	if config.Dims <= 0 {
 		return vecpb.Config{}, errInvalidVecConfig
+	}
+	// TODO(mw5h, drewk): this should be a session setting in create index rather
+	// than an override like this.
+	if buildutil.CrdbTestBuild {
+		// This is a test build, so let's use a fixed seed for the random projection to
+		// avoid test flakes.
+		config.Seed = 0xdeadcafe
 	}
 	return config, nil
 }

@@ -271,15 +271,6 @@ var retiredSettings = map[InternalKey]struct{}{
 	// removed as of 25.3
 	"sql.metrics.max_stmt_fingerprints_per_explicit_txn": {},
 	"sql.jobs.legacy_per_job_access_via_details.enabled": {},
-
-	// removed as of 25.4
-	"storage.columnar_blocks.enabled": {},
-
-	// removed as of 26.1
-	"sql.distsql_planning.use_gossip.enabled":             {},
-	"rocksdb.ingest_backpressure.l0_file_count_threshold": {},
-	"rocksdb.ingest_backpressure.max_delay":               {},
-	"pebble.pre_ingest_delay.enabled":                     {},
 }
 
 // grandfatheredDefaultSettings is the list of "grandfathered" existing sql.defaults
@@ -500,7 +491,7 @@ func LookupForReportingByKey(key InternalKey, forSystemTenant bool) (Setting, bo
 	if !forSystemTenant && s.Class() == SystemOnly {
 		return nil, false
 	}
-	if !s.IsReportable() {
+	if !s.isReportable() {
 		return &MaskedSetting{setting: s}, true
 	}
 	return s, true
@@ -537,7 +528,7 @@ func LookupForDisplayByKey(
 	if !forSystemTenant && s.Class() == SystemOnly {
 		return nil, false
 	}
-	if s.IsSensitive() && !canViewSensitive {
+	if s.isSensitive() && !canViewSensitive {
 		return &MaskedSetting{setting: s}, true
 	}
 	return s, true
@@ -571,7 +562,7 @@ var ReadableTypes = map[string]string{
 //   - "<unknown>" if there is no setting with this name.
 func RedactedValue(key InternalKey, values *Values, forSystemTenant bool) string {
 	if k, ok := registry[key]; ok {
-		if k.Typ() == "s" || k.IsSensitive() || !k.IsReportable() {
+		if k.Typ() == "s" || k.isSensitive() || !k.isReportable() {
 			return "<redacted>"
 		}
 	}

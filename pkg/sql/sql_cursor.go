@@ -68,11 +68,8 @@ func (p *planner) DeclareCursor(ctx context.Context, s *tree.DeclareCursor) (pla
 			}
 
 			// Try to plan the cursor query to make sure that it's valid.
-			stmt := makeStatement(
-				ctx, statements.Statement[tree.Statement]{AST: s.Select}, clusterunique.ID{},
-				tree.FmtFlags(tree.QueryFormattingForFingerprintsMask.Get(&p.execCfg.Settings.SV)),
-				nil, /* statementHintsCache */
-			)
+			stmt := makeStatement(statements.Statement[tree.Statement]{AST: s.Select}, clusterunique.ID{},
+				tree.FmtFlags(queryFormattingForFingerprintsMask.Get(&p.execCfg.Settings.SV)))
 			pt := planTop{}
 			pt.init(&stmt, &p.instrumentation)
 			opc := &p.optPlanningCtx
@@ -149,78 +146,37 @@ func (p *planner) checkIfCursorExists(name tree.Name) error {
 
 var errBackwardScan = pgerror.Newf(pgcode.ObjectNotInPrerequisiteState, "cursor can only scan forward")
 
-// FetchCursor implements the FETCH statement.
+// FetchCursor implements the FETCH and MOVE statements.
 // See https://www.postgresql.org/docs/current/sql-fetch.html for details.
 func (p *planner) FetchCursor(_ context.Context, s *tree.CursorStmt) (planNode, error) {
-	var fetch fetchNode
-	if err := fetch.init(p, s); err != nil {
-		return nil, err
-	}
-	return &fetch, nil
+	return p.newFetchNode(s)
 }
 
-// MoveCursor implements the MOVE statement.
-// See https://www.postgresql.org/docs/current/sql-fetch.html for details.
-func (p *planner) MoveCursor(_ context.Context, s *tree.CursorStmt) (planNode, error) {
-	var move moveNode
-	if err := move.init(p, s); err != nil {
-		return nil, err
+// newFetchNode creates a new fetchNode, which implements FETCH and MOVE
+// statements.
+func (p *planner) newFetchNode(s *tree.CursorStmt) (*fetchNode, error) {
+	cursor := p.sqlCursors.getCursor(s.Name)
+	if cursor == nil {
+		return nil, pgerror.Newf(
+			pgcode.InvalidCursorName, "cursor %q does not exist", s.Name,
+		)
 	}
-	return &move, nil
+	if s.Count < 0 || s.FetchType == tree.FetchBackwardAll {
+		return nil, errBackwardScan
+	}
+	node := &fetchNode{
+		n:         s.Count,
+		fetchType: s.FetchType,
+		cursor:    cursor,
+	}
+	if s.FetchType != tree.FetchNormal {
+		node.n = 0
+		node.offset = s.Count
+	}
+	return node, nil
 }
 
 type fetchNode struct {
-	fetchMoveNodeBase
-}
-
-func (f *fetchNode) startExec(_ runParams) error {
-	return f.startInternal()
-}
-
-func (f *fetchNode) Next(params runParams) (bool, error) {
-	return f.nextInternal(params.ctx)
-}
-
-func (f *fetchNode) Values() tree.Datums {
-	return f.cursor.Cur()
-}
-
-func (f *fetchNode) Close(ctx context.Context) {
-	f.close(ctx)
-}
-
-type moveNode struct {
-	fetchMoveNodeBase
-	rowsAffectedOutputHelper
-}
-
-func (m *moveNode) startExec(params runParams) error {
-	if err := m.startInternal(); err != nil {
-		return err
-	}
-	// Execute the move to completion, keeping track of the affected row count.
-	for {
-		next, err := m.nextInternal(params.ctx)
-		if !next || err != nil {
-			return err
-		}
-		m.incAffectedRows()
-	}
-}
-
-func (m *moveNode) Next(_ runParams) (bool, error) {
-	return m.next(), nil
-}
-
-func (m *moveNode) Values() tree.Datums {
-	return m.values()
-}
-
-func (m *moveNode) Close(ctx context.Context) {
-	m.close(ctx)
-}
-
-type fetchMoveNodeBase struct {
 	zeroInputPlanNode
 	cursor *sqlCursor
 	// n is the number of rows requested.
@@ -237,56 +193,34 @@ type fetchMoveNodeBase struct {
 	origTxnSeqNum enginepb.TxnSeq
 }
 
-func (b *fetchMoveNodeBase) init(p *planner, s *tree.CursorStmt) error {
-	cursor := p.sqlCursors.getCursor(s.Name)
-	if cursor == nil {
-		return pgerror.Newf(
-			pgcode.InvalidCursorName, "cursor %q does not exist", s.Name,
-		)
-	}
-	if s.Count < 0 || s.FetchType == tree.FetchBackwardAll {
-		return errBackwardScan
-	}
-	*b = fetchMoveNodeBase{
-		n:         s.Count,
-		fetchType: s.FetchType,
-		cursor:    cursor,
-	}
-	if s.FetchType != tree.FetchNormal {
-		b.n = 0
-		b.offset = s.Count
-	}
-	return nil
-}
-
-func (b *fetchMoveNodeBase) startInternal() error {
-	if !b.cursor.persisted {
+func (f *fetchNode) startInternal() error {
+	if !f.cursor.persisted {
 		// We need to make sure that we're reading at the same read sequence number
 		// that we had when we created the cursor, to preserve the "sensitivity"
 		// semantics of cursors, which demand that data written after the cursor
 		// was declared is not visible to the cursor.
-		b.origTxnSeqNum = b.cursor.txn.GetReadSeqNum()
-		return b.cursor.txn.SetReadSeqNum(b.cursor.readSeqNum)
+		f.origTxnSeqNum = f.cursor.txn.GetReadSeqNum()
+		return f.cursor.txn.SetReadSeqNum(f.cursor.readSeqNum)
 	}
 	// If persisted is set, the cursor has already been fully read into a row
 	// container, so there is no need to set the read sequence number.
 	return nil
 }
 
-func (b *fetchMoveNodeBase) nextInternal(ctx context.Context) (bool, error) {
-	if b.fetchType == tree.FetchAll {
-		return b.cursor.Next(ctx)
+func (f *fetchNode) nextInternal(ctx context.Context) (bool, error) {
+	if f.fetchType == tree.FetchAll {
+		return f.cursor.Next(ctx)
 	}
 
-	if !b.seeked {
+	if !f.seeked {
 		// FIRST, LAST, ABSOLUTE, and RELATIVE require seeking before returning
 		// values. Do that first.
-		b.seeked = true
-		switch b.fetchType {
+		f.seeked = true
+		switch f.fetchType {
 		case tree.FetchFirst:
-			switch b.cursor.curRow {
+			switch f.cursor.curRow {
 			case 0:
-				_, err := b.cursor.Next(ctx)
+				_, err := f.cursor.Next(ctx)
 				return true, err
 			case 1:
 				return true, nil
@@ -295,23 +229,23 @@ func (b *fetchMoveNodeBase) nextInternal(ctx context.Context) (bool, error) {
 		case tree.FetchLast:
 			return false, errBackwardScan
 		case tree.FetchAbsolute:
-			if b.cursor.curRow > b.offset {
+			if f.cursor.curRow > f.offset {
 				return false, errBackwardScan
 			}
-			if b.offset == 0 {
+			if f.offset == 0 {
 				// ABSOLUTE 0 is positioned before the first row.
 				return false, nil
 			}
-			for b.cursor.curRow < b.offset {
-				more, err := b.cursor.Next(ctx)
+			for f.cursor.curRow < f.offset {
+				more, err := f.cursor.Next(ctx)
 				if !more || err != nil {
 					return more, err
 				}
 			}
 			return true, nil
 		case tree.FetchRelative:
-			for i := int64(0); i < b.offset; i++ {
-				more, err := b.cursor.Next(ctx)
+			for i := int64(0); i < f.offset; i++ {
+				more, err := f.cursor.Next(ctx)
 				if !more || err != nil {
 					return more, err
 				}
@@ -319,22 +253,34 @@ func (b *fetchMoveNodeBase) nextInternal(ctx context.Context) (bool, error) {
 			return true, nil
 		}
 	}
-	if b.n <= 0 {
+	if f.n <= 0 {
 		return false, nil
 	}
-	b.n--
-	return b.cursor.Next(ctx)
+	f.n--
+	return f.cursor.Next(ctx)
 }
 
-func (b *fetchMoveNodeBase) close(ctx context.Context) {
+func (f *fetchNode) startExec(params runParams) error {
+	return f.startInternal()
+}
+
+func (f *fetchNode) Next(params runParams) (bool, error) {
+	return f.nextInternal(params.ctx)
+}
+
+func (f fetchNode) Values() tree.Datums {
+	return f.cursor.Cur()
+}
+
+func (f fetchNode) Close(ctx context.Context) {
 	// We explicitly do not pass through the Close to our Rows, because
 	// running FETCH on a CURSOR does not close it.
-	if !b.cursor.persisted {
+	if !f.cursor.persisted {
 		// Reset the transaction's read sequence number to what it was before the
 		// fetch began, so that subsequent reads in the transaction can still see
 		// writes from that transaction.
-		if err := b.cursor.txn.SetReadSeqNum(b.origTxnSeqNum); err != nil {
-			log.Dev.Warningf(ctx, "error resetting transaction read seq num after CURSOR operation: %v", err)
+		if err := f.cursor.txn.SetReadSeqNum(f.origTxnSeqNum); err != nil {
+			log.Warningf(ctx, "error resetting transaction read seq num after CURSOR operation: %v", err)
 		}
 	}
 }
@@ -374,18 +320,18 @@ func (p *planner) PLpgSQLCloseCursor(cursorName tree.Name) error {
 func (p *planner) PLpgSQLFetchCursor(
 	ctx context.Context, cursorStmt *tree.CursorStmt,
 ) (res tree.Datums, err error) {
-	var cursor fetchMoveNodeBase
-	if err = cursor.init(p, cursorStmt); err != nil {
+	cursor, err := p.newFetchNode(cursorStmt)
+	if err != nil {
 		return nil, err
 	}
 	if err = cursor.startInternal(); err != nil {
 		return nil, err
 	}
-	defer cursor.close(ctx)
+	defer cursor.Close(ctx)
 	var hasNext bool
 	hasNext, err = cursor.nextInternal(ctx)
 	for err == nil && hasNext {
-		res = cursor.cursor.Cur()
+		res = cursor.Values()
 		hasNext, err = cursor.nextInternal(ctx)
 	}
 	return res, err

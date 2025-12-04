@@ -101,7 +101,6 @@ export interface NodeStatusRow {
   usedMemory: number;
   availableMemory: number;
   numCpus: number;
-  numVcpus?: number;
   version?: string;
   /*
    * status is a union of Node statuses and two artificial statuses
@@ -337,10 +336,10 @@ export class NodeList extends React.Component<LiveNodeListProps> {
       width: "10%",
     },
     {
-      key: "vCpus",
+      key: "numCpus",
       title: <CPUsTooltip>vCPUs</CPUsTooltip>,
-      dataIndex: "numVcpus",
-      sorter: (a: NodeStatusRow, b: NodeStatusRow) => a.numVcpus - b.numVcpus,
+      dataIndex: "numCpus",
+      sorter: (a: NodeStatusRow, b: NodeStatusRow) => a.numCpus - b.numCpus,
       className: "column--align-right",
       width: "8%",
     },
@@ -561,7 +560,6 @@ export const liveNodesTableDataSelector = createSelector(
                 usedMemory: ns.metrics[MetricConstants.rss],
                 availableMemory: FixLong(ns.total_system_memory).toNumber(),
                 numCpus: ns.num_cpus,
-                numVcpus: ns.num_vcpus,
                 version: ns.build_info.tag,
                 status:
                   nodesSummary.livenessStatusByNodeID[ns.desc.node_id] ||
@@ -615,7 +613,6 @@ export const liveNodesTableDataSelector = createSelector(
               usedMemory: sum(nestedRows.map(nr => nr.usedMemory)),
               availableMemory: sum(nestedRows.map(nr => nr.availableMemory)),
               numCpus: sum(nestedRows.map(nr => nr.numCpus)),
-              numVcpus: sum(nestedRows.map(nr => nr.numVcpus)),
               status: getLocalityStatus(),
               children: nestedRows,
             };

@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
@@ -48,9 +47,6 @@ type ClusterConfig struct {
 	// to expose only relevant, vetted bits of kv.DB. It'll make our tests less
 	// "integration-ey".
 	DB *kv.DB
-
-	// Cluster settings allow access to version and other settings.
-	Settings *cluster.Settings
 }
 
 // New constructs a new Cluster with the provided dependencies.
@@ -79,7 +75,7 @@ func (c *Cluster) UntilClusterStable(
 			}
 
 			if ok, diffs := live.Identical(curLive); !ok || curUnavailable != nil {
-				log.Dev.Infof(ctx, "waiting for cluster stability, unavailable: %v, diff: %v", curUnavailable, diffs)
+				log.Infof(ctx, "waiting for cluster stability, unavailable: %v, diff: %v", curUnavailable, diffs)
 				live = curLive
 				unavailable = curUnavailable
 
@@ -124,7 +120,7 @@ func (c *Cluster) ForEveryNodeOrServer(
 
 	// We'll want to rate limit outgoing RPCs (limit pulled out of thin air).
 	qp := quotapool.NewIntPool("every-node", 25)
-	log.Dev.Infof(ctx, "executing %s on nodes %s", redact.Safe(op), live)
+	log.Infof(ctx, "executing %s on nodes %s", redact.Safe(op), live)
 	grp := ctxgroup.WithContext(ctx)
 
 	for _, node := range live {
@@ -136,7 +132,7 @@ func (c *Cluster) ForEveryNodeOrServer(
 		grp.GoCtx(func(ctx context.Context) error {
 			defer alloc.Release()
 
-			client, err := serverpb.DialMigrationClient(c.c.Dialer, ctx, node.ID, rpcbase.DefaultClass, c.c.Settings)
+			client, err := serverpb.DialMigrationClient(c.c.Dialer, ctx, node.ID, rpcbase.DefaultClass)
 			if err != nil {
 				return err
 			}

@@ -94,7 +94,7 @@ func (gd *GoroutineDumper) MaybeDump(ctx context.Context, st *cluster.Settings, 
 			)
 			path := gd.store.GetFullPath(filename)
 			if err := gd.takeGoroutineDump(path); err != nil {
-				log.Dev.Warningf(ctx, "error dumping goroutines: %s", err)
+				log.Warningf(ctx, "error dumping goroutines: %s", err)
 				continue
 			}
 			gd.maxGoroutinesDumped = goroutines
@@ -114,7 +114,7 @@ func NewGoroutineDumper(
 		return nil, errors.New("directory to store dumps could not be determined")
 	}
 
-	log.Dev.Infof(ctx, "writing goroutine dumps to %s", log.SafeManaged(dir))
+	log.Infof(ctx, "writing goroutine dumps to %s", log.SafeManaged(dir))
 
 	gd := &GoroutineDumper{
 		heuristics: []heuristic{
@@ -136,7 +136,7 @@ func (gd *GoroutineDumper) gcDumps(ctx context.Context, now time.Time) {
 
 // PreFilter is part of the dumpstore.Dumper interface.
 func (gd *GoroutineDumper) PreFilter(
-	ctx context.Context, files []os.DirEntry, cleanupFn func(fileName string) error,
+	ctx context.Context, files []os.FileInfo, cleanupFn func(fileName string) error,
 ) (preserved map[int]bool, _ error) {
 	preserved = make(map[int]bool)
 	for i := len(files) - 1; i >= 0; i-- {
@@ -150,7 +150,7 @@ func (gd *GoroutineDumper) PreFilter(
 }
 
 // CheckOwnsFile is part of the dumpstore.Dumper interface.
-func (gd *GoroutineDumper) CheckOwnsFile(_ context.Context, fi os.DirEntry) bool {
+func (gd *GoroutineDumper) CheckOwnsFile(_ context.Context, fi os.FileInfo) bool {
 	return strings.HasPrefix(fi.Name(), goroutineDumpPrefix)
 }
 

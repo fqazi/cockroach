@@ -62,7 +62,7 @@ func TestIndexBackfiller(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 
 	moveToTDelete := make(chan bool)
 	moveToTWrite := make(chan bool)
@@ -482,8 +482,8 @@ INSERT INTO foo VALUES (1), (10), (100);
 
 		// Run the testCase's setupDesc function to prepare an index backfill
 		// mutation. Also, create an associated job and set it up to be blocked.
+		lm := s.LeaseManager().(*lease.Manager)
 		tt := s.ApplicationLayer()
-		lm := tt.LeaseManager().(*lease.Manager)
 		codec := tt.Codec()
 		settings := tt.ClusterSettings()
 		execCfg := tt.ExecutorConfig().(sql.ExecutorConfig)
@@ -583,16 +583,14 @@ func TestIndexBackfillerResumePreservesProgress(t *testing.T) {
 	skip.UnderRace(t, "slow timing sensitive test")
 
 	ctx := context.Background()
-	// backfillProgressCompletedCh will be used to communicate completed spans
-	// with the tenant prefix removed, if applicable.
 	backfillProgressCompletedCh := make(chan []roachpb.Span)
 	const numRows = 100
 	const numSpans = 20
 	var isBlockingBackfillProgress atomic.Bool
-	var codec keys.SQLCodec
+	isBlockingBackfillProgress.Store(true)
 
 	// Start the server with testing knob.
-	srv, db, _ := serverutils.StartServer(t, base.TestServerArgs{
+	tc, db, _ := serverutils.StartServer(t, base.TestServerArgs{
 		Knobs: base.TestingKnobs{
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			DistSQL: &execinfra.TestingKnobs{
@@ -601,18 +599,6 @@ func TestIndexBackfillerResumePreservesProgress(t *testing.T) {
 				BulkAdderFlushesEveryBatch: true,
 				RunBeforeIndexBackfillProgressUpdate: func(ctx context.Context, completed []roachpb.Span) {
 					if isBlockingBackfillProgress.Load() {
-						if toRemove := len(codec.TenantPrefix()); toRemove > 0 {
-							// Remove the tenant prefix from completed spans.
-							updated := make([]roachpb.Span, len(completed))
-							for i := range updated {
-								sp := completed[i]
-								updated[i] = roachpb.Span{
-									Key:    append(roachpb.Key(nil), sp.Key[toRemove:]...),
-									EndKey: append(roachpb.Key(nil), sp.EndKey[toRemove:]...),
-								}
-							}
-							completed = updated
-						}
 						select {
 						case <-ctx.Done():
 						case backfillProgressCompletedCh <- completed:
@@ -639,11 +625,7 @@ func TestIndexBackfillerResumePreservesProgress(t *testing.T) {
 			},
 		},
 	})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
-
-	codec = s.Codec()
-	isBlockingBackfillProgress.Store(true)
+	defer tc.Stopper().Stop(ctx)
 
 	_, err := db.Exec(`SET CLUSTER SETTING bulkio.index_backfill.batch_size = 10`)
 	require.NoError(t, err)

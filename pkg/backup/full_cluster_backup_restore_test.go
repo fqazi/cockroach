@@ -192,9 +192,6 @@ CREATE TABLE data2.foo (a int);
 		sqlDB.Exec(t, `CREATE SCHEDULE FOR BACKUP data.bank INTO $1 RECURRING '@hourly' FULL BACKUP ALWAYS WITH SCHEDULE OPTIONS first_run = $2`, localFoo, firstRun)
 		sqlDB.Exec(t, `PAUSE SCHEDULES SELECT id FROM [SHOW SCHEDULES FOR BACKUP]`)
 
-		// Populate system.statement_hints with a dummy row.
-		sqlDB.Exec(t, `INSERT INTO system.statement_hints (fingerprint, hint) VALUES ('FOO BAR _', '0xDEADBEEF'::BYTES)`)
-
 		injectStats(t, sqlDB, "data.bank", "id")
 		sqlDB.Exec(t, `BACKUP INTO $1`, localFoo)
 
@@ -241,7 +238,7 @@ CREATE TABLE data2.foo (a int);
 			store := tcRestore.GetFirstStoreFromServer(t, 0)
 			startKey := keys.SystemSQLCodec.TablePrefix(uint32(id))
 			endKey := startKey.PrefixEnd()
-			it, err := store.StateEngine().NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
+			it, err := store.TODOEngine().NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
 				UpperBound: endKey,
 			})
 			require.NoError(t, err)
@@ -297,7 +294,6 @@ CREATE TABLE data2.foo (a int);
 				systemschema.UITable.GetName(),
 				systemschema.UsersTable.GetName(),
 				systemschema.ScheduledJobsTable.GetName(),
-				systemschema.StatementHintsTable.GetName(),
 			}
 
 			verificationQueries := make([]string, len(systemTablesToVerify))
@@ -393,8 +389,9 @@ func TestSingletonSpanConfigJobPostRestore(t *testing.T) {
 		ServerArgs: base.TestServerArgs{
 			// Disabled only because backupRestoreTestSetupEmpty, another DR test
 			// helper function, is not yet enabled to set up tenants within
-			// clusters by default.
-			DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
+			// clusters by default. Tracking issue
+			// https://github.com/cockroachdb/cockroach/issues/76378
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 			Knobs: base.TestingKnobs{
 				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			},
@@ -673,7 +670,7 @@ func TestClusterRestoreFailCleanup(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if d.Name() == backupbase.DeprecatedBackupManifestName ||
+		if d.Name() == backupbase.BackupManifestName ||
 			!strings.HasSuffix(path, ".sst") ||
 			d.Name() == backupinfo.BackupMetadataDescriptorsListPath ||
 			d.Name() == backupinfo.BackupMetadataFilesListPath {
@@ -692,13 +689,19 @@ func TestClusterRestoreFailCleanup(t *testing.T) {
 	sqlDB.Exec(t, `BACKUP data.bank INTO 'nodelocal://1/throwawayjob'`)
 	sqlDB.Exec(t, `BACKUP INTO $1`, localFoo)
 
+	waitForJobPauseCancel := func(db *sqlutils.SQLRunner, jobID jobspb.JobID) {
+		db.Exec(t, `USE system;`)
+		jobutils.WaitForJobToPause(t, db, jobID)
+		db.Exec(t, `CANCEL JOB $1`, jobID)
+		jobutils.WaitForJobToCancel(t, db, jobID)
+	}
+
 	t.Run("during restoration of data", func(t *testing.T) {
 		_, sqlDBRestore, cleanupEmptyCluster := backupRestoreTestSetupEmpty(t, singleNode, tempDir, InitManualReplication, base.TestClusterArgs{})
 		defer cleanupEmptyCluster()
 		var jobID jobspb.JobID
 		sqlDBRestore.QueryRow(t, `RESTORE FROM LATEST IN 'nodelocal://1/missing-ssts' WITH detached`).Scan(&jobID)
-		sqlDBRestore.Exec(t, "USE system")
-		jobutils.WaitForJobToFail(t, sqlDBRestore, jobID)
+		waitForJobPauseCancel(sqlDBRestore, jobID)
 		// Verify the failed RESTORE added some DROP tables.
 		// Note that the system tables here correspond to the temporary tables
 		// imported, not the system tables themselves.
@@ -716,7 +719,6 @@ func TestClusterRestoreFailCleanup(t *testing.T) {
 				{"role_options"},
 				{"scheduled_jobs"},
 				{"settings"},
-				{"statement_hints"},
 				{"tenant_settings"},
 				{"ui"},
 				{"users"},
@@ -811,7 +813,6 @@ func TestClusterRestoreFailCleanup(t *testing.T) {
 				{"role_options"},
 				{"scheduled_jobs"},
 				{"settings"},
-				{"statement_hints"},
 				{"tenant_settings"},
 				{"ui"},
 				{"users"},
@@ -1013,8 +1014,9 @@ func TestReintroduceOfflineSpans(t *testing.T) {
 	params.ServerArgs.Knobs = knobs
 	// Disabled only because backupRestoreTestSetupEmpty, another DR test
 	// helper function, is not yet enabled to set up tenants within
-	// clusters by default.
-	params.ServerArgs.DefaultTestTenant = base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798)
+	// clusters by default. Tracking issue
+	// https://github.com/cockroachdb/cockroach/issues/76378
+	params.ServerArgs.DefaultTestTenant = base.TODOTestTenantDisabled
 
 	const numAccounts = 1000
 	ctx := context.Background()
@@ -1119,10 +1121,8 @@ func TestRestoreWithRecreatedDefaultDB(t *testing.T) {
 	_, sqlDB, tempDir, cleanupFn := backuptestutils.StartBackupRestoreTestCluster(t, singleNode)
 	_, sqlDBRestore, cleanupEmptyCluster := backupRestoreTestSetupEmpty(t, singleNode, tempDir, InitManualReplication,
 		// Disabling the default test tenant due to test failures. More
-		// investigation is required.
-		base.TestClusterArgs{ServerArgs: base.TestServerArgs{
-			DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
-		}})
+		// investigation is required. Tracked with #76378.
+		base.TestClusterArgs{ServerArgs: base.TestServerArgs{DefaultTestTenant: base.TODOTestTenantDisabled}})
 	defer cleanupFn()
 	defer cleanupEmptyCluster()
 
@@ -1146,10 +1146,8 @@ func TestRestoreWithDroppedDefaultDB(t *testing.T) {
 	_, sqlDB, tempDir, cleanupFn := backuptestutils.StartBackupRestoreTestCluster(t, singleNode)
 	_, sqlDBRestore, cleanupEmptyCluster := backupRestoreTestSetupEmpty(t, singleNode, tempDir, InitManualReplication,
 		// Disabling the default test tenant due to test failures. More
-		// investigation is required.
-		base.TestClusterArgs{ServerArgs: base.TestServerArgs{
-			DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
-		}})
+		// investigation is required. Tracked with #76378.
+		base.TestClusterArgs{ServerArgs: base.TestServerArgs{DefaultTestTenant: base.TODOTestTenantDisabled}})
 	defer cleanupFn()
 	defer cleanupEmptyCluster()
 
@@ -1173,8 +1171,9 @@ func TestFullClusterRestoreWithUserIDs(t *testing.T) {
 		ServerArgs: base.TestServerArgs{
 			// Disabled only because backupRestoreTestSetupEmpty, another DR test
 			// helper function, that is not yet enabled to set up tenants within
-			// clusters by default.
-			DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
+			// clusters by default. Tracking issue
+			// https://github.com/cockroachdb/cockroach/issues/76378
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 			Knobs: base.TestingKnobs{
 				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			},

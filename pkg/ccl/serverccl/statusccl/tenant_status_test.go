@@ -57,11 +57,7 @@ func TestTenantStatusAPI(t *testing.T) {
 	ctx := context.Background()
 
 	var knobs base.TestingKnobs
-
-	sqlStatsKnobs := sqlstats.CreateTestingKnobs()
-	sqlStatsKnobs.SynchronousSQLStats = true
-
-	knobs.SQLStatsKnobs = sqlStatsKnobs
+	knobs.SQLStatsKnobs = sqlstats.CreateTestingKnobs()
 	knobs.SpanConfig = &spanconfig.TestingKnobs{
 		// Some of these subtests expect multiple (uncoalesced) tenant ranges.
 		StoreDisableCoalesceAdjacent: true,
@@ -402,16 +398,12 @@ func TestTenantCannotSeeNonTenantStats(t *testing.T) {
 	skip.UnderStressWithIssue(t, 113984)
 
 	ctx := context.Background()
-	sqlStatsKnobs := sqlstats.CreateTestingKnobs()
-	sqlStatsKnobs.SynchronousSQLStats = true
 	testCluster := serverutils.StartCluster(t, 3 /* numNodes */, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			Knobs: base.TestingKnobs{
-				SQLStatsKnobs: sqlStatsKnobs,
 				SpanConfig: &spanconfig.TestingKnobs{
 					ManagerDisableJobCreation: true, // TODO(irfansharif): #74919.
-				},
-			},
+				}},
 			DefaultTestTenant: base.TestControlsTenantsExplicitly,
 		},
 	})
@@ -422,7 +414,7 @@ func TestTenantCannotSeeNonTenantStats(t *testing.T) {
 	tenant, sqlDB := serverutils.StartTenant(t, server, base.TestTenantArgs{
 		TenantID: roachpb.MustMakeTenantID(10 /* id */),
 		TestingKnobs: base.TestingKnobs{
-			SQLStatsKnobs: sqlStatsKnobs,
+			SQLStatsKnobs: sqlstats.CreateTestingKnobs(),
 		},
 	})
 
