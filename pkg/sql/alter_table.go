@@ -11,7 +11,6 @@ import (
 	gojson "encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/build"
@@ -1268,7 +1267,7 @@ func applyColumnMutation(
 			return err
 		}
 
-		// Alter referenced sequence for identity with specified option.
+		// Alter referenced sequence for identity with sepcified option.
 		// Does not override existing values if not specified.
 		if err := alterSequenceImpl(params, seqDesc, t.SeqOptions, t); err != nil {
 			return err
@@ -1289,7 +1288,7 @@ func applyColumnMutation(
 		if opts.Virtual {
 			optsNode = append(optsNode, tree.SequenceOption{Name: tree.SeqOptVirtual})
 		}
-		s := strings.TrimSpace(tree.Serialize(&optsNode))
+		s := tree.Serialize(&optsNode)
 		col.ColumnDesc().GeneratedAsIdentitySequenceOption = &s
 
 	case *tree.AlterTableDropIdentity:

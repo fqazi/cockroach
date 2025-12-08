@@ -423,12 +423,11 @@ func ImportFixture(
 	for _, t := range tables {
 		table := t
 		paths := csvServerPaths(pathPrefix, gen, table, numNodes*filesPerNode)
-		// Wait for there to be a slot ready.
-		res, err := concurrentImportLimit.Begin(ctx)
-		if err != nil {
-			return 0, err
-		}
 		g.GoCtx(func(ctx context.Context) error {
+			res, err := concurrentImportLimit.Begin(ctx)
+			if err != nil {
+				return err
+			}
 			defer res.Release()
 			tableBytes, err := importFixtureTable(
 				ctx, sqlDB, dbName, table, paths, `` /* output */, injectStats)
@@ -601,19 +600,14 @@ func injectStatistics(qualifiedTableName string, table *workload.Table, sqlDB *g
 // makeQualifiedTableName constructs a qualified table name from the specified
 // database name and table.
 func makeQualifiedTableName(dbName string, table *workload.Table) string {
-	// If a table prefix is specified, use it.
-	if table.ObjectPrefix != nil {
+	if dbName == "" {
 		name := table.GetResolvedName()
 		if name.ObjectNamePrefix.ExplicitCatalog ||
 			name.ObjectNamePrefix.ExplicitSchema {
 			return name.FQString()
 		}
+		return fmt.Sprintf(`"%s"`, name.ObjectName)
 	}
-	// If no database name is specified, use the name directly.
-	if dbName == "" {
-		return fmt.Sprintf(`"%s"`, table.Name)
-	}
-	// Otherwise, use the database name and the table name directly.
 	return fmt.Sprintf(`"%s"."%s"`, dbName, table.Name)
 }
 

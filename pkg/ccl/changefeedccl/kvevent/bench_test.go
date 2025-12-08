@@ -49,7 +49,7 @@ func BenchmarkMemBuffer(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	metrics := kvevent.MakeMetrics(time.Minute).AggregatorBufferMetrics
+	metrics := kvevent.MakeMetrics(time.Minute).AggregatorBufferMetricsWithCompat
 	st := cluster.MakeTestingClusterSettings()
 
 	buf := kvevent.NewMemBuffer(ba, &st.SV, &metrics)

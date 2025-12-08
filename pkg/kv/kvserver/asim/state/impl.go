@@ -46,7 +46,7 @@ type state struct {
 	stores                  map[StoreID]*store
 	load                    map[RangeID]ReplicaLoad
 	loadsplits              map[StoreID]LoadSplitter
-	statusTracker           StatusTracker
+	nodeLiveness            MockNodeLiveness
 	capacityChangeListeners []CapacityChangeListener
 	newCapacityListeners    []NewCapacityListener
 	configChangeListeners   []ConfigChangeListener
@@ -81,11 +81,9 @@ func newState(settings *config.SimulationSettings) *state {
 		usageInfo:         newClusterUsageInfo(),
 		settings:          settings,
 	}
-	s.statusTracker = StatusTracker{
-		clock:          hlc.NewClockForTesting(s.clock),
-		storeStatusMap: map[StoreID]StoreStatus{},
-		nodeStatusMap:  map[NodeID]NodeStatus{},
-		storeToNode:    map[StoreID]NodeID{},
+	s.nodeLiveness = MockNodeLiveness{
+		clock:     hlc.NewClockForTesting(s.clock),
+		statusMap: map[NodeID]livenesspb.NodeLivenessStatus{},
 	}
 
 	s.load = map[RangeID]ReplicaLoad{FirstRangeID: NewReplicaLoadCounter(s.clock)}
@@ -435,10 +433,10 @@ func (s *state) AddNode(nodeCPUCapacity int64, locality roachpb.Locality) Node {
 		stores:      []StoreID{},
 		mmAllocator: mmAllocator,
 		storepool:   sp,
-		as:          mmaintegration.NewAllocatorSync(sp, mmAllocator, s.settings.ST, nil),
+		as:          mmaintegration.NewAllocatorSync(sp, mmAllocator, s.settings.ST),
 	}
 	s.nodes[nodeID] = node
-	s.SetNodeStatus(nodeID, NodeStatus{Membership: livenesspb.MembershipStatus_ACTIVE})
+	s.SetNodeLiveness(nodeID, livenesspb.NodeLivenessStatus_LIVE)
 	s.SetNodeLocality(nodeID, locality)
 	s.SetNodeCPURateCapacity(nodeID, nodeCPUCapacity)
 	return node
@@ -570,7 +568,6 @@ func (s *state) AddStore(nodeID NodeID) (Store, bool) {
 	// Old allocator is still needed for other queues.
 	allocator := allocatorimpl.MakeAllocator(
 		s.settings.ST,
-		node.as,
 		sp.IsDeterministic(),
 		func(id roachpb.NodeID) (time.Duration, bool) { return 0, true },
 		&allocator.TestingKnobs{
@@ -588,10 +585,6 @@ func (s *state) AddStore(nodeID NodeID) (Store, bool) {
 	// Commit the new store to state.
 	node.stores = append(node.stores, storeID)
 	s.stores[storeID] = store
-
-	// Register the store with the liveness tracker, associating
-	// this store with its node.
-	s.statusTracker.registerStore(storeID, nodeID)
 
 	// Add a range load splitter for this store.
 	s.loadsplits[storeID] = NewSplitDecider(s.settings)
@@ -1183,45 +1176,10 @@ func (s *state) NextReplicasFn(storeID StoreID) func() []Replica {
 	return nextReplFn
 }
 
-// SetStoreStatus sets the liveness for a store.
-func (s *state) SetStoreStatus(storeID StoreID, status StoreStatus) {
-	// NB: the store->node map entry was created when the store
-	// was created, so we don't need to create it here.
-	s.statusTracker.storeStatusMap[storeID] = status
-}
-
-// StoreStatus returns the liveness status for a store.
-func (s *state) StoreStatus(storeID StoreID) StoreStatus {
-	return s.statusTracker.storeStatusMap[storeID]
-}
-
-// SetNodeStatus sets the membership and draining signals for a node.
-func (s *state) SetNodeStatus(nodeID NodeID, status NodeStatus) {
-	s.statusTracker.nodeStatusMap[nodeID] = status
-}
-
-// NodeStatus returns the membership and draining signals for a node.
-func (s *state) NodeStatus(nodeID NodeID) NodeStatus {
-	return s.statusTracker.nodeStatusMap[nodeID]
-}
-
-// SetAllStoresLiveness sets the liveness for all stores on a node at once.
-func (s *state) SetAllStoresLiveness(nodeID NodeID, liveness LivenessState) {
-	node, ok := s.nodes[nodeID]
-	if !ok {
-		return
-	}
-	for _, storeID := range node.stores {
-		s.statusTracker.storeStatusMap[storeID] = StoreStatus{Liveness: liveness}
-	}
-}
-
-// NodeLiveness returns the aggregated liveness for a node, which is
-// the "worst" state. In effect, if one store is doing poorly, we
-// report this node as doing as poorly. This is needed for the single-
-// metric allocator, which thinks about liveness at the node level.
-func (s *state) NodeLiveness(nodeID NodeID) LivenessState {
-	return s.statusTracker.worstLivenessForStoresOnNode(nodeID)
+// SetNodeLiveness sets the liveness status of the node with ID NodeID to be
+// the status given.
+func (s *state) SetNodeLiveness(nodeID NodeID, status livenesspb.NodeLivenessStatus) {
+	s.nodeLiveness.statusMap[nodeID] = status
 }
 
 // NodeLivenessFn returns a function, that when called will return the
@@ -1229,19 +1187,23 @@ func (s *state) NodeLiveness(nodeID NodeID) LivenessState {
 // TODO(kvoli): Find a better home for this method, required by the storepool.
 func (s *state) NodeLivenessFn() storepool.NodeLivenessFunc {
 	return func(nid roachpb.NodeID) livenesspb.NodeLivenessStatus {
-		return s.statusTracker.convertToNodeVitality(NodeID(nid), s.statusTracker.clock.Now()).LivenessStatus()
+		return s.nodeLiveness.statusMap[NodeID(nid)]
 	}
 }
 
 // NodeCountFn returns a function, that when called will return the current
 // number of nodes that exist in this state.
 // TODO(kvoli): Find a better home for this method, required by the storepool.
+// TODO(wenyihu6): introduce the concept of membership separated from the
+// liveness map.
 func (s *state) NodeCountFn() storepool.NodeCountFunc {
 	return func() int {
 		count := 0
-		for _, ns := range s.statusTracker.nodeStatusMap {
-			// Only nodes with ACTIVE membership are counted.
-			if ns.Membership.Active() {
+		for _, status := range s.nodeLiveness.statusMap {
+			// Nodes with a liveness status other than decommissioned or
+			// decommissioning are considered active members (see
+			// liveness.MembershipStatus).
+			if status != livenesspb.NodeLivenessStatus_DECOMMISSIONED && status != livenesspb.NodeLivenessStatus_DECOMMISSIONING {
 				count++
 			}
 		}
@@ -1393,7 +1355,7 @@ func (s *state) Scan(
 // state of ranges.
 func (s *state) Report() roachpb.SpanConfigConformanceReport {
 	reporter := spanconfigreporter.New(
-		s.statusTracker, s, s, s,
+		s.nodeLiveness, s, s, s,
 		s.settings.ST, &spanconfig.TestingKnobs{})
 	report, err := reporter.SpanConfigConformance(context.Background(), []roachpb.Span{{}})
 	if err != nil {
@@ -1439,8 +1401,6 @@ func (s *state) SetClusterSetting(Key string, Value interface{}) {
 	switch Key {
 	case "LBRebalancingMode":
 		kvserverbase.LoadBasedRebalancingMode.Override(context.Background(), &s.settings.ST.SV, kvserverbase.LBRebalancingMode(Value.(int64)))
-	case "LBRebalancingObjective":
-		kvserver.LoadBasedRebalancingObjective.Override(context.Background(), &s.settings.ST.SV, kvserver.LBRebalancingObjective(Value.(int64)))
 	default:
 		panic("other cluster settings not supported")
 	}

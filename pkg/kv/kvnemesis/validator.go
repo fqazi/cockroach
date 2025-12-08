@@ -489,13 +489,11 @@ func (v *validator) processOp(op Operation) {
 			break
 		}
 		readObservation := &observedRead{Key: t.Key}
-		var shouldObserveRead bool
 		writeObservation := &observedWrite{
 			Key:   t.Key,
 			Seq:   t.Seq,
 			Value: roachpb.MakeValueFromString(t.Value()),
 		}
-		var shouldObserveWrite bool
 		// Consider two cases based on whether the CPut hit a ConditionFailedError.
 		err := errorFromResult(t.Result)
 		if e := (*kvpb.ConditionFailedError)(nil); errors.As(err, &e) {
@@ -506,7 +504,7 @@ func (v *validator) processOp(op Operation) {
 				observedVal.RawBytes = e.ActualValue.RawBytes
 			}
 			readObservation.Value = observedVal
-			shouldObserveRead = true
+			v.curObservations = append(v.curObservations, readObservation)
 		} else {
 			// If the CPut succeeded, the expected value is observed, and the CPut's
 			// write is also observed.
@@ -519,21 +517,11 @@ func (v *validator) processOp(op Operation) {
 					observedVal = roachpb.MakeValueFromBytes(t.ExpVal)
 				}
 				readObservation.Value = observedVal
-				shouldObserveRead = true
+				v.curObservations = append(v.curObservations, readObservation)
 			}
 			if sv, ok := v.tryConsumeWrite(t.Key, t.Seq); ok {
 				writeObservation.Timestamp = sv.Timestamp
 			}
-			shouldObserveWrite = true
-		}
-		// The read observation should be added before the write observation, since
-		// that's the order in which the CPut executed. Moreover, the CPut read is
-		// always non-locking, so if the observation filter is observeLocking, we
-		// won't be adding it.
-		if shouldObserveRead && v.observationFilter != observeLocking {
-			v.curObservations = append(v.curObservations, readObservation)
-		}
-		if shouldObserveWrite {
 			v.curObservations = append(v.curObservations, writeObservation)
 		}
 		if v.buffering == bufferingSingle {
@@ -588,9 +576,6 @@ func (v *validator) processOp(op Operation) {
 			deleteOps[i] = write
 		}
 		v.curObservations = append(v.curObservations, deleteOps...)
-		// Adding the scan to the current observations should follow the same
-		// conditions as a regular scan: add it ony if there are no errors.
-		_, isErr := v.checkError(op, t.Result)
 		// The span ought to be empty right after the DeleteRange.
 		//
 		// However, we do not add this observation if the observation filter is
@@ -598,7 +583,7 @@ func (v *validator) processOp(op Operation) {
 		// that for isolation levels that permit write skew, the DeleteRange does
 		// not prevent new keys from being inserted in the deletion span between the
 		// transaction's read and write timestamps.
-		if v.observationFilter != observeLocking && !isErr {
+		if v.observationFilter != observeLocking {
 			endKey := t.EndKey
 			if t.Result.ResumeSpan != nil {
 				endKey = t.Result.ResumeSpan.Key
@@ -680,15 +665,12 @@ func (v *validator) processOp(op Operation) {
 			v.curObservations = append(v.curObservations, write)
 		}
 
-		// Adding the scan to the current observations should follow the same
-		// conditions as a regular scan: add it ony if there are no errors.
-		_, isErr := v.checkError(op, t.Result)
 		// The span ought to be empty right after the DeleteRange, even if parts of
 		// the DeleteRange that didn't materialize due to a shadowing operation.
 		//
 		// See above for why we do not add this observation if the observation
 		// filter is observeLocking.
-		if v.observationFilter != observeLocking && !isErr {
+		if v.observationFilter != observeLocking {
 			v.curObservations = append(v.curObservations, &observedScan{
 				Span: roachpb.Span{
 					Key:    t.Key,
@@ -1014,16 +996,6 @@ func (v *validator) processOp(op Operation) {
 	case *MutateBatchHeaderOperation:
 		execTimestampStrictlyOptional = true
 		v.checkError(op, t.Result)
-	case *AddNetworkPartitionOperation, *RemoveNetworkPartitionOperation:
-		execTimestampStrictlyOptional = true
-		// Ignore any errors due to the generator trying to add/remove a partition
-		// that doesn't exist or from a node to itself.
-	case *StopNodeOperation:
-		execTimestampStrictlyOptional = true
-		v.checkError(op, t.Result)
-	case *RestartNodeOperation:
-		execTimestampStrictlyOptional = true
-		v.checkError(op, t.Result)
 	default:
 		panic(errors.AssertionFailedf(`unknown operation type: %T %v`, t, t))
 	}
@@ -1051,14 +1023,14 @@ func (v *validator) checkAtomic(atomicType string, result Result) {
 		// of writing, checkAtomicCommitted doesn't capitalize on this unconditional
 		// presence yet, and most unit tests don't specify it for reads.
 		if !result.OptionalTimestamp.IsSet() {
-			err := errors.AssertionFailedf("operation has no execution timestamp: %v", result)
+			err := errors.AssertionFailedf("operation has no execution timestamp: %s", result)
 			v.failures = append(v.failures, err)
 		}
 		v.checkAtomicCommitted(`committed `+atomicType, observations, result.OptionalTimestamp)
 	} else if resultIsAmbiguous(result) {
 		// An ambiguous result shouldn't have an execution timestamp.
 		if result.OptionalTimestamp.IsSet() {
-			err := errors.AssertionFailedf("OptionalTimestamp set for ambiguous result: %v", result)
+			err := errors.AssertionFailedf("OptionalTimestamp set for ambiguous result: %s", result)
 			v.failures = append(v.failures, err)
 		}
 		v.checkAtomicAmbiguous(`ambiguous `+atomicType, observations)

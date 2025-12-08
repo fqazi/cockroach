@@ -250,11 +250,8 @@ const (
 	// In its current state it is no longer functional.
 	// See: https://github.com/cockroachdb/cockroach/issues/137329 for details.
 	PostValidationNoDeadNodes
-	// PostValidationInspect runs INSPECT DATABASE on user databases to verify
-	// consistency.
-	PostValidationInspect
 	// PostValidationAll is a bitwise OR of all post-validations to skip.
-	PostValidationAll = PostValidationReplicaDivergence | PostValidationInvalidDescriptors | PostValidationNoDeadNodes | PostValidationInspect
+	PostValidationAll = PostValidationReplicaDivergence | PostValidationInvalidDescriptors | PostValidationNoDeadNodes
 )
 
 // PromSub replaces all non prometheus friendly chars with "_". Note,
@@ -459,13 +456,12 @@ const (
 	Acceptance            = "acceptance"
 	Perturbation          = "perturbation"
 	MixedVersion          = "mixedversion"
-	VecIndex              = "vecindex"
 )
 
 var allSuites = []string{
 	Nightly, Weekly, ReleaseQualification, ORM, Driver, Tool, Quick, Fixtures,
 	Pebble, PebbleNightlyWrite, PebbleNightlyYCSB, PebbleNightlyYCSBRace, Roachtest, Acceptance,
-	Perturbation, MixedVersion, VecIndex,
+	Perturbation, MixedVersion,
 }
 
 // SuiteSet represents a set of suites.

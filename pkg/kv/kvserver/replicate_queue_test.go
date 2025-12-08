@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -177,7 +176,6 @@ func TestReplicateQueueRebalance(t *testing.T) {
 // rebalances the replicas and leases.
 func TestReplicateQueueRebalanceMultiStore(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	skip.WithIssue(t, 156293)
 	skip.UnderDuress(t) // eight stores is too much under duress
 	scope := log.Scope(t)
 	defer scope.Close(t)
@@ -223,10 +221,8 @@ func TestReplicateQueueRebalanceMultiStore(t *testing.T) {
 		})
 	}
 	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			// TODO(pav-kv): remove this when we know why the test is too slow in CI.
-			t.Logf("GOMAXPROCS: %d", runtime.GOMAXPROCS(0))
 
+		t.Run(testCase.name, func(t *testing.T) {
 			if testCase.storesPerNode > 1 {
 				// 8 stores with active rebalancing can lead to failed heartbeats due
 				// to overload. Skip under stress when running the multi-store variant.
@@ -882,8 +878,8 @@ func TestReplicateQueueDecommissioningNonVoters(t *testing.T) {
 func TestReplicateQueueTracingOnError(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	s := log.ScopeWithoutShowLogs(t)
+	_ = log.SetVModule("replicate_queue=2")
 	defer s.Close(t)
-	testutils.SetVModule(t, "replicate_queue=2")
 
 	// NB: This test injects a fake failure during replica rebalancing, and we use
 	// this `rejectSnapshots` variable as a flag to activate or deactivate that
@@ -2665,7 +2661,7 @@ func TestPriorityInversionRequeue(t *testing.T) {
 
 	var scratchRangeID int64
 	atomic.StoreInt64(&scratchRangeID, -1)
-	testutils.SetVModule(t, "queue=5,replicate_queue=5,replica_command=5,replicate=5,replica=5")
+	require.NoError(t, log.SetVModule("queue=5,replicate_queue=5,replica_command=5,replicate=5,replica=5"))
 
 	const newLeaseholderStoreAndNodeID = 4
 	var waitUntilLeavingJoint = func() {}

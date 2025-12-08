@@ -251,12 +251,12 @@ txn_id  txn_fingerprint_id  query  implicit_txn  session_id  start_time  end_tim
 query ITTI
 SELECT range_id, start_pretty, end_pretty, lease_holder FROM crdb_internal.ranges
 ----
-80  /Tenant/10  /Tenant/11  1
+79  /Tenant/10  /Tenant/11  1
 
 query ITT
 SELECT range_id, start_pretty, end_pretty FROM crdb_internal.ranges_no_leases
 ----
-80  /Tenant/10  /Tenant/11
+79  /Tenant/10  /Tenant/11
 
 query IT
 SELECT zone_id, target FROM crdb_internal.zones ORDER BY 1
@@ -304,7 +304,7 @@ select crdb_internal.get_vmodule()
 query T
 SELECT crdb_internal.release_series(crdb_internal.node_executable_version())
 ----
-26.1
+25.4
 
 query ITTT colnames,rowsort
 select node_id, component, field, regexp_replace(regexp_replace(value, '^\d+$', '<port>'), e':\\d+', ':<port>') as value from crdb_internal.node_runtime_info
@@ -392,7 +392,7 @@ select * from crdb_internal.gossip_alerts
 query T
 SELECT crdb_internal.release_series(crdb_internal.node_executable_version())
 ----
-26.1
+25.4
 
 user root
 

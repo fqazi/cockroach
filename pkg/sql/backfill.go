@@ -1044,10 +1044,6 @@ func (sc *SchemaChanger) distIndexBackfill(
 		indexBatchSize := indexBackfillBatchSize.Get(&sc.execCfg.Settings.SV)
 		chunkSize := sc.getChunkSize(indexBatchSize)
 		spec := initIndexBackfillerSpec(*tableDesc.TableDesc(), writeAsOf, writeAtRequestTimestamp, chunkSize, addedIndexes, 0)
-		if details, ok := sc.job.Details().(jobspb.SchemaChangeDetails); ok &&
-			details.DistributedMergeMode == jobspb.IndexBackfillDistributedMergeMode_Enabled {
-			backfill.EnableDistributedMergeIndexBackfillSink(sc.execCfg.NodeInfo.NodeID.SQLInstanceID(), &spec)
-		}
 		p, err = sc.distSQLPlanner.createBackfillerPhysicalPlan(ctx, planCtx, spec, todoSpans)
 		return err
 	}); err != nil {

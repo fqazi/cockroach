@@ -73,15 +73,11 @@ func TestRandStep(t *testing.T) {
 	config := newAllOperationsConfig()
 	config.NumNodes, config.NumReplicas = 3, 2
 	rng, _ := randutil.NewTestRand()
-	getReplicasFn := func(ctx context.Context, _ roachpb.Key) ([]roachpb.ReplicationTarget, []roachpb.ReplicationTarget) {
+	getReplicasFn := func(_ roachpb.Key) ([]roachpb.ReplicationTarget, []roachpb.ReplicationTarget) {
 		return make([]roachpb.ReplicationTarget, rng.Intn(config.NumNodes)+1),
 			make([]roachpb.ReplicationTarget, rng.Intn(config.NumNodes)+1)
 	}
-	n := nodes{
-		running: map[int]struct{}{1: {}, 2: {}, 3: {}},
-		stopped: make(map[int]struct{}),
-	}
-	g, err := MakeGenerator(config, getReplicasFn, 0, &n)
+	g, err := MakeGenerator(config, getReplicasFn)
 	require.NoError(t, err)
 
 	keys := make(map[string]struct{})
@@ -138,8 +134,6 @@ func TestRandStep(t *testing.T) {
 						} else {
 							client.GetExistingForShare++
 						}
-					} else if o.FollowerReadEligible {
-						client.GetExistingFollowerRead++
 					} else {
 						client.GetExisting++
 					}
@@ -170,8 +164,6 @@ func TestRandStep(t *testing.T) {
 						} else {
 							client.GetMissingForShare++
 						}
-					} else if o.FollowerReadEligible {
-						client.GetMissingFollowerRead++
 					} else {
 						client.GetMissing++
 					}
@@ -230,8 +222,6 @@ func TestRandStep(t *testing.T) {
 						} else {
 							client.ReverseScanForShare++
 						}
-					} else if o.FollowerReadEligible {
-						client.ReverseScanFollowerRead++
 					} else {
 						client.ReverseScan++
 					}
@@ -263,8 +253,6 @@ func TestRandStep(t *testing.T) {
 						} else {
 							client.ScanForShare++
 						}
-					} else if o.FollowerReadEligible {
-						client.ScanFollowerRead++
 					} else {
 						client.Scan++
 					}
@@ -430,20 +418,6 @@ func TestRandStep(t *testing.T) {
 			case ChangeZoneType_ToggleGlobalReads:
 				counts.ChangeZone.ToggleGlobalReads++
 			}
-		case *AddNetworkPartitionOperation:
-			counts.Fault.AddNetworkPartition++
-		case *RemoveNetworkPartitionOperation:
-			counts.Fault.RemoveNetworkPartition++
-		case *StopNodeOperation:
-			counts.Fault.StopNode++
-			n.mu.Lock()
-			n.stopped[int(o.NodeId)] = struct{}{}
-			n.mu.Unlock()
-		case *RestartNodeOperation:
-			counts.Fault.RestartNode++
-			n.mu.Lock()
-			n.running[int(o.NodeId)] = struct{}{}
-			n.mu.Unlock()
 		default:
 			t.Fatalf("%T", o)
 		}

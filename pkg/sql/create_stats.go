@@ -91,12 +91,6 @@ var errorOnConcurrentCreateStats = settings.RegisterBoolSetting(
 	false,
 	settings.WithPublic)
 
-var automaticStatsJobAutoCleanup = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"sql.stats.automatic_stats_job_auto_cleanup.enabled",
-	"set to true to enable automatic cleanup of completed AUTO CREATE STATISTICS jobs",
-	true)
-
 const nonIndexColHistogramBuckets = 2
 
 // createStatsNode is a planNode implemented in terms of a function. The
@@ -209,12 +203,6 @@ func (n *createStatsNode) runJob(ctx context.Context) error {
 				return nil
 			}
 		}
-	} else if automaticStatsJobAutoCleanup.Get(n.p.ExecCfg().SV()) {
-		if name := job.Details().(jobspb.CreateStatsDetails).Name; name == jobspb.AutoStatsName || name == jobspb.AutoPartialStatsName {
-			if err := n.p.ExecCfg().JobRegistry.DeleteTerminalJobByID(ctx, job.ID()); err != nil {
-				log.Dev.Warningf(ctx, "failed to auto-delete terminal automatic stats job: %v", err)
-			}
-		}
 	}
 	return err
 }
@@ -294,7 +282,7 @@ func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, erro
 		virtColEnabled := statsOnVirtualCols.Get(n.p.ExecCfg().SV())
 		// Disable multi-column stats and deleting stats if partial statistics at
 		// the extremes are requested.
-		// TODO(#94076): add support for creating multi-column stats.
+		// TODO(faizaanmadhani): Add support for multi-column stats.
 		var multiColEnabled bool
 		if !n.Options.UsingExtremes {
 			multiColEnabled = stats.MultiColumnStatisticsClusterMode.Get(n.p.ExecCfg().SV())

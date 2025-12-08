@@ -70,21 +70,17 @@ const (
 	// ExplainGist generates a plan "gist".
 	ExplainGist
 
-	// ExplainFingerprint returns the statement fingerprint.
-	ExplainFingerprint
-
 	numExplainModes = iota
 )
 
 var explainModeStrings = [...]string{
-	ExplainPlan:        "PLAN",
-	ExplainDistSQL:     "DISTSQL",
-	ExplainOpt:         "OPT",
-	ExplainVec:         "VEC",
-	ExplainDebug:       "DEBUG",
-	ExplainDDL:         "DDL",
-	ExplainGist:        "GIST",
-	ExplainFingerprint: "FINGERPRINT",
+	ExplainPlan:    "PLAN",
+	ExplainDistSQL: "DISTSQL",
+	ExplainOpt:     "OPT",
+	ExplainVec:     "VEC",
+	ExplainDebug:   "DEBUG",
+	ExplainDDL:     "DDL",
+	ExplainGist:    "GIST",
 }
 
 var explainModeStringMap = func() map[string]ExplainMode {
@@ -306,15 +302,6 @@ func MakeExplain(options []string, stmt Statement) (Statement, error) {
 			ExplainOptions: opts,
 			Statement:      stmt,
 		}, nil
-	}
-
-	if opts.Mode == ExplainFingerprint {
-		// FINGERPRINT mode doesn't support any flags
-		for f := ExplainFlag(1); f <= numExplainFlags; f++ {
-			if opts.Flags[f] {
-				return nil, pgerror.Newf(pgcode.Syntax, "EXPLAIN (FINGERPRINT) cannot be used with %s", f)
-			}
-		}
 	}
 
 	if opts.Mode == ExplainDebug {

@@ -73,7 +73,6 @@ var supportedStatements = map[reflect.Type]supportedStatement{
 	reflect.TypeOf((*tree.SetZoneConfig)(nil)):       {fn: SetZoneConfig, statementTags: []string{tree.ConfigureZoneTag}, on: true, checks: isV251Active},
 	reflect.TypeOf((*tree.Truncate)(nil)):            {fn: Truncate, statementTags: []string{tree.TruncateTag}, on: true, checks: isV254Active},
 	reflect.TypeOf((*tree.RenameTable)(nil)):         {fn: RenameTable, statementTags: []string{tree.AlterTableTag}, on: true, checks: isV254Active},
-	reflect.TypeOf((*tree.AlterTableSetSchema)(nil)): {fn: AlterTableSetSchema, statementTags: []string{tree.AlterTableTag}, on: true, checks: isV261Active},
 }
 
 // supportedStatementTags tracks statement tags which are implemented
@@ -227,8 +226,4 @@ var isV253Active = func(_ tree.NodeFormatter, _ sessiondatapb.NewSchemaChangerMo
 
 var isV254Active = func(_ tree.NodeFormatter, _ sessiondatapb.NewSchemaChangerMode, activeVersion clusterversion.ClusterVersion) bool {
 	return activeVersion.IsActive(clusterversion.V25_4)
-}
-
-var isV261Active = func(_ tree.NodeFormatter, _ sessiondatapb.NewSchemaChangerMode, activeVersion clusterversion.ClusterVersion) bool {
-	return activeVersion.IsActive(clusterversion.V26_1)
 }

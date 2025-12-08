@@ -88,10 +88,6 @@ const (
 	// contributes meaningfully to the average, while earlier measurements have
 	// diminishing impact.
 	DefaultCPUUsageMovingAverageAge = 20
-
-	// DefaultHighCardinalityMetricsSampleInterval is the default interval for
-	// sampling low-frequency high-cardinality metrics.
-	DefaultHighCardinalityMetricsSampleInterval = time.Minute
 )
 
 // DefaultCertsDirectory is the default value for the cert directory flag.
@@ -474,9 +470,6 @@ type Config struct {
 
 	// RPCHearbeatTimeout is the timeout for Ping requests.
 	RPCHeartbeatTimeout time.Duration
-
-	// UseDRPC indicates whether to use DRPC as the RPC framework instead of gRPC.
-	UseDRPC bool
 
 	// ApplicationInternalRPCPortMin/PortMax define the range of TCP ports
 	// used to start the internal RPC service for application-level

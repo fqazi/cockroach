@@ -59,11 +59,11 @@ func NewServer(
 	mux.Handle("/inspectz/v2/kvflowcontroller", server.makeKVFlowControllerHandler(server.KVFlowControllerV2))
 	mux.Handle(
 		"/inspectz/storeliveness/supportFrom",
-		server.makeStoreLivenessSupportFromHandler(server.StoreLivenessSupportFrom),
+		server.makeStoreLivenessHandler(server.StoreLivenessSupportFrom),
 	)
 	mux.Handle(
 		"/inspectz/storeliveness/supportFor",
-		server.makeStoreLivenessSupportForHandler(server.StoreLivenessSupportFor),
+		server.makeStoreLivenessHandler(server.StoreLivenessSupportFor),
 	)
 
 	return server
@@ -112,27 +112,9 @@ func (s *Server) makeKVFlowControllerHandler(
 	}
 }
 
-func (s *Server) makeStoreLivenessSupportFromHandler(
+func (s *Server) makeStoreLivenessHandler(
 	impl func(ctx context.Context, request *slpb.InspectStoreLivenessRequest) (
-		*slpb.InspectSupportFromResponse, error,
-	),
-) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := s.AnnotateCtx(context.Background())
-		req := &slpb.InspectStoreLivenessRequest{}
-		resp, err := impl(ctx, req)
-		if err != nil {
-			log.Dev.ErrorfDepth(ctx, 1, "%s", err)
-			http.Error(w, "internal error: check logs for details", http.StatusInternalServerError)
-			return
-		}
-		respond(ctx, w, http.StatusOK, resp)
-	}
-}
-
-func (s *Server) makeStoreLivenessSupportForHandler(
-	impl func(ctx context.Context, request *slpb.InspectStoreLivenessRequest) (
-		*slpb.InspectSupportForResponse, error,
+		*slpb.InspectStoreLivenessResponse, error,
 	),
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -165,20 +147,20 @@ func (s *Server) KVFlowHandlesV2(
 // StoreLivenessSupportFrom implements the InspectzServer interface.
 func (s *Server) StoreLivenessSupportFrom(
 	_ context.Context, _ *slpb.InspectStoreLivenessRequest,
-) (*slpb.InspectSupportFromResponse, error) {
-	resp := &slpb.InspectSupportFromResponse{}
+) (*slpb.InspectStoreLivenessResponse, error) {
+	resp := &slpb.InspectStoreLivenessResponse{}
 	support, err := s.storeLiveness.InspectAllSupportFrom()
-	resp.SupportFromStatesPerStore = support
+	resp.SupportStatesPerStore = support
 	return resp, err
 }
 
 // StoreLivenessSupportFor implements the InspectzServer interface.
 func (s *Server) StoreLivenessSupportFor(
 	_ context.Context, _ *slpb.InspectStoreLivenessRequest,
-) (*slpb.InspectSupportForResponse, error) {
-	resp := &slpb.InspectSupportForResponse{}
+) (*slpb.InspectStoreLivenessResponse, error) {
+	resp := &slpb.InspectStoreLivenessResponse{}
 	support, err := s.storeLiveness.InspectAllSupportFor()
-	resp.SupportForStatesPerStore = support
+	resp.SupportStatesPerStore = support
 	return resp, err
 }
 

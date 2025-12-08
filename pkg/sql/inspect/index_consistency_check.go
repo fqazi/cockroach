@@ -10,37 +10,25 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/lexbase"
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
+	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/spanutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
-)
-
-var indexConsistencyHashEnabled = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"sql.inspect.index_consistency_hash.enabled",
-	"if false, the index consistency check skips the hash precheck and always runs the full join",
-	true,
 )
 
 // indexConsistencyCheckApplicability is a lightweight version that only implements applicability logic.
@@ -57,21 +45,6 @@ func (c *indexConsistencyCheckApplicability) AppliesTo(
 	return spanContainsTable(c.tableID, codec, span)
 }
 
-// checkState represents the state of an index consistency check.
-type checkState int
-
-const (
-	// checkNotStarted indicates Start() has not been called yet.
-	checkNotStarted checkState = iota
-	// checkHashMatched indicates the hash precheck passed - no corruption detected,
-	// so the full check can be skipped.
-	checkHashMatched
-	// checkRunning indicates the full check is actively running and may produce more results.
-	checkRunning
-	// checkDone indicates the check has finished (iterator exhausted or error occurred).
-	checkDone
-)
-
 // indexConsistencyCheck verifies consistency between a table's primary index
 // and a specified secondary index by streaming rows from both sides of a
 // query. It reports an issue if a key exists in the primary but not the
@@ -81,16 +54,13 @@ type indexConsistencyCheck struct {
 
 	flowCtx *execinfra.FlowCtx
 	indexID descpb.IndexID
-	// tableVersion is the descriptor version recorded when the check was planned.
-	// It is used to detect concurrent schema changes for non-AS OF inspections.
-	tableVersion descpb.DescriptorVersion
-	asOf         hlc.Timestamp
+	asOf    hlc.Timestamp
 
-	tableDesc catalog.TableDescriptor
-	secIndex  catalog.Index
-	priIndex  catalog.Index
-	rowIter   isql.Rows
-	state     checkState
+	tableDesc     catalog.TableDescriptor
+	secIndex      catalog.Index
+	priIndex      catalog.Index
+	rowIter       isql.Rows
+	exhaustedIter bool
 
 	// columns is a list of the columns returned by one side of the
 	// queries join. The actual resulting rows from the RowContainer is
@@ -100,9 +70,6 @@ type indexConsistencyCheck struct {
 	// lastQuery stores the SQL query executed for this check to help
 	// debug internal errors by providing context about the span bounds.
 	lastQuery string
-
-	// lastQueryPlaceholders stores the placeholder values used in lastQuery.
-	lastQueryPlaceholders []interface{}
 }
 
 var _ inspectCheck = (*indexConsistencyCheck)(nil)
@@ -110,7 +77,7 @@ var _ inspectCheckApplicability = (*indexConsistencyCheck)(nil)
 
 // Started implements the inspectCheck interface.
 func (c *indexConsistencyCheck) Started() bool {
-	return c.state != checkNotStarted
+	return c.rowIter != nil
 }
 
 // Start implements the inspectCheck interface.
@@ -140,8 +107,6 @@ func (c *indexConsistencyCheck) Start(
 		colToIdx.Set(colID, -1)
 	}
 
-	joinColumns := append([]catalog.Column(nil), pkColumns...)
-
 	// Collect all of the columns we are fetching from the index. This
 	// includes the columns involved in the index: columns, extra columns,
 	// and store columns.
@@ -156,11 +121,6 @@ func (c *indexConsistencyCheck) Start(
 		}
 		col := c.tableDesc.PublicColumns()[pos]
 		otherColumns = append(otherColumns, col)
-		if !tree.EqCmpAllowedForEquivalentTypes(col.GetType(), col.GetType()) {
-			// We cannot use types in join predicates that don't allow for equality comparisons.
-			return
-		}
-		joinColumns = append(joinColumns, col)
 	})
 
 	c.columns = append(pkColumns, otherColumns...)
@@ -172,10 +132,6 @@ func (c *indexConsistencyCheck) Start(
 		}
 		return res
 	}
-
-	pkColNames := colNames(pkColumns)
-	otherColNames := colNames(otherColumns)
-	allColNames := colNames(c.columns)
 
 	// Generate query bounds from the span to limit the query to the specified range
 	var predicate string
@@ -204,101 +160,65 @@ func (c *indexConsistencyCheck) Start(
 	alloc := &tree.DatumAlloc{}
 	bounds, hasRows, err := spanutils.SpanToQueryBounds(
 		ctx, cfg.DB.KV(), cfg.Codec, pkColIDs, pkColTypes, pkColDirs,
-		len(c.tableDesc.GetFamilies()), span, alloc, c.asOf,
+		len(c.tableDesc.GetFamilies()), span, alloc,
 	)
 	if err != nil {
 		return errors.Wrap(err, "converting span to query bounds")
 	}
 
-	// If no rows exist in the primary index span, we still need to check for dangling
-	// secondary index entries. We run the check with an empty predicate, which will
-	// scan the entire secondary index within the span. Any secondary index entries found
-	// will be dangling since there are no corresponding primary index rows.
+	// Nothing to do if no rows exist in the span.
 	if !hasRows {
-		// Use empty predicate and no query arguments
-		predicate = ""
-		queryArgs = []interface{}{}
-	} else {
-		if len(bounds.Start) == 0 || len(bounds.End) == 0 {
-			return errors.AssertionFailedf("query bounds from span didn't produce start or end: %+v", bounds)
-		}
-
-		// Generate SQL predicate from the bounds
-		// Encode column names for SQL usage
-		encodedPkColNames := make([]string, len(pkColNames))
-		for i, colName := range pkColNames {
-			encodedPkColNames[i] = encodeColumnName(colName)
-		}
-		predicate, err = spanutils.RenderQueryBounds(
-			encodedPkColNames, pkColDirs, pkColTypes,
-			len(bounds.Start), len(bounds.End), true, 1,
-		)
-		if err != nil {
-			return errors.Wrap(err, "rendering query bounds")
-		}
-
-		if strings.TrimSpace(predicate) == "" {
-			return errors.AssertionFailedf("query bounds from span didn't produce predicate: %+v", bounds)
-		}
-
-		// Prepare query arguments: end bounds first, then start bounds
-		queryArgs = make([]interface{}, 0, len(bounds.End)+len(bounds.Start))
-		for _, datum := range bounds.End {
-			queryArgs = append(queryArgs, datum)
-		}
-		for _, datum := range bounds.Start {
-			queryArgs = append(queryArgs, datum)
-		}
+		return nil
 	}
 
-	if indexConsistencyHashEnabled.Get(&c.flowCtx.Cfg.Settings.SV) && len(allColNames) > 0 {
-		// The hash precheck uses crdb_internal.datums_to_bytes, which depends on
-		// keyside.Encode. Skip if any column type isn’t encodable (i.e. TSQUERY, etc.).
-		if !allColumnsDatumsToBytesCompatible(c.columns) {
-			log.Dev.Infof(ctx, "skipping hash precheck for index %s: column type not compatible with datums_to_bytes",
-				c.secIndex.GetName())
-		} else {
-			match, hashErr := c.hashesMatch(ctx, allColNames, predicate, queryArgs)
-			if hashErr != nil {
-				if isQueryConstructionError(hashErr) {
-					// If hashing fails and the error stems from query construction,
-					// that's an internal bug and shouldn't be ignored.
-					return errors.WithAssertionFailure(hashErr)
-				}
-				// For all other hash errors, log and fall back.
-				log.Dev.Infof(ctx, "hash precheck failed; falling back to full check: %v", hashErr)
-			}
-			if match {
-				// Hashes match, no corruption detected - skip the full check.
-				c.state = checkHashMatched
-				return nil
-			}
-			// Hashes don't match - corruption detected. Fall back to full check.
-			log.Dev.Infof(ctx, "hash precheck detected mismatch for index %s; proceeding with full check",
-				c.secIndex.GetName())
-		}
+	if len(bounds.Start) == 0 || len(bounds.End) == 0 {
+		return errors.AssertionFailedf("query bounds from span didn't produce start or end: %+v", bounds)
 	}
 
-	joinColNames := colNames(joinColumns)
+	// Generate SQL predicate from the bounds
+	pkColNames := colNames(pkColumns)
+	// Encode column names for SQL usage
+	encodedPkColNames := make([]string, len(pkColNames))
+	for i, colName := range pkColNames {
+		encodedPkColNames[i] = encodeColumnName(colName)
+	}
+	predicate, err = spanutils.RenderQueryBounds(
+		encodedPkColNames, pkColDirs, pkColTypes,
+		len(bounds.Start), len(bounds.End), true, 1,
+	)
+	if err != nil {
+		return errors.Wrap(err, "rendering query bounds")
+	}
+
+	if strings.TrimSpace(predicate) == "" {
+		return errors.AssertionFailedf("query bounds from span didn't produce predicate: %+v", bounds)
+	}
+
+	// Prepare query arguments: end bounds first, then start bounds
+	queryArgs = make([]interface{}, 0, len(bounds.End)+len(bounds.Start))
+	for _, datum := range bounds.End {
+		queryArgs = append(queryArgs, datum)
+	}
+	for _, datum := range bounds.Start {
+		queryArgs = append(queryArgs, datum)
+	}
+
 	checkQuery := c.createIndexCheckQuery(
-		pkColNames, otherColNames, joinColNames,
-		c.tableDesc.GetID(), c.secIndex, c.priIndex.GetID(), predicate,
+		colNames(pkColumns), colNames(otherColumns), c.tableDesc.GetID(), c.secIndex, c.priIndex.GetID(), predicate,
 	)
 
 	// Wrap the query with AS OF SYSTEM TIME to ensure it uses the specified timestamp
 	queryWithAsOf := fmt.Sprintf("SELECT * FROM (%s) AS OF SYSTEM TIME %s", checkQuery, c.asOf.AsOfSystemTime())
 
-	// Store the query and placeholders for error reporting.
+	// Store the query for error reporting
 	c.lastQuery = queryWithAsOf
-	c.lastQueryPlaceholders = queryArgs
 
 	// Execute the query with AS OF SYSTEM TIME embedded in the SQL
-	qos := getInspectQoS(&c.flowCtx.Cfg.Settings.SV)
 	it, err := c.flowCtx.Cfg.DB.Executor().QueryIteratorEx(
 		ctx, "inspect-index-consistency-check", nil, /* txn */
 		sessiondata.InternalExecutorOverride{
 			User:             username.NodeUserName(),
-			QualityOfService: &qos,
+			QualityOfService: &sessiondatapb.BulkLowQoS,
 		},
 		queryWithAsOf,
 		queryArgs...,
@@ -312,7 +232,6 @@ func (c *indexConsistencyCheck) Start(
 	// do that here because the results of the iterator are used in the Next()
 	// function.
 	c.rowIter = it
-	c.state = checkRunning
 	return nil
 }
 
@@ -320,11 +239,6 @@ func (c *indexConsistencyCheck) Start(
 func (c *indexConsistencyCheck) Next(
 	ctx context.Context, cfg *execinfra.ServerConfig,
 ) (*inspectIssue, error) {
-	// If hashes matched, there's no corruption to report.
-	if c.state == checkHashMatched {
-		return nil, nil
-	}
-
 	if c.rowIter == nil {
 		return nil, errors.AssertionFailedf("nil rowIter unexpected")
 	}
@@ -334,7 +248,7 @@ func (c *indexConsistencyCheck) Next(
 		// Close the iterator to prevent further usage. The close may emit the
 		// internal error too, but we only need to capture it once.
 		_ = c.Close(ctx)
-		c.state = checkDone
+		c.exhaustedIter = true
 
 		// Convert internal errors to inspect issues rather than failing the entire job.
 		// This allows us to capture and log data corruption or encoding errors as
@@ -344,7 +258,6 @@ func (c *indexConsistencyCheck) Next(
 		details["error_type"] = "internal_query_error"
 		details["index_name"] = c.secIndex.GetName()
 		details["query"] = c.lastQuery // Store the query that caused the error
-		details["query_placeholders"] = formatPlaceholders(c.lastQueryPlaceholders)
 
 		return &inspectIssue{
 			ErrorType:  InternalError,
@@ -356,7 +269,7 @@ func (c *indexConsistencyCheck) Next(
 		}, nil
 	}
 	if !ok {
-		c.state = checkDone
+		c.exhaustedIter = true
 		return nil, nil
 	}
 
@@ -409,7 +322,6 @@ func (c *indexConsistencyCheck) Next(
 	details := make(map[redact.RedactableString]interface{})
 	details["row_data"] = extractRowData(c.rowIter.Cur(), c.columns, dataStartIdx)
 	details["index_name"] = c.secIndex.GetName()
-	details["query_placeholders"] = formatPlaceholders(c.lastQueryPlaceholders)
 
 	return &inspectIssue{
 		ErrorType:  errorType,
@@ -424,8 +336,12 @@ func (c *indexConsistencyCheck) Next(
 
 // Done implements the inspectCheck interface.
 func (c *indexConsistencyCheck) Done(context.Context) bool {
-	done := c.state == checkHashMatched || c.state == checkDone
-	return done
+	// If we never started (rowIter is nil), we're done
+	if c.rowIter == nil {
+		return true
+	}
+	// Otherwise, we're done when the iterator is exhausted
+	return c.exhaustedIter
 }
 
 // Close implements the inspectCheck interface.
@@ -447,32 +363,10 @@ func (c *indexConsistencyCheck) Close(context.Context) error {
 // descriptor and index metadata in the indexConsistencyCheck struct.
 func (c *indexConsistencyCheck) loadCatalogInfo(ctx context.Context) error {
 	return c.flowCtx.Cfg.DB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
-		if !c.asOf.IsEmpty() {
-			if err := txn.KV().SetFixedTimestamp(ctx, c.asOf); err != nil {
-				return err
-			}
-		}
-
-		byIDGetter := txn.Descriptors().ByIDWithLeased(txn.KV())
-		if !c.asOf.IsEmpty() {
-			byIDGetter = txn.Descriptors().ByIDWithoutLeased(txn.KV())
-		}
-
 		var err error
-		c.tableDesc, err = byIDGetter.WithoutNonPublic().Get().Table(ctx, c.tableID)
+		c.tableDesc, err = txn.Descriptors().ByIDWithLeased(txn.KV()).WithoutNonPublic().Get().Table(ctx, c.tableID)
 		if err != nil {
 			return err
-		}
-		if c.tableVersion != 0 && c.tableDesc.GetVersion() != c.tableVersion {
-			return errors.WithHintf(
-				errors.Newf(
-					"table %s [%d] has had a schema change since the job has started at %s",
-					c.tableDesc.GetName(),
-					c.tableDesc.GetID(),
-					c.tableDesc.GetModificationTime().GoTime().Format(time.RFC3339),
-				),
-				"use AS OF SYSTEM TIME to avoid schema changes during inspection",
-			)
 		}
 
 		c.priIndex = c.tableDesc.GetPrimaryIndex()
@@ -557,7 +451,7 @@ func (c *indexConsistencyCheck) loadCatalogInfo(ctx context.Context) error {
 //     - Rows in primary index missing from secondary index
 //     - Rows in secondary index missing from primary index
 func (c *indexConsistencyCheck) createIndexCheckQuery(
-	pkColumns, otherColumns, lookupColumns []string,
+	pkColumns, otherColumns []string,
 	tableID descpb.ID,
 	index catalog.Index,
 	primaryIndexID descpb.IndexID,
@@ -566,9 +460,9 @@ func (c *indexConsistencyCheck) createIndexCheckQuery(
 	allColumns := append(pkColumns, otherColumns...)
 
 	// Build join conditions using helper function
-	lookupClause := buildJoinConditions(lookupColumns, "pri", "sec")
+	lookupClause := buildJoinConditions(allColumns, "pri", "sec")
 	mergeClause := buildJoinConditions(pkColumns, "pri", "sec")
-	reverseLookupClause := buildJoinConditions(lookupColumns, "sec", "pri")
+	reverseLookupClause := buildJoinConditions(allColumns, "sec", "pri")
 	reverseMergeClause := buildJoinConditions(pkColumns, "sec", "pri")
 
 	// If there are no non-primary-key columns, we don't need to split by NULL/non-NULL
@@ -766,93 +660,6 @@ func (c *indexConsistencyCheck) createIndexCheckQuery(
 	)
 }
 
-type hashResult struct {
-	rowCount int64
-	hash     string
-}
-
-// hashesMatch performs a fast comparison of primary and secondary indexes by
-// computing row counts and hash values. Returns true if both indexes have
-// identical row counts and hash values, indicating no corruption.
-func (c *indexConsistencyCheck) hashesMatch(
-	ctx context.Context, columnNames []string, predicate string, queryArgs []interface{},
-) (bool, error) {
-	primary, err := c.computeHashAndRowCount(ctx, c.priIndex, columnNames, predicate, queryArgs)
-	if err != nil {
-		return false, errors.Wrapf(err, "computing hash for primary index %s", c.priIndex.GetName())
-	}
-	secondary, err := c.computeHashAndRowCount(ctx, c.secIndex, columnNames, predicate, queryArgs)
-	if err != nil {
-		return false, errors.Wrapf(err, "computing hash for secondary index %s", c.secIndex.GetName())
-	}
-	// Hashes match only if both row count and hash value are identical.
-	return primary.rowCount == secondary.rowCount && primary.hash == secondary.hash, nil
-}
-
-// computeHashAndRowCount executes a hash query for the specified index and
-// returns the row count and XOR aggregate hash value.
-func (c *indexConsistencyCheck) computeHashAndRowCount(
-	ctx context.Context,
-	index catalog.Index,
-	columnNames []string,
-	predicate string,
-	queryArgs []interface{},
-) (hashResult, error) {
-	query := buildIndexHashQuery(c.tableDesc.GetID(), index, columnNames, predicate)
-	queryWithAsOf := fmt.Sprintf("SELECT * FROM (%s) AS OF SYSTEM TIME %s", query, c.asOf.AsOfSystemTime())
-
-	qos := getInspectQoS(&c.flowCtx.Cfg.Settings.SV)
-	row, err := c.flowCtx.Cfg.DB.Executor().QueryRowEx(
-		ctx, "inspect-index-consistency-hash", nil, /* txn */
-		sessiondata.InternalExecutorOverride{
-			User:             username.NodeUserName(),
-			QualityOfService: &qos,
-		},
-		queryWithAsOf,
-		queryArgs...,
-	)
-	if err != nil {
-		return hashResult{}, err
-	}
-	if len(row) != 2 {
-		return hashResult{}, errors.AssertionFailedf("hash query returned unexpected column count: %d", len(row))
-	}
-	return hashResult{
-		rowCount: int64(tree.MustBeDInt(row[0])),
-		hash:     string(tree.MustBeDBytes(row[1])),
-	}, nil
-}
-
-// buildIndexHashQuery constructs a query that computes row count and XOR
-// aggregate hash for the specified index and columns.
-func buildIndexHashQuery(
-	tableID descpb.ID, index catalog.Index, columnNames []string, predicate string,
-) string {
-	hashExpr := hashInputExpression(columnNames)
-	whereClause := buildWhereClause(predicate, nil /* nullFilters */)
-	return fmt.Sprintf(`
-SELECT
-  count(*) AS row_count,
-  crdb_internal.datums_to_bytes(xor_agg(fnv64(%s))) AS hash_value
-FROM [%d AS t]@{FORCE_INDEX=[%d]}%s`,
-		hashExpr,
-		tableID,
-		index.GetID(),
-		whereClause,
-	)
-}
-
-// hashInputExpression creates a hash-friendly expression by encoding column
-// values to bytes with NULL coalesced to empty bytes.
-func hashInputExpression(columnNames []string) string {
-	args := make([]string, len(columnNames))
-	for i, col := range columnNames {
-		args[i] = colRef("t", col)
-	}
-	encoded := fmt.Sprintf("crdb_internal.datums_to_bytes(%s)", strings.Join(args, ", "))
-	return fmt.Sprintf("COALESCE(%s, ''::BYTES)", encoded)
-}
-
 // encodeColumnName properly encodes a column name for use in SQL.
 func encodeColumnName(columnName string) string {
 	var buf bytes.Buffer
@@ -943,51 +750,4 @@ func buildWhereClause(predicate string, nullFilters []string) string {
 	}
 
 	return buf.String()
-}
-
-// isQueryConstructionError checks if the given error is due to
-// invalid syntax or references in the query construction.
-func isQueryConstructionError(err error) bool {
-	code := pgerror.GetPGCode(err)
-	switch code {
-	case pgcode.Syntax,
-		pgcode.UndefinedColumn,
-		pgcode.UndefinedTable,
-		pgcode.UndefinedFunction,
-		pgcode.DatatypeMismatch,
-		pgcode.InvalidColumnReference:
-		return true
-	default:
-		return false
-	}
-}
-
-// formatPlaceholders converts query placeholder values to a string slice for JSON serialization.
-func formatPlaceholders(placeholders []interface{}) []string {
-	result := make([]string, len(placeholders))
-	for i, placeholder := range placeholders {
-		if datum, ok := placeholder.(tree.Datum); ok {
-			result[i] = tree.AsStringWithFlags(datum, tree.FmtParsable)
-		} else {
-			result[i] = fmt.Sprintf("%v", placeholder)
-		}
-	}
-	return result
-}
-
-// allColumnsDatumsToBytesCompatible reports whether all columns can be
-// passed to crdb_internal.datums_to_bytes. Returns false if any column
-// has a type that cannot be key-encoded using keyside.Encode, which
-// datums_to_bytes relies on internally.
-//
-// REFCURSOR is technically supported by datums_to_bytes, but we still use
-// ColumnTypeIsIndexable to avoid duplicating type checks. REFCURSOR is
-// uncommon, so this trade-off keeps the code simpler.
-func allColumnsDatumsToBytesCompatible(columns []catalog.Column) bool {
-	for _, col := range columns {
-		if !colinfo.ColumnTypeIsIndexable(col.GetType()) {
-			return false
-		}
-	}
-	return true
 }

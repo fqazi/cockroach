@@ -77,17 +77,11 @@ func emitInternal(
 	e := makeEmitter(ob, spanFormatFn)
 	var walk func(n *Node) error
 	walk = func(n *Node) error {
-		if n == nil {
-			return nil
-		}
 		// In non-verbose mode, we skip all projections.
 		// In verbose mode, we only skip trivial projections (which just rearrange
 		// or rename the columns).
 		if !ob.flags.Verbose {
 			if n.op == serializingProjectOp || n.op == simpleProjectOp {
-				if len(n.children) == 0 {
-					return nil
-				}
 				return walk(n.children[0])
 			}
 		}
@@ -239,9 +233,6 @@ func omitTrivialProjections(n *Node) (*Node, colinfo.ResultColumns, colinfo.Colu
 		return n, n.Columns(), n.Ordering()
 	}
 
-	if len(n.children) == 0 {
-		return n, n.Columns(), n.Ordering()
-	}
 	input, inputColumns, inputOrdering := omitTrivialProjections(n.children[0])
 
 	// Check if the projection is a bijection (i.e. permutation of all input
@@ -1509,16 +1500,14 @@ func (e *emitter) emitPolicies(ob *OutputBuilder, table cat.Table, n *Node) {
 		ob.AddField("policies", "row-level security enabled, no policies applied.")
 	} else {
 		var sb strings.Builder
-		if table != nil {
-			policies := table.Policies()
-			for _, grp := range [][]cat.Policy{policies.Permissive, policies.Restrictive} {
-				for _, policy := range grp {
-					if applied.Policies.Contains(policy.ID) {
-						if sb.Len() > 0 {
-							sb.WriteString(", ")
-						}
-						sb.WriteString(policy.Name.Normalize())
+		policies := table.Policies()
+		for _, grp := range [][]cat.Policy{policies.Permissive, policies.Restrictive} {
+			for _, policy := range grp {
+				if applied.Policies.Contains(policy.ID) {
+					if sb.Len() > 0 {
+						sb.WriteString(", ")
 					}
+					sb.WriteString(policy.Name.Normalize())
 				}
 			}
 		}

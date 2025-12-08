@@ -118,7 +118,7 @@ type Catalog interface {
 	Reset(ctx context.Context) error
 
 	// InitializeSequence initializes the initial value for a sequence.
-	InitializeSequence(ctx context.Context, id descpb.ID, startVal int64) error
+	InitializeSequence(id descpb.ID, startVal int64)
 
 	// CheckMaxSchemaObjects checks if the number of schema objects in the
 	// cluster plus the new objects being created would exceed the configured
@@ -270,10 +270,6 @@ type BackfillProgress struct {
 	// backfilled into the destination indexes. The spans are expected to
 	// contain any tenant prefix.
 	CompletedSpans []roachpb.Span
-
-	// SSTManifests captures SST metadata emitted by the distributed merge
-	// backfill pipeline.
-	SSTManifests []jobspb.IndexBackfillSSTManifest
 }
 
 // Backfill corresponds to a definition of a backfill from a source
@@ -400,7 +396,7 @@ type StatsRefreshQueue interface {
 type StatsRefresher interface {
 	// NotifyMutation notifies the stats refresher that a table needs its
 	// statistics updated.
-	NotifyMutation(ctx context.Context, table catalog.TableDescriptor, rowsAffected int)
+	NotifyMutation(table catalog.TableDescriptor, rowsAffected int)
 }
 
 // ProtectedTimestampManager used to install a protected timestamp before

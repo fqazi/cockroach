@@ -168,15 +168,6 @@ func (b *Builder) buildExplain(
 		return b.buildExplainOpt(explainExpr)
 	}
 
-	if explainExpr.Options.Mode == tree.ExplainFingerprint {
-		var ep execPlan
-		ep.root, err = b.factory.ConstructExplainOpt(explainExpr.Fingerprint, exec.ExplainEnvData{})
-		if err != nil {
-			return execPlan{}, colOrdMap{}, err
-		}
-		return ep, b.outputColsFromList(explainExpr.ColList), nil
-	}
-
 	var ep execPlan
 	ep.root, err = b.factory.ConstructExplain(
 		&explainExpr.Options,

@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
@@ -90,7 +89,7 @@ func (ds dataDistribution) setupTest(
 	require.NoError(t, eng.Flush())
 	snap := eng.NewSnapshot()
 	defer snap.Close()
-	ms, err := rditer.ComputeStatsForRange(ctx, &desc, snap, fs.UnknownReadCategory, maxTs.WallTime)
+	ms, err := rditer.ComputeStatsForRange(ctx, &desc, snap, maxTs.WallTime)
 	require.NoError(t, err)
 	return ms
 }

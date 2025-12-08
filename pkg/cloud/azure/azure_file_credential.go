@@ -62,10 +62,6 @@ func NewAzureFileCredential(
 	return c, nil
 }
 
-func credFileEnv() string {
-	return envutil.EnvOrDefaultString("COCKROACH_AZURE_APPLICATION_CREDENTIALS_FILE", "")
-}
-
 // NewDefaultAzureCredentialWithFile creates a credential chain that's simply
 // a FileCredential prepended to the chain in DefaultAzureCredential.
 func NewDefaultAzureCredentialWithFile(
@@ -78,7 +74,7 @@ func NewDefaultAzureCredentialWithFile(
 	var credentials []azcore.TokenCredential
 	var credErrors []string
 
-	credentialFileName := credFileEnv()
+	credentialFileName := envutil.EnvOrDefaultString("COCKROACH_AZURE_APPLICATION_CREDENTIALS_FILE", "")
 	fileCredentials, err := NewAzureFileCredential(credentialFileName, &FileCredentialOptions{ClientOptions: options.ClientOptions, testingKnobs: options.testingKnobs})
 	if err != nil {
 		credErrors = append(credErrors, errors.Wrap(err, "file credential").Error())

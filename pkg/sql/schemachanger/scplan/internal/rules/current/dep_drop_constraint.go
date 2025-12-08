@@ -96,23 +96,19 @@ func init() {
 	)
 }
 
-// These rules ensure that a unique without index constraint with a column
-// name in its expression is cleaned up before the column name is dropped.
-// This is needed because unique without index constraints can have predicates
-// that reference columns by name.
+// These rules ensure that a non-indexed backed constraint with a column
+// name in its expression is cleaned up before the column is dropped.
 func init() {
 	registerDepRuleForDrop(
-		"unique without index constraint should be cleaned up before column name references",
+		"non-indexed backed constraint should be cleaned up "+
+			"before column name references",
 		scgraph.Precedence,
 		"constraint", "referenced-column-name",
 		scpb.Status_ABSENT, scpb.Status_ABSENT,
 		func(from, to NodeVars) rel.Clauses {
 			fromColumnID := rel.Var("fromColumnID")
 			return rel.Clauses{
-				from.Type(
-					(*scpb.UniqueWithoutIndexConstraint)(nil),
-					(*scpb.UniqueWithoutIndexConstraintUnvalidated)(nil),
-				),
+				from.TypeFilter(rulesVersionKey, isNonIndexBackedConstraint, isWithExpression),
 				from.ReferencedColumnIDsContains(fromColumnID),
 				to.Type((*scpb.ColumnName)(nil)),
 				to.El.AttrEqVar(screl.ColumnID, fromColumnID),

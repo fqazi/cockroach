@@ -93,7 +93,6 @@ go_test(
     ],
     embed = [":execinfra"],
     deps = [
-        "//pkg/base",
         "//pkg/security/securityassets",
         "//pkg/security/securitytest",
         "//pkg/server",

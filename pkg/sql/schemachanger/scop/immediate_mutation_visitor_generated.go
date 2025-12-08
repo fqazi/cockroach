@@ -46,10 +46,6 @@ type ImmediateMutationVisitor interface {
 	UpsertColumnType(context.Context, UpsertColumnType) error
 	AddColumnComputeExpression(context.Context, AddColumnComputeExpression) error
 	RemoveColumnComputeExpression(context.Context, RemoveColumnComputeExpression) error
-	AddColumnGeneratedAsIdentity(context.Context, AddColumnGeneratedAsIdentity) error
-	RemoveColumnGeneratedAsIdentity(context.Context, RemoveColumnGeneratedAsIdentity) error
-	MakeColumnHidden(context.Context, MakeColumnHidden) error
-	MakeColumnVisible(context.Context, MakeColumnVisible) error
 	MakeWriteOnlyColumnPublic(context.Context, MakeWriteOnlyColumnPublic) error
 	MakePublicColumnWriteOnly(context.Context, MakePublicColumnWriteOnly) error
 	MakeWriteOnlyColumnDeleteOnly(context.Context, MakeWriteOnlyColumnDeleteOnly) error
@@ -158,7 +154,7 @@ type ImmediateMutationVisitor interface {
 	UpdateOwner(context.Context, UpdateOwner) error
 	CreateSchemaDescriptor(context.Context, CreateSchemaDescriptor) error
 	CreateSequenceDescriptor(context.Context, CreateSequenceDescriptor) error
-	SetSequenceOption(context.Context, SetSequenceOption) error
+	SetSequenceOptions(context.Context, SetSequenceOptions) error
 	InitSequence(context.Context, InitSequence) error
 	CreateDatabaseDescriptor(context.Context, CreateDatabaseDescriptor) error
 	AddNamedRangeZoneConfig(context.Context, AddNamedRangeZoneConfig) error
@@ -321,26 +317,6 @@ func (op AddColumnComputeExpression) Visit(ctx context.Context, v ImmediateMutat
 // Visit is part of the ImmediateMutationOp interface.
 func (op RemoveColumnComputeExpression) Visit(ctx context.Context, v ImmediateMutationVisitor) error {
 	return v.RemoveColumnComputeExpression(ctx, op)
-}
-
-// Visit is part of the ImmediateMutationOp interface.
-func (op AddColumnGeneratedAsIdentity) Visit(ctx context.Context, v ImmediateMutationVisitor) error {
-	return v.AddColumnGeneratedAsIdentity(ctx, op)
-}
-
-// Visit is part of the ImmediateMutationOp interface.
-func (op RemoveColumnGeneratedAsIdentity) Visit(ctx context.Context, v ImmediateMutationVisitor) error {
-	return v.RemoveColumnGeneratedAsIdentity(ctx, op)
-}
-
-// Visit is part of the ImmediateMutationOp interface.
-func (op MakeColumnHidden) Visit(ctx context.Context, v ImmediateMutationVisitor) error {
-	return v.MakeColumnHidden(ctx, op)
-}
-
-// Visit is part of the ImmediateMutationOp interface.
-func (op MakeColumnVisible) Visit(ctx context.Context, v ImmediateMutationVisitor) error {
-	return v.MakeColumnVisible(ctx, op)
 }
 
 // Visit is part of the ImmediateMutationOp interface.
@@ -884,8 +860,8 @@ func (op CreateSequenceDescriptor) Visit(ctx context.Context, v ImmediateMutatio
 }
 
 // Visit is part of the ImmediateMutationOp interface.
-func (op SetSequenceOption) Visit(ctx context.Context, v ImmediateMutationVisitor) error {
-	return v.SetSequenceOption(ctx, op)
+func (op SetSequenceOptions) Visit(ctx context.Context, v ImmediateMutationVisitor) error {
+	return v.SetSequenceOptions(ctx, op)
 }
 
 // Visit is part of the ImmediateMutationOp interface.

@@ -1,4 +1,4 @@
-# LogicTest: local local-leased-descriptors
+# LogicTest: local
 
 # Set the distsql_workmem to the default production value because of a problem
 # with losing 'name' attribute when spilling to disk (#78547).
@@ -2800,9 +2800,9 @@ FROM pg_catalog.pg_roles
 ORDER BY rolname
 ----
 oid         rolname   rolsuper  rolinherit  rolcreaterole  rolcreatedb  rolcatupdate  rolcanlogin  rolreplication
-2310524507  admin     true      true        true           true         false         true         true
-3233629770  node      true      true        true           true         false         false        true
-1546506610  root      true      true        true           true         false         true         true
+2310524507  admin     true      true        true           true         false         true         false
+3233629770  node      true      true        true           true         false         false        false
+1546506610  root      true      true        true           true         false         true         false
 2264919399  testuser  false     true        false          false        false         true         false
 
 query OTITTBT colnames
@@ -2835,53 +2835,6 @@ testuser
 
 statement ok
 DELETE FROM system.users WHERE username = 'non_cached_user'
-
-## rolreplication from pg_catalog.pg_authid and pg_catalog.pg_roles
-statement ok
-CREATE ROLE test_no_replication;
-CREATE ROLE test_replication;
-GRANT SYSTEM REPLICATION to test_replication;
-CREATE ROLE test_src_replication;
-GRANT SYSTEM REPLICATIONSOURCE to test_src_replication;
-CREATE ROLE test_dst_replication;
-GRANT SYSTEM REPLICATIONDEST to test_dst_replication;
-
-query TB colnames
-SELECT rolname, rolreplication FROM pg_catalog.pg_roles
-ORDER BY rolname
-----
-rolname               rolreplication
-admin                 true
-node                  true
-root                  true
-test_dst_replication  true
-test_no_replication   false
-test_replication      true
-test_src_replication  true
-testuser              false
-
-query TB colnames
-SELECT rolname, rolreplication FROM pg_catalog.pg_authid
-ORDER BY rolname
-----
-rolname               rolreplication
-admin                 true
-node                  true
-root                  true
-test_dst_replication  true
-test_no_replication   false
-test_replication      true
-test_src_replication  true
-testuser              false
-
-statement ok
-DROP ROLE test_no_replication;
-REVOKE SYSTEM REPLICATION FROM test_replication;
-REVOKE SYSTEM REPLICATIONSOURCE FROM test_src_replication;
-REVOKE SYSTEM REPLICATIONDEST FROM test_dst_replication;
-DROP ROLE test_replication;
-DROP ROLE test_src_replication;
-DROP ROLE test_dst_replication;
 
 ## pg_catalog.pg_auth_members
 
@@ -3023,7 +2976,7 @@ name                                                             setting        
 allow_create_trigger_function_with_argv_references               off                 NULL      NULL        NULL        string
 allow_ordinal_column_references                                  off                 NULL      NULL        NULL        string
 allow_role_memberships_to_change_during_transaction              off                 NULL      NULL        NULL        string
-allow_unsafe_internals                                           off                 NULL      NULL        NULL        string
+allow_unsafe_internals                                           on                  NULL      NULL        NULL        string
 alter_primary_region_super_region_override                       off                 NULL      NULL        NULL        string
 always_distribute_full_scans                                     off                 NULL      NULL        NULL        string
 application_name                                                 ·                   NULL      NULL        NULL        string
@@ -3035,7 +2988,6 @@ backslash_quote                                                  safe_encoding  
 buffered_writes_use_locking_on_non_unique_indexes                off                 NULL      NULL        NULL        string
 bypass_pcr_reader_catalog_aost                                   off                 NULL      NULL        NULL        string
 bytea_output                                                     hex                 NULL      NULL        NULL        string
-canary_stats_mode                                                auto                NULL      NULL        NULL        string
 check_function_bodies                                            on                  NULL      NULL        NULL        string
 client_encoding                                                  UTF8                NULL      NULL        NULL        string
 client_min_messages                                              notice              NULL      NULL        NULL        string
@@ -3068,7 +3020,6 @@ disable_optimizer_rules                                          ·             
 disable_partially_distributed_plans                              off                 NULL      NULL        NULL        string
 disable_plan_gists                                               off                 NULL      NULL        NULL        string
 disable_vec_union_eager_cancellation                             off                 NULL      NULL        NULL        string
-disable_wait_for_jobs_notice                                     off                 NULL      NULL        NULL        string
 disallow_full_table_scans                                        off                 NULL      NULL        NULL        string
 distribute_group_by_row_count_threshold                          1000                NULL      NULL        NULL        string
 distribute_join_row_count_threshold                              1000                NULL      NULL        NULL        string
@@ -3089,6 +3040,7 @@ enable_insert_fast_path                                          on             
 enable_inspect_command                                           off                 NULL      NULL        NULL        string
 enable_multiple_modifications_of_table                           off                 NULL      NULL        NULL        string
 enable_multiregion_placement_policy                              off                 NULL      NULL        NULL        string
+enable_scrub_job                                                 off                 NULL      NULL        NULL        string
 enable_seqscan                                                   on                  NULL      NULL        NULL        string
 enable_shared_locking_for_serializable                           off                 NULL      NULL        NULL        string
 enable_super_regions                                             off                 NULL      NULL        NULL        string
@@ -3139,8 +3091,8 @@ on_update_rehome_row_enabled                                     on             
 opt_split_scan_limit                                             2048                NULL      NULL        NULL        string
 optimizer_always_use_histograms                                  on                  NULL      NULL        NULL        string
 optimizer_check_input_min_row_count                              1                   NULL      NULL        NULL        string
-optimizer_clamp_inequality_selectivity                           on                  NULL      NULL        NULL        string
-optimizer_clamp_low_histogram_selectivity                        on                  NULL      NULL        NULL        string
+optimizer_clamp_inequality_selectivity                           off                 NULL      NULL        NULL        string
+optimizer_clamp_low_histogram_selectivity                        off                 NULL      NULL        NULL        string
 optimizer_disable_cross_region_cascade_fast_path_for_rbr_tables  on                  NULL      NULL        NULL        string
 optimizer_enable_lock_elision                                    on                  NULL      NULL        NULL        string
 optimizer_hoist_uncorrelated_equality_subqueries                 on                  NULL      NULL        NULL        string
@@ -3196,7 +3148,7 @@ reorder_joins_limit                                              8              
 require_explicit_primary_keys                                    off                 NULL      NULL        NULL        string
 results_buffer_size                                              524288              NULL      NULL        NULL        string
 role                                                             none                NULL      NULL        NULL        string
-row_security                                                     on                  NULL      NULL        NULL        string
+row_security                                                     off                 NULL      NULL        NULL        string
 search_path                                                      "$user", public     NULL      NULL        NULL        string
 serial_normalization                                             rowid               NULL      NULL        NULL        string
 server_encoding                                                  UTF8                NULL      NULL        NULL        string
@@ -3243,7 +3195,6 @@ use_improved_routine_dependency_tracking                         on             
 use_pre_25_2_variadic_builtins                                   off                 NULL      NULL        NULL        string
 use_proc_txn_control_extended_protocol_fix                       on                  NULL      NULL        NULL        string
 use_soft_limit_for_distribute_scan                               on                  NULL      NULL        NULL        string
-use_swap_mutations                                               off                 NULL      NULL        NULL        string
 variable_inequality_lookup_join_enabled                          on                  NULL      NULL        NULL        string
 vector_search_beam_size                                          32                  NULL      NULL        NULL        string
 vector_search_rerank_multiplier                                  50                  NULL      NULL        NULL        string
@@ -3273,7 +3224,7 @@ name                                                             setting        
 allow_create_trigger_function_with_argv_references               off                 NULL  user     NULL      off                 off
 allow_ordinal_column_references                                  off                 NULL  user     NULL      off                 off
 allow_role_memberships_to_change_during_transaction              off                 NULL  user     NULL      off                 off
-allow_unsafe_internals                                           off                 NULL  user     NULL      off                 off
+allow_unsafe_internals                                           on                  NULL  user     NULL      on                  on
 alter_primary_region_super_region_override                       off                 NULL  user     NULL      off                 off
 always_distribute_full_scans                                     off                 NULL  user     NULL      off                 off
 application_name                                                 ·                   NULL  user     NULL      ·                   ·
@@ -3285,7 +3236,6 @@ backslash_quote                                                  safe_encoding  
 buffered_writes_use_locking_on_non_unique_indexes                off                 NULL  user     NULL      off                 off
 bypass_pcr_reader_catalog_aost                                   off                 NULL  user     NULL      off                 off
 bytea_output                                                     hex                 NULL  user     NULL      hex                 hex
-canary_stats_mode                                                auto                NULL  user     NULL      auto                auto
 check_function_bodies                                            on                  NULL  user     NULL      on                  on
 client_encoding                                                  UTF8                NULL  user     NULL      UTF8                UTF8
 client_min_messages                                              notice              NULL  user     NULL      notice              notice
@@ -3318,7 +3268,6 @@ disable_optimizer_rules                                          ·             
 disable_partially_distributed_plans                              off                 NULL  user     NULL      off                 off
 disable_plan_gists                                               off                 NULL  user     NULL      off                 off
 disable_vec_union_eager_cancellation                             off                 NULL  user     NULL      off                 off
-disable_wait_for_jobs_notice                                     off                 NULL  user     NULL      off                 off
 disallow_full_table_scans                                        off                 NULL  user     NULL      off                 off
 distribute_group_by_row_count_threshold                          1000                NULL  user     NULL      1000                1000
 distribute_join_row_count_threshold                              1000                NULL  user     NULL      1000                1000
@@ -3339,6 +3288,7 @@ enable_insert_fast_path                                          on             
 enable_inspect_command                                           off                 NULL  user     NULL      off                 off
 enable_multiple_modifications_of_table                           off                 NULL  user     NULL      off                 off
 enable_multiregion_placement_policy                              off                 NULL  user     NULL      off                 off
+enable_scrub_job                                                 off                 NULL  user     NULL      off                 off
 enable_seqscan                                                   on                  NULL  user     NULL      on                  on
 enable_shared_locking_for_serializable                           off                 NULL  user     NULL      off                 off
 enable_super_regions                                             off                 NULL  user     NULL      off                 off
@@ -3389,8 +3339,8 @@ on_update_rehome_row_enabled                                     on             
 opt_split_scan_limit                                             2048                NULL  user     NULL      2048                2048
 optimizer_always_use_histograms                                  on                  NULL  user     NULL      on                  on
 optimizer_check_input_min_row_count                              1                   NULL  user     NULL      1                   1
-optimizer_clamp_inequality_selectivity                           on                  NULL  user     NULL      on                  on
-optimizer_clamp_low_histogram_selectivity                        on                  NULL  user     NULL      on                  on
+optimizer_clamp_inequality_selectivity                           off                 NULL  user     NULL      off                 off
+optimizer_clamp_low_histogram_selectivity                        off                 NULL  user     NULL      off                 off
 optimizer_disable_cross_region_cascade_fast_path_for_rbr_tables  on                  NULL  user     NULL      on                  on
 optimizer_enable_lock_elision                                    on                  NULL  user     NULL      on                  on
 optimizer_hoist_uncorrelated_equality_subqueries                 on                  NULL  user     NULL      on                  on
@@ -3446,7 +3396,7 @@ reorder_joins_limit                                              8              
 require_explicit_primary_keys                                    off                 NULL  user     NULL      off                 off
 results_buffer_size                                              524288              NULL  user     NULL      524288              524288
 role                                                             none                NULL  user     NULL      none                none
-row_security                                                     on                  NULL  user     NULL      on                  on
+row_security                                                     off                 NULL  user     NULL      off                 off
 search_path                                                      "$user", public     NULL  user     NULL      "$user", public     "$user", public
 serial_normalization                                             rowid               NULL  user     NULL      rowid               rowid
 server_encoding                                                  UTF8                NULL  user     NULL      UTF8                UTF8
@@ -3493,7 +3443,6 @@ use_improved_routine_dependency_tracking                         on             
 use_pre_25_2_variadic_builtins                                   off                 NULL  user     NULL      off                 off
 use_proc_txn_control_extended_protocol_fix                       on                  NULL  user     NULL      on                  on
 use_soft_limit_for_distribute_scan                               on                  NULL  user     NULL      on                  on
-use_swap_mutations                                               off                 NULL  user     NULL      off                 off
 variable_inequality_lookup_join_enabled                          on                  NULL  user     NULL      on                  on
 vector_search_beam_size                                          32                  NULL  user     NULL      32                  32
 vector_search_rerank_multiplier                                  50                  NULL  user     NULL      50                  50
@@ -3519,7 +3468,6 @@ backslash_quote                                                  NULL    NULL   
 buffered_writes_use_locking_on_non_unique_indexes                NULL    NULL     NULL     NULL        NULL
 bypass_pcr_reader_catalog_aost                                   NULL    NULL     NULL     NULL        NULL
 bytea_output                                                     NULL    NULL     NULL     NULL        NULL
-canary_stats_mode                                                NULL    NULL     NULL     NULL        NULL
 check_function_bodies                                            NULL    NULL     NULL     NULL        NULL
 client_encoding                                                  NULL    NULL     NULL     NULL        NULL
 client_min_messages                                              NULL    NULL     NULL     NULL        NULL
@@ -3555,7 +3503,6 @@ disable_optimizer_rules                                          NULL    NULL   
 disable_partially_distributed_plans                              NULL    NULL     NULL     NULL        NULL
 disable_plan_gists                                               NULL    NULL     NULL     NULL        NULL
 disable_vec_union_eager_cancellation                             NULL    NULL     NULL     NULL        NULL
-disable_wait_for_jobs_notice                                     NULL    NULL     NULL     NULL        NULL
 disallow_full_table_scans                                        NULL    NULL     NULL     NULL        NULL
 distribute_group_by_row_count_threshold                          NULL    NULL     NULL     NULL        NULL
 distribute_join_row_count_threshold                              NULL    NULL     NULL     NULL        NULL
@@ -3577,6 +3524,7 @@ enable_insert_fast_path                                          NULL    NULL   
 enable_inspect_command                                           NULL    NULL     NULL     NULL        NULL
 enable_multiple_modifications_of_table                           NULL    NULL     NULL     NULL        NULL
 enable_multiregion_placement_policy                              NULL    NULL     NULL     NULL        NULL
+enable_scrub_job                                                 NULL    NULL     NULL     NULL        NULL
 enable_seqscan                                                   NULL    NULL     NULL     NULL        NULL
 enable_shared_locking_for_serializable                           NULL    NULL     NULL     NULL        NULL
 enable_super_regions                                             NULL    NULL     NULL     NULL        NULL
@@ -3735,7 +3683,6 @@ use_improved_routine_dependency_tracking                         NULL    NULL   
 use_pre_25_2_variadic_builtins                                   NULL    NULL     NULL     NULL        NULL
 use_proc_txn_control_extended_protocol_fix                       NULL    NULL     NULL     NULL        NULL
 use_soft_limit_for_distribute_scan                               NULL    NULL     NULL     NULL        NULL
-use_swap_mutations                                               NULL    NULL     NULL     NULL        NULL
 variable_inequality_lookup_join_enabled                          NULL    NULL     NULL     NULL        NULL
 vector_search_beam_size                                          NULL    NULL     NULL     NULL        NULL
 vector_search_rerank_multiplier                                  NULL    NULL     NULL     NULL        NULL

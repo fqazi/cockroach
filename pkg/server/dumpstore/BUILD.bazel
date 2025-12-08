@@ -9,7 +9,6 @@ go_library(
         "//pkg/settings",
         "//pkg/settings/cluster",
         "//pkg/util/log",
-        "@com_github_cockroachdb_errors//oserror",
     ],
 )
 

@@ -17,8 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/errors"
-	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,14 +27,15 @@ func TestInspectMetrics(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	srv, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
+	})
+	defer s.Stopper().Stop(ctx)
 
 	runner := sqlutils.MakeSQLRunner(db)
 	runner.Exec(t, `
 		CREATE DATABASE db;
-		SET enable_inspect_command = true;
+		SET enable_scrub_job = true;
 		CREATE TABLE db.t (
 			id INT PRIMARY KEY,
 			val INT
@@ -45,7 +44,7 @@ func TestInspectMetrics(t *testing.T) {
 		INSERT INTO db.t VALUES (1, 2), (2, 3);
 	`)
 
-	execCfg := s.ExecutorConfig().(sql.ExecutorConfig)
+	execCfg := s.ApplicationLayer().ExecutorConfig().(sql.ExecutorConfig)
 	metrics := execCfg.JobRegistry.MetricsStruct().Inspect.(*InspectMetrics)
 
 	initialRuns := metrics.Runs.Count()
@@ -54,7 +53,7 @@ func TestInspectMetrics(t *testing.T) {
 	initialSpansProcessed := metrics.SpansProcessed.Count()
 
 	// First run: no corruption, should succeed without issues
-	runner.Exec(t, "INSPECT TABLE db.t")
+	runner.Exec(t, "EXPERIMENTAL SCRUB TABLE db.t")
 	require.Equal(t, initialRuns+1, metrics.Runs.Count(), "Runs counter should increment")
 	require.Equal(t, initialRunsWithIssues, metrics.RunsWithIssues.Count(), "RunsWithIssues should not increment")
 	require.Equal(t, initialIssuesFound, metrics.IssuesFound.Count(), "IssuesFound should not increment")
@@ -72,17 +71,13 @@ func TestInspectMetrics(t *testing.T) {
 		tree.NewDInt(1), // id
 		tree.NewDInt(2), // val
 	}
-	err := deleteSecondaryIndexEntry(ctx, codec, row, kvDB, tableDesc, secIndex)
+	err := deleteSecondaryIndexEntry(ctx, row, kvDB, tableDesc, secIndex)
 	require.NoError(t, err)
 
 	// Second run: with corruption, should detect the missing index entry.
-	_, err = db.Exec("INSPECT TABLE db.t")
+	_, err = db.Exec("EXPERIMENTAL SCRUB TABLE db.t")
 	require.Error(t, err, "INSPECT should fail when corruption is detected")
 	require.Contains(t, err.Error(), "INSPECT found inconsistencies")
-	var pqErr *pq.Error
-	require.True(t, errors.As(err, &pqErr), "expected pq.Error, got %T", err)
-	require.NotEmpty(t, pqErr.Hint, "expected error to have a hint")
-	require.Regexp(t, "SHOW INSPECT ERRORS FOR JOB [0-9]+ WITH DETAILS", pqErr.Hint)
 	require.Equal(t, initialRuns+2, metrics.Runs.Count(),
 		"Runs counter should increment for each job execution")
 	require.Equal(t, initialRunsWithIssues+1, metrics.RunsWithIssues.Count(),
@@ -101,7 +96,7 @@ func TestInspectMetrics(t *testing.T) {
 		CREATE INDEX i2 on db.t2 (val);
 		INSERT INTO db.t2 VALUES (1, 2), (2, 3);
 	`)
-	runner.Exec(t, "INSPECT TABLE db.t2")
+	runner.Exec(t, "EXPERIMENTAL SCRUB TABLE db.t2")
 	require.Equal(t, initialRuns+3, metrics.Runs.Count(),
 		"Runs counter should increment for third job execution")
 	require.Equal(t, initialRunsWithIssues+1, metrics.RunsWithIssues.Count(),

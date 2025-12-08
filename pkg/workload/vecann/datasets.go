@@ -90,8 +90,6 @@ type DatasetLoader struct {
 	// CacheFolder is the path to the temporary folder where datasets will be
 	// cached. It defaults to ~/.cache/workload-datasets.
 	CacheFolder string
-	// ResetCache indicates that the cache should be re-populated.
-	ResetCache bool
 
 	// OnProgress logs the progress of the loading process.
 	OnProgress func(ctx context.Context, format string, args ...any)
@@ -130,12 +128,12 @@ func (dl *DatasetLoader) loadFiles(ctx context.Context) error {
 	neighbors := fmt.Sprintf("%s/%s-neighbors-%s.ibin", baseDir, baseName, metric)
 
 	// Download test and neighbors files if missing.
-	if dl.ResetCache || !fileExists(test) {
+	if !fileExists(test) {
 		if err := dl.downloadAndUnzip(ctx, baseName, baseName+"-test.fbin.zip", test); err != nil {
 			return err
 		}
 	}
-	if dl.ResetCache || !fileExists(neighbors) {
+	if !fileExists(neighbors) {
 		fileName := baseName + "-neighbors-" + metric + ".ibin.zip"
 		if err := dl.downloadAndUnzip(ctx, baseName, fileName, neighbors); err != nil {
 			return err
@@ -181,7 +179,7 @@ func (dl *DatasetLoader) downloadTrainFiles(
 	// First, check for files in the cache.
 	onlyFileName := fmt.Sprintf("%s/%s.fbin", baseDir, baseName)
 	firstPartName := fmt.Sprintf("%s/%s-1.fbin", baseDir, baseName)
-	if dl.ResetCache || (!fileExists(onlyFileName) && !fileExists(firstPartName)) {
+	if !fileExists(onlyFileName) && !fileExists(firstPartName) {
 		// No files in cache, download them.
 		partNum := 0
 		for {

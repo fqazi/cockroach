@@ -410,7 +410,7 @@ func TestCheckCreateOpts(t *testing.T) {
 			SSDOpts: struct {
 				UseLocalSSD   bool
 				NoExt4Barrier bool
-				FileSystem    vm.Filesystem
+				FileSystem    string
 			}{
 				UseLocalSSD: true,
 			},

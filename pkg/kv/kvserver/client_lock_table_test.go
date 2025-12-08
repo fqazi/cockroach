@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/dd"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -213,7 +212,8 @@ var (
 )
 
 func (e *evalCtx) newTxn(ctx context.Context, d *datadriven.TestData) {
-	name := dd.ScanArg[string](e.t, d, txnKey)
+	var name string
+	d.ScanArgs(e.t, txnKey, &name)
 	if _, ok := e.txnsByName[name]; ok {
 		d.Fatalf(e.t, "txn %q already exists", name)
 	} else {
@@ -225,7 +225,8 @@ func (e *evalCtx) newTxn(ctx context.Context, d *datadriven.TestData) {
 }
 
 func (e *evalCtx) mustGetTxn(d *datadriven.TestData) *kv.Txn {
-	txnName := dd.ScanArg[string](e.t, d, txnKey)
+	var txnName string
+	d.ScanArgs(e.t, txnKey, &txnName)
 	txn, ok := e.txnsByName[txnName]
 	if !ok {
 		d.Fatalf(e.t, "txn %q doesn't exists", txnName)
@@ -234,7 +235,8 @@ func (e *evalCtx) mustGetTxn(d *datadriven.TestData) *kv.Txn {
 }
 
 func (e *evalCtx) mustGetAndRemoveTxn(d *datadriven.TestData) *kv.Txn {
-	txnName := dd.ScanArg[string](e.t, d, txnKey)
+	var txnName string
+	d.ScanArgs(e.t, txnKey, &txnName)
 	txn, ok := e.txnsByName[txnName]
 	if !ok {
 		d.Fatalf(e.t, "txn %q doesn't exists", txnName)
@@ -256,7 +258,8 @@ func (e *evalCtx) rollbackTxn(ctx context.Context, d *datadriven.TestData) error
 
 func (e *evalCtx) getNamedKey(name string, d *datadriven.TestData) roachpb.Key {
 	e.t.Helper()
-	keyS := dd.ScanArg[string](e.t, d, name)
+	var keyS string
+	d.ScanArgs(e.t, name, &keyS)
 	return append(e.rangeStartKey.Clone(), []byte(keyS)...)
 }
 
@@ -266,18 +269,23 @@ func (e *evalCtx) getKey(d *datadriven.TestData) roachpb.Key {
 
 func (e *evalCtx) getValue(d *datadriven.TestData) []byte {
 	e.t.Helper()
-	return []byte(dd.ScanArg[string](e.t, d, valKey))
+	var valueS string
+	d.ScanArgs(e.t, valKey, &valueS)
+	return []byte(valueS)
 }
 
 func (e *evalCtx) getLockStr(d *datadriven.TestData) lock.Strength {
-	return lock.Strength(lock.Strength_value[dd.ScanArg[string](e.t, d, "lock")])
+	var lockStr string
+	d.ScanArgs(e.t, "lock", &lockStr)
+	return lock.Strength(lock.Strength_value[lockStr])
 }
 
 func (e *evalCtx) getLockDurability(d *datadriven.TestData) kvpb.KeyLockingDurabilityType {
-	lockDur := dd.ScanArg[string](e.t, d, "dur")
+	var lockDur string
 	// TODO(ssd): I tend to think in terms of the lock package while the
 	// client takes arguments in terms of the kvpb package. This creates
 	// a small mess.
+	d.ScanArgs(e.t, "dur", &lockDur)
 	var dur kvpb.KeyLockingDurabilityType
 	switch lock.Durability(lock.Durability_value[lockDur]) {
 	case lock.Replicated:
@@ -289,15 +297,22 @@ func (e *evalCtx) getLockDurability(d *datadriven.TestData) kvpb.KeyLockingDurab
 }
 
 func (e *evalCtx) getLockWaitPolicy(d *datadriven.TestData) lock.WaitPolicy {
-	if str, ok := dd.ScanArgOpt[string](e.t, d, "wait"); ok {
-		return lock.WaitPolicy(lock.WaitPolicy_value[str])
+	if d.HasArg("wait") {
+		var waitPolicyStr string
+		d.ScanArgs(e.t, "wait", &waitPolicyStr)
+		return lock.WaitPolicy(lock.WaitPolicy_value[waitPolicyStr])
 	} else {
 		return lock.WaitPolicy_Block
 	}
 }
 
 func (e *evalCtx) getInt(d *datadriven.TestData, name string) int {
-	return dd.ScanArgOr(e.t, d, name, 0)
+	if d.HasArg(name) {
+		var i int
+		d.ScanArgs(e.t, name, &i)
+		return i
+	}
+	return 0
 }
 
 func (e *evalCtx) cmdInBatch(cmdStr string, b *kv.Batch) error {

@@ -13,7 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod/roachprodutil/codec"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/gce"
 	"github.com/cockroachdb/errors"
-	"go.yaml.in/yaml/v4"
+	"gopkg.in/yaml.v3"
 )
 
 // ClusterSettings contains various knobs that affect operations on a cluster.

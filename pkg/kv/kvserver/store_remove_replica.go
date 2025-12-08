@@ -27,11 +27,11 @@ type RemoveOptions struct {
 }
 
 // RemoveReplica removes the replica from the store's replica map and from the
-// sorted replicasByKey btree. If the replica is already removed, returns nil.
+// sorted replicasByKey btree.
 //
-// The passed in NextReplicaID is taken from the replica descriptor used to make
-// the removal decision. It is written into the RangeTombstone and prevents
-// historical replicas (including this one) from appearing on this store again.
+// The NextReplicaID from the replica descriptor that was used to make the
+// removal decision is passed in. Removal is aborted if the replica ID has
+// advanced to or beyond the NextReplicaID since the removal decision was made.
 //
 // The passed replica must be initialized.
 func (s *Store) RemoveReplica(

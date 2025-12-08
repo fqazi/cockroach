@@ -103,17 +103,6 @@ var DiscoveredLocksThresholdToConsultTxnStatusCache = settings.RegisterIntSettin
 	settings.NonNegativeInt,
 )
 
-// DefaultLockTableSize controls the default upper bound on the number of locks
-// in a lock table.
-var DefaultLockTableSize = settings.RegisterIntSetting(
-	settings.SystemOnly,
-	"kv.lock_table.default_size",
-	"the default upper bound on the number of locks in a lock table. This setting "+
-		"controls the maximum number of locks that can be held in memory by the lock table "+
-		"before it starts evicting locks to manage memory pressure.",
-	10000,
-)
-
 // BatchPushedLockResolution controls whether the lock table should allow
 // non-locking readers to defer and batch the resolution of conflicting locks
 // whose holder is known to be pending and have been pushed above the reader's
@@ -133,7 +122,7 @@ var UnreplicatedLockReliabilitySplit = settings.RegisterBoolSetting(
 	settings.SystemOnly,
 	"kv.lock_table.unreplicated_lock_reliability.split.enabled",
 	"whether the replica should attempt to keep unreplicated locks during range splits",
-	metamorphic.ConstantWithTestBool("kv.lock_table.unreplicated_lock_reliability.split.enabled", true),
+	false,
 )
 
 // UnreplicatedLockReliabilityLeaseTransfer controls whether the replica will attempt
@@ -142,7 +131,7 @@ var UnreplicatedLockReliabilityLeaseTransfer = settings.RegisterBoolSetting(
 	settings.SystemOnly,
 	"kv.lock_table.unreplicated_lock_reliability.lease_transfer.enabled",
 	"whether the replica should attempt to keep unreplicated locks during lease transfers",
-	metamorphic.ConstantWithTestBool("kv.lock_table.unreplicated_lock_reliability.lease_transfer.enabled", true),
+	metamorphic.ConstantWithTestBool("kv.lock_table.unreplicated_lock_reliability.lease_transfer.enabled", false),
 )
 
 // UnreplicatedLockReliabilityMerge controls whether the replica will attempt to
@@ -151,7 +140,7 @@ var UnreplicatedLockReliabilityMerge = settings.RegisterBoolSetting(
 	settings.SystemOnly,
 	"kv.lock_table.unreplicated_lock_reliability.merge.enabled",
 	"whether the replica should attempt to keep unreplicated locks during range merges",
-	metamorphic.ConstantWithTestBool("kv.lock_table.unreplicated_lock_reliability.merge.enabled", true),
+	metamorphic.ConstantWithTestBool("kv.lock_table.unreplicated_lock_reliability.merge.enabled", false),
 )
 
 var MaxLockFlushSize = settings.RegisterByteSizeSetting(
@@ -210,7 +199,7 @@ type Config struct {
 
 func (c *Config) initDefaults() {
 	if c.MaxLockTableSize == 0 {
-		c.MaxLockTableSize = DefaultLockTableSize.Get(&c.Settings.SV)
+		c.MaxLockTableSize = defaultLockTableSize
 	}
 }
 
@@ -611,7 +600,7 @@ func (m *managerImpl) OnLockAcquired(ctx context.Context, acq *roachpb.LockAcqui
 	}
 }
 
-// OnLockMissing implements the LockManager interface.
+// OnLockMissing implements the Lockmanager interface.
 func (m *managerImpl) OnLockMissing(ctx context.Context, acq *roachpb.LockAcquisition) {
 	if err := m.lt.MarkIneligibleForExport(acq); err != nil {
 		// We don't currently expect any errors other than assertion failures that represent
@@ -668,7 +657,7 @@ func (m *managerImpl) OnRangeLeaseTransferEval() ([]*roachpb.LockAcquisition, in
 }
 
 // OnRangeSubumeEval implements the RangeStateListener interface. It is called
-// during evaluation of Subsume. The returned LockAcquisition structs represent
+// during evalutation of Subsume. The returned LockAcquisition structs represent
 // held locks that we may want to flush to disk as replicated.
 func (m *managerImpl) OnRangeSubsumeEval() ([]*roachpb.LockAcquisition, int64) {
 	if !UnreplicatedLockReliabilityMerge.Get(&m.st.SV) {
@@ -701,8 +690,8 @@ func (m *managerImpl) OnRangeSplit(rhsStartKey roachpb.Key) []roachpb.LockAcquis
 		m.twq.ClearGE(rhsStartKey)
 		return lockToMove
 	} else {
-		// TODO(ssd): We could call ClearGE here but ignore the response. But for
-		// now we leave the old behavior unchanged.
+		// TODO(ssd): We could call ClearGE here but ignore the
+		// response. But for now we leave the old behaviour unchanged.
 		const disable = false
 		m.lt.Clear(disable)
 		m.twq.Clear(disable)
@@ -751,13 +740,13 @@ func (m *managerImpl) LockTableMetrics() LockTableMetrics {
 func (m *managerImpl) exportUnreplicatedLocks() ([]*roachpb.LockAcquisition, int64) {
 	// TODO(ssd): Expose a function that allows us to pre-allocate this a bit better.
 	approximateBatchSize := int64(0)
-	acquisitions := make([]*roachpb.LockAcquisition, 0)
+	acquistions := make([]*roachpb.LockAcquisition, 0)
 	m.lt.ExportUnreplicatedLocks(allKeysSpan, func(acq *roachpb.LockAcquisition) bool {
 		approximateBatchSize += storage.ApproximateLockTableSize(acq)
-		acquisitions = append(acquisitions, acq)
+		acquistions = append(acquistions, acq)
 		return true
 	})
-	return acquisitions, approximateBatchSize
+	return acquistions, approximateBatchSize
 }
 
 // TestingLockTableString implements the MetricExporter interface.
@@ -770,9 +759,9 @@ func (m *managerImpl) TestingTxnWaitQueue() *txnwait.Queue {
 	return m.twq.(*txnwait.Queue)
 }
 
-// SetMaxLockTableSize implements the LockManager interface.
-func (m *managerImpl) SetMaxLockTableSize(maxLocks int64) {
-	m.lt.SetMaxLockTableSize(maxLocks)
+// TestingSetMaxLocks implements the TestingAccessor interface.
+func (m *managerImpl) TestingSetMaxLocks(maxLocks int64) {
+	m.lt.TestingSetMaxLocks(maxLocks)
 }
 
 func (r *Request) isSingle(m kvpb.Method) bool {

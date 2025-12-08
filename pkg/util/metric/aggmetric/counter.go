@@ -410,14 +410,12 @@ var _ metric.Iterable = (*HighCardinalityCounter)(nil)
 var _ metric.PrometheusEvictable = (*HighCardinalityCounter)(nil)
 
 // NewHighCardinalityCounter constructs a new HighCardinalityCounter that uses cache storage
-// with eviction for child metrics. The opts parameter contains the metadata and allows configuring
-// the maximum number of label combinations (MaxLabelValues) and retention time (RetentionTimeTillEviction).
-// If opts has zero values for MaxLabelValues or RetentionTimeTillEviction, defaults will be used.
+// with eviction for child metrics.
 func NewHighCardinalityCounter(
-	opts metric.HighCardinalityMetricOptions, childLabels ...string,
+	metadata metric.Metadata, childLabels ...string,
 ) *HighCardinalityCounter {
-	c := &HighCardinalityCounter{g: *metric.NewCounter(opts.Metadata)}
-	c.initWithCacheStorageType(childLabels, opts.Metadata.Name, opts)
+	c := &HighCardinalityCounter{g: *metric.NewCounter(metadata)}
+	c.initWithCacheStorageType(childLabels, metadata.Name)
 	return c
 }
 

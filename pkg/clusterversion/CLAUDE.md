@@ -1,113 +1,217 @@
 # CockroachDB Release Preparation Guide
 
-This document provides an overview of the quarterly release preparation tasks with links to detailed runbooks.
+This document provides step-by-step instructions for preparing the CockroachDB source tree for beta releases, specifically following the R.1: Prepare for beta checklist from the clusterversion README.md.
 
-## Quick Navigation
+## Beta Release Preparation (R.1 Checklist)
 
-**Release Branch Tasks:**
-- [R.1: Prepare for beta](runbooks/R1_prepare_for_beta.md) - Prepare the release branch for beta
-- [R.2: Mint release](runbooks/R2_mint_release.md) - Finalize cluster version before RC
+When preparing for a beta release (e.g., 25.4 beta1), the following files must be updated:
 
-**Master Branch Tasks:**
-- [M.1: Bump Current Version](runbooks/M1_bump_current_version.md) - Advance master to next development version
-- [M.2: Enable Mixed-Cluster Logic Tests](runbooks/M2_enable_mixed_cluster_logic_tests.md) - Add bootstrap data and test configs
-- [M.3: Enable Upgrade Tests](runbooks/M3_enable_upgrade_tests.md) - Generate fixtures and enable roachtests
-- [M.4: Bump MinSupported Version](runbooks/M4_bump_minsupported_version.md) - Remove support for oldest version
+### 1. Core Version Changes
 
-## For Claude Code AI
+**Set Development Branch Flag:**
+- File: `pkg/clusterversion/cockroach_versions.go`
+- Change: Set `const DevelopmentBranch = false` (line ~334)
 
-**IMPORTANT FOR FUTURE CLAUDE SESSIONS:**
+**Update Version String:**
+- File: `pkg/build/version.txt`
+- Change: Update from alpha to beta version (e.g., `v25.4.0-alpha.2` → `v25.4.0-beta.1`)
 
-When the user asks you to perform a release task (e.g., "perform M.1", "do the M.2 task", "help with R.1"):
+### 2. Regenerate Documentation
 
-1. **Read the appropriate runbook** from the `runbooks/` directory using the Read tool
-2. **Follow the runbook exactly** - it contains step-by-step instructions, expected files, and common errors
-3. **Use the TodoWrite tool** to track your progress through the runbook steps
-4. **Ask clarifying questions** if the runbook is unclear or doesn't match the current codebase state
-
-**Adding new runbooks:**
-
-1. **Create a new file** in `pkg/clusterversion/runbooks/` following the naming pattern: `{R|M}N_descriptive_name.md`
-2. **Update this file** to add the new runbook to the Quick Navigation section
-3. **Update `pkg/clusterversion/README.md`** with a "Claude Prompt" section that references the new runbook
-4. **Follow the existing structure:** Use consistent header levels (# for title, ## for major sections, ### for subsections)
-5. **Include these sections:** Overview, Prerequisites, Step-by-Step Checklist, Expected Files Modified, Validation/Verification, Common Errors, Quick Reference Commands
-
-## Runbook Structure Guidelines
-
-Each runbook should include:
-
-- **Overview**: When to perform the task, what it does, why it's needed
-- **Prerequisites**: What must be completed before starting
-- **Step-by-Step Checklist**: Detailed instructions with commands
-- **Expected Files Modified**: List of files that should change
-- **Validation/Verification**: How to verify the changes are correct
-- **Common Errors and Solutions**: Known issues and fixes
-- **Quick Reference Commands**: Summary of key commands
-
-## General Tips
-
-### Git Workflow
-
-Always check which branch you're on:
+Run the following command to update generated documentation:
 ```bash
-git status
-git log --oneline -5
+./dev gen docs
 ```
 
-When creating commits, follow the project's commit message format (see root CLAUDE.md).
+This updates:
+- `docs/generated/settings/settings-for-tenants.txt`
+- `docs/generated/settings/settings.html`
 
-### Testing
+### 3. Update Test Data
 
-After making changes, always run relevant tests:
+**System Schema Tests:**
+Run this command to regenerate bootstrap test data:
 ```bash
-./dev test pkg/clusterversion pkg/roachpb  # Version-related tests
-./dev test pkg/sql/catalog/bootstrap       # Bootstrap tests
-./dev testlogic                            # Logic tests
+./dev test pkg/sql/catalog/systemschema_test --rewrite
 ```
 
-### Build Verification
+This updates:
+- `pkg/sql/catalog/systemschema_test/testdata/bootstrap_system`
+- `pkg/sql/catalog/systemschema_test/testdata/bootstrap_tenant`
 
-Verify the build works after changes:
+**Bootstrap Hash Test:**
+Run this command and manually update hash values if the test fails:
 ```bash
-./dev build short  # Fast build without UI
+./dev test pkg/sql/catalog/bootstrap --rewrite -f TestInitialValuesToString
 ```
 
-### Common Patterns
+If the rewrite fails, manually update the hash values in:
+- `pkg/sql/catalog/bootstrap/testdata/testdata`
+  - Update `system hash=` value
+  - Update `tenant hash=` value
+  - Update binary data values as shown in test output
 
-**Version Constants:**
-- Format: `V{MAJOR}_{MINOR}_{FeatureName}` for internal versions
-- Format: `V{MAJOR}_{MINOR}` for release versions
-- Example: `V25_4_Start`, `V25_4_AddNewTable`, `V25_4`
+### 4. CLI Test Data Updates
 
-**Internal Version Numbers:**
-- Must be even (2, 4, 6, ...)
-- Increment by 2 for each new internal version
+**Declarative Rules Tests:**
+- File: `pkg/cli/testdata/declarative-rules/deprules`
+  - Change: Update version reference to current release branch (e.g., `debug declarative-print-rules 25.2 dep` → `debug declarative-print-rules 25.3 dep`)
 
-**File Patterns to Watch:**
-- Bootstrap data: `pkg/sql/catalog/bootstrap/data/{version}_*.{keys,sha256}`
-- Schema changer rules: `pkg/sql/schemachanger/scplan/internal/rules/release_{version}/`
-- Logic test configs: `pkg/sql/logictest/logictestbase/logictestbase.go`
+- File: `pkg/cli/testdata/declarative-rules/invalid_version`
+  - Change: Update supported versions list to reflect current releases (use short format like `25.2`, `25.3` not `1000025.x`)
 
-### Multi-Version Pattern
+### 5. Logic Test Updates
 
-CockroachDB maintains a rolling window of N-2 versions:
-- Current development: 26.1 (on master)
-- Previous release: 25.4 (MinSupported after M.4)
-- Older supported: 25.3 (removed in M.4)
+**Internal Catalog Test:**
+- File: `pkg/sql/logictest/testdata/logic_test/crdb_internal_catalog`
+- Change: Update `majorVal` from `1000025` to `25` in systemDatabaseSchemaVersion entries
 
-### Quarterly Cycle
+## Example PR Reference
 
-1. **Around beta time**: M.1 (bump master version)
-2. **After RC published**: M.2 (enable mixed-cluster tests), M.3 (enable upgrade tests)
-3. **After final release**: M.4 (bump MinSupported, clean up old versions)
-4. **Before final release**: R.1 (prepare beta), R.2 (mint release)
+For reference, see PR #148382 which demonstrates the complete set of changes needed for beta release preparation.
 
-### Validation Strategy
+## Expected File Count
 
-Before creating a PR:
-1. Compare file changes with previous PR for the same task
-2. Run core tests (clusterversion, storage, bootstrap)
-3. Verify build succeeds
-4. Check commit message follows conventions
-5. Review all modified files for unintended changes
+A typical beta release preparation should modify approximately 10-12 files:
+1. `pkg/clusterversion/cockroach_versions.go`
+2. `pkg/build/version.txt`
+3. `docs/generated/settings/settings-for-tenants.txt`
+4. `docs/generated/settings/settings.html`
+5. `pkg/sql/catalog/systemschema_test/testdata/bootstrap_system`
+6. `pkg/sql/catalog/systemschema_test/testdata/bootstrap_tenant`
+7. `pkg/sql/catalog/bootstrap/testdata/testdata`
+8. `pkg/cli/testdata/declarative-rules/deprules`
+9. `pkg/cli/testdata/declarative-rules/invalid_version`
+10. `pkg/sql/logictest/testdata/logic_test/crdb_internal_catalog`
+
+## Verification
+
+After making all changes:
+1. Run the bootstrap test to ensure it passes: `./dev test pkg/sql/catalog/bootstrap -f TestInitialValuesToString`
+2. Check git status to verify expected number of modified files
+3. All tests should pass before proceeding with the release
+
+## Notes
+
+- Some test data files contain binary encoded data that may change when version numbers are updated
+- Hash values in bootstrap test data are expected to change when the development branch flag is modified
+- The logic test updates are necessary to reflect the new major version in system database schema version metadata
+- CLI declarative rules tests use short version format (e.g., `25.3`) not the long format (e.g., `1000025.3`)
+- Always run the CLI tests after updating declarative rules files to ensure correct version format
+
+---
+
+## R.2: Mint Release (Creating Final Version)
+
+This change finalizes the cluster version for the release. It should be done when you are absolutely sure that no additional version gates are needed - right before cutting the first RC (typically rc.1).
+
+**Important timing note:** The minting happens before the final v25.X.0 release. It's typically done when preparing rc.1, which is shipped before the final release.
+
+### Critical Step: Update SystemDatabaseSchemaBootstrapVersion
+
+**IMPORTANT:** This is the most commonly missed step and will cause test failures if forgotten.
+
+**File:** `pkg/sql/catalog/systemschema/system.go` (line ~1445)
+
+**Change:** Update from the last internal version to the final minted version:
+
+```go
+// Before (last internal version - e.g., V25_4_AddSystemStatementHintsTable)
+var SystemDatabaseSchemaBootstrapVersion = clusterversion.V25_4_AddSystemStatementHintsTable.Version()
+
+// After (final minted version - e.g., V25_4)
+var SystemDatabaseSchemaBootstrapVersion = clusterversion.V25_4.Version()
+```
+
+### Full Checklist
+
+1. **Update cockroach_versions.go:**
+   - Add the final version key (e.g., `V25_4`) with `Internal: 0`
+   - Set `finalVersion` constant to this key (e.g., `const finalVersion Key = V25_4`)
+
+2. **Update SystemDatabaseSchemaBootstrapVersion** (see above - critical!)
+
+3. **Update version.txt:**
+   ```bash
+   # Update pkg/build/version.txt to RC version (e.g., v25.4.0-rc.1)
+   # Note: Minting happens before the final release, typically when cutting rc.1
+   ```
+
+4. **Regenerate documentation:**
+   ```bash
+   ./dev gen docs
+   ```
+
+5. **Regenerate bootstrap test data:**
+   ```bash
+   ./dev test pkg/sql/catalog/systemschema_test --rewrite
+   ```
+   This updates:
+   - `pkg/sql/catalog/systemschema_test/testdata/bootstrap_system`
+   - `pkg/sql/catalog/systemschema_test/testdata/bootstrap_tenant`
+
+6. **Update bootstrap hash test data:**
+
+   Run the test to see what values need updating:
+   ```bash
+   ./dev test pkg/sql/catalog/bootstrap -f TestInitialValuesToString
+   ```
+
+   The test will fail showing the expected hash values. Update in `pkg/sql/catalog/bootstrap/testdata/testdata`:
+   - Line 1: `system hash=<new_hash_from_test_output>`
+   - Line ~228: `tenant hash=<new_hash_from_test_output>`
+   - Update the binary data on the line following each hash (the `{"key":"8b89898a89","value":"..."}` entry)
+
+7. **Update logic test data:**
+
+   After updating `SystemDatabaseSchemaBootstrapVersion`, you need to update the expected test output:
+
+   - File: `pkg/sql/logictest/testdata/logic_test/crdb_internal_catalog`
+   - Change: Update the `systemDatabaseSchemaVersion` in the test data to match the new minted version
+
+   **Before (with internal version):**
+   ```
+   1           {"database": {"id": 1, "name": "system", ... "systemDatabaseSchemaVersion": {"internal": 14, "majorVal": 25, "minorVal": 3}, ...}}
+   ```
+
+   **After (final minted version):**
+   ```
+   1           {"database": {"id": 1, "name": "system", ... "systemDatabaseSchemaVersion": {"majorVal": 25, "minorVal": 4}, ...}}
+   ```
+
+   Note: The `internal` field should be removed when minting the final version.
+
+8. **Verify all tests pass:**
+   ```bash
+   ./dev test pkg/sql/catalog/bootstrap -f TestInitialValuesToString
+   ./dev test pkg/sql/catalog/systemschema_test
+   ./dev test pkg/sql/logictest -f crdb_internal_catalog
+   ```
+
+### Common Errors and Solutions
+
+**Error: "Unexpected hash value for system"**
+- **Cause:** Forgot to update `SystemDatabaseSchemaBootstrapVersion` in step 2
+- **Fix:** Complete step 2, then re-run steps 5-7
+
+**Error: "output didn't match expected" with binary data diff**
+- **Cause:** The binary-encoded system database descriptor needs updating
+- **Fix:** Copy the exact binary value from the test output diff (shown after the `+` sign) and paste it into the testdata file
+
+### Expected Files Modified
+
+A typical R.2 mint should modify:
+1. `pkg/clusterversion/cockroach_versions.go` (add final version, set finalVersion)
+2. `pkg/sql/catalog/systemschema/system.go` (update SystemDatabaseSchemaBootstrapVersion)
+3. `pkg/build/version.txt` (update to final version)
+4. `docs/generated/settings/settings-for-tenants.txt`
+5. `docs/generated/settings/settings.html`
+6. `pkg/sql/catalog/systemschema_test/testdata/bootstrap_system`
+7. `pkg/sql/catalog/systemschema_test/testdata/bootstrap_tenant`
+8. `pkg/sql/catalog/bootstrap/testdata/testdata` (hashes and binary data)
+9. `pkg/sql/logictest/testdata/logic_test/crdb_internal_catalog` (update systemDatabaseSchemaVersion)
+
+### Example PRs
+
+- For reference: [#112347](https://github.com/cockroachdb/cockroach/pull/112347)
+- 25.3 mint: [#150211](https://github.com/cockroachdb/cockroach/pull/150211)

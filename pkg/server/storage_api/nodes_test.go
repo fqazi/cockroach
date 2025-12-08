@@ -216,7 +216,9 @@ func TestNodesGRPCResponse(t *testing.T) {
 
 	ctx := context.Background()
 
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	srv := serverutils.StartServerOnly(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(110023),
+	})
 	defer srv.Stopper().Stop(ctx)
 
 	if srv.DeploymentMode().IsExternal() {

@@ -8,8 +8,6 @@ package scbuildstmt
 import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
-	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
@@ -53,13 +51,7 @@ func Truncate(b BuildCtx, stmt *tree.Truncate) {
 		if stmt.DropBehavior != tree.DropCascade {
 			name := b.QueryByID(tableID).FilterNamespace().MustGetOneElement()
 			refName := refElts.FilterNamespace().MustGetZeroOrOneElement()
-			// The error code returned here matches PGSQL, even though the CASCADE
-			// operation is supported there with TRUNCATE as well.
-			panic(errors.WithHint(pgerror.Newf(pgcode.FeatureNotSupported,
-				"%q is %s table %q", name.Name,
-				"referenced by foreign key from",
-				refName.Name),
-				"truncate dependent tables at the same time or specify the CASCADE option"))
+			panic(errors.Errorf("%q is %s table %q", name.Name, "referenced by foreign key from", refName.Name))
 		}
 		if !tablesToTruncate.Contains(referencingTableID) {
 			tablesToTruncate.Add(referencingTableID)

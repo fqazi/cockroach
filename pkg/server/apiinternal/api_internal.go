@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/srverrors"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/ts/tspb"
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -54,10 +53,8 @@ type route struct {
 // apiInternalServer provides REST endpoints that proxy to RPC services. It
 // serves as a bridge between HTTP REST clients and internal RPC services.
 type apiInternalServer struct {
-	mux        *mux.Router
-	status     serverpb.RPCStatusClient
-	admin      serverpb.RPCAdminClient
-	timeseries tspb.RPCTimeSeriesClient
+	mux    *mux.Router
+	status serverpb.RPCStatusClient
 }
 
 // NewAPIInternalServer creates a new REST API server that proxies to internal
@@ -71,34 +68,12 @@ func NewAPIInternalServer(
 		return nil, err
 	}
 
-	admin, err := serverpb.DialAdminClient(nd, ctx, localNodeID, cs)
-	if err != nil {
-		return nil, err
-	}
-
-	timeseries, err := rpcbase.DialRPCClient(
-		nd,
-		ctx,
-		localNodeID,
-		rpcbase.DefaultClass,
-		tspb.NewGRPCTimeSeriesClientAdapter,
-		tspb.NewDRPCTimeSeriesClientAdapter,
-		cs,
-	)
-	if err != nil {
-		return nil, err
-	}
-
 	r := &apiInternalServer{
-		status:     status,
-		admin:      admin,
-		timeseries: timeseries,
-		mux:        mux.NewRouter(),
+		status: status,
+		mux:    mux.NewRouter(),
 	}
 
 	r.registerStatusRoutes()
-	r.registerAdminRoutes()
-	r.registerTimeSeriesRoutes()
 
 	decoder.SetAliasTag("json")
 	decoder.IgnoreUnknownKeys(true)

@@ -367,8 +367,7 @@ func WithOnlyVersionBump() WriteDescOption {
 }
 
 type getAllOptions struct {
-	allowLeased  bool
-	withMetadata bool
+	allowLeased bool
 }
 
 // GetAllOption defines functional options for GetAll* methods.
@@ -382,21 +381,9 @@ func (c allowLeasedOption) apply(opts *getAllOptions) {
 	opts.allowLeased = bool(c)
 }
 
-type withMetaDataOption bool
-
-func (c withMetaDataOption) apply(opts *getAllOptions) {
-	opts.withMetadata = bool(c)
-}
-
 // WithAllowLeased configures GetAll* methods to allow leased descriptors.
 func WithAllowLeased() GetAllOption {
 	return allowLeasedOption(true)
-}
-
-// WithMetaData configures GetAll* methods to fetch comments and zone
-// configs.
-func WithMetaData() GetAllOption {
-	return withMetaDataOption(true)
 }
 
 // applyGetAllOptions applies the provided functional options to a getAllOptions struct.
@@ -414,13 +401,6 @@ var allowLeasedDescriptorsInCatalogViews = settings.RegisterBoolSetting(
 	"if true, catalog views (crdb_internal, information_schema, pg_catalog) can use leased descriptors for improved performance",
 	false,
 	settings.WithPublic,
-)
-
-var prefetchLeasedDescriptorsInCatalogViews = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"sql.catalog.allow_leased_descriptors.prefetch.enabled",
-	"if true, catalog views (crdb_internal, information_schema, pg_catalog) can prefetch leased descriptors for improved performance",
-	true,
 )
 
 // GetCatalogGetAllOptions returns the functional options for GetAll* methods
@@ -942,7 +922,7 @@ func (tc *Collection) GetAll(
 	if err != nil {
 		return nstree.Catalog{}, err
 	}
-	ret, err := tc.aggregateAllLayers(ctx, txn, options, stored)
+	ret, err := tc.aggregateAllLayers(ctx, txn, options.allowLeased, stored)
 	if err != nil {
 		return nstree.Catalog{}, err
 	}
@@ -967,8 +947,8 @@ func (tc *Collection) GetAllComments(
 	if err != nil {
 		return nil, err
 	}
-	var options = getAllOptions{}
-	comments, err := tc.aggregateAllLayers(ctx, txn, options, kvComments)
+	const allowLeased = false
+	comments, err := tc.aggregateAllLayers(ctx, txn, allowLeased, kvComments)
 	if err != nil {
 		return nil, err
 	}
@@ -994,7 +974,7 @@ func (tc *Collection) GetAllDatabases(
 	if err != nil {
 		return nstree.Catalog{}, err
 	}
-	ret, err := tc.aggregateAllLayers(ctx, txn, options, stored)
+	ret, err := tc.aggregateAllLayers(ctx, txn, options.allowLeased, stored)
 	if err != nil {
 		return nstree.Catalog{}, err
 	}
@@ -1021,9 +1001,9 @@ func (tc *Collection) GetAllSchemasInDatabase(
 	}
 	var ret nstree.MutableCatalog
 	if db.HasPublicSchemaWithDescriptor() {
-		ret, err = tc.aggregateAllLayers(ctx, txn, options, stored)
+		ret, err = tc.aggregateAllLayers(ctx, txn, options.allowLeased, stored)
 	} else {
-		ret, err = tc.aggregateAllLayers(ctx, txn, options, stored, schemadesc.GetPublicSchema())
+		ret, err = tc.aggregateAllLayers(ctx, txn, options.allowLeased, stored, schemadesc.GetPublicSchema())
 	}
 	if err != nil {
 		return nstree.Catalog{}, err
@@ -1065,12 +1045,7 @@ func (tc *Collection) GetAllObjectsInSchema(
 		if err != nil {
 			return nstree.Catalog{}, err
 		}
-		if options.allowLeased && prefetchLeasedDescriptorsInCatalogViews.Get(&tc.settings.SV) {
-			if err := tc.leased.ensureLeasesExist(ctx, stored.OrderedDescriptorIDs()); err != nil {
-				return nstree.Catalog{}, err
-			}
-		}
-		ret, err = tc.aggregateAllLayers(ctx, txn, options, stored, sc)
+		ret, err = tc.aggregateAllLayers(ctx, txn, options.allowLeased, stored, sc)
 		if err != nil {
 			return nstree.Catalog{}, err
 		}
@@ -1096,11 +1071,6 @@ func (tc *Collection) GetAllInDatabase(
 	if err != nil {
 		return nstree.Catalog{}, err
 	}
-	if options.allowLeased && prefetchLeasedDescriptorsInCatalogViews.Get(&tc.settings.SV) {
-		if err := tc.leased.ensureLeasesExist(ctx, stored.OrderedDescriptorIDs()); err != nil {
-			return nstree.Catalog{}, err
-		}
-	}
 	schemas, err := tc.GetAllSchemasInDatabase(ctx, txn, db, opts...)
 	if err != nil {
 		return nstree.Catalog{}, err
@@ -1113,7 +1083,7 @@ func (tc *Collection) GetAllInDatabase(
 	}); err != nil {
 		return nstree.Catalog{}, err
 	}
-	ret, err := tc.aggregateAllLayers(ctx, txn, options, stored, schemasSlice...)
+	ret, err := tc.aggregateAllLayers(ctx, txn, options.allowLeased, stored, schemasSlice...)
 	if err != nil {
 		return nstree.Catalog{}, err
 	}
@@ -1148,16 +1118,11 @@ func (tc *Collection) GetAllTablesInDatabase(
 	if err != nil {
 		return nstree.Catalog{}, err
 	}
-	if options.allowLeased && prefetchLeasedDescriptorsInCatalogViews.Get(&tc.settings.SV) {
-		if err := tc.leased.ensureLeasesExist(ctx, stored.OrderedDescriptorIDs()); err != nil {
-			return nstree.Catalog{}, err
-		}
-	}
 	var ret nstree.MutableCatalog
 	if db.HasPublicSchemaWithDescriptor() {
-		ret, err = tc.aggregateAllLayers(ctx, txn, options, stored)
+		ret, err = tc.aggregateAllLayers(ctx, txn, options.allowLeased, stored)
 	} else {
-		ret, err = tc.aggregateAllLayers(ctx, txn, options, stored, schemadesc.GetPublicSchema())
+		ret, err = tc.aggregateAllLayers(ctx, txn, options.allowLeased, stored, schemadesc.GetPublicSchema())
 	}
 	if err != nil {
 		return nstree.Catalog{}, err
@@ -1182,7 +1147,7 @@ func (tc *Collection) GetAllTablesInDatabase(
 func (tc *Collection) aggregateAllLayers(
 	ctx context.Context,
 	txn *kv.Txn,
-	getAllOptions getAllOptions,
+	allowLeased bool,
 	stored nstree.Catalog,
 	schemas ...catalog.SchemaDescriptor,
 ) (ret nstree.MutableCatalog, _ error) {
@@ -1281,11 +1246,8 @@ func (tc *Collection) aggregateAllLayers(
 	tc.deletedDescs.ForEach(descIDs.Remove)
 	allDescs := make([]catalog.Descriptor, descIDs.Len())
 	flags := defaultUnleasedFlags()
-	if getAllOptions.allowLeased {
+	if allowLeased {
 		flags.layerFilters.withoutLeased = false
-	}
-	if getAllOptions.withMetadata {
-		flags.layerFilters.withMetadata = true
 	}
 	if err := getDescriptorsByID(
 		ctx, tc, txn, flags, allDescs, descIDs.Ordered()...,
@@ -1520,8 +1482,7 @@ func (tc *Collection) GetIndexComment(
 // MaybeSetReplicationSafeTS modifies a txn to apply the replication safe timestamp,
 // if we are executing against a PCR reader catalog.
 func (tc *Collection) MaybeSetReplicationSafeTS(ctx context.Context, txn *kv.Txn) error {
-	now := tc.leased.lm.GetReadTimestamp(ctx, txn.DB().Clock().Now())
-	defer now.Release(ctx)
+	now := tc.leased.lm.GetReadTimestamp(txn.DB().Clock().Now())
 	desc, err := tc.leased.lm.Acquire(ctx, now, keys.SystemDatabaseID)
 	if err != nil {
 		return err

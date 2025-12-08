@@ -5,7 +5,7 @@ go_library(
     srcs = ["types.go"],
     importpath = "github.com/cockroachdb/cockroach/pkg/roachprod/roachprodutil/codec",
     visibility = ["//visibility:public"],
-    deps = ["@in_yaml_go_yaml_v4//:yaml"],
+    deps = ["@in_gopkg_yaml_v3//:yaml_v3"],
 )
 
 go_test(
@@ -16,8 +16,7 @@ go_test(
     ],
     embed = [":codec"],
     deps = [
-        "//pkg/util/yamlutil",
         "@com_github_stretchr_testify//require",
-        "@in_yaml_go_yaml_v4//:yaml",
+        "@in_gopkg_yaml_v3//:yaml_v3",
     ],
 )

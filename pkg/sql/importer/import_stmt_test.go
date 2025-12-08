@@ -56,6 +56,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/kvclientutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -1295,14 +1296,19 @@ func TestFailedImport(t *testing.T) {
 	ctx := context.Background()
 	baseDir := datapathutils.TestDataPath(t, "csv")
 	tc := serverutils.StartCluster(t, nodes, base.TestClusterArgs{ServerArgs: base.TestServerArgs{
-		ExternalIODir: baseDir,
+		// Test fails within a test tenant. This may be because we're trying
+		// to access files in nodelocal://1, which is off node. More
+		// investigation is required. Tracked with #76378.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
+		SQLMemoryPoolSize: 256 << 20,
+		ExternalIODir:     baseDir,
 	}})
 	defer tc.Stopper().Stop(ctx)
 	conn := tc.ServerConn(0)
 
 	var forceFailure bool
 	for i := 0; i < tc.NumServers(); i++ {
-		tc.ApplicationLayer(i).JobRegistry().(*jobs.Registry).TestingWrapResumerConstructor(
+		tc.Server(i).JobRegistry().(*jobs.Registry).TestingWrapResumerConstructor(
 			jobspb.TypeImport,
 			func(raw jobs.Resumer) jobs.Resumer {
 				r := raw.(*importResumer)
@@ -1365,14 +1371,15 @@ func TestImportIntoCSVCancel(t *testing.T) {
 			},
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 		},
-		ExternalIODir: baseDir,
+		DefaultTestTenant: base.TODOTestTenantDisabled,
+		ExternalIODir:     baseDir,
 	}})
 	defer tc.Stopper().Stop(ctx)
 	conn := tc.ServerConn(0)
 
 	setupDoneCh := make(chan struct{})
 	for i := 0; i < tc.NumServers(); i++ {
-		tc.ApplicationLayer(i).JobRegistry().(*jobs.Registry).TestingWrapResumerConstructor(
+		tc.Server(i).JobRegistry().(*jobs.Registry).TestingWrapResumerConstructor(
 			jobspb.TypeImport,
 			func(raw jobs.Resumer) jobs.Resumer {
 				r := raw.(*importResumer)
@@ -1415,13 +1422,17 @@ func TestImportCSVStmt(t *testing.T) {
 	ctx := context.Background()
 	baseDir := datapathutils.TestDataPath(t, "csv")
 	tc := serverutils.StartCluster(t, nodes, base.TestClusterArgs{ServerArgs: base.TestServerArgs{
-		ExternalIODir: baseDir,
+		// Test fails when run within a test tenant. More
+		// investigation is required. Tracked with #76378.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
+		SQLMemoryPoolSize: 256 << 20,
+		ExternalIODir:     baseDir,
 	}})
 	defer tc.Stopper().Stop(ctx)
 	conn := tc.ServerConn(0)
 
 	for i := 0; i < tc.NumServers(); i++ {
-		tc.ApplicationLayer(i).JobRegistry().(*jobs.Registry).TestingWrapResumerConstructor(
+		tc.Server(i).JobRegistry().(*jobs.Registry).TestingWrapResumerConstructor(
 			jobspb.TypeImport,
 			func(raw jobs.Resumer) jobs.Resumer {
 				r := raw.(*importResumer)
@@ -1741,7 +1752,10 @@ func TestImportCSVStmt(t *testing.T) {
 	t.Run("RBAC-SuperUser", func(t *testing.T) {
 		sqlDB.Exec(t, `CREATE USER testuser`)
 		sqlDB.Exec(t, `GRANT admin TO testuser`)
-		pgURL, cleanupFunc := tc.ApplicationLayer(0).PGUrl(t, serverutils.User(username.TestUser))
+		pgURL, cleanupFunc := pgurlutils.PGUrl(
+			t, tc.ApplicationLayer(0).AdvSQLAddr(), "TestImportPrivileges-testuser",
+			url.User("testuser"),
+		)
 		defer cleanupFunc()
 		testuser, err := gosql.Open("postgres", pgURL.String())
 		if err != nil {
@@ -1854,7 +1868,7 @@ func TestImportCSVStmt(t *testing.T) {
 	// Test userfile import CSV.
 	t.Run("userfile-simple", func(t *testing.T) {
 		userfileURI := "userfile://defaultdb.public.root/test.csv"
-		userfileStorage, err := tc.ApplicationLayer(0).ExecutorConfig().(sql.ExecutorConfig).DistSQLSrv.
+		userfileStorage, err := tc.Server(0).ExecutorConfig().(sql.ExecutorConfig).DistSQLSrv.
 			ExternalStorageFromURI(ctx, userfileURI, username.RootUserName())
 		require.NoError(t, err)
 
@@ -1870,7 +1884,7 @@ func TestImportCSVStmt(t *testing.T) {
 
 	t.Run("userfile-relative-file-path", func(t *testing.T) {
 		userfileURI := "userfile:///import-test/employees.csv"
-		userfileStorage, err := tc.ApplicationLayer(0).ExecutorConfig().(sql.ExecutorConfig).DistSQLSrv.
+		userfileStorage, err := tc.Server(0).ExecutorConfig().(sql.ExecutorConfig).DistSQLSrv.
 			ExternalStorageFromURI(ctx, userfileURI, username.RootUserName())
 		require.NoError(t, err)
 
@@ -1966,13 +1980,21 @@ func TestImportObjectLevelRBAC(t *testing.T) {
 	const nodes = 3
 
 	ctx := context.Background()
-	tc := serverutils.StartCluster(t, nodes, base.TestClusterArgs{})
+	tc := serverutils.StartCluster(t, nodes, base.TestClusterArgs{ServerArgs: base.TestServerArgs{
+		// Test fails when run within a test tenant. More investigation
+		// is required. Tracked with #76378.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
+		SQLMemoryPoolSize: 256 << 20,
+	}})
 	defer tc.Stopper().Stop(ctx)
 	conn := tc.ServerConn(0)
 	rootDB := sqlutils.MakeSQLRunner(conn)
 
 	rootDB.Exec(t, `CREATE USER testuser`)
-	pgURL, cleanupFunc := tc.ApplicationLayer(0).PGUrl(t, serverutils.User(username.TestUser))
+	pgURL, cleanupFunc := pgurlutils.PGUrl(
+		t, tc.ApplicationLayer(0).AdvSQLAddr(), "TestImportPrivileges-testuser",
+		url.User("testuser"),
+	)
 	defer cleanupFunc()
 
 	startTestUser := func(t *testing.T) *gosql.DB {
@@ -1987,7 +2009,7 @@ func TestImportObjectLevelRBAC(t *testing.T) {
 
 	writeToUserfile := func(t *testing.T, filename, data string) {
 		// Write to userfile storage now that testuser has CREATE privileges.
-		ief := tc.ApplicationLayer(0).InternalDB().(isql.DB)
+		ief := tc.Server(0).InternalDB().(isql.DB)
 		fileTableSystem1, err := cloud.ExternalStorageFromURI(
 			ctx, dest, base.ExternalIODirConfig{},
 			cluster.NoSettings, blobs.TestEmptyBlobClientFactory,
@@ -2117,8 +2139,10 @@ func TestImportIntoCSV(t *testing.T) {
 		Knobs: base.TestingKnobs{
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 		},
-		ExternalIODir: baseDir,
-	}})
+		// Test fails when run within a test tenant. More investigation
+		// is required. Tracked with #76378.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
+		ExternalIODir:     baseDir}})
 	defer tc.Stopper().Stop(ctx)
 	conn := tc.ServerConn(0)
 
@@ -2130,7 +2154,7 @@ func TestImportIntoCSV(t *testing.T) {
 	var delayImportFinish chan struct{}
 
 	for i := 0; i < tc.NumServers(); i++ {
-		tc.ApplicationLayer(i).JobRegistry().(*jobs.Registry).TestingWrapResumerConstructor(
+		tc.Server(i).JobRegistry().(*jobs.Registry).TestingWrapResumerConstructor(
 			jobspb.TypeImport,
 			func(raw jobs.Resumer) jobs.Resumer {
 				r := raw.(*importResumer)
@@ -2162,13 +2186,6 @@ func TestImportIntoCSV(t *testing.T) {
 	sqlDB := sqlutils.MakeSQLRunner(conn)
 
 	sqlDB.Exec(t, `SET CLUSTER SETTING kv.bulk_ingest.batch_size = '10KB'`)
-	// 'import-into-no-glob-wildcard' hits an error that the file doesn't exist
-	// in external storage. When run with test tenants, that error also happens
-	// to be annotated with 'rpc error' marker, which we treat as a retryable
-	// one (see joberror.IsPermanentBulkJobError which calls
-	// sqlerrors.IsDistSQLRetryableError). In order to speed up the test, we'll
-	// reduce the retry duration from 2 minutes to 2 seconds.
-	sqlDB.Exec(t, `SET CLUSTER SETTING bulkio.import.retry_duration = '2s'`)
 
 	testFiles := makeCSVData(t, numFiles, rowsPerFile, nodes, rowsPerRaceFile)
 	if util.RaceEnabled {
@@ -2885,7 +2902,7 @@ func TestImportIntoCSV(t *testing.T) {
 		)
 
 		sqlDB.ExpectErr(
-			t, `ingested key collides with an existing one: (\/Tenant\/10)?/Table/\d+/1/0/0`,
+			t, `ingested key collides with an existing one: /Table/\d+/1/0/0`,
 			fmt.Sprintf(`IMPORT INTO t (a, b) CSV DATA (%s)`, testFiles.files[0]),
 		)
 	})
@@ -2927,7 +2944,7 @@ func TestImportIntoCSV(t *testing.T) {
 
 		preCollisionData := sqlDB.QueryStr(t, `SELECT * FROM t`)
 		sqlDB.ExpectErr(
-			t, `ingested key collides with an existing one: (\/Tenant\/10)?/Table/\d+/1/0/0`,
+			t, `ingested key collides with an existing one: /Table/\d+/1/0/0`,
 			fmt.Sprintf(`IMPORT INTO t (a, b) CSV DATA (%s)`, testFiles.fileWithShadowKeys[0]),
 		)
 		sqlDB.CheckQueryResults(t, `SELECT * FROM t`, preCollisionData)
@@ -2963,7 +2980,7 @@ func TestImportIntoCSV(t *testing.T) {
 	// Test userfile IMPORT INTO CSV.
 	t.Run("import-into-userfile-simple", func(t *testing.T) {
 		userfileURI := "userfile://defaultdb.public.root/test.csv"
-		userfileStorage, err := tc.ApplicationLayer(0).ExecutorConfig().(sql.ExecutorConfig).DistSQLSrv.
+		userfileStorage, err := tc.Server(0).ExecutorConfig().(sql.ExecutorConfig).DistSQLSrv.
 			ExternalStorageFromURI(ctx, userfileURI, username.RootUserName())
 		require.NoError(t, err)
 
@@ -3823,8 +3840,11 @@ func TestImportDefaultWithResume(t *testing.T) {
 
 	ctx := context.Background()
 	filterFunc, verifyFunc := kvclientutils.PrefixTransactionRetryFilter(t, importProgressDebugName, 1)
-	srv, db, _ := serverutils.StartServer(t,
+	s, db, _ := serverutils.StartServer(t,
 		base.TestServerArgs{
+			// Test hangs when run within a test tenant. More investigation
+			// is required. Tracked with #76378.
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 			Knobs: base.TestingKnobs{
 				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 				DistSQL: &execinfra.TestingKnobs{
@@ -3836,9 +3856,8 @@ func TestImportDefaultWithResume(t *testing.T) {
 			},
 			SQLMemoryPoolSize: 1 << 30, // 1 GiB
 		})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
 	registry := s.JobRegistry().(*jobs.Registry)
+	defer s.Stopper().Stop(ctx)
 
 	sqlDB := sqlutils.MakeSQLRunner(db)
 	testCases := []struct {
@@ -4350,7 +4369,13 @@ func TestImportControlJobRBAC(t *testing.T) {
 	defer jobs.ResetConstructors()()
 
 	ctx := context.Background()
-	tc := serverutils.StartCluster(t, 1, base.TestClusterArgs{})
+	tc := serverutils.StartCluster(t, 1, base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			// Test fails when run within a test tenant. More investigation
+			// is required. Tracked with #76378.
+			DefaultTestTenant: base.TODOTestTenantDisabled,
+		},
+	})
 	defer tc.Stopper().Stop(ctx)
 	rootDB := sqlutils.MakeSQLRunner(tc.ServerConn(0))
 
@@ -4359,7 +4384,10 @@ func TestImportControlJobRBAC(t *testing.T) {
 	// Create non-root user.
 	rootDB.Exec(t, `CREATE USER testuser`)
 	rootDB.Exec(t, `ALTER ROLE testuser CONTROLJOB`)
-	pgURL, cleanupFunc := tc.ApplicationLayer(0).PGUrl(t, serverutils.User(username.TestUser))
+	pgURL, cleanupFunc := pgurlutils.PGUrl(
+		t, tc.ApplicationLayer(0).AdvSQLAddr(), "TestImportPrivileges-testuser",
+		url.User("testuser"),
+	)
 	defer cleanupFunc()
 	testuser, err := gosql.Open("postgres", pgURL.String())
 	if err != nil {
@@ -4385,7 +4413,7 @@ func TestImportControlJobRBAC(t *testing.T) {
 
 	startLeasedJob := func(t *testing.T, record jobs.Record) *jobs.StartableJob {
 		job, err := jobs.TestingCreateAndStartJob(
-			ctx, registry, tc.ApplicationLayer(0).InternalDB().(isql.DB), record,
+			ctx, registry, tc.Server(0).InternalDB().(isql.DB), record,
 		)
 		require.NoError(t, err)
 		return job
@@ -4767,8 +4795,9 @@ func TestCreateStatsAfterImport(t *testing.T) {
 	st := cluster.MakeClusterSettings()
 	stats.AutomaticStatisticsOnSystemTables.Override(context.Background(), &st.SV, false)
 	args := base.TestServerArgs{
-		Settings:      st,
-		ExternalIODir: baseDir,
+		Settings:          st,
+		DefaultTestTenant: base.TODOTestTenantDisabled,
+		ExternalIODir:     baseDir,
 	}
 	tc := serverutils.StartCluster(t, nodes, base.TestClusterArgs{ServerArgs: args})
 	defer tc.Stopper().Stop(ctx)
@@ -5126,7 +5155,7 @@ func waitForJobResult(
 	t *testing.T, tc serverutils.TestClusterInterface, id jobspb.JobID, expected jobs.State,
 ) {
 	// Force newly created job to be adopted and verify its result.
-	tc.ApplicationLayer(0).JobRegistry().(*jobs.Registry).TestingNudgeAdoptionQueue()
+	tc.Server(0).JobRegistry().(*jobs.Registry).TestingNudgeAdoptionQueue()
 	testutils.SucceedsSoon(t, func() error {
 		var unused int64
 		return tc.ServerConn(0).QueryRow(
@@ -5247,6 +5276,9 @@ func TestImportJobEventLogging(t *testing.T) {
 	ctx := context.Background()
 	baseDir := datapathutils.TestDataPath(t, "avro")
 	args := base.TestServerArgs{ExternalIODir: baseDir}
+	// Test fails within a test tenant. More investigation is required.
+	// Tracked with #76378.
+	args.DefaultTestTenant = base.TODOTestTenantDisabled
 	args.Knobs = base.TestingKnobs{JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals()}
 	params := base.TestClusterArgs{ServerArgs: args}
 	tc := serverutils.StartCluster(t, nodes, params)
@@ -5254,7 +5286,7 @@ func TestImportJobEventLogging(t *testing.T) {
 
 	var forceFailure bool
 	for i := 0; i < tc.NumServers(); i++ {
-		tc.ApplicationLayer(i).JobRegistry().(*jobs.Registry).TestingWrapResumerConstructor(
+		tc.Server(i).JobRegistry().(*jobs.Registry).TestingWrapResumerConstructor(
 			jobspb.TypeImport,
 			func(raw jobs.Resumer) jobs.Resumer {
 				r := raw.(*importResumer)

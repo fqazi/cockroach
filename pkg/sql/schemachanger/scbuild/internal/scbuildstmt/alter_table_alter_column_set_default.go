@@ -8,6 +8,7 @@ package scbuildstmt
 import (
 	"context"
 
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemaexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/seqexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
@@ -74,7 +75,7 @@ func panicIfInvalidNonComputedColumnExpr(
 	newExpr tree.Expr,
 	schemaChange tree.SchemaExprContext,
 ) tree.TypedExpr {
-	if isColumnGeneratedAsIdentity(b, tbl.TableID, col.ColumnID) {
+	if col.GeneratedAsIdentityType != catpb.GeneratedAsIdentityType_NOT_IDENTITY_COLUMN {
 		panic(sqlerrors.NewSyntaxErrorf("column %q is an identity column", colName))
 	}
 

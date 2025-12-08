@@ -13,11 +13,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage/snaprecv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/readsummary"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -44,10 +44,9 @@ var snapshotIngestAsWriteThreshold = settings.RegisterByteSizeSetting(
 	"size below which a range snapshot ingestion will be performed as a normal write",
 	metamorphic.ConstantWithTestChoice[int64](
 		"kv.snapshot.ingest_as_write_threshold",
-		100<<10, // default value is 100KiB
-		1<<30,   // 1GiB causes everything to be a normal write
-		0,       // 0B causes everything to be an ingest
-	),
+		100<<10, /* default value is 100KiB */
+		1<<30,   /* 1GiB causes everything to be a normal write */
+		0 /* 0B causes everything to be an ingest */),
 )
 
 // replicaRaftStorage implements the raft.Storage interface.
@@ -125,7 +124,7 @@ func (r *replicaRaftStorage) InitialState() (raftpb.HardState, raftpb.ConfState,
 	r.mu.AssertHeld()
 
 	ctx := r.AnnotateCtx(context.TODO())
-	hs, err := r.raftMu.stateLoader.LoadHardState(ctx, r.store.LogEngine())
+	hs, err := r.raftMu.stateLoader.LoadHardState(ctx, r.store.TODOEngine())
 	if err != nil {
 		r.reportRaftStorageError(err)
 		return raftpb.HardState{}, raftpb.ConfState{}, err
@@ -221,10 +220,10 @@ func (r *Replica) GetSnapshot(
 	// the corresponding Raft command not applied yet).
 	r.raftMu.Lock()
 	startKey := r.shMu.state.Desc.StartKey
-	spans := rditer.MakeReplicatedKeySpans(r.shMu.state.Desc)
-	snap := r.store.StateEngine().NewSnapshot(spans...)
+	spans := rditer.MakeAllKeySpans(r.shMu.state.Desc) // needs unreplicated to access Raft state
+	snap := r.store.TODOEngine().NewSnapshot(spans...)
 	if util.RaceEnabled {
-		ss := rditer.MakeReplicatedKeySpanSet(r.shMu.state.Desc)
+		ss := rditer.MakeAllKeySpanSet(r.shMu.state.Desc)
 		defer ss.Release()
 		snap = spanset.NewReader(snap, ss, hlc.Timestamp{})
 	}
@@ -249,7 +248,7 @@ func (r *Replica) GetSnapshot(
 	// NB: we don't hold either of locks, so can't use Replica.mu.stateLoader or
 	// Replica.raftMu.stateLoader. This call is not performance sensitive, so
 	// create a new state loader.
-	snapData, err := snapshot(ctx, snapUUID, kvstorage.MakeStateLoader(rangeID), snap, startKey)
+	snapData, err := snapshot(ctx, snapUUID, stateloader.Make(rangeID), snap, startKey)
 	if err != nil {
 		log.KvExec.Errorf(ctx, "error generating snapshot: %+v", err)
 		return nil, err
@@ -265,7 +264,7 @@ type OutgoingSnapshot struct {
 	// The Raft snapshot message to send. Contains SnapUUID as its data.
 	RaftSnap raftpb.Snapshot
 	// The Pebble snapshot that will be streamed from.
-	StateSnap kvstorage.StateRO
+	EngineSnap storage.Reader
 	// The replica state within the snapshot.
 	State          kvserverpb.ReplicaState
 	sharedBackings []objstorage.RemoteObjectBackingHandle
@@ -284,7 +283,7 @@ func (s OutgoingSnapshot) SafeFormat(w redact.SafePrinter, _ rune) {
 
 // Close releases the resources associated with the snapshot.
 func (s *OutgoingSnapshot) Close() {
-	s.StateSnap.Close()
+	s.EngineSnap.Close()
 	for i := range s.sharedBackings {
 		s.sharedBackings[i].Close()
 	}
@@ -335,8 +334,8 @@ func (s IncomingSnapshot) SafeFormat(w redact.SafePrinter, _ rune) {
 func snapshot(
 	ctx context.Context,
 	snapUUID uuid.UUID,
-	rsl kvstorage.StateLoader,
-	snap kvstorage.StateRO,
+	rsl stateloader.StateLoader,
+	snap storage.Reader,
 	startKey roachpb.RKey,
 ) (OutgoingSnapshot, error) {
 	var desc roachpb.RangeDescriptor
@@ -365,9 +364,9 @@ func snapshot(
 	state.TruncatedState = nil
 
 	return OutgoingSnapshot{
-		StateSnap: snap,
-		State:     state,
-		SnapUUID:  snapUUID,
+		EngineSnap: snap,
+		State:      state,
+		SnapUUID:   snapUUID,
 		RaftSnap: raftpb.Snapshot{
 			Data: snapUUID.GetBytes(),
 			Metadata: raftpb.SnapshotMetadata{
@@ -569,7 +568,7 @@ func (r *Replica) applySnapshotRaftMuLocked(
 		Term:  kvpb.RaftTerm(nonemptySnap.Metadata.Term),
 	}
 
-	subsume := make([]kvstorage.DestroyReplicaInfo, 0, len(subsumedRepls))
+	subsume := make([]destroyReplicaInfo, 0, len(subsumedRepls))
 	for _, sr := range subsumedRepls {
 		// We mark the replica as destroyed so that new commands are not
 		// accepted. This destroy status will be detected after the batch
@@ -583,18 +582,19 @@ func (r *Replica) applySnapshotRaftMuLocked(
 		sr.shMu.destroyStatus.Set(
 			kvpb.NewRangeNotFoundError(sr.RangeID, sr.store.StoreID()),
 			destroyReasonRemoved)
+		srDesc := sr.descRLocked()
 		sr.mu.Unlock()
 		sr.readOnlyCmdMu.Unlock()
 
-		subsume = append(subsume, sr.destroyInfoRaftMuLocked())
+		subsume = append(subsume, destroyReplicaInfo{id: sr.ID(), desc: srDesc})
 	}
 
-	// NB: subsumed replicas in snapWriteBuilder must be sorted by start key. This
+	// NB: subsumedDescs in snapWriteBuilder must be sorted by start key. This
 	// should be the case, by construction, but add a test-only assertion just in
 	// case this ever changes.
-	testingAssert(slices.IsSortedFunc(subsume, func(a, b kvstorage.DestroyReplicaInfo) int {
-		return a.Keys.Key.Compare(b.Keys.Key)
-	}), "subsumed replicas must be sorted by start key")
+	testingAssert(slices.IsSortedFunc(subsume, func(a, b destroyReplicaInfo) int {
+		return a.desc.StartKey.Compare(b.desc.StartKey)
+	}), "subsumedDescs must be sorted by start key")
 
 	sb := snapWriteBuilder{
 		id: r.ID(),
@@ -677,8 +677,8 @@ func (r *Replica) applySnapshotRaftMuLocked(
 	// has not yet been updated. Any errors past this point must therefore be
 	// treated as fatal.
 
-	sl := kvstorage.MakeStateLoader(desc.RangeID)
-	state, err := sl.Load(ctx, r.store.StateEngine(), desc)
+	sl := stateloader.Make(desc.RangeID)
+	state, err := sl.Load(ctx, r.store.TODOEngine(), desc)
 	if err != nil {
 		log.KvExec.Fatalf(ctx, "unable to load replica state: %s", err)
 	}
@@ -698,7 +698,7 @@ func (r *Replica) applySnapshotRaftMuLocked(
 	// Read the prior read summary for this range, which was included in the
 	// snapshot. We may need to use it to bump our timestamp cache if we
 	// discover that we are the leaseholder as of the snapshot's log index.
-	prioReadSum, err := readsummary.Load(ctx, r.store.StateEngine(), r.RangeID)
+	prioReadSum, err := readsummary.Load(ctx, r.store.TODOEngine(), r.RangeID)
 	if err != nil {
 		log.KvExec.Fatalf(ctx, "failed to read prior read summary after applying snapshot: %+v", err)
 	}
@@ -818,7 +818,7 @@ func (r *Replica) clearSubsumedReplicaInMemoryData(
 		// allowed in (perhaps not involving any of the RangeIDs known to the merge
 		// but still touching its keyspace) and causing corruption.
 		ph, err := r.store.removeInitializedReplicaRaftMuLocked(
-			ctx, sr, kvstorage.MergedTombstoneReplicaID, "subsumed by snapshot",
+			ctx, sr, mergedTombstoneReplicaID, "subsumed by snapshot",
 			RemoveOptions{
 				// The data was already destroyed by clearSubsumedReplicaDiskData.
 				DestroyData:       false,
@@ -841,81 +841,4 @@ func testingAssert(cond bool, msg string) {
 	if buildutil.CrdbTestBuild && !cond {
 		panic(msg)
 	}
-}
-
-// destroyInfoRaftMuLocked returns the information necessary for constructing a
-// storage write destroying this replica.
-//
-// NB: since raftMu is locked, there is no concurrent write that would be able
-// to change this replica. In particular, no concurrent log truncations. The
-// caller must make sure to complete the destruction before raftMu is released.
-func (r *Replica) destroyInfoRaftMuLocked() kvstorage.DestroyReplicaInfo {
-	r.raftMu.AssertHeld()
-	return kvstorage.DestroyReplicaInfo{
-		FullReplicaID: r.ID(),
-		Keys:          r.shMu.state.Desc.RSpan(),
-	}
-}
-
-// overlapsUnreplicatedRangeIDLocalKeys checks if the provided span overlaps
-// with any unreplicated rangeID local keys.
-// Note that we could receive the span with a nil startKey, which has a special
-// meaning that the span represents: [endKey.Prev(), endKey).
-func overlapsUnreplicatedRangeIDLocalKeys(span spanset.TrickySpan) error {
-	fullRangeIDLocalSpans := roachpb.Span{
-		Key:    keys.LocalRangeIDPrefix.AsRawKey(),
-		EndKey: keys.LocalRangeIDPrefix.AsRawKey().PrefixEnd(),
-	}
-
-	// If the provided span is completely outside the rangeID local spans for any
-	// rangeID, then there is no overlap with any rangeID local keys.
-	if !spanset.Overlaps(fullRangeIDLocalSpans, span) {
-		return nil
-	}
-
-	// At this point, we know that we overlap with fullRangeIDLocalSpans. If we
-	// are not completely within fullRangeIDLocalSpans, return an error as we
-	// make an assumption that spans should respect the local RangeID tree
-	// structure, and that spans that partially overlaps with
-	// fullRangeIDLocalSpans don't make logical sense.
-	if !spanset.Contains(fullRangeIDLocalSpans, span) {
-		return errors.Errorf("overlapping an unreplicated rangeID key")
-	}
-
-	// If the span in inside fullRangeIDLocalSpans, we expect that both start and
-	// end keys should be in the same rangeID.
-	rangeIDKey := span.Key
-	if rangeIDKey == nil {
-		rangeIDKey = span.EndKey
-	}
-	rangeID, err := keys.DecodeRangeIDPrefix(rangeIDKey)
-	if err != nil {
-		return errors.NewAssertionErrorWithWrappedErrf(err,
-			"could not decode range ID for span: %s", span)
-	}
-	if spanset.Overlaps(roachpb.Span{
-		Key:    keys.MakeRangeIDUnreplicatedPrefix(rangeID),
-		EndKey: keys.MakeRangeIDUnreplicatedPrefix(rangeID).PrefixEnd(),
-	}, span) {
-		return errors.Errorf("overlapping an unreplicated rangeID span")
-	}
-
-	return nil
-}
-
-// overlapsStoreLocalKeys returns an error if the provided span overlaps
-// with any store local keys.
-// Note that we could receive the span with a nil startKey, which has a special
-// meaning that the span represents: [endKey.Prev(), endKey).
-func overlapsStoreLocalKeys(span spanset.TrickySpan) error {
-	localStoreSpan := roachpb.Span{
-		Key:    keys.LocalStorePrefix,
-		EndKey: keys.LocalStoreMax,
-	}
-
-	if spanset.Overlaps(localStoreSpan, span) {
-		return errors.Errorf("overlaps with store local keys")
-	}
-
-	return nil
 }

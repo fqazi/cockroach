@@ -10,6 +10,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemaexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
@@ -97,7 +98,7 @@ func alterTableAlterColumnType(
 	var err error
 	newColType.Type, err = schemachange.ValidateAlterColumnTypeChecks(
 		b, t, b.ClusterSettings(), newColType.Type,
-		isColumnGeneratedAsIdentity(b, tbl.TableID, col.ColumnID),
+		col.GeneratedAsIdentityType != catpb.GeneratedAsIdentityType_NOT_IDENTITY_COLUMN,
 		newColType.IsVirtual)
 	if err != nil {
 		panic(err)
@@ -214,7 +215,7 @@ func validateNewTypeForComputedColumn(
 		func() colinfo.ResultColumns {
 			return getNonDropResultColumns(b, tableID)
 		},
-		func(columnName tree.Name) (exists, accessible, computed bool, id catid.ColumnID, typ *types.T) {
+		func(columnName tree.Name) (exists bool, accessible bool, id catid.ColumnID, typ *types.T) {
 			return columnLookupFn(b, tableID, columnName)
 		},
 	)
@@ -335,8 +336,6 @@ func handleGeneralColumnConversion(
 			"old active version; ALTER COLUMN TYPE requires backfill. Reverting to legacy handling"))
 	}
 
-	colHidden := retrieveColumnHidden(b, tbl.TableID, col.ColumnID)
-
 	colNotNull := retrieveColumnNotNull(b, tbl.TableID, col.ColumnID)
 
 	// Generate the ID of the new column we are adding.
@@ -381,9 +380,6 @@ func handleGeneralColumnConversion(
 	}
 	if colNotNull != nil {
 		b.Drop(colNotNull)
-	}
-	if colHidden != nil {
-		b.Drop(colHidden)
 	}
 	if oldColComment != nil {
 		b.Drop(oldColComment)
@@ -433,7 +429,6 @@ func handleGeneralColumnConversion(
 			Expression: *b.WrapExpression(tbl.TableID, expr),
 			Usage:      scpb.ColumnComputeExpression_ALTER_TYPE_USING,
 		},
-		hidden:  colHidden != nil,
 		notNull: retrieveColumnNotNull(b, tbl.TableID, col.ColumnID) != nil,
 		// The new column will be placed in the same column family as the one
 		// it's replacing, so there's no need to specify a family.
@@ -536,7 +531,7 @@ func getComputeExpressionForBackfill(
 		func() colinfo.ResultColumns {
 			return getNonDropResultColumns(b, tableID)
 		},
-		func(columnName tree.Name) (exists, accessible, computed bool, id catid.ColumnID, typ *types.T) {
+		func(columnName tree.Name) (exists bool, accessible bool, id catid.ColumnID, typ *types.T) {
 			return columnLookupFn(b, tableID, columnName)
 		},
 	)

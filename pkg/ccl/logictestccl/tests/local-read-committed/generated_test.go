@@ -71,7 +71,7 @@ func TestMain(m *testing.M) {
 	serverutils.InitTestClusterFactory(testcluster.TestClusterFactory)
 
 	defer serverutils.TestingSetDefaultTenantSelectionOverride(
-		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(156124),
+		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(76378),
 	)()
 
 	os.Exit(m.Run())
@@ -361,13 +361,6 @@ func TestReadCommittedLogic_bytes(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "bytes")
-}
-
-func TestReadCommittedLogic_canary_stats(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "canary_stats")
 }
 
 func TestReadCommittedLogic_cascade(
@@ -2127,13 +2120,6 @@ func TestReadCommittedLogic_srfs(
 	runLogicTest(t, "srfs")
 }
 
-func TestReadCommittedLogic_statement_hint_builtins(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "statement_hint_builtins")
-}
-
 func TestReadCommittedLogic_statement_source(
 	t *testing.T,
 ) {
@@ -3028,6 +3014,13 @@ func TestReadCommittedExecBuild_fk_read_committed(
 ) {
 	defer leaktest.AfterTest(t)()
 	runExecBuildLogicTest(t, "fk_read_committed")
+}
+
+func TestReadCommittedExecBuild_geospatial(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runExecBuildLogicTest(t, "geospatial")
 }
 
 func TestReadCommittedExecBuild_select_for_update_read_committed(

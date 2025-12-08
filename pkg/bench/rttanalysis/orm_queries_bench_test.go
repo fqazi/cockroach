@@ -946,8 +946,8 @@ ORDER BY
 		{
 			Name: `liquibase migrations on multiple dbs`,
 			// 15 databases, each with 40 tables.
-			SetupEx: liquibaseSetup,
-			ResetEx: liquibaseReset,
+			Setup: liquibaseSetup,
+			Reset: liquibaseReset,
 			Stmt: `SELECT
   NULL AS table_cat,
   n.nspname AS table_schem,
@@ -1067,18 +1067,16 @@ func buildNTypes(n int) string {
 	return b.String()
 }
 
-func buildNDatabasesWithMTables(amtDbs int, amtTbls int) ([]string, []string) {
-	setupEx := make([]string, amtDbs)
-	resetEx := make([]string, amtDbs)
+func buildNDatabasesWithMTables(amtDbs int, amtTbls int) (string, string) {
+	b := strings.Builder{}
+	reset := strings.Builder{}
 	tbls := buildNTables(amtTbls)
 	for i := 0; i < amtDbs; i++ {
 		db := fmt.Sprintf("d%d", i)
-		b := strings.Builder{}
 		b.WriteString(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s;\n", db))
+		reset.WriteString(fmt.Sprintf("DROP DATABASE %s;\n", db))
 		b.WriteString(fmt.Sprintf("USE %s;\n", db))
 		b.WriteString(tbls)
-		setupEx[i] = b.String()
-		resetEx[i] = fmt.Sprintf("DROP DATABASE %s", db)
 	}
-	return setupEx, resetEx
+	return b.String(), reset.String()
 }

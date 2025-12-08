@@ -39,19 +39,20 @@ func MatchInOrder(s string, res ...string) error {
 	return nil
 }
 
-// SetVModule sets the logging vmodule. The vmodule will be reset by the given
-// testing.TB's Cleanup method.
+// SetVModule sets the logging vmodule. The returned func should be deferred by
+// the caller to reset the vmodule at the end of the test
+//
+//	defer testutils.SetVModules(t, "some_file=3")()
 //
 // Not safe for concurrent use.
-func SetVModule(t testing.TB, vmodule string) {
-	t.Helper()
+func SetVModule(t testing.TB, vmodule string) func() {
 	prevVModule := log.GetVModule()
 	if err := log.SetVModule(vmodule); err != nil {
 		t.Fatalf("failed to set vmodule: %s", err.Error())
 	}
-	t.Cleanup(func() {
+	return func() {
 		if err := log.SetVModule(prevVModule); err != nil {
 			t.Fatalf("failed to set vmodule: %s", err.Error())
 		}
-	})
+	}
 }

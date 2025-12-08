@@ -149,13 +149,11 @@ func (og *operationGenerator) tableHasDependencies(
 	return og.scanBool(ctx, tx, q, tableName.Object(), tableName.Schema(), skipSelfRef)
 }
 
-// columnDropViolatesFKIndexRequirements determines if dropping this column
-// will violate foreign key index requirements. This occurs when dropping the
-// column would leave a foreign key without a suitable backing index.
-// CockroachDB requires backing indexes to have the same number of key columns
-// as the FK in any order. Only key columns (not stored columns) count toward
-// FK backing index requirements.
-func (og *operationGenerator) columnDropViolatesFKIndexRequirements(
+// columnRemovalWillDropFKBackingIndexes determines if dropping this column
+// will lead to no indexes backing a foreign key. CockroachDB will consider
+// alternative indexes backing a foreign key if they have the same number of
+// key columns as the FK in any order.
+func (og *operationGenerator) columnRemovalWillDropFKBackingIndexes(
 	ctx context.Context, tx pgx.Tx, tableName *tree.TableName, columName tree.Name,
 ) (bool, error) {
 	return og.scanBool(ctx, tx, fmt.Sprintf(`
@@ -228,7 +226,6 @@ WITH
 							[SHOW INDEXES FROM %s]
 						WHERE
 							column_name = $2
-							AND storing = 'f'
 							AND index_name
 								NOT LIKE '%%_pkey' -- renames would keep the old table name
 					)
@@ -1554,39 +1551,4 @@ func (og *operationGenerator) tableHasUniqueConstraintMutation(
 			WHERE (m->>'direction')::STRING IN ('ADD', 'DROP')
 			AND (m->'index'->>'unique')::BOOL IS TRUE
 		);`, tableName)
-}
-
-// getTableForeignKeyReferences returns a list of tables that reference
-// the specified table via foreign key references.
-func (og *operationGenerator) getTableForeignKeyReferences(
-	ctx context.Context, tx pgx.Tx, tableName *tree.TableName,
-) ([]tree.TableName, error) {
-	rows, err := tx.Query(ctx,
-		`WITH fk_refs AS (
-					SELECT conrelid FROM pg_constraint WHERE
-						confrelid = $1::REGCLASS AND
-						conrelid <> $1::REGCLASS
-				)
-				SELECT
-					n.nspname as schema_name,  c.relname AS object_name
-				FROM fk_refs AS f
-					JOIN pg_class AS c ON c.oid = f.conrelid
-					JOIN pg_namespace AS n ON c.relnamespace = n.oid
-`,
-		tableName.String())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []tree.TableName
-	for rows.Next() {
-		var table, schema string
-		err = rows.Scan(&schema, &table)
-		if err != nil {
-			return nil, err
-		}
-		name := tree.MakeTableNameWithSchema(tableName.CatalogName, tree.Name(schema), tree.Name(table))
-		result = append(result, name)
-	}
-	return result, rows.Err()
 }

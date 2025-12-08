@@ -6,15 +6,12 @@
 package mmaintegration
 
 import (
-	"context"
-
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/mmaprototype"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 )
 
@@ -42,24 +39,13 @@ type storePool interface {
 // mmaState is an interface that defines the methods that the allocator sync
 // needs to call on the mma. Using an interface to simplify testing.
 type mmaState interface {
-	// RegisterExternalChange is called by the allocator sync to register
+	// RegisterExternalChanges is called by the allocator sync to register
 	// external changes with the mma.
-	RegisterExternalChange(
-		change mmaprototype.PendingRangeChange) (_ mmaprototype.ExternalRangeChange, ok bool)
-	// AdjustPendingChangeDisposition is called by the allocator sync to adjust
-	// the disposition of pending changes to a range.
-	AdjustPendingChangeDisposition(change mmaprototype.ExternalRangeChange, success bool)
-	// BuildMMARebalanceAdvisor is called by the allocator sync to build a
-	// MMARebalanceAdvisor for the given existing store and candidates. The
-	// advisor should be later passed to IsInConflictWithMMA to determine if a
-	// given candidate is in conflict with the existing store.
-	BuildMMARebalanceAdvisor(existing roachpb.StoreID, cands []roachpb.StoreID) *mmaprototype.MMARebalanceAdvisor
-	// IsInConflictWithMMA is called by the allocator sync to determine if the
-	// given candidate is in conflict with the existing store.
-	IsInConflictWithMMA(ctx context.Context, cand roachpb.StoreID, advisor *mmaprototype.MMARebalanceAdvisor, cpuOnly bool) bool
+	RegisterExternalChanges(changes []mmaprototype.ReplicaChange) []mmaprototype.ChangeID
+	// AdjustPendingChangesDisposition is called by the allocator sync to adjust
+	// the disposition of pending changes.
+	AdjustPendingChangesDisposition(changeIDs []mmaprototype.ChangeID, success bool)
 }
-
-var _ mmaState = mmaprototype.Allocator(nil)
 
 // TODO(wenyihu6): make sure allocator sync can tolerate cluster setting
 // changes not happening consistently or atomically across components. (For
@@ -72,7 +58,6 @@ var _ mmaState = mmaprototype.Allocator(nil)
 // pool. When mma is disabled, its sole purpose is to track and apply changes
 // to the store pool upon success.
 type AllocatorSync struct {
-	knobs        *TestingKnobs
 	sp           storePool
 	st           *cluster.Settings
 	mmaAllocator mmaState
@@ -89,14 +74,11 @@ type AllocatorSync struct {
 	}
 }
 
-func NewAllocatorSync(
-	sp storePool, mmaAllocator mmaState, st *cluster.Settings, knobs *TestingKnobs,
-) *AllocatorSync {
+func NewAllocatorSync(sp storePool, mmaAllocator mmaState, st *cluster.Settings) *AllocatorSync {
 	as := &AllocatorSync{
 		sp:           sp,
 		st:           st,
 		mmaAllocator: mmaAllocator,
-		knobs:        knobs,
 	}
 	as.mu.trackedChanges = make(map[SyncChangeID]trackedAllocatorChange)
 	return as
@@ -146,27 +128,22 @@ func (as *AllocatorSync) getTrackedChange(syncChangeID SyncChangeID) trackedAllo
 // identifier that can be used to call PostApply to apply the change to the
 // store pool upon success.
 func (as *AllocatorSync) NonMMAPreTransferLease(
-	ctx context.Context,
 	desc *roachpb.RangeDescriptor,
 	usage allocator.RangeUsageInfo,
 	transferFrom, transferTo roachpb.ReplicationTarget,
 ) SyncChangeID {
-	var isMMARegistered bool
-	var mmaChange mmaprototype.ExternalRangeChange
+	var changeIDs []mmaprototype.ChangeID
 	if kvserverbase.LoadBasedRebalancingModeIsMMA(&as.st.SV) {
-		change := convertLeaseTransferToMMA(desc, usage, transferFrom, transferTo)
-		mmaChange, isMMARegistered = as.mmaAllocator.RegisterExternalChange(change)
+		changeIDs = as.mmaAllocator.RegisterExternalChanges(convertLeaseTransferToMMA(desc, usage, transferFrom, transferTo))
 	}
 	trackedChange := trackedAllocatorChange{
-		isMMARegistered: isMMARegistered,
-		mmaChange:       mmaChange,
-		usage:           usage,
+		changeIDs: changeIDs,
+		usage:     usage,
 		leaseTransferOp: &leaseTransferOp{
 			transferFrom: transferFrom.StoreID,
 			transferTo:   transferTo.StoreID,
 		},
 	}
-	log.KvDistribution.VEventf(ctx, 2, "non-mma: adding lease transfer from s%s to s%s", transferFrom.StoreID, transferTo.StoreID)
 	return as.addTrackedChange(trackedChange)
 }
 
@@ -175,33 +152,21 @@ func (as *AllocatorSync) NonMMAPreTransferLease(
 // identifier that can be used to call PostApply to apply the change to the
 // store pool upon success.
 func (as *AllocatorSync) NonMMAPreChangeReplicas(
-	ctx context.Context,
 	desc *roachpb.RangeDescriptor,
 	usage allocator.RangeUsageInfo,
 	changes kvpb.ReplicationChanges,
 	leaseholderStoreID roachpb.StoreID,
 ) SyncChangeID {
-	var isMMARegistered bool
-	var mmaChange mmaprototype.ExternalRangeChange
+	var changeIDs []mmaprototype.ChangeID
 	if kvserverbase.LoadBasedRebalancingModeIsMMA(&as.st.SV) {
-		var err error
-		change, err := convertReplicaChangeToMMA(desc, usage, changes, leaseholderStoreID)
-		if err != nil {
-			log.KvDistribution.Errorf(ctx, "failed to convert replica change to mma: %v", err)
-		} else {
-			mmaChange, isMMARegistered = as.mmaAllocator.RegisterExternalChange(change)
-		}
+		changeIDs = as.mmaAllocator.RegisterExternalChanges(convertReplicaChangeToMMA(desc, usage, changes, leaseholderStoreID))
 	}
 	trackedChange := trackedAllocatorChange{
-		isMMARegistered: isMMARegistered,
-		mmaChange:       mmaChange,
-		usage:           usage,
+		changeIDs: changeIDs,
+		usage:     usage,
 		changeReplicasOp: &changeReplicasOp{
 			chgs: changes,
 		},
-	}
-	for _, chg := range changes {
-		log.KvDistribution.VEventf(ctx, 2, "non-mma: adding s%s with change=%s", chg.Target.StoreID, chg.ChangeType)
 	}
 	return as.addTrackedChange(trackedChange)
 }
@@ -211,28 +176,21 @@ func (as *AllocatorSync) NonMMAPreChangeReplicas(
 // caller. It is an identifier that can be used to call PostApply to apply the
 // change to the store pool upon success.
 func (as *AllocatorSync) MMAPreApply(
-	ctx context.Context,
-	usage allocator.RangeUsageInfo,
-	pendingChange mmaprototype.ExternalRangeChange,
+	usage allocator.RangeUsageInfo, pendingChange mmaprototype.PendingRangeChange,
 ) SyncChangeID {
 	trackedChange := trackedAllocatorChange{
-		isMMARegistered: true,
-		mmaChange:       pendingChange,
-		usage:           usage,
+		changeIDs: pendingChange.ChangeIDs(),
+		usage:     usage,
 	}
 	switch {
-	case pendingChange.IsPureTransferLease():
+	case pendingChange.IsTransferLease():
 		trackedChange.leaseTransferOp = &leaseTransferOp{
 			transferFrom: pendingChange.LeaseTransferFrom(),
 			transferTo:   pendingChange.LeaseTransferTarget(),
 		}
-		log.KvDistribution.VEventf(ctx, 2, "mma: adding lease transfer from s%s to s%s", pendingChange.LeaseTransferFrom(), pendingChange.LeaseTransferTarget())
 	case pendingChange.IsChangeReplicas():
 		trackedChange.changeReplicasOp = &changeReplicasOp{
 			chgs: pendingChange.ReplicationChanges(),
-		}
-		for _, chg := range pendingChange.ReplicationChanges() {
-			log.KvDistribution.VEventf(ctx, 2, "mma: adding s%s with change=%s", chg.Target.StoreID, chg.ChangeType)
 		}
 	default:
 		panic("unexpected change type")
@@ -240,11 +198,11 @@ func (as *AllocatorSync) MMAPreApply(
 	return as.addTrackedChange(trackedChange)
 }
 
-// MarkChangeAsFailed marks the given changes to the range as failed without
-// going through allocator sync. This is used when mma changes fail before
-// even registering with mma via MMAPreApply.
-func (as *AllocatorSync) MarkChangeAsFailed(change mmaprototype.ExternalRangeChange) {
-	as.mmaAllocator.AdjustPendingChangeDisposition(change, false /* success */)
+// MarkChangesAsFailed marks the given change IDs as failed without going
+// through allocator sync. This is used when mma changes fail before even
+// registering with mma via MMAPreApply.
+func (as *AllocatorSync) MarkChangesAsFailed(changeIDs []mmaprototype.ChangeID) {
+	as.mmaAllocator.AdjustPendingChangesDisposition(changeIDs, false /* success */)
 }
 
 // PostApply is called by the lease/replicate queue to apply a change to the
@@ -252,9 +210,9 @@ func (as *AllocatorSync) MarkChangeAsFailed(change mmaprototype.ExternalRangeCha
 // NonMMAPreTransferLease or NonMMAPreChangeReplicas.
 func (as *AllocatorSync) PostApply(syncChangeID SyncChangeID, success bool) {
 	trackedChange := as.getTrackedChange(syncChangeID)
-	if trackedChange.isMMARegistered {
+	if changeIDs := trackedChange.changeIDs; changeIDs != nil {
 		// Call into without checking cluster setting.
-		as.mmaAllocator.AdjustPendingChangeDisposition(trackedChange.mmaChange, success)
+		as.mmaAllocator.AdjustPendingChangesDisposition(changeIDs, success)
 	}
 	if !success {
 		return

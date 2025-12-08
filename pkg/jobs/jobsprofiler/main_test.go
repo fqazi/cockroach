@@ -9,7 +9,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl"
 	"github.com/cockroachdb/cockroach/pkg/security/securityassets"
 	"github.com/cockroachdb/cockroach/pkg/security/securitytest"
@@ -23,8 +22,7 @@ func TestMain(m *testing.M) {
 	defer ccl.TestingEnableEnterprise()() // allow usage of backups
 	securityassets.SetLoader(securitytest.EmbeddedAssets)
 	randutil.SeedForTests()
-	serverutils.InitTestServerFactory(server.TestServerFactory,
-		serverutils.WithDRPCOption(base.TestDRPCEnabledRandomly))
+	serverutils.InitTestServerFactory(server.TestServerFactory)
 	serverutils.InitTestClusterFactory(testcluster.TestClusterFactory)
 	os.Exit(m.Run())
 }

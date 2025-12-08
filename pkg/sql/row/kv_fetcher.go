@@ -65,11 +65,10 @@ func newTxnKVFetcher(
 	alloc := new(struct {
 		batchRequestsIssued int64
 		kvPairsRead         int64
-		kvCPUTime           int64
 	})
 	var sendFn sendFunc
 	if bsHeader == nil {
-		sendFn = makeSendFunc(txn, ext, &alloc.batchRequestsIssued, &alloc.kvCPUTime)
+		sendFn = makeSendFunc(txn, ext, &alloc.batchRequestsIssued)
 	} else {
 		negotiated := false
 		sendFn = func(ctx context.Context, ba *kvpb.BatchRequest) (br *kvpb.BatchResponse, _ error) {
@@ -96,9 +95,6 @@ func newTxnKVFetcher(
 				return nil, pErr.GoError()
 			}
 			alloc.batchRequestsIssued++
-			if br.CPUTime > 0 {
-				alloc.kvCPUTime += br.CPUTime
-			}
 			return br, nil
 		}
 	}
@@ -116,7 +112,6 @@ func newTxnKVFetcher(
 		forceProductionKVBatchSize: forceProductionKVBatchSize,
 		kvPairsRead:                &alloc.kvPairsRead,
 		batchRequestsIssued:        &alloc.batchRequestsIssued,
-		kvCPUTime:                  &alloc.kvCPUTime,
 	}
 	fetcherArgs.admission.requestHeader = txn.AdmissionHeader()
 	fetcherArgs.admission.responseQ = txn.DB().SQLKVResponseAdmissionQ
@@ -211,8 +206,7 @@ func NewStreamingKVFetcher(
 ) *KVFetcher {
 	var kvPairsRead int64
 	var batchRequestsIssued int64
-	var kvCPUTime int64
-	sendFn := makeSendFunc(txn, ext, &batchRequestsIssued, &kvCPUTime)
+	sendFn := makeSendFunc(txn, ext, &batchRequestsIssued)
 	streamer := kvstreamer.NewStreamer(
 		distSender,
 		metrics,
@@ -225,7 +219,6 @@ func NewStreamingKVFetcher(
 		streamerBudgetLimit,
 		streamerBudgetAcc,
 		&kvPairsRead,
-		&kvCPUTime,
 		GetKeyLockingStrength(lockStrength),
 		GetKeyLockingDurability(lockDurability),
 		reverse,
@@ -245,7 +238,7 @@ func NewStreamingKVFetcher(
 	)
 	return newKVFetcher(newTxnKVStreamer(
 		streamer, lockStrength, lockDurability, kvFetcherMemAcc,
-		&kvPairsRead, &batchRequestsIssued, &kvCPUTime, rawMVCCValues, reverse,
+		&kvPairsRead, &batchRequestsIssued, rawMVCCValues, reverse,
 	))
 }
 
@@ -425,11 +418,6 @@ func (f *KVProvider) GetKVPairsRead() int64 {
 
 // GetBatchRequestsIssued implements the KVBatchFetcher interface.
 func (f *KVProvider) GetBatchRequestsIssued() int64 {
-	return 0
-}
-
-// GetKVCPUTime implements the KVBatchFetcher interface.
-func (f *KVProvider) GetKVCPUTime() int64 {
 	return 0
 }
 

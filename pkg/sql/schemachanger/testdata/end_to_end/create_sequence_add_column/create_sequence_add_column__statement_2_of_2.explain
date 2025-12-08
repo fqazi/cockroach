@@ -27,7 +27,7 @@ Schema change plan for ALTER TABLE ‹defaultdb›.‹public›.‹t› ADD COLU
  │              ├── SetTableSchemaLocked {"TableID":104}
  │              ├── MakeAbsentColumnDeleteOnly {"Column":{"ColumnID":2,"TableID":104}}
  │              ├── SetColumnName {"ColumnID":2,"Name":"j","TableID":104}
- │              ├── UpsertColumnType {"ColumnType":{"ColumnID":2,"TableID":104}}
+ │              ├── UpsertColumnType {"ColumnType":{"ColumnID":2,"IsNullable":true,"TableID":104}}
  │              ├── AddColumnDefaultExpression {"Default":{"ColumnID":2,"TableID":104}}
  │              ├── UpdateTableBackReferencesInSequences {"BackReferencedColumnID":2,"BackReferencedTableID":104}
  │              ├── MakeAbsentIndexBackfilling {"Index":{"ConstraintID":2,"IndexID":2,"IsUnique":true,"SourceIndexID":1,"TableID":104,"TemporaryIndexID":3}}
@@ -39,7 +39,7 @@ Schema change plan for ALTER TABLE ‹defaultdb›.‹public›.‹t› ADD COLU
  ├── PreCommitPhase
  │    ├── Stage 1 of 2 in PreCommitPhase
  │    │    ├── 23 elements transitioning toward PUBLIC
- │    │    │    ├── PUBLIC        → ABSENT Namespace:{DescID: 105 (sq1+), Name: "sq1", ReferencedDescID: 101 (public)}
+ │    │    │    ├── PUBLIC        → ABSENT Namespace:{DescID: 105 (sq1+), Name: "sq1", ReferencedDescID: 100 (defaultdb)}
  │    │    │    ├── PUBLIC        → ABSENT Owner:{DescID: 105 (sq1+)}
  │    │    │    ├── PUBLIC        → ABSENT UserPrivileges:{DescID: 105 (sq1+), Name: "admin"}
  │    │    │    ├── PUBLIC        → ABSENT UserPrivileges:{DescID: 105 (sq1+), Name: "root"}
@@ -72,7 +72,7 @@ Schema change plan for ALTER TABLE ‹defaultdb›.‹public›.‹t› ADD COLU
  │    │         └── UndoAllInTxnImmediateMutationOpSideEffects
  │    └── Stage 2 of 2 in PreCommitPhase
  │         ├── 23 elements transitioning toward PUBLIC
- │         │    ├── ABSENT → PUBLIC        Namespace:{DescID: 105 (sq1+), Name: "sq1", ReferencedDescID: 101 (public)}
+ │         │    ├── ABSENT → PUBLIC        Namespace:{DescID: 105 (sq1+), Name: "sq1", ReferencedDescID: 100 (defaultdb)}
  │         │    ├── ABSENT → PUBLIC        Owner:{DescID: 105 (sq1+)}
  │         │    ├── ABSENT → PUBLIC        UserPrivileges:{DescID: 105 (sq1+), Name: "admin"}
  │         │    ├── ABSENT → PUBLIC        UserPrivileges:{DescID: 105 (sq1+), Name: "root"}
@@ -103,7 +103,7 @@ Schema change plan for ALTER TABLE ‹defaultdb›.‹public›.‹t› ADD COLU
  │         │    └── PUBLIC → ABSENT        TableSchemaLocked:{DescID: 104 (t)}
  │         └── 42 Mutation operations
  │              ├── CreateSequenceDescriptor {"SequenceID":105}
- │              ├── SetSequenceOption {"Key":"START","SequenceID":105,"Value":"32"}
+ │              ├── SetSequenceOptions {"Key":"START","SequenceID":105,"Value":"32"}
  │              ├── SetObjectParentID {"ObjParent":{"ChildObjectID":105,"SchemaID":101}}
  │              ├── MakeAbsentColumnDeleteOnly {"Column":{"ColumnID":1,"TableID":105}}
  │              ├── UpsertColumnType {"ColumnType":{"ColumnID":1,"TableID":105}}
@@ -113,7 +113,7 @@ Schema change plan for ALTER TABLE ‹defaultdb›.‹public›.‹t› ADD COLU
  │              ├── SetTableSchemaLocked {"TableID":104}
  │              ├── MakeAbsentColumnDeleteOnly {"Column":{"ColumnID":2,"TableID":104}}
  │              ├── SetColumnName {"ColumnID":2,"Name":"j","TableID":104}
- │              ├── UpsertColumnType {"ColumnType":{"ColumnID":2,"TableID":104}}
+ │              ├── UpsertColumnType {"ColumnType":{"ColumnID":2,"IsNullable":true,"TableID":104}}
  │              ├── AddColumnDefaultExpression {"Default":{"ColumnID":2,"TableID":104}}
  │              ├── UpdateTableBackReferencesInSequences {"BackReferencedColumnID":2,"BackReferencedTableID":104}
  │              ├── MakeAbsentIndexBackfilling {"Index":{"ConstraintID":2,"IndexID":2,"IsUnique":true,"SourceIndexID":1,"TableID":104,"TemporaryIndexID":3}}

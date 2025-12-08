@@ -382,9 +382,7 @@ var _ metric.WindowedHistogram = (*HighCardinalityHistogram)(nil)
 var _ metric.CumulativeHistogram = (*HighCardinalityHistogram)(nil)
 
 // NewHighCardinalityHistogram constructs a new HighCardinalityHistogram that uses cache storage
-// with eviction for child metrics. The HighCardinalityOpts field in opts allows configuring
-// the maximum number of label combinations (MaxLabelValues) and retention time (RetentionTimeTillEviction).
-// If HighCardinalityOpts is not provided or has zero values, defaults will be used.
+// with eviction for child metrics.
 func NewHighCardinalityHistogram(
 	opts metric.HistogramOptions, childLabels ...string,
 ) *HighCardinalityHistogram {
@@ -412,7 +410,7 @@ func NewHighCardinalityHistogram(
 				childHist.h.Tick()
 			})
 		})
-	h.initWithCacheStorageType(childLabels, opts.Metadata.Name, opts.HighCardinalityOpts)
+	h.initWithCacheStorageType(childLabels, opts.Metadata.Name)
 	return h
 }
 

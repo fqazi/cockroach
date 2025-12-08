@@ -18,9 +18,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobfrontier"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobstest"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -30,7 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
-	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/lexbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/oidext"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
@@ -54,8 +53,12 @@ import (
 
 var zeroDuration time.Duration
 
+type ttlServer interface {
+	JobRegistry() interface{}
+}
+
 type rowLevelTTLTestJobTestHelper struct {
-	server           serverutils.ApplicationLayerInterface
+	server           ttlServer
 	env              *jobstest.JobSchedulerTestEnv
 	testCluster      serverutils.TestClusterInterface
 	sqlDB            *sqlutils.SQLRunner
@@ -128,8 +131,6 @@ func newRowLevelTTLTestJobTestHelper(
 			Settings:          makeSettings(),
 			Knobs:             baseTestingKnobs,
 			InsecureWebAccess: true,
-			// TODO(server): re-enable DRPC once flakiness is addressed, see #158387.
-			DefaultDRPCOption: base.TestDRPCDisabled,
 		},
 	})
 	th.testCluster = testCluster
@@ -267,14 +268,6 @@ func (h *rowLevelTTLTestJobTestHelper) verifyExpiredRowsJobOnly(
 
 		actualNumExpiredRows := progress.UnwrapDetails().(jobspb.RowLevelTTLProgress).JobDeletedRowCount
 		require.Equal(t, int64(expectedNumExpiredRows), actualNumExpiredRows)
-
-		// Verify job reached 100% completion
-		var fractionComplete float32
-		if f, ok := progress.Progress.(*jobspb.Progress_FractionCompleted); ok {
-			fractionComplete = f.FractionCompleted
-		}
-		require.InEpsilon(t, float32(1.0), fractionComplete, 0.001,
-			"expected job to reach 100%% completion, got %.3f", fractionComplete)
 		jobCount++
 	}
 	require.Equal(t, 1, jobCount)
@@ -289,7 +282,7 @@ func (h *rowLevelTTLTestJobTestHelper) verifyExpiredRows(
 	t *testing.T, expectedSQLInstanceIDToProcessorMap map[base.SQLInstanceID]*processor,
 ) {
 	rows := h.sqlDB.Query(t, `
-				SELECT crdb_j.status, crdb_j.progress, crdb_j.id
+				SELECT crdb_j.status, crdb_j.progress
 				FROM crdb_internal.system_jobs AS crdb_j
 				WHERE crdb_j.job_type = 'ROW LEVEL TTL'
 			`)
@@ -297,8 +290,7 @@ func (h *rowLevelTTLTestJobTestHelper) verifyExpiredRows(
 	for rows.Next() {
 		var status string
 		var progressBytes []byte
-		var jobID jobspb.JobID
-		require.NoError(t, rows.Scan(&status, &progressBytes, &jobID))
+		require.NoError(t, rows.Scan(&status, &progressBytes))
 
 		require.Equal(t, string(jobs.StateSucceeded), status)
 
@@ -330,73 +322,9 @@ func (h *rowLevelTTLTestJobTestHelper) verifyExpiredRows(
 			require.Equal(t, expectedProcessorRowCount, processorProgress.DeletedRowCount)
 			expectedJobRowCount += expectedProcessorRowCount
 		}
-		// Check span completion based on mode
-		if rowLevelTTLProgress.UseCheckpointing {
-			// In checkpointing mode, verify that the completed spans cover the entire table.
-			// Load completed spans from jobfrontier storage.
-			if expectedJobSpanCount > 0 {
-				ctx := context.Background()
-				internalDB := h.testCluster.ApplicationLayer(0).InternalDB().(isql.DB)
-
-				var completedSpans []roachpb.Span
-				err := internalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-					resolvedSpans, found, err := jobfrontier.GetResolvedSpans(ctx, txn, jobID, "ttl_completed_spans")
-					if err != nil {
-						return err
-					}
-					if !found {
-						return nil // No completed spans stored yet
-					}
-
-					// Extract just the spans (we don't care about timestamps for TTL)
-					completedSpans = make([]roachpb.Span, len(resolvedSpans))
-					for i, rs := range resolvedSpans {
-						completedSpans[i] = rs.Span
-					}
-					return nil
-				})
-				require.NoError(t, err)
-				require.Greater(t, len(completedSpans), 0, "expected completed spans to be stored in jobfrontier, but found none")
-
-				// Get the table's span to compare against
-				tableDesc := desctestutils.TestingGetPublicTableDescriptor(
-					h.kvDB,
-					h.server.Codec(),
-					"defaultdb",
-					"tbl",
-				)
-				tableSpan := tableDesc.PrimaryIndexSpan(h.server.Codec())
-
-				// Check if completed spans cover the entire table span
-				var spanGroup roachpb.SpanGroup
-				spanGroup.Add(completedSpans...)
-				mergedSpans := spanGroup.Slice()
-				require.Greater(t, len(mergedSpans), 0)
-
-				// Find the overall span covered by completed spans
-				overallStart := mergedSpans[0].Key
-				overallEnd := mergedSpans[len(mergedSpans)-1].EndKey
-				actualCoverage := roachpb.Span{Key: overallStart, EndKey: overallEnd}
-
-				// Verify the completed spans cover the entire table
-				require.True(t, actualCoverage.Contains(tableSpan),
-					"completed spans should cover entire table span")
-			}
-		} else {
-			// In legacy mode, check the deprecated span count fields
-			require.Equal(t, expectedJobSpanCount, rowLevelTTLProgress.JobProcessedSpanCount)
-			require.Equal(t, expectedJobSpanCount, rowLevelTTLProgress.JobTotalSpanCount)
-		}
+		require.Equal(t, expectedJobSpanCount, rowLevelTTLProgress.JobProcessedSpanCount)
+		require.Equal(t, expectedJobSpanCount, rowLevelTTLProgress.JobTotalSpanCount)
 		require.Equal(t, expectedJobRowCount, rowLevelTTLProgress.JobDeletedRowCount)
-
-		// Verify job reached 100% completion
-		var fractionComplete float32
-		if f, ok := progress.Progress.(*jobspb.Progress_FractionCompleted); ok {
-			fractionComplete = f.FractionCompleted
-		}
-		require.InEpsilon(t, float32(1.0), fractionComplete, 0.001,
-			"expected job to reach 100%% completion, got %.3f", fractionComplete)
-
 		jobCount++
 	}
 	require.Equal(t, 1, jobCount)
@@ -701,7 +629,7 @@ func TestRowLevelTTLJobMultipleNodes(t *testing.T) {
 				}
 				tableDesc := desctestutils.TestingGetPublicTableDescriptor(
 					th.kvDB,
-					th.server.Codec(),
+					keys.SystemSQLCodec,
 					"defaultdb", /* database */
 					tableName,
 				)
@@ -1072,7 +1000,7 @@ func TestRowLevelTTLJobRandomEntries(t *testing.T) {
 			if tc.numSplits > 0 {
 				tbDesc := desctestutils.TestingGetPublicTableDescriptor(
 					th.kvDB,
-					th.server.Codec(),
+					keys.SystemSQLCodec,
 					"defaultdb",
 					createTableStmt.Table.Table(),
 				)

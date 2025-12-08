@@ -1,6 +1,6 @@
 # 3node-tenant is blocked from running this file due to heavy reliance on
 # unavailable node IDs in this test.
-# LogicTest: !3node-tenant-default-configs !local-prepared local-leased-descriptors default-configs
+# LogicTest: !3node-tenant-default-configs !local-prepared
 
 query error database "crdb_internal" does not exist
 ALTER DATABASE crdb_internal RENAME TO not_crdb_internal
@@ -597,7 +597,7 @@ select crdb_internal.get_vmodule()
 query T
 SELECT crdb_internal.release_series(crdb_internal.node_executable_version())
 ----
-26.1
+25.4
 
 query error version '1.0' not supported
 SELECT crdb_internal.release_series('1.0')
@@ -760,7 +760,7 @@ SELECT * FROM crdb_internal.check_consistency(true, b'\x02', b'\x04')
 query T
 SELECT crdb_internal.release_series(crdb_internal.node_executable_version())
 ----
-26.1
+25.4
 
 user root
 
@@ -1777,6 +1777,8 @@ subtest end
 
 subtest cluster_inspect_errors_view
 
+skipif config local-mixed-25.2
+skipif config local-mixed-25.3
 query TT colnames
 SELECT column_name, data_type
 FROM information_schema.columns
@@ -1795,6 +1797,8 @@ primary_key                text
 details                    jsonb
 crdb_internal_expiration   timestamp with time zone
 
+skipif config local-mixed-25.2
+skipif config local-mixed-25.3
 statement ok
 SELECT count(*) FROM crdb_internal.cluster_inspect_errors
 

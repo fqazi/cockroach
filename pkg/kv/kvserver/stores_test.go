@@ -14,7 +14,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/gossip"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/disk"
@@ -154,11 +154,15 @@ func TestStoresGetReplicaForRangeID(t *testing.T) {
 			},
 		}
 
-		require.NoError(t, kvstorage.MakeStateLoader(desc.RangeID).SetRaftReplicaID(
-			ctx, store.StateEngine(), replicaID))
+		require.NoError(t, stateloader.Make(desc.RangeID).SetRaftReplicaID(ctx, store.TODOEngine(), replicaID))
 		replica, err := loadInitializedReplicaForTesting(ctx, store, desc, replicaID)
-		require.NoError(t, err)
-		require.NoError(t, store.AddReplica(replica))
+		if err != nil {
+			t.Fatalf("unexpected error when creating replica: %+v", err)
+		}
+		err2 := store.AddReplica(replica)
+		if err2 != nil {
+			t.Fatalf("unexpected error when adding replica: %v", err2)
+		}
 	}
 
 	// Test the case where the replica we're looking for exists.

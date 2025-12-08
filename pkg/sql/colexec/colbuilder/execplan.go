@@ -341,14 +341,6 @@ func canWrap(mode sessiondatapb.VectorizeExecMode, core *execinfrapb.ProcessorCo
 	case core.VectorMutationSearch != nil:
 	case core.CompactBackups != nil:
 		return errCoreNotWorthWrapping
-	case core.BulkMerge != nil:
-		return errCoreNotWorthWrapping
-	case core.MergeCoordinator != nil:
-		return errCoreNotWorthWrapping
-	case core.MergeLoopback != nil:
-		return errCoreNotWorthWrapping
-	case core.IngestFile != nil:
-		return errCoreNotWorthWrapping
 	default:
 		err := errors.AssertionFailedf("unexpected processor core %q", core)
 		if buildutil.CrdbTestBuild {

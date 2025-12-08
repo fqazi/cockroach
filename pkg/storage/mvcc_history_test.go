@@ -70,100 +70,65 @@ var (
 //
 // The input files use the following DSL:
 //
-//		run            [ok|trace|stats|error|log-ops]
+// run            [ok|trace|stats|error|log-ops]
 //
-//		txn_begin              t=<name> [ts=<int>[,<int>]] [globalUncertaintyLimit=<int>[,<int>]]
-//		txn_remove             t=<name>
-//		txn_restart            t=<name> [epoch=<int>]
-//		txn_update             t=<name> t2=<name>
-//		txn_step               t=<name> [n=<int>] [seq=<int>]
-//		txn_advance            t=<name> ts=<int>[,<int>]
-//		txn_status             t=<name> status=<txnstatus>
-//		txn_ignore_seqs        t=<name> seqs=[<int>-<int>[,<int>-<int>...]]
+// txn_begin      t=<name> [ts=<int>[,<int>]] [globalUncertaintyLimit=<int>[,<int>]]
+// txn_remove     t=<name>
+// txn_restart    t=<name> [epoch=<int>]
+// txn_update     t=<name> t2=<name>
+// txn_step       t=<name> [n=<int>] [seq=<int>]
+// txn_advance    t=<name> ts=<int>[,<int>]
+// txn_status     t=<name> status=<txnstatus>
+// txn_ignore_seqs t=<name> seqs=[<int>-<int>[,<int>-<int>...]]
 //
-//		resolve_intent         t=<name> k=<key> [status=<txnstatus>] [clockWhilePending=<int>[,<int>]] [targetBytes=<int>]
-//		resolve_intent_range   t=<name> k=<key> end=<key> [status=<txnstatus>] [maxKeys=<int>] [targetBytes=<int>]
-//		check_intent           k=<key> [none]
-//		add_unreplicated_lock  t=<name> k=<key>
-//		check_for_acquire_lock t=<name> k=<key> str=<strength> [maxLockConflicts=<int>] [targetLockConflictBytes=<int>]
-//		acquire_lock           t=<name> k=<key> str=<strength> [maxLockConflicts=<int>] [targetLockConflictBytes=<int>]
+// resolve_intent         t=<name> k=<key> [status=<txnstatus>] [clockWhilePending=<int>[,<int>]] [targetBytes=<int>]
+// resolve_intent_range   t=<name> k=<key> end=<key> [status=<txnstatus>] [maxKeys=<int>] [targetBytes=<int>]
+// check_intent           k=<key> [none]
+// add_unreplicated_lock  t=<name> k=<key>
+// check_for_acquire_lock t=<name> k=<key> str=<strength> [maxLockConflicts=<int>] [targetLockConflictBytes=<int>]
+// acquire_lock           t=<name> k=<key> str=<strength> [maxLockConflicts=<int>] [targetLockConflictBytes=<int>]
 //
-//	    cput                  [t=<name>] [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [resolve [status=<txnstatus>]]
-//	                          [ambiguousReplay] [maxLockConflicts=<int>] [targetLockConflictBytes=<int>]
-//	                          k=<key> v=<string> [raw] [cond=<string>]
+// cput           [t=<name>] [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [resolve [status=<txnstatus>]] [ambiguousReplay] [maxLockConflicts=<int>] [targetLockConflictBytes=<int>] k=<key> v=<string> [raw] [cond=<string>]
+// del            [t=<name>] [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [resolve [status=<txnstatus>]] [ambiguousReplay] [maxLockConflicts=<int>] [targetLockConflictBytes=<int>] k=<key>
+// del_range      [t=<name>] [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [resolve [status=<txnstatus>]] [ambiguousReplay] [maxLockConflicts=<int>] [targetLockConflictBytes=<int>] k=<key> end=<key> [max=<max>] [returnKeys]
+// del_range_ts   [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [maxLockConflicts=<int>] [targetLockConflictBytes=<int>] k=<key> end=<key> [idempotent] [noCoveredStats]
+// del_range_pred [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [maxLockConflicts=<int>] [targetLockConflictBytes=<int>] k=<key> end=<key> [startTime=<int>,max=<int>,maxBytes=<int>,rangeThreshold=<int>]
+// increment      [t=<name>] [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [resolve [status=<txnstatus>]] [ambiguousReplay] [maxLockConflicts=<int>] [targetLockConflictBytes=<int>] k=<key> [inc=<val>]
+// put            [t=<name>] [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [resolve [status=<txnstatus>]] [ambiguousReplay] [maxLockConflicts=<int>] k=<key> v=<string> [raw]
+// put_rangekey   ts=<int>[,<int>] [localTs=<int>[,<int>]] k=<key> end=<key> [syntheticBit]
+// put_blind_inline	k=<key> v=<string> [prev=<string>]
+// get            [t=<name>] [ts=<int>[,<int>]]                         [resolve [status=<txnstatus>]] k=<key> [inconsistent] [skipLocked] [tombstones] [failOnMoreRecent] [localUncertaintyLimit=<int>[,<int>]] [globalUncertaintyLimit=<int>[,<int>]] [maxKeys=<int>] [targetBytes=<int>] [allowEmpty]
+// scan           [t=<name>] [ts=<int>[,<int>]]                         [resolve [status=<txnstatus>]] k=<key> [end=<key>] [inconsistent] [skipLocked] [tombstones] [reverse] [failOnMoreRecent] [localUncertaintyLimit=<int>[,<int>]] [globalUncertaintyLimit=<int>[,<int>]] [max=<max>] [targetbytes=<target>] [wholeRows[=<int>]] [allowEmpty]
+// export         [k=<key>] [end=<key>] [ts=<int>[,<int>]] [kTs=<int>[,<int>]] [startTs=<int>[,<int>]] [maxLockConflicts=<int>] [targetLockConflictBytes=<int>] [allRevisions] [targetSize=<int>] [maxSize=<int>] [stopMidKey] [fingerprint]
 //
-//	     del                  [t=<name>] [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [resolve [status=<txnstatus>]]
-//	                          [ambiguousReplay] [maxLockConflicts=<int>] [targetLockConflictBytes=<int>] k=<key>
+// iter_new       [k=<key>] [end=<key>] [prefix] [kind=key|keyAndIntents] [types=pointsOnly|pointsWithRanges|pointsAndRanges|rangesOnly] [maskBelow=<int>[,<int>]] [minTimestamp=<int>[,<int>]] [maxTimestamp=<int>[,<int>]]
+// iter_new_incremental [k=<key>] [end=<key>] [startTs=<int>[,<int>]] [endTs=<int>[,<int>]] [types=pointsOnly|pointsWithRanges|pointsAndRanges|rangesOnly] [maskBelow=<int>[,<int>]] [intents=error|aggregate|emit]
+// iter_seek_ge   k=<key> [ts=<int>[,<int>]]
+// iter_seek_lt   k=<key> [ts=<int>[,<int>]]
+// iter_next
+// iter_next_ignoring_time
+// iter_next_key_ignoring_time
+// iter_next_key
+// iter_prev
+// iter_scan      [reverse]
 //
-//	     del_range            [t=<name>] [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [resolve [status=<txnstatus>]]
-//	                          [ambiguousReplay] [maxLockConflicts=<int>] [targetLockConflictBytes=<int>]
-//	                          k=<key> end=<key> [max=<max>] [returnKeys]
+// merge     [ts=<int>[,<int>]] k=<key> v=<string> [raw]
 //
-//	     del_range_ts         [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [maxLockConflicts=<int>] [targetLockConflictBytes=<int>]
-//	                           k=<key> end=<key> [idempotent] [noCoveredStats]
+// clear				  k=<key> [ts=<int>[,<int>]]
+// clear_range    k=<key> end=<key>
+// clear_rangekey k=<key> end=<key> ts=<int>[,<int>]
+// clear_time_range k=<key> end=<key> ts=<int>[,<int>] targetTs=<int>[,<int>] [clearRangeThreshold=<int>] [maxBatchSize=<int>] [maxBatchByteSize=<int>]
 //
-//	     del_range_pred       [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [maxLockConflicts=<int>] [targetLockConflictBytes=<int>]
-//	                           k=<key> end=<key> [startTime=<int>,max=<int>,maxBytes=<int>,rangeThreshold=<int>]
+// gc_clear_range k=<key> end=<key> startTs=<int>[,<int>] ts=<int>[,<int>]
+// gc_points_clear_range k=<key> end=<key> startTs=<int>[,<int>] ts=<int>[,<int>]
+// replace_point_tombstones_with_range_tombstones k=<key> [end=<key>]
 //
-//	     increment            [t=<name>] [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [resolve [status=<txnstatus>]] [ambiguousReplay]
-//	                          [maxLockConflicts=<int>] [targetLockConflictBytes=<int>] k=<key> [inc=<val>]
-//
-//	     put                  [t=<name>] [ts=<int>[,<int>]] [localTs=<int>[,<int>]] [resolve [status=<txnstatus>]] [ambiguousReplay]
-//	                          [maxLockConflicts=<int>] k=<key> v=<string> [raw]
-//
-//	     put_rangekey         ts=<int>[,<int>] [localTs=<int>[,<int>]] k=<key> end=<key> [syntheticBit]
-//
-//	     put_blind_inline     k=<key> v=<string> [prev=<string>]
-//
-//	     get                  [t=<name>] [ts=<int>[,<int>]] [resolve [status=<txnstatus>]] k=<key> [inconsistent] [skipLocked]
-//	                          [tombstones] [failOnMoreRecent] [localUncertaintyLimit=<int>[,<int>]] [globalUncertaintyLimit=<int>[,<int>]]
-//	                          [maxKeys=<int>] [targetBytes=<int>] [allowEmpty]
-//
-//	     scan                 [t=<name>] [ts=<int>[,<int>]] [resolve [status=<txnstatus>]] k=<key> [end=<key>]
-//	                          [inconsistent] [skipLocked] [tombstones] [reverse] [failOnMoreRecent]
-//	                          [localUncertaintyLimit=<int>[,<int>]] [globalUncertaintyLimit=<int>[,<int>]] [max=<max>]
-//	                          [targetbytes=<target>] [wholeRows[=<int>]] [allowEmpty]
-//
-//	     export               [k=<key>] [end=<key>] [ts=<int>[,<int>]] [kTs=<int>[,<int>]] [startTs=<int>[,<int>]]
-//	                          [maxLockConflicts=<int>] [targetLockConflictBytes=<int>]
-//	                          [allRevisions] [targetSize=<int>] [maxSize=<int>] [stopMidKey] [fingerprint]
-//
-//	     iter_new             [k=<key>] [end=<key>] [prefix] [kind=key|keyAndIntents]
-//	                          [types=pointsOnly|pointsWithRanges|pointsAndRanges|rangesOnly]
-//	                          [maskBelow=<int>[,<int>]] [minTimestamp=<int>[,<int>]] [maxTimestamp=<int>[,<int>]]
-//
-//	     iter_new_incremental [k=<key>] [end=<key>] [startTs=<int>[,<int>]] [endTs=<int>[,<int>]]
-//	                          [types=pointsOnly|pointsWithRanges|pointsAndRanges|rangesOnly]
-//	                          [maskBelow=<int>[,<int>]] [intents=error|aggregate|emit]
-//
-//	     iter_seek_ge         k=<key> [ts=<int>[,<int>]]
-//	     iter_seek_lt         k=<key> [ts=<int>[,<int>]]
-//	     iter_next
-//	     iter_next_ignoring_time
-//	     iter_next_key_ignoring_time
-//	     iter_next_key
-//	     iter_prev
-//	     iter_scan           [reverse]
-//
-//	     merge               [ts=<int>[,<int>]] k=<key> v=<string> [raw]
-//
-//	     clear                k=<key> [ts=<int>[,<int>]]
-//	     clear_range          k=<key> end=<key>
-//	     clear_rangekey       k=<key> end=<key> ts=<int>[,<int>]
-//	     clear_time_range     k=<key> end=<key> ts=<int>[,<int>] targetTs=<int>[,<int>]
-//	                          [clearRangeThreshold=<int>] [maxBatchSize=<int>] [maxBatchByteSize=<int>]
-//
-//	     gc_clear_range        k=<key> end=<key> startTs=<int>[,<int>] ts=<int>[,<int>]
-//	     gc_points_clear_range k=<key> end=<key> startTs=<int>[,<int>] ts=<int>[,<int>]
-//
-//	     replace_point_tombstones_with_range_tombstones k=<key> [end=<key>]
-//
-//	     sst_put            [ts=<int>[,<int>]] [localTs=<int>[,<int>]] k=<key> [v=<string>]
-//	     sst_put_rangekey   ts=<int>[,<int>] [localTS=<int>[,<int>]] k=<key> end=<key>
-//	     sst_clear_range    k=<key> end=<key>
-//	     sst_clear_rangekey k=<key> end=<key> ts=<int>[,<int>]
-//	     sst_finish
-//	     sst_iter_new
+// sst_put            [ts=<int>[,<int>]] [localTs=<int>[,<int>]] k=<key> [v=<string>]
+// sst_put_rangekey   ts=<int>[,<int>] [localTS=<int>[,<int>]] k=<key> end=<key>
+// sst_clear_range    k=<key> end=<key>
+// sst_clear_rangekey k=<key> end=<key> ts=<int>[,<int>]
+// sst_finish
+// sst_iter_new
 //
 // Where `<key>` can be a simple string, or a string
 // prefixed by the following characters:
@@ -593,14 +558,13 @@ func TestMVCCHistories(t *testing.T) {
 					var msEngineBefore enginepb.MVCCStats
 					if stats {
 						for _, span := range spans {
-							ms, err := storage.ComputeStats(ctx, e.engine, fs.UnknownReadCategory, span.Key, span.EndKey, statsTS)
+							ms, err := storage.ComputeStats(ctx, e.engine, span.Key, span.EndKey, statsTS)
 							require.NoError(t, err)
 							msEngineBefore.Add(ms)
 
 							lockSpan := lockTableSpan(span)
 							lockMs, err := storage.ComputeStats(
-								ctx, e.engine, fs.UnknownReadCategory,
-								lockSpan.Key, lockSpan.EndKey, statsTS)
+								ctx, e.engine, lockSpan.Key, lockSpan.EndKey, statsTS)
 							require.NoError(t, err)
 							msEngineBefore.Add(lockMs)
 						}
@@ -626,14 +590,13 @@ func TestMVCCHistories(t *testing.T) {
 						// command, and compare them with the real computed stats diff.
 						var msEngineDiff enginepb.MVCCStats
 						for _, span := range spans {
-							ms, err := storage.ComputeStats(ctx, e.engine, fs.UnknownReadCategory, span.Key, span.EndKey, statsTS)
+							ms, err := storage.ComputeStats(ctx, e.engine, span.Key, span.EndKey, statsTS)
 							require.NoError(t, err)
 							msEngineDiff.Add(ms)
 
 							lockSpan := lockTableSpan(span)
 							lockMs, err := storage.ComputeStats(
-								ctx, e.engine, fs.UnknownReadCategory,
-								lockSpan.Key, lockSpan.EndKey, statsTS)
+								ctx, e.engine, lockSpan.Key, lockSpan.EndKey, statsTS)
 							require.NoError(t, err)
 							msEngineDiff.Add(lockMs)
 						}
@@ -681,14 +644,13 @@ func TestMVCCHistories(t *testing.T) {
 				if stats && (dataChange || locksChange) {
 					var msFinal enginepb.MVCCStats
 					for _, span := range spans {
-						ms, err := storage.ComputeStats(ctx, e.engine, fs.UnknownReadCategory, span.Key, span.EndKey, statsTS)
+						ms, err := storage.ComputeStats(ctx, e.engine, span.Key, span.EndKey, statsTS)
 						require.NoError(t, err)
 						msFinal.Add(ms)
 
 						lockSpan := lockTableSpan(span)
 						lockMs, err := storage.ComputeStats(
-							ctx, e.engine, fs.UnknownReadCategory,
-							lockSpan.Key, lockSpan.EndKey, statsTS)
+							ctx, e.engine, lockSpan.Key, lockSpan.EndKey, statsTS)
 						require.NoError(t, err)
 						msFinal.Add(lockMs)
 					}
@@ -1201,7 +1163,7 @@ func cmdGCClearRange(e *evalCtx) error {
 	key, endKey := e.getKeyRange()
 	gcTs := e.getTs(nil)
 	return e.withWriter("gc_clear_range", func(rw storage.ReadWriter) error {
-		cms, err := storage.ComputeStats(context.Background(), rw, fs.UnknownReadCategory, key, endKey, 100e9)
+		cms, err := storage.ComputeStats(context.Background(), rw, key, endKey, 100e9)
 		require.NoError(e.t, err, "failed to compute range stats")
 		return storage.MVCCGarbageCollectWholeRange(e.ctx, rw, e.ms, key, endKey, gcTs, cms)
 	})
@@ -1358,8 +1320,7 @@ func cmdDeleteRangeTombstone(e *evalCtx) error {
 		// before the start key -- don't attempt to compute covered stats for these
 		// to avoid iterator panics.
 		if key.Compare(endKey) < 0 && key.Compare(keys.LocalMax) >= 0 {
-			ms, err := storage.ComputeStats(context.Background(), e.engine,
-				fs.UnknownReadCategory, key, endKey, ts.WallTime)
+			ms, err := storage.ComputeStats(context.Background(), e.engine, key, endKey, ts.WallTime)
 			if err != nil {
 				return err
 			}

@@ -27,13 +27,12 @@ func TestInjectHints(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	testCases := []struct {
-		name              string
-		originalSQL       string
-		donorSQL          string
-		expectedSQL       string
-		expectChanged     bool
-		expectError       bool
-		legacyFingerprint bool
+		name          string
+		originalSQL   string
+		donorSQL      string
+		expectedSQL   string
+		expectChanged bool
+		expectError   bool
 	}{
 		{
 			name:          "inject index hint on simple table",
@@ -82,7 +81,7 @@ func TestInjectHints(t *testing.T) {
 			originalSQL:   "SELECT * FROM t@idx",
 			donorSQL:      "SELECT * FROM t@idx",
 			expectedSQL:   "SELECT * FROM t@idx",
-			expectChanged: false,
+			expectChanged: true, // we still perform a rewrite, and still return true
 		},
 		{
 			name:          "different constants should work",
@@ -153,11 +152,11 @@ func TestInjectHints(t *testing.T) {
 			expectChanged: true,
 		},
 		{
-			name:          "hint overwritten by donor",
+			name:          "hint unchanged by donor",
 			originalSQL:   "SELECT * FROM t@idx",
-			donorSQL:      "SELECT * FROM t@{NO_FULL_SCAN}",
-			expectedSQL:   "SELECT * FROM t@{NO_FULL_SCAN}",
-			expectChanged: true,
+			donorSQL:      "SELECT * FROM t",
+			expectedSQL:   "SELECT * FROM t@idx",
+			expectChanged: false,
 		},
 		{
 			name:          "subquery in join condition",
@@ -193,118 +192,12 @@ func TestInjectHints(t *testing.T) {
 			expectedSQL:   "SELECT * FROM a@a_b_idx WHERE b = $1 ORDER BY c LIMIT $2",
 			expectChanged: true,
 		},
-		{
-			name:          "index hint with hidden placeholders",
-			originalSQL:   "SELECT * FROM a WHERE b = $1 ORDER BY c LIMIT $2",
-			donorSQL:      "SELECT * FROM a@a_b_idx WHERE b = _ ORDER BY c LIMIT _",
-			expectedSQL:   "SELECT * FROM a@a_b_idx WHERE b = $1 ORDER BY c LIMIT $2",
-			expectChanged: true,
-		},
-		{
-			name:          "index hint with hidden constants",
-			originalSQL:   "SELECT * FROM a WHERE b = 1 ORDER BY c LIMIT 2",
-			donorSQL:      "SELECT * FROM a@a_b_idx WHERE b = _ ORDER BY c LIMIT _",
-			expectedSQL:   "SELECT * FROM a@a_b_idx WHERE b = 1 ORDER BY c LIMIT 2",
-			expectChanged: true,
-		},
-		{
-			name:          "extra parens",
-			originalSQL:   "SELECT * FROM a WHERE b > 1 AND b < 10 ORDER BY c LIMIT 2",
-			donorSQL:      "SELECT * FROM a@a_b_idx WHERE (b > _) AND (b < _) ORDER BY c LIMIT _",
-			expectedSQL:   "SELECT * FROM a@a_b_idx WHERE (b > 1) AND (b < 10) ORDER BY c LIMIT 2",
-			expectChanged: true,
-		},
-		{
-			name:          "even more parens",
-			originalSQL:   "SELECT * FROM a WHERE (b > 1 AND b < 10) OR (b > 20) ORDER BY c LIMIT 2",
-			donorSQL:      "SELECT * FROM a@a_b_idx WHERE ((b > _) AND (b < _)) OR (b > _) ORDER BY c LIMIT _",
-			expectedSQL:   "SELECT * FROM a@a_b_idx WHERE ((b > 1) AND (b < 10)) OR (b > 20) ORDER BY c LIMIT 2",
-			expectChanged: true,
-		},
-		{
-			name:          "tuple, array, values with one item",
-			originalSQL:   "SELECT (4,), ARRAY[5] FROM a LEFT OUTER JOIN (VALUES (6)) AS b (c) ON d = e",
-			donorSQL:      "SELECT (_,), ARRAY[_] FROM a LEFT LOOKUP JOIN (VALUES (_)) AS b (c) ON d = e",
-			expectedSQL:   "SELECT (4,), ARRAY[5] FROM a LEFT LOOKUP JOIN (VALUES (6)) AS b (c) ON d = e",
-			expectChanged: true,
-		},
-		{
-			name:          "tuple with collapsed list",
-			originalSQL:   "SELECT (4, 5, 6) FROM a JOIN b ON c = d",
-			donorSQL:      "SELECT (_, __more__) FROM a INNER HASH JOIN b ON c = d",
-			expectedSQL:   "SELECT (4, 5, 6) FROM a INNER HASH JOIN b ON c = d",
-			expectChanged: true,
-		},
-		{
-			name:          "array with collapsed list",
-			originalSQL:   "SELECT ARRAY[4, 5, 6] FROM a JOIN b ON c = d",
-			donorSQL:      "SELECT ARRAY[_, __more__] FROM a@{NO_FULL_SCAN} INNER HASH JOIN b@b_d_idx ON c = d",
-			expectedSQL:   "SELECT ARRAY[4, 5, 6] FROM a@{NO_FULL_SCAN} INNER HASH JOIN b@b_d_idx ON c = d",
-			expectChanged: true,
-		},
-		{
-			name:          "values with collapsed lists",
-			originalSQL:   "SELECT * FROM (VALUES (5, 6), (7, 8)) AS v (c, d), a WHERE b = c",
-			donorSQL:      "SELECT * FROM (VALUES (_, __more__), (__more__)) AS v (c, d), a@{NO_FULL_SCAN} WHERE b = c",
-			expectedSQL:   "SELECT * FROM (VALUES (5, 6), (7, 8)) AS v (c, d), a@{NO_FULL_SCAN} WHERE b = c",
-			expectChanged: true,
-		},
-		{
-			name:              "tuple with legacy collapsed list",
-			originalSQL:       "SELECT (4, 5, 6) FROM a JOIN b ON c = d",
-			donorSQL:          "SELECT (_, _, __more1_10__) FROM a INNER HASH JOIN b ON c = d",
-			expectedSQL:       "SELECT (4, 5, 6) FROM a INNER HASH JOIN b ON c = d",
-			expectChanged:     true,
-			legacyFingerprint: true,
-		},
-		{
-			name:              "array with legacy collapsed list",
-			originalSQL:       "SELECT ARRAY[4, 5, 6] FROM a JOIN b ON c = d",
-			donorSQL:          "SELECT ARRAY[_, _, __more1_10__] FROM a@{NO_FULL_SCAN} INNER HASH JOIN b@b_d_idx ON c = d",
-			expectedSQL:       "SELECT ARRAY[4, 5, 6] FROM a@{NO_FULL_SCAN} INNER HASH JOIN b@b_d_idx ON c = d",
-			expectChanged:     true,
-			legacyFingerprint: true,
-		},
-		{
-			name:              "values with legacy collapsed lists",
-			originalSQL:       "SELECT * FROM (VALUES (5, 6), (7, 8)) AS v (c, d), a WHERE b = c",
-			donorSQL:          "SELECT * FROM (VALUES (_, _), (__more1_10__)) AS v (c, d), a@{NO_FULL_SCAN} WHERE b = c",
-			expectedSQL:       "SELECT * FROM (VALUES (5, 6), (7, 8)) AS v (c, d), a@{NO_FULL_SCAN} WHERE b = c",
-			expectChanged:     true,
-			legacyFingerprint: true,
-		},
-		{
-			name:          "inner join",
-			originalSQL:   "SELECT * FROM a INNER JOIN b ON true",
-			donorSQL:      "SELECT * FROM a INNER JOIN b ON true",
-			expectedSQL:   "SELECT * FROM a INNER JOIN b ON true",
-			expectChanged: false,
-		},
-		{
-			name:          "inner join in donor",
-			originalSQL:   "SELECT * FROM a JOIN b ON true",
-			donorSQL:      "SELECT * FROM a INNER JOIN b ON true",
-			expectedSQL:   "SELECT * FROM a INNER JOIN b ON true",
-			expectChanged: true,
-		},
-		{
-			name:          "remove hints",
-			originalSQL:   "SELECT * FROM a@{NO_FULL_SCAN,IGNORE_FOREIGN_KEYS} INNER LOOKUP JOIN b@b_c_idx ON true",
-			donorSQL:      "SELECT * FROM a JOIN b ON true",
-			expectedSQL:   "SELECT * FROM a JOIN b ON true",
-			expectChanged: true,
-		},
 	}
 
 	st := cluster.MakeTestingClusterSettings()
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			var fingerprintFlags tree.FmtFlags
-			if !tc.legacyFingerprint {
-				fingerprintFlags = tree.FmtFlags(tree.QueryFormattingForFingerprintsMask.Get(&st.SV))
-			}
-
 			// Parse original statement.
 			originalStmt, err := parser.ParseOne(tc.originalSQL)
 			require.NoError(t, err)
@@ -314,15 +207,15 @@ func TestInjectHints(t *testing.T) {
 			require.NoError(t, err)
 
 			// Create hint injection donor.
-			donor, err := tree.NewHintInjectionDonor(donorStmt.AST, fingerprintFlags)
+			donor, err := tree.NewHintInjectionDonor(donorStmt.AST, &st.SV)
 			require.NoError(t, err)
 
 			// Validate.
 			if tc.expectError {
-				require.Error(t, donor.Validate(originalStmt.AST, fingerprintFlags))
+				require.Error(t, donor.Validate(originalStmt.AST, &st.SV))
 				return
 			} else {
-				require.NoError(t, donor.Validate(originalStmt.AST, fingerprintFlags))
+				require.NoError(t, donor.Validate(originalStmt.AST, &st.SV))
 			}
 
 			// Inject hints.
@@ -391,43 +284,38 @@ func TestRandomInjectHints(t *testing.T) {
 		t.Log(randSQL + ";")
 
 		// Generate the statement fingerprint for the random statement.
-		var fingerprintFlags tree.FmtFlags
-		if rng.Intn(10) < 9 {
-			// 90% chance of using the current default statement fingerprint
-			// formatting, 10% chance of using the legacy statement fingerprint
-			// formatting.
-			fingerprintFlags = tree.FmtFlags(tree.QueryFormattingForFingerprintsMask.Get(&st.SV))
-		}
 		randStmt, err := parser.ParseOne(randSQL)
 		require.NoError(t, err)
-		randFingerprint := tree.FormatStatementHideConstants(randStmt.AST, fingerprintFlags)
+		fingerprintFlags := tree.FmtHideConstants | tree.FmtCollapseLists | tree.FmtConstantsAsUnderscores
+		randFingerprint := tree.AsStringWithFlags(randStmt.AST, fingerprintFlags)
 
 		// Parse random fingerprint to make the donor AST.
 		donorStmt, err := parser.ParseOne(randFingerprint)
 		require.NoError(t, err)
-		donor, err := tree.NewHintInjectionDonor(donorStmt.AST, fingerprintFlags)
+		donor, err := tree.NewHintInjectionDonor(donorStmt.AST, &st.SV)
 		require.NoError(t, err)
 		donorSQL := tree.AsString(donorStmt.AST)
 
-		// Format the random statement without hints, and parse again to make the
-		// target statement.
-		targetSQL := tree.AsStringWithFlags(randStmt.AST, tree.FmtHideHints)
+		// Format the donor AST without hints, and parse again to make the target
+		// statement fingerprint.
+		targetSQL := tree.AsStringWithFlags(donorStmt.AST, tree.FmtHideHints)
 		targetStmt, err := parser.ParseOne(targetSQL)
 		require.NoError(t, err)
 
 		// Validate.
-		require.NoError(t, donor.Validate(targetStmt.AST, fingerprintFlags))
+		require.NoError(t, donor.Validate(targetStmt.AST, &st.SV))
 
 		// Inject hints.
 		result, changed, err := donor.InjectHints(targetStmt.AST)
 		require.NoError(t, err)
 
-		// Check that the rewritten statement matches the donor statement when
-		// formatted as a statement fingerprint.
-		resultFingerprint := tree.FormatStatementHideConstants(result, fingerprintFlags)
-		require.Equal(t, donorSQL, resultFingerprint, "resulting SQL mismatch")
-		if !changed {
+		// Check that the rewritten statement matches the donor statement.
+		if changed {
+			resultSQL := tree.AsString(result)
+			require.Equal(t, donorSQL, resultSQL, "resulting SQL mismatch")
+		} else {
 			require.Same(t, targetStmt.AST, result, "resulting statement was changed")
+			require.Equal(t, donorSQL, targetSQL)
 		}
 	}
 }

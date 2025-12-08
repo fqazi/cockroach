@@ -11,7 +11,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/loqrecovery/loqrecoverypb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -65,7 +64,7 @@ func writeReplicaRecoveryStoreRecord(
 // recovery actions are properly reflected in server logs as needed.
 func RegisterOfflineRecoveryEvents(
 	ctx context.Context,
-	readWriter kvstorage.RaftRW,
+	readWriter storage.ReadWriter,
 	registerEvent func(context.Context, loqrecoverypb.ReplicaRecoveryRecord) (bool, error),
 ) (int, error) {
 	successCount := 0

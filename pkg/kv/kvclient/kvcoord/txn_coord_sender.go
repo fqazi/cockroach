@@ -527,7 +527,8 @@ func (tc *TxnCoordSender) Send(
 		return nil, pErr
 	}
 
-	if ba.IsSingleEndTxnRequest() && !tc.hasAcquiredLocksOrBufferedWritesLocked() {
+	if ba.IsSingleEndTxnRequest() && !tc.interceptorAlloc.txnPipeliner.hasAcquiredLocks() &&
+		!tc.interceptorAlloc.txnWriteBuffer.hasBufferedWrites() {
 		return nil, tc.finalizeNonLockingTxnLocked(ctx, ba)
 	}
 
@@ -1525,6 +1526,11 @@ func (tc *TxnCoordSender) TestingCloneTxn() *roachpb.Transaction {
 
 // Step is part of the TxnSender interface.
 func (tc *TxnCoordSender) Step(ctx context.Context, allowReadTimestampStep bool) error {
+	// TODO(nvanbenschoten): it should be possible to make this assertion, but
+	// the API is currently misused by the connExecutor. See #86162.
+	// if tc.typ != kv.RootTxn {
+	//	return errors.AssertionFailedf("cannot step in non-root txn")
+	// }
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 	if allowReadTimestampStep && tc.shouldStepReadTimestampLocked() {
@@ -1717,8 +1723,4 @@ func (tc *TxnCoordSender) hasPerformedWritesLocked() bool {
 
 func (tc *TxnCoordSender) hasBufferedWritesLocked() bool {
 	return tc.interceptorAlloc.txnWriteBuffer.hasBufferedWrites()
-}
-
-func (tc *TxnCoordSender) hasAcquiredLocksOrBufferedWritesLocked() bool {
-	return tc.interceptorAlloc.txnPipeliner.hasAcquiredLocks() || tc.interceptorAlloc.txnWriteBuffer.hasBufferedWrites()
 }

@@ -719,14 +719,6 @@ information.
 `,
 	}
 
-	UseNewRPC = FlagInfo{
-		Name: "use-new-rpc",
-		Description: `
-Use the new RPC framework for internode communication instead of gRPC. This is
-a preview feature and is intended for non-production use only.
-`,
-	}
-
 	LocalityAdvertiseAddr = FlagInfo{
 		Name: "locality-advertise-addr",
 		Description: `
@@ -947,22 +939,6 @@ A string of comma separated list of distinguished-name
 <attribute-type>=<attribute-value> mappings in accordance with RFC4514 for the node
 user. This strictly needs to match the DN subject in the client certificate
 provided for node user if this flag is set.
-`,
-	}
-
-	DisallowRootLogin = FlagInfo{
-		Name: "disallow-root-login",
-		Description: `
-When set, prevents authentication attempts by clients presenting certificates
-with "root" as one of the principals (CommonName or SubjectAlternativeName).
-This applies to both SQL client connections and RPC connections. Authentication
-attempts by root will be rejected with an error.
-<PRE>
-
-</PRE>
-Note: Please ensure none of the certificates that are in use by the cluster or
-the SQL/RPC clients have a root in the SAN fields since the flag will block
-access to that client.
 `,
 	}
 

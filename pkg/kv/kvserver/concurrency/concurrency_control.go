@@ -271,11 +271,6 @@ type LockManager interface {
 	// ExportUnreplicatedLocks runs exporter on each held, unreplicated lock
 	// in the given span until the exporter returns false.
 	ExportUnreplicatedLocks(span roachpb.Span, exporter func(*roachpb.LockAcquisition) bool)
-
-	// SetMaxLockTableSize updates the lock table's maximum size limit. It may
-	// be used to dynamically adjust the lock table's size after it has been
-	// initialized.
-	SetMaxLockTableSize(maxLocks int64)
 }
 
 // TransactionManager is concerned with tracking transactions that have their
@@ -359,6 +354,10 @@ type TestingAccessor interface {
 
 	// TestingTxnWaitQueue returns the concurrency manager's txnWaitQueue.
 	TestingTxnWaitQueue() *txnwait.Queue
+
+	// TestingSetMaxLocks updates the locktable's lock limit. This can be used to
+	// force the locktable to exceed its limit and clear locks.
+	TestingSetMaxLocks(n int64)
 }
 
 ///////////////////////////////////
@@ -790,10 +789,9 @@ type lockTable interface {
 	// String returns a debug string representing the state of the lockTable.
 	String() string
 
-	// SetMaxLockTableSize updates the lock table's maximum size limit. It may
-	// be used to dynamically adjust the lock table's size after it has been
-	// initialized.
-	SetMaxLockTableSize(maxLocks int64)
+	// TestingSetMaxLocks updates the locktable's lock limit. This can be used to
+	// force the locktable to exceed its limit and clear locks.
+	TestingSetMaxLocks(maxLocks int64)
 }
 
 // lockTableGuard is a handle to a request as it waits on conflicting locks in a

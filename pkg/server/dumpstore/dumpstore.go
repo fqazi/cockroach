@@ -7,6 +7,7 @@ package dumpstore
 
 import (
 	"context"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/errors/oserror"
 )
 
 // DumpStore represents a store for dump files.
@@ -59,10 +59,10 @@ type Dumper interface {
 	//
 	// There may be files not owned by this dumper in the files array;
 	// these should be ignored.
-	PreFilter(ctx context.Context, files []os.DirEntry, cleanupFn func(fileName string) error) (preserved map[int]bool, err error)
+	PreFilter(ctx context.Context, files []os.FileInfo, cleanupFn func(fileName string) error) (preserved map[int]bool, err error)
 
 	// CheckOwnsFile returns true iff the dumper owns the given file.
-	CheckOwnsFile(ctx context.Context, fi os.DirEntry) bool
+	CheckOwnsFile(ctx context.Context, fi os.FileInfo) bool
 }
 
 // NewStore creates a new DumpStore.
@@ -83,9 +83,9 @@ func (s *DumpStore) GetFullPath(fileName string) string {
 
 // GC runs the GC policy on this store.
 func (s *DumpStore) GC(ctx context.Context, now time.Time, dumper Dumper) {
-	// NB: os.ReadDir sorts the file names in ascending order.
+	// NB: ioutil.ReadDir sorts the file names in ascending order.
 	// This brings the oldest files first.
-	files, err := os.ReadDir(s.dir)
+	files, err := ioutil.ReadDir(s.dir)
 	if err != nil {
 		log.Dev.Warningf(ctx, "%v", err)
 		return
@@ -120,7 +120,7 @@ func (s *DumpStore) GC(ctx context.Context, now time.Time, dumper Dumper) {
 func removeOldAndTooBigExcept(
 	ctx context.Context,
 	dumper Dumper,
-	files []os.DirEntry,
+	files []os.FileInfo,
 	now time.Time,
 	maxS int64,
 	preserved map[int]bool,
@@ -135,16 +135,8 @@ func removeOldAndTooBigExcept(
 			continue
 		}
 
-		info, err := fi.Info()
-		if err != nil {
-			if !oserror.IsNotExist(err) {
-				log.Dev.Warningf(ctx, "%v", err)
-			}
-			continue
-		}
-
 		// Note: we are counting preserved files against the maximum.
-		actualSize += info.Size()
+		actualSize += fi.Size()
 
 		// Ignore all the preserved entries, even if they are "too old".
 		if preserved[i] {

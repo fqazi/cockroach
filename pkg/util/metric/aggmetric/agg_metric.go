@@ -28,14 +28,10 @@ import (
 var delimiter = []byte{'_'}
 
 const (
-	dbLabel  = "database"
-	appLabel = "application_name"
-	// defaultCacheSize is the default maximum number of distinct label value combinations
-	// before eviction starts in high cardinality metrics.
-	defaultCacheSize = 5000
-	// defaultRetentionTimeTillEviction is the default duration after which unused
-	// label value combinations can be evicted from high cardinality metrics.
-	defaultRetentionTimeTillEviction = 20 * time.Second
+	dbLabel                   = "database"
+	appLabel                  = "application_name"
+	cacheSize                 = 5000
+	retentionTimeTillEviction = 20 * time.Second
 )
 
 // This is a no-op context used during logging.
@@ -110,38 +106,22 @@ func (cs *childSet) initWithBTreeStorageType(labels []string) {
 	}
 }
 
-func (cs *childSet) initWithCacheStorageType(
-	labels []string, metricName string, opts metric.HighCardinalityMetricOptions,
-) {
+func (cs *childSet) initWithCacheStorageType(labels []string, metricName string) {
 	cs.labels = labels
-
-	// Determine maxLabelValues: use the maximum of env variable and metric defined opts.
-	maxLabelValues := opts.MaxLabelValues
-	if maxLabelValues == 0 {
-		maxLabelValues = defaultCacheSize
-	}
-	maxLabelValues = max(maxLabelValues, metric.MaxLabelValues)
-
-	// Determine retentionDuration: use the maximum of env variable and metric defined opts.
-	retentionDuration := opts.RetentionTimeTillEviction
-	if retentionDuration == 0 {
-		retentionDuration = defaultRetentionTimeTillEviction
-	}
-	retentionDuration = max(retentionDuration, metric.RetentionTimeTillEviction)
 
 	cs.mu.children = &UnorderedCacheWrapper{
 		cache: cache.NewUnorderedCache(cache.Config{
 			Policy: cache.CacheLRU,
 			ShouldEvict: func(size int, key, value any) bool {
 				if childMetric, ok := value.(ChildMetric); ok {
-					// Check if the child metric has exceeded the retention time and cache size is greater than max
+					// Check if the child metric has exceeded 20 seconds and cache size is greater than 5000
 					if labelSliceCachedChildMetric, ok := childMetric.(LabelSliceCachedChildMetric); ok {
 						currentTime := timeutil.Now()
 						age := currentTime.Sub(labelSliceCachedChildMetric.CreatedAt())
-						return size > maxLabelValues && age > retentionDuration
+						return size > cacheSize && age > retentionTimeTillEviction
 					}
 				}
-				return size > maxLabelValues
+				return size > cacheSize
 			},
 			OnEvictedEntry: func(entry *cache.Entry) {
 				if childMetric, ok := entry.Value.(ChildMetric); ok {
@@ -164,8 +144,9 @@ func (cs *childSet) initWithCacheStorageType(
 func getCacheStorage() *cache.UnorderedCache {
 	cacheStorage := cache.NewUnorderedCache(cache.Config{
 		Policy: cache.CacheLRU,
+		//TODO (aa-joshi) : make cacheSize configurable in the future
 		ShouldEvict: func(size int, key, value interface{}) bool {
-			return size > defaultCacheSize
+			return size > cacheSize
 		},
 	})
 	return cacheStorage

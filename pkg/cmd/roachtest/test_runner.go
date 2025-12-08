@@ -19,7 +19,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -140,119 +139,6 @@ const VmLabelTestRunID string = "test_run_id"
 // VmLabelTestOwner is the label used to identify the test owner in the VM metadata
 const VmLabelTestOwner string = "test_owner"
 
-// inspectBlocklistRegex is a compiled regex of test name patterns that should
-// skip INSPECT validation. Tests matching any of these patterns will not run
-// INSPECT.
-// TODO(155704): 155704 is a tracking issue to reduce the number of tests listed here.
-var inspectBlocklistRegex = regexp.MustCompile(
-	`^acceptance|` +
-		`^activerecord|` +
-		`^admission|` +
-		`^allocbench|` +
-		`^asyncpg|` +
-		`^awsdms|` +
-		`^backup|` +
-		`^blobfixture|` +
-		`^buffered|` +
-		`^c2c|` +
-		`^cancel|` +
-		`^cdc|` +
-		`^change|` +
-		`^clearrange|` +
-		`^clock|` +
-		`^connection|` +
-		`^copy|` +
-		`^costfuzz|` +
-		`^db|` +
-		`^declarative|` +
-		`^decommission|` +
-		`^disk|` +
-		`^django|` +
-		`^drain|` +
-		`^drop|` +
-		`^encryption|` +
-		`^export|` +
-		`^failover|` +
-		`^failure|` +
-		`^follower|` +
-		`^generate|` +
-		`^gopg|` +
-		`^gorm|` +
-		`^gossip|` +
-		`^hibernate|` +
-		`^hotspotsplits|` +
-		`^http|` +
-		`^import|` +
-		`^inconsistency|` +
-		`^indexes|` +
-		`^invariant|` +
-		`^jasync|` +
-		`^jepsen|` +
-		`^jobs|` +
-		`^kerberos|` +
-		`^knex|` +
-		`^kv|` +
-		`^ldap|` +
-		`^ldr|` +
-		`^lease|` +
-		`^ledger|` +
-		`^lib|` +
-		`^limit|` +
-		`^liquibase|` +
-		`^loqrecovery|` +
-		`^multi|` +
-		`^mvcc|` +
-		`^network|` +
-		`^node|` +
-		`^npgsql|` +
-		`^pebble|` +
-		`^perturbation|` +
-		`^pg|` +
-		`^point|` +
-		`^pop|` +
-		`^process|` +
-		`^prune|` +
-		`^psycopg|` +
-		`^ptp|` +
-		`^queue|` +
-		`^rebalance|` +
-		`^replicagc|` +
-		`^replicate|` +
-		`^restart|` +
-		`^restore|` +
-		`^roachmart|` +
-		`^roachtest|` +
-		`^ruby|` +
-		`^rust|` +
-		`^sequelize|` +
-		`^slow|` +
-		`^splits|` +
-		`^sql|` +
-		`^stop|` +
-		`^storage|` +
-		`^sysbench|` +
-		`^tlp|` +
-		`^tpcc|` +
-		`^tpcdsvec|` +
-		`^tpce|` +
-		`^tpch|` +
-		`^transfer|` +
-		`^ttl|` +
-		`^typeorm|` +
-		`^unoptimized|` +
-		`^validate|` +
-		`^weekly|` +
-		`^ycsb|` +
-		`^zfs`,
-)
-
-// isInspectSkipped returns true if the test name matches the blocklist
-// and should skip INSPECT validation. Tests NOT matching any pattern will
-// run INSPECT.
-func isInspectSkipped(testName string) bool {
-	return inspectBlocklistRegex.MatchString(testName)
-}
-
 // testRunner runs tests.
 type testRunner struct {
 	stopper *stop.Stopper
@@ -262,8 +148,6 @@ type testRunner struct {
 		skipClusterWipeOnAttach bool
 		// disableIssue disables posting GitHub issues for test failures.
 		disableIssue bool
-		// dryRunIssuePosting enables dry-run mode for GitHub issue posting.
-		dryRunIssuePosting bool
 		// overrideShutdownPromScrapeInterval overrides the default time a test runner waits to
 		// shut down, normally used to ensure a remote prometheus server has scraped the roachtest
 		// endpoint.
@@ -331,7 +215,6 @@ func newTestRunner(cr *clusterRegistry, stopper *stop.Stopper) *testRunner {
 	}
 	r.config.skipClusterWipeOnAttach = !roachtestflags.ClusterWipe
 	r.config.disableIssue = roachtestflags.DisableIssue
-	r.config.dryRunIssuePosting = roachtestflags.DryRunIssuePosting
 	r.workersMu.workers = make(map[string]*workerStatus)
 	return r
 }
@@ -1104,6 +987,7 @@ func (r *testRunner) runWorker(
 						setting string
 						label   string
 					}{
+						{setting: "kv.rangefeed.buffered_sender.enabled", label: "metamorphicBufferedSender"},
 						{setting: "kv.transaction.write_buffering.enabled", label: "metamorphicWriteBuffering"},
 					} {
 						enable := prng.Intn(2) == 0
@@ -1380,13 +1264,12 @@ func (r *testRunner) runTest(
 					t.Error(liveMigrationError(liveMigrationVMNames))
 				}
 
-				// Construct failureMsg which will be shouted and githubMsg which will
-				// be passed to github.MaybePost to be formatted in the github issue
-				// body
-				failureMsg = fmt.Sprintf("%s\ntest artifacts and logs in: %s", failureMsg, t.ArtifactsDir())
-				githubMsg := t.getGithubMessage(failureMsg)
-
+				output := fmt.Sprintf("%s\ntest artifacts and logs in: %s", failureMsg, t.ArtifactsDir())
 				params := getTestParameters(t, issueInfo.cluster, issueInfo.vmCreateOpts)
+				githubMsg := output
+				if testGithubMsg := t.getGithubMessage(); testGithubMsg != "" {
+					githubMsg = fmt.Sprintf("%s\n%s", output, testGithubMsg)
+				}
 				logTestParameters(l, params)
 				issue, err := github.MaybePost(t, issueInfo, l, githubMsg, params)
 				if err != nil {
@@ -1395,23 +1278,23 @@ func (r *testRunner) runTest(
 				}
 
 				// If an issue was created (or comment added) on GitHub,
-				// include that information in the failureMsg so that it can be
+				// include that information in the output so that it can be
 				// easily inspected on the TeamCity overview page.
 				if issue != nil {
-					failureMsg += "\n" + issue.String()
+					output += "\n" + issue.String()
 				}
 				if roachtestflags.TeamCity {
 					// If `##teamcity[testFailed ...]` is not present before `##teamCity[testFinished ...]`,
 					// TeamCity regards the test as successful.
 					shout(ctx, l, stdout, "##teamcity[testFailed name='%s' details='%s' flowId='%s']",
-						s.Name, TeamCityEscape(failureMsg), testRunID)
+						s.Name, TeamCityEscape(output), testRunID)
 				}
 
-				shout(ctx, l, stdout, "--- FAIL: %s (%s)\n%s", testRunID, durationStr, failureMsg)
+				shout(ctx, l, stdout, "--- FAIL: %s (%s)\n%s", testRunID, durationStr, output)
 
 				if roachtestflags.GitHubActions {
-					stdoutMsgLines := strings.Split(strings.TrimSpace(failureMsg), "\n")
-					for _, line := range stdoutMsgLines {
+					outputLines := strings.Split(strings.TrimSpace(output), "\n")
+					for _, line := range outputLines {
 						shout(ctx, l, stdout, "::error title=%s failed::%s", s.Name, line)
 					}
 				}
@@ -1617,7 +1500,7 @@ func (r *testRunner) runTest(
 	if err := r.teardownTest(ctx, t, c, timedOut); err != nil {
 		l.PrintfCtx(ctx, "error during test teardown: %v; see test-teardown.log for details", err)
 	}
-	if err := r.inspectArtifacts(ctx, t, c, l); err != nil {
+	if err := r.inspectArtifacts(ctx, t, l); err != nil {
 		// inspect artifacts and potentially add helpful triage information for failed tests
 		l.PrintfCtx(ctx, "error during artifact inspection: %v", err)
 	}
@@ -1704,15 +1587,6 @@ func (r *testRunner) postTestAssertions(
 	_ = r.stopper.RunAsyncTask(ctx, "test-post-assertions", func(ctx context.Context) {
 		defer close(postAssertCh)
 
-		defer func() {
-			// Unlike the main test goroutine, we _do_ want to log t.Fatal* calls here
-			// to make it clear that the post-test assertions failed. Otherwise, the fatal
-			// will be recorded as a normal test failure.
-			if r := recover(); r != nil {
-				postAssertionErr(fmt.Errorf("post-test assertion panicked: %v", r))
-			}
-		}()
-
 		// We collect all the admin health endpoints in parallel,
 		// and select the first one that succeeds to run the validation queries
 		statuses, err := c.HealthStatus(ctx, t.L(), c.CRDBNodes())
@@ -1778,28 +1652,6 @@ func (r *testRunner) postTestAssertions(
 				defer db.Close()
 				if err := c.assertConsistentReplicas(ctx, db, t); err != nil {
 					postAssertionErr(errors.WithDetail(err, "consistency check failed"))
-				}
-			}()
-		}
-		// Check INSPECT DATABASE for index consistency
-		if t.spec.SkipPostValidations&registry.PostValidationInspect == 0 {
-			func() {
-				if isInspectSkipped(t.Name()) {
-					t.L().Printf("Skipping INSPECT validation (test is on blocklist)")
-					return
-				}
-
-				db := c.Conn(ctx, t.L(), validationNode)
-				defer db.Close()
-
-				// Use 80% of timeout budget for INSPECT
-				inspectTimeout := time.Duration(float64(timeout) * 0.8)
-				t.L().Printf("Running INSPECT validation with %s time budget",
-					inspectTimeout)
-
-				if err := roachtestutil.CheckInspectDatabase(ctx, t.L(), db,
-					inspectTimeout); err != nil {
-					postAssertionErr(errors.WithDetail(err, "INSPECT database check failed"))
 				}
 			}()
 		}
@@ -1881,67 +1733,33 @@ func (r *testRunner) teardownTest(
 	return nil
 }
 
-// inspectArtifacts inspects logs and attempts to write helpful triage
-// information to the test log and testRunner to be used in github issues.
+// inspectArtifacts inspects node logs and attempts to write helpful triage
+// information to the test log and testRunner.githubMessage
 // This method is best effort and should not fail a test.
 // This method writes to both testLogger which is expected to be test.log and
 // t.L() which is test-teardown.log since inspectArtifacts is called after
 // teardownTest
 func (r *testRunner) inspectArtifacts(
-	ctx context.Context, t *testImpl, c *clusterImpl, testLogger *logger.Logger,
-) (inspectArtifactsErr error) {
+	ctx context.Context, t *testImpl, testLogger *logger.Logger,
+) error {
 
 	if t.Failed() || roachtestflags.AlwaysCollectArtifacts {
 		t.L().Printf("Attempting to gather node fatal level logs for triage.")
-		fatalOut, gatherFatalErr := gatherFatalNodeLogs(t, testLogger)
-		if gatherFatalErr != nil {
-			// even if we encounter an error continue on, this is best effort
-			inspectArtifactsErr = errors.Join(inspectArtifactsErr, gatherFatalErr)
-		} else if fatalOut == "" {
+		out, err := gatherFatalNodeLogs(t, testLogger)
+		if err != nil {
+			return err
+		}
+		if out == "" {
 			t.L().Printf("No fatal level logs found.")
+			return nil
 		} else {
 			testLogger.PrintfCtx(ctx, "CockroachDB contains Fatal level logs. Up to the first 10 "+
-				"will be shown here. See node logs in artifacts for more details.\n%s", fatalOut)
-			t.appendGithubFatalLogs(fatalOut)
-		}
-
-		t.L().Printf("Attempting to gather ip node mapping")
-		ipNodeMapOut, gatherNodeIpErr := gatherNodeIpMapping(t, c)
-		if gatherNodeIpErr != nil {
-			inspectArtifactsErr = errors.Join(inspectArtifactsErr, gatherNodeIpErr)
-		} else {
-			t.appendGithubIpToNodeMapping(ipNodeMapOut)
+				"will be shown here. See node logs in artifacts for more details.\n%s", out)
+			t.appendGithubMessage(out)
+			return nil
 		}
 	}
-	return inspectArtifactsErr
-}
-
-// gatherNodeIpMapping attempts to gather cluster node ip information for debug
-func gatherNodeIpMapping(t *testImpl, c *clusterImpl) (string, error) {
-	var table [][]string
-	cachedCluster, err := getCachedCluster(c.name)
-	if err != nil {
-		return "", err
-	}
-	// The regex to select out this table in issues.roachtestNodeToIpRE is not
-	// strict on the number of columns i.e. columns can be added / removed
-	// without a regex change
-	table = append(table, []string{"Node", "Public IP", "Private IP"})
-	for _, vmInstance := range cachedCluster.VMs {
-		table = append(table, []string{vmInstance.Name, vmInstance.PublicIP, vmInstance.PrivateIP})
-	}
-	nodeIpTable, err := roachtestutil.ToMarkdownTable(table)
-	if err != nil {
-		return "", err
-	}
-	testClusterLogger, err := c.l.ChildLogger("node-ips", logger.QuietStderr, logger.QuietStdout)
-	if err != nil {
-		// Best effort, swallowing error
-		t.L().Printf("unable to create logger %s: %s", "node-ips", err)
-		return nodeIpTable, nil
-	}
-	testClusterLogger.Printf("\n%s", nodeIpTable)
-	return nodeIpTable, nil
+	return nil
 }
 
 // gatherFatalNodeLogs attempts to gather fatal level node logs to help with
@@ -1949,19 +1767,19 @@ func gatherNodeIpMapping(t *testImpl, c *clusterImpl) (string, error) {
 func gatherFatalNodeLogs(t *testImpl, testLogger *logger.Logger) (string, error) {
 	logPattern := `^F[0-9]{6}`
 	filePattern := "logs/*unredacted/cockroach*.log"
-	// * wildcard to capture patterns for single node and multi-node clusters
-	// e.g. single node: unredacted, multi-node: 1.unredacted, ...
+	// *unredacted captures patterns for single node and multi-node clusters
+	// e.g. unredacted, 1.unredacted
 	joinedFilePath := filepath.Join(t.ArtifactsDir(), filePattern)
 	targetFiles, err := filepath.Glob(joinedFilePath)
 	if err != nil {
 		return "", err
 	} else if len(targetFiles) == 0 {
-		t.L().Printf("No matching log files found for log pattern: %s and file pattern: %s",
+		return "", errors.Newf("No matching log files found for log pattern: %s and file pattern: %s",
 			logPattern, filePattern)
-		return "", nil
 	}
 	args := append([]string{"-E", "-m", "10", "-a", logPattern}, targetFiles...)
-	t.L().Printf("Gathering fatal level logs with command: %s %s", "grep", strings.Join(args, " "))
+	command := "grep"
+	t.L().Printf("Gathering fatal level logs with command: %q %s", command, strings.Join(args, " "))
 	// Works with local and remote node clusters because we will always download
 	// the artifacts if there's a test failure (except for timeout)
 	cmd := exec.Command("grep", args...)
@@ -2601,7 +2419,7 @@ func getTestParameters(t *testImpl, c *clusterImpl, createOpts *vm.CreateOpts) m
 	// These params can be probabilistically set, so we pass them here to
 	// show what their actual values are in the posted issue.
 	if createOpts != nil {
-		clusterParams["fs"] = string(createOpts.SSDOpts.FileSystem)
+		clusterParams["fs"] = createOpts.SSDOpts.FileSystem
 		clusterParams["localSSD"] = fmt.Sprintf("%v", createOpts.SSDOpts.UseLocalSSD)
 	}
 

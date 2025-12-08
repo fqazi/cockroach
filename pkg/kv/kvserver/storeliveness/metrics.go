@@ -28,9 +28,6 @@ type TransportMetrics struct {
 	MessagesReceived       *metric.Counter
 	MessagesSendDropped    *metric.Counter
 	MessagesReceiveDropped *metric.Counter
-
-	BatchesSent     *metric.Counter
-	BatchesReceived *metric.Counter
 }
 
 func newTransportMetrics() *TransportMetrics {
@@ -42,8 +39,6 @@ func newTransportMetrics() *TransportMetrics {
 		MessagesReceived:       metric.NewCounter(metaMessagesReceived),
 		MessagesSendDropped:    metric.NewCounter(metaMessagesSendDropped),
 		MessagesReceiveDropped: metric.NewCounter(metaMessagesReceiveDropped),
-		BatchesSent:            metric.NewCounter(metaBatchesSent),
-		BatchesReceived:        metric.NewCounter(metaBatchesReceived),
 	}
 }
 
@@ -149,7 +144,6 @@ var (
 			"Store Liveness Support Manager",
 		Measurement: "Heartbeats",
 		Unit:        metric.Unit_COUNT,
-		Visibility:  metric.Metadata_SUPPORT,
 	}
 	metaMessageHandleSuccesses = metric.Metadata{
 		Name: "storeliveness.message_handle.successes",
@@ -207,22 +201,11 @@ var (
 		Measurement: "Bytes",
 		Unit:        metric.Unit_BYTES,
 	}
+
 	metaCallbacksProcessingDuration = metric.Metadata{
 		Name:        "storeliveness.callbacks.processing_duration",
 		Help:        "Duration of support withdrawal callback processing",
 		Measurement: "Duration",
 		Unit:        metric.Unit_NANOSECONDS,
-	}
-	metaBatchesSent = metric.Metadata{
-		Name:        "storeliveness.transport.batches-sent",
-		Help:        "Number of message batches sent by the Store Liveness Transport",
-		Measurement: "Batches",
-		Unit:        metric.Unit_COUNT,
-	}
-	metaBatchesReceived = metric.Metadata{
-		Name:        "storeliveness.transport.batches-received",
-		Help:        "Number of message batches received by the Store Liveness Transport",
-		Measurement: "Batches",
-		Unit:        metric.Unit_COUNT,
 	}
 )

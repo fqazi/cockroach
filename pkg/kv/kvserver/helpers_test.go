@@ -26,7 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/intentresolver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
@@ -41,7 +40,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/circuit"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -98,7 +96,7 @@ func (s *Store) ComputeMVCCStats(reader storage.Reader) (enginepb.MVCCStats, err
 	now := s.Clock().PhysicalNow()
 	newStoreReplicaVisitor(s).Visit(func(r *Replica) bool {
 		var stats enginepb.MVCCStats
-		stats, err = rditer.ComputeStatsForRange(context.Background(), r.Desc(), reader, fs.UnknownReadCategory, now)
+		stats, err = rditer.ComputeStatsForRange(context.Background(), r.Desc(), reader, now)
 		if err != nil {
 			return false
 		}
@@ -319,14 +317,12 @@ func (r *Replica) Breaker() *circuit.Breaker {
 	return r.breaker.wrapped
 }
 
-func (r *Replica) AssertState(
-	ctx context.Context, stateRO kvstorage.StateRO, raftRO kvstorage.RaftRO,
-) {
+func (r *Replica) AssertState(ctx context.Context, reader storage.Reader) {
 	r.raftMu.Lock()
 	defer r.raftMu.Unlock()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	r.assertStateRaftMuLockedReplicaMuRLocked(ctx, stateRO, raftRO)
+	r.assertStateRaftMuLockedReplicaMuRLocked(ctx, reader)
 }
 
 func (r *Replica) RaftLock() {

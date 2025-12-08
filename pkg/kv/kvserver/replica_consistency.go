@@ -20,9 +20,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -37,7 +37,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -489,63 +488,34 @@ func CalcReplicaDigest(
 	// amortize the overhead of the limiter when reading many small KVs.
 	var batchSize int64
 	const targetBatchSize = int64(256 << 10) // 256 KiB
-	const uninitializedResumeSoonTime crtime.Mono = crtime.Mono(-1)
-	// lastResumeSoonTime is used to return resumeSoon=true. It is oblivious to
-	// the fact that ComputeStatsWithVisitors first uses an iterator over lock
-	// table keys and subsequently a different iterator over point and range
-	// keys. If we spend 5s on the first, it will deduct from the resumption
-	// duration of the second iteration. We are ok with this imprecision
-	// (instead of complicating the callback interface), since the bulk of the
-	// iteration in the common case will be spent on the point and range key
-	// iteration.
-	lastResumeSoonTime := uninitializedResumeSoonTime
-	wait := func(size int64) (resumeSoon bool, _ error) {
-		if lastResumeSoonTime == uninitializedResumeSoonTime {
-			lastResumeSoonTime = crtime.NowMono()
-		}
+	wait := func(size int64) error {
 		if batchSize += size; batchSize < targetBatchSize {
-			return false, nil
+			return nil
 		}
 		tokens := batchSize
 		batchSize = 0
-		if err := limiter.WaitN(ctx, tokens); err != nil {
-			return false, err
-		}
-		if crtime.NowMono().Sub(lastResumeSoonTime) > storage.SnapshotRecreateIterDuration.Get(&settings.SV) ||
-			util.RaceEnabled {
-			// NB: we will start returning resumeSoon=false in subsequent calls,
-			// even if the caller has not resumed yet. This is permitted by the
-			// contract documented in ComputeStatsVisitors. Also, the next call to
-			// wait will initialize lastResumeSoonTime, which can be earlier than
-			// the actual resumption, so it isn't very precise, but it is the best
-			// we can do. And this imprecision should not matter given the coarse
-			// granularity of SnapshotRecreateIterDuration.
-			lastResumeSoonTime = uninitializedResumeSoonTime
-			return true, nil
-		}
-		return false, nil
+		return limiter.WaitN(ctx, tokens)
 	}
 
 	var visitors storage.ComputeStatsVisitors
 
-	visitors.PointKey = func(unsafeKey storage.MVCCKey, unsafeValue []byte) (resumeSoon bool, _ error) {
+	visitors.PointKey = func(unsafeKey storage.MVCCKey, unsafeValue []byte) error {
 		// Rate limit the scan through the range.
-		var err error
-		if resumeSoon, err = wait(int64(len(unsafeKey.Key) + len(unsafeValue))); err != nil {
-			return false, err
+		if err := wait(int64(len(unsafeKey.Key) + len(unsafeValue))); err != nil {
+			return err
 		}
 		// Encode the length of the key and value.
 		binary.LittleEndian.PutUint64(intBuf[:], uint64(len(unsafeKey.Key)))
-		if _, err = hasher.Write(intBuf[:]); err != nil {
-			return false, err
+		if _, err := hasher.Write(intBuf[:]); err != nil {
+			return err
 		}
 		binary.LittleEndian.PutUint64(intBuf[:], uint64(len(unsafeValue)))
-		if _, err = hasher.Write(intBuf[:]); err != nil {
-			return false, err
+		if _, err := hasher.Write(intBuf[:]); err != nil {
+			return err
 		}
 		// Encode the key.
-		if _, err = hasher.Write(unsafeKey.Key); err != nil {
-			return false, err
+		if _, err := hasher.Write(unsafeKey.Key); err != nil {
+			return err
 		}
 		timestamp = unsafeKey.Timestamp
 		if size := timestamp.Size(); size > cap(timestampBuf) {
@@ -553,44 +523,43 @@ func CalcReplicaDigest(
 		} else {
 			timestampBuf = timestampBuf[:size]
 		}
-		if _, err = protoutil.MarshalToSizedBuffer(&timestamp, timestampBuf); err != nil {
-			return false, err
+		if _, err := protoutil.MarshalToSizedBuffer(&timestamp, timestampBuf); err != nil {
+			return err
 		}
-		if _, err = hasher.Write(timestampBuf); err != nil {
-			return false, err
+		if _, err := hasher.Write(timestampBuf); err != nil {
+			return err
 		}
 		// Encode the value.
-		_, err = hasher.Write(unsafeValue)
-		return resumeSoon, err
+		_, err := hasher.Write(unsafeValue)
+		return err
 	}
 
-	visitors.RangeKey = func(rangeKV storage.MVCCRangeKeyValue) (resumeSoon bool, _ error) {
+	visitors.RangeKey = func(rangeKV storage.MVCCRangeKeyValue) error {
 		// Rate limit the scan through the range.
-		var err error
-		resumeSoon, err = wait(
+		err := wait(
 			int64(len(rangeKV.RangeKey.StartKey) + len(rangeKV.RangeKey.EndKey) + len(rangeKV.Value)))
 		if err != nil {
-			return false, err
+			return err
 		}
 		// Encode the length of the start key and end key.
 		binary.LittleEndian.PutUint64(intBuf[:], uint64(len(rangeKV.RangeKey.StartKey)))
-		if _, err = hasher.Write(intBuf[:]); err != nil {
-			return false, err
+		if _, err := hasher.Write(intBuf[:]); err != nil {
+			return err
 		}
 		binary.LittleEndian.PutUint64(intBuf[:], uint64(len(rangeKV.RangeKey.EndKey)))
-		if _, err = hasher.Write(intBuf[:]); err != nil {
-			return false, err
+		if _, err := hasher.Write(intBuf[:]); err != nil {
+			return err
 		}
 		binary.LittleEndian.PutUint64(intBuf[:], uint64(len(rangeKV.Value)))
-		if _, err = hasher.Write(intBuf[:]); err != nil {
-			return false, err
+		if _, err := hasher.Write(intBuf[:]); err != nil {
+			return err
 		}
 		// Encode the key.
-		if _, err = hasher.Write(rangeKV.RangeKey.StartKey); err != nil {
-			return false, err
+		if _, err := hasher.Write(rangeKV.RangeKey.StartKey); err != nil {
+			return err
 		}
-		if _, err = hasher.Write(rangeKV.RangeKey.EndKey); err != nil {
-			return false, err
+		if _, err := hasher.Write(rangeKV.RangeKey.EndKey); err != nil {
+			return err
 		}
 		timestamp = rangeKV.RangeKey.Timestamp
 		if size := timestamp.Size(); size > cap(timestampBuf) {
@@ -598,55 +567,54 @@ func CalcReplicaDigest(
 		} else {
 			timestampBuf = timestampBuf[:size]
 		}
-		if _, err = protoutil.MarshalToSizedBuffer(&timestamp, timestampBuf); err != nil {
-			return false, err
+		if _, err := protoutil.MarshalToSizedBuffer(&timestamp, timestampBuf); err != nil {
+			return err
 		}
-		if _, err = hasher.Write(timestampBuf); err != nil {
-			return false, err
+		if _, err := hasher.Write(timestampBuf); err != nil {
+			return err
 		}
 		// Encode the value.
 		_, err = hasher.Write(rangeKV.Value)
-		return resumeSoon, err
+		return err
 	}
 
-	visitors.LockTableKey = func(unsafeKey storage.LockTableKey, unsafeValue []byte) (resumeSoon bool, _ error) {
+	visitors.LockTableKey = func(unsafeKey storage.LockTableKey, unsafeValue []byte) error {
 		// Assert that the lock is not an intent. Intents are handled by the
 		// PointKey visitor function, not by the LockTableKey visitor function.
 		if unsafeKey.Strength == lock.Intent {
-			return false, errors.AssertionFailedf("unexpected intent lock in LockTableKey visitor: %s", unsafeKey)
+			return errors.AssertionFailedf("unexpected intent lock in LockTableKey visitor: %s", unsafeKey)
 		}
 		// Rate limit the scan through the lock table.
-		var err error
-		if resumeSoon, err = wait(int64(len(unsafeKey.Key) + len(unsafeValue))); err != nil {
-			return false, err
+		if err := wait(int64(len(unsafeKey.Key) + len(unsafeValue))); err != nil {
+			return err
 		}
 		// Encode the length of the key and value.
 		binary.LittleEndian.PutUint64(intBuf[:], uint64(len(unsafeKey.Key)))
-		if _, err = hasher.Write(intBuf[:]); err != nil {
-			return false, err
+		if _, err := hasher.Write(intBuf[:]); err != nil {
+			return err
 		}
 		binary.LittleEndian.PutUint64(intBuf[:], uint64(len(unsafeValue)))
-		if _, err = hasher.Write(intBuf[:]); err != nil {
-			return false, err
+		if _, err := hasher.Write(intBuf[:]); err != nil {
+			return err
 		}
 		// Encode the key.
-		if _, err = hasher.Write(unsafeKey.Key); err != nil {
-			return false, err
+		if _, err := hasher.Write(unsafeKey.Key); err != nil {
+			return err
 		}
 		// NOTE: this is not the same strength encoding that the actual lock
 		// table version uses. For that, see getByteForReplicatedLockStrength.
 		strengthBuf := intBuf[:1]
 		strengthBuf[0] = byte(unsafeKey.Strength)
-		if _, err = hasher.Write(strengthBuf); err != nil {
-			return false, err
+		if _, err := hasher.Write(strengthBuf); err != nil {
+			return err
 		}
 		copy(uuidBuf[:], unsafeKey.TxnUUID.GetBytes())
-		if _, err = hasher.Write(uuidBuf[:]); err != nil {
-			return false, err
+		if _, err := hasher.Write(uuidBuf[:]); err != nil {
+			return err
 		}
 		// Encode the value.
-		_, err = hasher.Write(unsafeValue)
-		return resumeSoon, err
+		_, err := hasher.Write(unsafeValue)
+		return err
 	}
 
 	// In statsOnly mode, we hash only the RangeAppliedState. In regular mode, hash
@@ -654,7 +622,7 @@ func CalcReplicaDigest(
 	var result ReplicaDigest
 	if !statsOnly {
 		ms, err := rditer.ComputeStatsForRangeWithVisitors(
-			ctx, &desc, snap, fs.ConsistencyCheckerReadCategory, 0 /* nowNanos */, visitors)
+			ctx, &desc, snap, 0 /* nowNanos */, visitors)
 		// Consume the remaining quota borrowed in the visitors. Do it even on
 		// iteration error, but prioritize returning the latter if it occurs.
 		if wErr := limiter.WaitN(ctx, batchSize); wErr != nil && err == nil {
@@ -666,7 +634,7 @@ func CalcReplicaDigest(
 		result.RecomputedMS = ms
 	}
 
-	rangeAppliedState, err := kvstorage.MakeStateLoader(desc.RangeID).LoadRangeAppliedState(ctx, snap)
+	rangeAppliedState, err := stateloader.Make(desc.RangeID).LoadRangeAppliedState(ctx, snap)
 	if err != nil {
 		return nil, err
 	}
@@ -711,14 +679,14 @@ func (r *Replica) computeChecksumPostApply(
 
 	// Caller is holding raftMu, so an engine snapshot is automatically
 	// Raft-consistent (i.e. not in the middle of an AddSSTable).
-	snap := r.store.StateEngine().NewSnapshot(rditer.MakeReplicatedKeySpans(&desc)...)
+	snap := r.store.TODOEngine().NewSnapshot(rditer.MakeReplicatedKeySpans(&desc)...)
 	if util.RaceEnabled {
 		ss := rditer.MakeReplicatedKeySpanSet(&desc)
 		defer ss.Release()
 		snap = spanset.NewReader(snap, ss, hlc.Timestamp{})
 	}
 	if cc.Checkpoint {
-		sl := kvstorage.MakeStateLoader(r.RangeID)
+		sl := stateloader.Make(r.RangeID)
 		as, err := sl.LoadRangeAppliedState(ctx, snap)
 		if err != nil {
 			log.KvExec.Warningf(ctx, "unable to load applied index, continuing anyway")
@@ -799,12 +767,8 @@ func (r *Replica) computeChecksumPostApply(
 		// early, the reply won't make it back to the leaseholder, so it will not be
 		// certain of completing the check. Since we're already in a goroutine
 		// that's about to end, just sleep for a few seconds and then terminate.
-		//
-		// TODO(sep-raft-log): the decision to store the fatal file in LogEngine is
-		// somewhat arbitrary, make sure it's fine.
-		eng := r.store.LogEngine()
-		auxDir := eng.GetAuxiliaryDir()
-		_ = eng.Env().MkdirAll(auxDir, os.ModePerm)
+		auxDir := r.store.TODOEngine().GetAuxiliaryDir()
+		_ = r.store.TODOEngine().Env().MkdirAll(auxDir, os.ModePerm)
 		path := base.PreventedStartupFile(auxDir)
 
 		const attentionFmt = `ATTENTION:
@@ -847,7 +811,7 @@ creation. These directories should be deleted, or inspected with caution.
 `
 		attentionArgs := []any{r, desc.Replicas(), redact.Safe(auxDir), redact.Safe(path)}
 		preventStartupMsg := fmt.Sprintf(attentionFmt, attentionArgs...)
-		if err := fs.WriteFile(eng.Env(), path, []byte(preventStartupMsg), fs.UnspecifiedWriteCategory); err != nil {
+		if err := fs.WriteFile(r.store.TODOEngine().Env(), path, []byte(preventStartupMsg), fs.UnspecifiedWriteCategory); err != nil {
 			log.KvExec.Warningf(ctx, "%v", err)
 		}
 

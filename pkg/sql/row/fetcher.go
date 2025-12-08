@@ -39,7 +39,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/lib/pq/oid"
 )
@@ -148,11 +147,6 @@ type KVBatchFetcher interface {
 	// fetcher throughout its lifetime. It is safe for concurrent use and is
 	// able to handle a case of uninitialized fetcher.
 	GetBatchRequestsIssued() int64
-
-	// GetKVCPUTime returns the cumulative CPU time as reported by KV BatchResponses
-	// processed by this fetcher throughout its lifetime. It is safe for concurrent
-	// use and is able to handle a case of uninitialized fetcher.
-	GetKVCPUTime() int64
 
 	// Close releases the resources of this KVBatchFetcher. Must be called once
 	// the fetcher is no longer in use. Note that observability-related methods
@@ -345,7 +339,7 @@ type FetcherInitArgs struct {
 	TraceKV bool
 	// TraceKVEvery controls how often KVs are sampled for logging with traceKV
 	// enabled.
-	TraceKVEvery               *util.EveryN[crtime.Mono]
+	TraceKVEvery               *util.EveryN
 	ForceProductionKVBatchSize bool
 	// SpansCanOverlap indicates whether the spans in a given batch can overlap
 	// with one another. If it is true, spans that correspond to the same row must
@@ -504,7 +498,6 @@ func (rf *Fetcher) Init(ctx context.Context, args FetcherInitArgs) error {
 	} else if !args.WillUseKVProvider {
 		var kvPairsRead int64
 		var batchRequestsIssued int64
-		var kvCPUTime int64
 		fetcherArgs := newTxnKVFetcherArgs{
 			reverse:                    args.Reverse,
 			lockStrength:               args.LockStrength,
@@ -517,10 +510,9 @@ func (rf *Fetcher) Init(ctx context.Context, args FetcherInitArgs) error {
 			forceProductionKVBatchSize: args.ForceProductionKVBatchSize,
 			kvPairsRead:                &kvPairsRead,
 			batchRequestsIssued:        &batchRequestsIssued,
-			kvCPUTime:                  &kvCPUTime,
 		}
 		if args.Txn != nil {
-			fetcherArgs.sendFn = makeSendFunc(args.Txn, args.Spec.External, &batchRequestsIssued, &kvCPUTime)
+			fetcherArgs.sendFn = makeSendFunc(args.Txn, args.Spec.External, &batchRequestsIssued)
 			fetcherArgs.admission.requestHeader = args.Txn.AdmissionHeader()
 			fetcherArgs.admission.responseQ = args.Txn.DB().SQLKVResponseAdmissionQ
 			fetcherArgs.admission.pacerFactory = args.Txn.DB().AdmissionPacerFactory
@@ -546,8 +538,7 @@ func (rf *Fetcher) Init(ctx context.Context, args FetcherInitArgs) error {
 // Consider using GetBatchRequestsIssued if that information is needed.
 func (rf *Fetcher) SetTxn(txn *kv.Txn) error {
 	var batchRequestsIssued int64
-	var kvCPUTime int64
-	sendFn := makeSendFunc(txn, rf.args.Spec.External, &batchRequestsIssued, &kvCPUTime)
+	sendFn := makeSendFunc(txn, rf.args.Spec.External, &batchRequestsIssued)
 	return rf.setTxnAndSendFn(txn, sendFn)
 }
 
@@ -1140,10 +1131,7 @@ func (rf *Fetcher) processValueSingle(
 	if rf.args.TraceKV {
 		prettyValue = value.String()
 	}
-	table.row[idx], err = rowenc.DatumToEncDatum(typ, value)
-	if err != nil {
-		return "", "", err
-	}
+	table.row[idx] = rowenc.DatumToEncDatum(typ, value)
 	return prettyKey, prettyValue, nil
 }
 
@@ -1205,7 +1193,7 @@ func (rf *Fetcher) NextRow(ctx context.Context) (row rowenc.EncDatumRow, spanID 
 		// log.EveryN will always print under verbosity level 2.
 		// The caller may choose to set it to avoid logging
 		// too many rows. If unset, we log every KV.
-		if rf.args.TraceKV && (rf.args.TraceKVEvery == nil || rf.args.TraceKVEvery.ShouldProcess(crtime.NowMono())) {
+		if rf.args.TraceKV && (rf.args.TraceKVEvery == nil || rf.args.TraceKVEvery.ShouldProcess(timeutil.Now())) {
 			log.VEventf(ctx, TraceKVVerbosity, "fetched: %s -> %s", prettyKey, prettyVal)
 		}
 
@@ -1413,15 +1401,6 @@ func (rf *Fetcher) GetBytesRead() int64 {
 		return 0
 	}
 	return rf.kvFetcher.GetBytesRead()
-}
-
-// GetKVCPUTime returns CPU time (in nanoseconds) as reported by KV BatchResponses
-// processed by the underlying KVFetcher.
-func (rf *Fetcher) GetKVCPUTime() int64 {
-	if rf == nil || rf.kvFetcher == nil {
-		return 0
-	}
-	return rf.kvFetcher.GetKVCPUTime()
 }
 
 // GetBatchRequestsIssued returns total number of BatchRequests issued by the

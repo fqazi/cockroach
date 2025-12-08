@@ -187,17 +187,15 @@ func (mr *MockCatalogMockRecorder) GetZoneConfig(arg0, arg1 interface{}) *gomock
 }
 
 // InitializeSequence mocks base method.
-func (m *MockCatalog) InitializeSequence(arg0 context.Context, arg1 catid.DescID, arg2 int64) error {
+func (m *MockCatalog) InitializeSequence(arg0 catid.DescID, arg1 int64) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "InitializeSequence", arg0, arg1, arg2)
-	ret0, _ := ret[0].(error)
-	return ret0
+	m.ctrl.Call(m, "InitializeSequence", arg0, arg1)
 }
 
 // InitializeSequence indicates an expected call of InitializeSequence.
-func (mr *MockCatalogMockRecorder) InitializeSequence(arg0, arg1, arg2 interface{}) *gomock.Call {
+func (mr *MockCatalogMockRecorder) InitializeSequence(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InitializeSequence", reflect.TypeOf((*MockCatalog)(nil).InitializeSequence), arg0, arg1, arg2)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InitializeSequence", reflect.TypeOf((*MockCatalog)(nil).InitializeSequence), arg0, arg1)
 }
 
 // InsertTemporarySchema mocks base method.

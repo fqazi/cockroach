@@ -211,12 +211,9 @@ type Memo struct {
 	useExistsFilterHoistRule                   bool
 	disableSlowCascadeFastPathForRBRTables     bool
 	useImprovedHoistJoinProject                bool
-	rowSecurity                                bool
 	clampLowHistogramSelectivity               bool
 	clampInequalitySelectivity                 bool
 	useMaxFrequencySelectivity                 bool
-	usingHintInjection                         bool
-	useSwapMutations                           bool
 
 	// txnIsoLevel is the isolation level under which the plan was created. This
 	// affects the planning of some locking operations, so it must be included in
@@ -328,12 +325,9 @@ func (m *Memo) Init(ctx context.Context, evalCtx *eval.Context) {
 		useExistsFilterHoistRule:                   evalCtx.SessionData().OptimizerUseExistsFilterHoistRule,
 		disableSlowCascadeFastPathForRBRTables:     evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables,
 		useImprovedHoistJoinProject:                evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject,
-		rowSecurity:                                evalCtx.SessionData().RowSecurity,
 		clampLowHistogramSelectivity:               evalCtx.SessionData().OptimizerClampLowHistogramSelectivity,
 		clampInequalitySelectivity:                 evalCtx.SessionData().OptimizerClampInequalitySelectivity,
 		useMaxFrequencySelectivity:                 evalCtx.SessionData().OptimizerUseMaxFrequencySelectivity,
-		usingHintInjection:                         evalCtx.Planner != nil && evalCtx.Planner.UsingHintInjection(),
-		useSwapMutations:                           evalCtx.SessionData().UseSwapMutations,
 		txnIsoLevel:                                evalCtx.TxnIsoLevel,
 	}
 	m.metadata.Init()
@@ -509,12 +503,9 @@ func (m *Memo) IsStale(
 		m.useExistsFilterHoistRule != evalCtx.SessionData().OptimizerUseExistsFilterHoistRule ||
 		m.disableSlowCascadeFastPathForRBRTables != evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables ||
 		m.useImprovedHoistJoinProject != evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject ||
-		m.rowSecurity != evalCtx.SessionData().RowSecurity ||
 		m.clampLowHistogramSelectivity != evalCtx.SessionData().OptimizerClampLowHistogramSelectivity ||
 		m.clampInequalitySelectivity != evalCtx.SessionData().OptimizerClampInequalitySelectivity ||
 		m.useMaxFrequencySelectivity != evalCtx.SessionData().OptimizerUseMaxFrequencySelectivity ||
-		m.usingHintInjection != (evalCtx.Planner != nil && evalCtx.Planner.UsingHintInjection()) ||
-		m.useSwapMutations != evalCtx.SessionData().UseSwapMutations ||
 		m.txnIsoLevel != evalCtx.TxnIsoLevel {
 		return true, nil
 	}

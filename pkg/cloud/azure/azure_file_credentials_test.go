@@ -211,7 +211,8 @@ func TestAzureFileCredential(t *testing.T) {
 
 		t.Run("invalid-on-reload", func(t *testing.T) {
 			credFile := path.Join(tmpDir, "reload-on-error-invalid-on-reload")
-			defer envutil.TestSetEnv(t, "COCKROACH_AZURE_APPLICATION_CREDENTIALS_FILE", credFile)()
+			cleanup := envutil.TestSetEnv(t, "COCKROACH_AZURE_APPLICATION_CREDENTIALS_FILE", credFile)
+			defer cleanup()
 
 			require.NoError(t, writeAzureCredentialsFile(credFile, cfg.tenantID, cfg.clientID, cfg.clientSecret))
 

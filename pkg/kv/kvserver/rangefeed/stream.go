@@ -86,12 +86,13 @@ func (s *PerRangeEventSink) SendError(err *kvpb.Error) {
 		Error: *transformRangefeedErrToClientError(err),
 	})
 	if ev.Error == nil {
-		log.KvExec.Fatalf(context.Background(),
+		log.KvDistribution.Fatalf(context.Background(),
 			"unexpected: SendWithoutBlocking called with non-error event")
 	}
-	// Silence the error: expected to happen when the buffered sender is closed or
-	// stopped.
-	_ = s.wrapped.sendBuffered(ev, nil)
+	if err := s.wrapped.sendBuffered(ev, nil); err != nil {
+		log.KvDistribution.Infof(context.Background(),
+			"failed to send rangefeed error to client: %v", err)
+	}
 }
 
 // transformRangefeedErrToClientError converts a rangefeed error to a client

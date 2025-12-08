@@ -16,7 +16,7 @@ mutations
 
 # We should observe placeholder entries for both tenants (installed when
 # creating tenant records).
-state offset=48
+state offset=47
 ----
 ...
 /Table/4{6-7}                              database system (host)
@@ -204,10 +204,9 @@ mutations tenant=10
 delete {source=10,target=10}
 
 # All system span config targets should have been removed at this point.
-state limit=5
+state limit=4
 ----
-/M{in-eta2}                                ttl_seconds=3600 num_replicas=5
-/{Meta2-System/NodeLiveness}               ttl_seconds=3600 num_replicas=5
+/{Min-System/NodeLiveness}                 ttl_seconds=3600 num_replicas=5
 /System/NodeLiveness{-Max}                 ttl_seconds=600 num_replicas=5
 /System/{NodeLivenessMax-tsd}              range system
 /System{/tsd-tse}                          range default

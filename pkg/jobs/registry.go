@@ -30,6 +30,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
 	"github.com/cockroachdb/cockroach/pkg/util/cidr"
+	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
@@ -284,11 +285,6 @@ func (r *Registry) CurrentlyRunningJobs() []jobspb.JobID {
 // used for keying sqlliveness claims held by the registry.
 func (r *Registry) ID() base.SQLInstanceID {
 	return r.nodeID.SQLInstanceID()
-}
-
-// ClusterSettings returns the registry's cluster settings handle.
-func (r *Registry) ClusterSettings() *cluster.Settings {
-	return r.settings
 }
 
 // makeCtx returns a new context from r's ambient context and an associated
@@ -889,6 +885,9 @@ func (r *Registry) LoadJobWithTxn(
 	}
 	return j, nil
 }
+
+// TODO (sajjad): make maxAdoptionsPerLoop a cluster setting.
+var maxAdoptionsPerLoop = envutil.EnvOrDefaultInt(`COCKROACH_JOB_ADOPTIONS_PER_PERIOD`, 10)
 
 const removeClaimsForDeadSessionsQuery = `
 UPDATE system.jobs

@@ -29,7 +29,7 @@ import (
 // in that cluster.
 type Simulator struct {
 	log.AmbientContext
-	onRecording func(storeID state.StoreID, atDuration time.Duration, rec tracingpb.Recording)
+	onRecording func(storeID state.StoreID, rec tracingpb.Recording)
 
 	curr time.Time
 	end  time.Time
@@ -98,18 +98,13 @@ func NewSimulator(
 	changer := state.NewReplicaChanger()
 	controllers := make(map[state.StoreID]op.Controller)
 
-	var onRecording func(storeID state.StoreID, atDuration time.Duration, rec tracingpb.Recording)
-	if fn := settings.OnRecording; fn != nil {
-		onRecording = func(storeID state.StoreID, atDuration time.Duration, rec tracingpb.Recording) {
-			fn(int64(storeID), atDuration, rec)
-		}
-	}
-
 	s := &Simulator{
 		AmbientContext: log.MakeTestingAmbientCtxWithNewTracer(),
-		// onRecording is intentionally nil if settings.OnRecording is nil, to
-		// short-circuit trace creation overhead in that case.
-		onRecording: onRecording,
+		onRecording: func(storeID state.StoreID, rec tracingpb.Recording) {
+			if fn := settings.OnRecording; fn != nil {
+				fn(int64(storeID), rec)
+			}
+		},
 		curr:        settings.StartTime,
 		end:         settings.StartTime.Add(duration),
 		interval:    settings.TickInterval,
@@ -309,7 +304,7 @@ func (s *Simulator) tickWorkload(ctx context.Context, tick time.Time) {
 // each store ticks the pending operations such as relocate range and lease
 // transfers.
 func (s *Simulator) tickStateChanges(ctx context.Context, tick time.Time) {
-	s.changer.Tick(ctx, tick, s.state)
+	s.changer.Tick(tick, s.state)
 	stores := s.state.Stores()
 	s.shuffler(len(stores), func(i, j int) { stores[i], stores[j] = stores[j], stores[i] })
 	for _, store := range stores {
@@ -328,25 +323,6 @@ func (s *Simulator) tickStoreClocks(tick time.Time) {
 	s.state.TickClock(tick)
 }
 
-func (s *Simulator) doAndMaybeTrace(
-	ctx context.Context,
-	storeID state.StoreID,
-	tick time.Time,
-	op string,
-	f func(ctx context.Context),
-) {
-	atDuration := tick.Sub(s.settings.StartTime)
-
-	var finishAndGetRecording func() tracingpb.Recording
-	if s.onRecording != nil {
-		ctx, finishAndGetRecording = tracing.ContextWithRecordingSpan(ctx, s.Tracer, op)
-	}
-	f(ctx)
-	if finishAndGetRecording != nil {
-		s.onRecording(storeID, atDuration, finishAndGetRecording())
-	}
-}
-
 // tickQueues iterates over the next replicas for each store to
 // consider. It then enqueues each of these and ticks the replicate queue for
 // processing.
@@ -358,20 +334,14 @@ func (s *Simulator) tickQueues(ctx context.Context, tick time.Time, state state.
 
 		// Tick the split queue.
 		s.sqs[storeID].Tick(ctx, tick, state)
-
 		// Tick the replicate queue.
-		s.doAndMaybeTrace(ctx, storeID, tick, "replicateQueue.PlanOneChange", func(ctx context.Context) {
-			s.rqs[storeID].Tick(ctx, tick, state)
-		})
-
+		s.rqs[storeID].Tick(ctx, tick, state)
 		// Tick the lease queue.
-		s.doAndMaybeTrace(ctx, storeID, tick, "leaseQueue.PlanOneChange", func(ctx context.Context) {
-			s.lqs[storeID].Tick(ctx, tick, state)
-		})
+		s.lqs[storeID].Tick(ctx, tick, state)
 
 		// Tick changes that may have been enqueued with a lower completion
 		// than the current tick, from the queues.
-		s.changer.Tick(ctx, tick, state)
+		s.changer.Tick(tick, state)
 
 		// Try adding suggested load splits that are pending for this store.
 		for _, rangeID := range state.LoadSplitterFor(storeID).ClearSplitKeys() {
@@ -409,9 +379,7 @@ func (s *Simulator) tickStoreRebalancers(ctx context.Context, tick time.Time, st
 	stores := s.state.Stores()
 	s.shuffler(len(stores), func(i, j int) { stores[i], stores[j] = stores[j], stores[i] })
 	for _, store := range stores {
-		s.doAndMaybeTrace(ctx, store.StoreID(), tick, "StoreRebalancer", func(ctx context.Context) {
-			s.srs[store.StoreID()].Tick(ctx, tick, state)
-		})
+		s.srs[store.StoreID()].Tick(ctx, tick, state)
 	}
 }
 
@@ -421,9 +389,14 @@ func (s *Simulator) tickMMStoreRebalancers(ctx context.Context, tick time.Time, 
 	stores := s.state.Stores()
 	s.shuffler(len(stores), func(i, j int) { stores[i], stores[j] = stores[j], stores[i] })
 	for _, store := range stores {
-		s.doAndMaybeTrace(ctx, store.StoreID(), tick, "mma.ComputeChanges", func(ctx context.Context) {
-			s.mmSRs[store.StoreID()].Tick(ctx, tick, state)
-		})
+		var finishAndGetRecording func() tracingpb.Recording
+		if s.onRecording != nil {
+			ctx, finishAndGetRecording = tracing.ContextWithRecordingSpan(ctx, s.Tracer, "mma.ComputeChanges")
+		}
+		s.mmSRs[store.StoreID()].Tick(ctx, tick, state)
+		if finishAndGetRecording != nil {
+			s.onRecording(store.StoreID(), finishAndGetRecording())
+		}
 	}
 }
 

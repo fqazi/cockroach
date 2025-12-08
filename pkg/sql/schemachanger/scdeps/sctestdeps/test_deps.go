@@ -1393,7 +1393,10 @@ func (s *TestState) ResolveFunction(
 	if err != nil {
 		return nil, err
 	}
-	fd := tree.GetBuiltinFuncDefinition(fnName, path)
+	fd, err := tree.GetBuiltinFuncDefinition(fnName, path)
+	if err != nil {
+		return nil, err
+	}
 	if fd != nil {
 		return fd, nil
 	}
@@ -1543,9 +1546,8 @@ func getNameEntryDescriptorType(parentID, parentSchemaID descpb.ID) string {
 }
 
 // InitializeSequence is part of the scexec.Catalog interface.
-func (s *TestState) InitializeSequence(ctx context.Context, id descpb.ID, startVal int64) error {
+func (s *TestState) InitializeSequence(id descpb.ID, startVal int64) {
 	s.LogSideEffectf("initializing sequence %d with starting value of %d", id, startVal)
-	return nil
 }
 
 // CheckMaxSchemaObjects is part of the scexec.Catalog interface.

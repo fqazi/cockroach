@@ -294,7 +294,7 @@ func TestBackupRestorePartitioned(t *testing.T) {
 	// Disabled to run within tenant as certain MR features are not available to tenants.
 	args := base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
-			DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 		},
 		ServerArgsPerNode: map[int]base.TestServerArgs{
 			0: {
@@ -450,14 +450,12 @@ func TestBackupRestoreExecLocality(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderRace(t, "too slow")
-
 	const numAccounts = 1000
 
 	// Disabled to run within tenant as certain MR features are not available to tenants.
 	args := base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
-			DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 		},
 		ServerArgsPerNode: map[int]base.TestServerArgs{
 			0: {
@@ -4080,8 +4078,7 @@ func TestNonLinearChain(t *testing.T) {
 	defer cleanup()
 
 	tc := testcluster.NewTestCluster(t, 1, base.TestClusterArgs{ServerArgs: base.TestServerArgs{
-		DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
-		ExternalIODir:     dir, Knobs: base.TestingKnobs{
+		DefaultTestTenant: base.TODOTestTenantDisabled, ExternalIODir: dir, Knobs: base.TestingKnobs{
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 		},
 	}})
@@ -6505,8 +6502,8 @@ func TestProtectedTimestampsFailDueToLimits(t *testing.T) {
 			// The meta table is used to track limits.
 			UseMetaTable: true,
 		}
-		// Test fails within a tenant.
-		params.ServerArgs.DefaultTestTenant = base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798)
+		// Test fails within a tenant. Tracked with #76378.
+		params.ServerArgs.DefaultTestTenant = base.TODOTestTenantDisabled
 		tc := testcluster.StartTestCluster(t, 1, params)
 		defer tc.Stopper().Stop(ctx)
 		db := tc.ServerConn(0)
@@ -7603,8 +7600,6 @@ func TestClientDisconnect(t *testing.T) {
 func TestBackupExportRequestTimeout(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	skip.UnderDeadlock(t)
 
 	allowRequest := make(chan struct{})
 	defer close(allowRequest)
@@ -9276,8 +9271,8 @@ func TestGCDropIndexSpanExpansion(t *testing.T) {
 		// This test hangs when run within a tenant. It's likely that
 		// the cause of the hang is the fact that we're waiting on the GC to
 		// complete, and we don't have visibility into the GC completing from
-		// the tenant. More investigation is required.
-		DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
+		// the tenant. More investigation is required. Tracked with #76378.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 		Knobs: base.TestingKnobs{
 			GCJob: &sql.GCJobTestingKnobs{
 				RunBeforePerformGC: func(id jobspb.JobID) error {
@@ -9451,7 +9446,7 @@ func TestExcludeDataFromBackupAndRestore(t *testing.T) {
 			ServerArgs: base.TestServerArgs{
 				// Disabled to run within tenants because the function that sets up the restoring cluster
 				// has not been configured yet to run within tenants.
-				DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
+				DefaultTestTenant: base.TODOTestTenantDisabled,
 				Knobs: base.TestingKnobs{
 					JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(), // speeds up test
 					SpanConfig: &spanconfig.TestingKnobs{
@@ -9552,8 +9547,8 @@ func TestExportRequestBelowGCThresholdOnDataExcludedFromBackup(t *testing.T) {
 	args := base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			// Test fails when run within a tenant as zone config
-			// updates are not allowed by default.
-			DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
+			// updates are not allowed by default. Tracked with 73768.
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 		},
 	}
 	args.ServerArgs.Knobs.Store = &kvserver.StoreTestingKnobs{
@@ -9657,8 +9652,8 @@ func TestExcludeDataFromBackupDoesNotHoldupGC(t *testing.T) {
 	params := base.TestClusterArgs{}
 	params.ServerArgs.ExternalIODir = dir
 	// Test fails when run within a tenant. More investigation is
-	// required.
-	params.ServerArgs.DefaultTestTenant = base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798)
+	// required. Tracked with #76378.
+	params.ServerArgs.DefaultTestTenant = base.TODOTestTenantDisabled
 	params.ServerArgs.Knobs.Store = &kvserver.StoreTestingKnobs{
 		DisableGCQueue:            true,
 		DisableLastProcessedCheck: true,
@@ -10502,7 +10497,6 @@ func TestBackupDBWithViewOnAdjacentDBRange(t *testing.T) {
 			},
 		})
 	defer cleanupFn()
-	srv0 := tc.StorageLayer(0)
 	s0 := tc.ApplicationLayer(0)
 
 	// Speeds up the test.
@@ -10533,7 +10527,7 @@ func TestBackupDBWithViewOnAdjacentDBRange(t *testing.T) {
 	time.Sleep(5 * time.Second)
 
 	// Force GC on da.t2 to advance its GC threshold.
-	err := srv0.ForceTableGC(context.Background(), "da", "t2", s0.Clock().Now().Add(-int64(1*time.Second), 0))
+	err := s0.ForceTableGC(context.Background(), "da", "t2", s0.Clock().Now().Add(-int64(1*time.Second), 0))
 	require.NoError(t, err)
 
 	// This statement should succeed as we are not backing up the span for dbview,
@@ -11198,95 +11192,4 @@ func TestBackupRestoreFunctionDependenciesRevisionHistory(t *testing.T) {
 	sqlDB.Exec(t, `USE test6`)
 
 	checkFunctions("test6")
-}
-
-func TestBackupRestoreDatabaseRevisionHistory(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	dataDir, dirCleanupFunc := testutils.TempDir(t)
-	defer dirCleanupFunc()
-
-	_, sqlDB, cleanupFn := backupRestoreTestSetupEmpty(t, singleNode, dataDir, InitManualReplication, base.TestClusterArgs{})
-	defer cleanupFn()
-
-	// Helper function to check if a database exists.
-	checkDatabase := func(dbName string, shouldExist bool) {
-		var count int
-		sqlDB.QueryRow(t, `SELECT count(*) FROM system.namespace WHERE name = $1 AND "parentID" = 0`, dbName).Scan(&count)
-		if shouldExist {
-			if count != 1 {
-				t.Fatalf("expected database %s to exist, but it doesn't", dbName)
-			}
-		} else {
-			if count != 0 {
-				t.Fatalf("expected database %s to not exist, but it does", dbName)
-			}
-		}
-	}
-
-	sqlDB.Exec(t, `CREATE DATABASE test_db`)
-
-	// T1: Full cluster backup with revision history.
-	backupPath := "nodelocal://1/database_revision_backup"
-	sqlDB.Exec(t, `BACKUP INTO $1 WITH revision_history`, backupPath)
-
-	// T2: Capture timestamp after backup (database exists).
-	var t2 string
-	sqlDB.QueryRow(t, `SELECT cluster_logical_timestamp()`).Scan(&t2)
-
-	sqlDB.Exec(t, `DROP DATABASE test_db`)
-
-	checkDatabase("test_db", false)
-
-	// T3: Capture timestamp after dropping database.
-	var t3 string
-	sqlDB.QueryRow(t, `SELECT cluster_logical_timestamp()`).Scan(&t3)
-
-	sqlDB.Exec(t, `CREATE DATABASE ephemeral`)
-
-	// T4: Capture timestamp the has the ephemeral database.
-	var t4 string
-	sqlDB.QueryRow(t, `SELECT cluster_logical_timestamp()`).Scan(&t4)
-
-	sqlDB.Exec(t, `DROP DATABASE ephemeral`)
-
-	// T5: Capture timestamp after dropping ephemeral database.
-	var t5 string
-	sqlDB.QueryRow(t, `SELECT cluster_logical_timestamp()`).Scan(&t5)
-
-	sqlDB.Exec(t, `BACKUP INTO LATEST IN $1 WITH revision_history`, backupPath)
-
-	// Choose one of the 4 restores to run, to reduce test runtime:
-	i := rand.Intn(4)
-
-	switch i {
-	case 0:
-		// Restore AOST t2 -> expect database to exist.
-		restoreQuery := fmt.Sprintf(
-			"RESTORE FROM LATEST IN $1 AS OF SYSTEM TIME %s", t2)
-		sqlDB.Exec(t, restoreQuery, backupPath)
-		checkDatabase("test_db", true)
-
-		sqlDB.Exec(t, `DROP DATABASE test_db`)
-	case 1:
-		// Restore AOST t3 -> expect database to not exist.
-		restoreQuery := fmt.Sprintf(
-			"RESTORE FROM LATEST IN $1 AS OF SYSTEM TIME %s", t3)
-		sqlDB.Exec(t, restoreQuery, backupPath)
-		checkDatabase("test_db", false)
-	case 2:
-		// Restore AOST t4 -> ephemeral db exists.
-		restoreQuery := fmt.Sprintf(
-			"RESTORE FROM LATEST IN $1 AS OF SYSTEM TIME %s", t4)
-		sqlDB.Exec(t, restoreQuery, backupPath)
-		checkDatabase("ephemeral", true)
-
-		sqlDB.Exec(t, `DROP DATABASE ephemeral`)
-	case 3:
-		restoreQuery := fmt.Sprintf(
-			"RESTORE FROM LATEST IN $1 AS OF SYSTEM TIME %s", t5)
-		sqlDB.Exec(t, restoreQuery, backupPath)
-		checkDatabase("ephemeral", false)
-	}
 }

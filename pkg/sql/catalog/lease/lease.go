@@ -32,6 +32,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descbuilder"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/internal/catkv"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/systemschema"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/enum"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
@@ -107,11 +108,6 @@ var LockedLeaseTimestamp = settings.RegisterBoolSetting(settings.ApplicationLeve
 	"guarantees transactional version consistency for descriptors used by the lease manager,"+
 		"descriptors used can be intentionally older to support this",
 	false)
-
-var MaxBatchLeaseCount = settings.RegisterIntSetting(settings.ApplicationLevel,
-	"sql.catalog.descriptor_lease.max_batch_lease_count",
-	"the maximum number of descriptors to lease in a single batch",
-	1000)
 
 // WaitForNoVersion returns once there are no unexpired leases left
 // for any version of the descriptor.
@@ -430,11 +426,7 @@ func (m *Manager) WaitForInitialVersion(
 						sessionIDs, err = getSessionsHoldingDescriptor(ctx, txn, schemaID, region)
 					}
 					if err != nil {
-						skipRegion, handledErr := handleRegionLivenessErrors(ctx, prober, region, err)
-						if skipRegion {
-							return nil
-						}
-						return handledErr
+						return handleRegionLivenessErrors(ctx, prober, region, err)
 					}
 					sessionsPerRegion[region] = sessionIDs
 					expectedSessions += len(sessionIDs)
@@ -478,12 +470,8 @@ func (m *Manager) WaitForInitialVersion(
 						} else {
 							regionCount, err = countDescriptorsHeldBySessionIDs(ctx, txn, descIDsForSchema, region, sessionIDs)
 						}
-						skipRegion, err := handleRegionLivenessErrors(ctx, prober, region, err)
-						if err != nil {
+						if err := handleRegionLivenessErrors(ctx, prober, region, err); err != nil {
 							return err
-						}
-						if skipRegion {
-							return nil
 						}
 						count += regionCount
 						return nil
@@ -633,13 +621,7 @@ func (m *Manager) WaitForNewVersion(
 					regionStaleSessionCount, err = countSessionsHoldingStaleDescriptor(ctx, txn, desc, region)
 				}
 				if err != nil {
-					skipRegion, handledErr := handleRegionLivenessErrors(ctx, prober, region, err)
-					if handledErr != nil {
-						return handledErr
-					}
-					if skipRegion {
-						continue
-					}
+					return handleRegionLivenessErrors(ctx, prober, region, err)
 				}
 
 				staleSessionCount += regionStaleSessionCount
@@ -1014,9 +996,7 @@ func (m *Manager) insertDescriptorVersions(
 // get needs to see some descriptor updates that we know happened recently.
 func (m *Manager) AcquireFreshestFromStore(ctx context.Context, id descpb.ID) error {
 	// Create descriptorState if needed.
-	state := m.findDescriptorState(id, true /* create */)
-	state.markAcquisitionStart(ctx)
-	defer state.markAcquisitionDone(ctx)
+	_ = m.findDescriptorState(id, true /* create */)
 	// We need to acquire a lease on a "fresh" descriptor, meaning that joining
 	// a potential in-progress lease acquisition is generally not good enough.
 	// If we are to join an in-progress acquisition, it needs to be an acquisition
@@ -1052,159 +1032,13 @@ func (m *Manager) AcquireFreshestFromStore(ctx context.Context, id descpb.ID) er
 	return nil
 }
 
-// upsertDescriptorIntoState inserts a descriptor into the descriptor state.
-func (m *Manager) upsertDescriptorIntoState(
-	ctx context.Context, id descpb.ID, session sqlliveness.Session, desc catalog.Descriptor,
-) error {
-	t := m.findDescriptorState(id, false /* create */)
-	if t == nil {
-		return errors.AssertionFailedf("could not find descriptor state for id %d", id)
-	}
-	t.mu.Lock()
-	t.mu.takenOffline = false
-	defer t.mu.Unlock()
-	err := t.upsertLeaseLocked(ctx, desc, session, m.storage.getRegionPrefix())
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// maybePrepareDescriptorForBulkAcquisition sets up the descriptor state for a bulk
-// acquisition. Returns true if the descriptor has been setup for bulk acquistion,
-// and false if an acqusition is already fetching it.
-func (m *Manager) maybePrepareDescriptorForBulkAcquisition(
-	id descpb.ID, acquisitionCh chan struct{},
-) bool {
-	state := m.findDescriptorState(id, true)
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	// Only work on descriptors that haven't been acquired or have no
-	// acquisition in progress.
-	if (state.mu.takenOffline || len(state.mu.active.data) > 0) ||
-		state.mu.acquisitionsInProgress > 0 {
-		return false
-	}
-	// Mark the descriptor as having an acquisition in progress, any normal
-	// acquisition will wait for the bulk acquisition to finish.
-	state.mu.acquisitionsInProgress++
-	state.mu.acquisitionChannel = acquisitionCh
-	return true
-}
-
-// completeBulkAcquisition clears up the descriptor state after a bulk acquisition.
-func (m *Manager) completeBulkAcquisition(id descpb.ID) {
-	state := m.findDescriptorState(id, false)
-	if state == nil {
-		return
-	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	state.mu.acquisitionChannel = nil
-	state.mu.acquisitionsInProgress -= 1
-}
-
-// EnsureBatch ensures that a set of IDs are already cached by the lease manager
-// by doing a bulk acquisition. The acquisition will be done on a best effort
-// basis, where missing descriptors, dropped, adding, or validation errors will
-// be ignored.
-func (m *Manager) EnsureBatch(ctx context.Context, ids []descpb.ID) error {
-	maxBatchSize := MaxBatchLeaseCount.Get(&m.storage.settings.SV)
-	idsToFetch := make([]descpb.ID, 0, min(len(ids), int(maxBatchSize)))
-	lastVersion := make([]descpb.DescriptorVersion, cap(idsToFetch))
-	lastSession := make([]sqlliveness.SessionID, cap(idsToFetch))
-	for len(ids) > 0 {
-		processNextBatch := func() error {
-			// Reset for the next batch.
-			idsToFetch = idsToFetch[:0]
-			acquisitionCh := make(chan struct{})
-			defer close(acquisitionCh)
-
-			// Figure out which IDs have no state object allocated.
-			batchCompleted := true
-			for idx, id := range ids {
-				if !m.maybePrepareDescriptorForBulkAcquisition(id, acquisitionCh) {
-					continue
-				}
-				idsToFetch = append(idsToFetch, id)
-				if len(idsToFetch) == int(maxBatchSize) {
-					ids = ids[idx+1:]
-					batchCompleted = false
-					break
-				}
-			}
-			// All of the entries in the slice have been processed.
-			if batchCompleted {
-				ids = nil
-			}
-			// Nothing needs to be fetched everything is cached in memory.
-			if len(idsToFetch) == 0 {
-				return nil
-			}
-			// Clean up the acquisition state after-wards.
-			defer func() {
-				for _, id := range idsToFetch {
-					m.completeBulkAcquisition(id)
-				}
-			}()
-			// Initial acquisition so version and session ID are blank for any
-			// previous version.
-			lastVersion = lastVersion[:len(idsToFetch)]
-			lastSession = lastSession[:len(idsToFetch)]
-			// Execute a batch acquisition at the storage layer.
-			session, err := m.storage.livenessProvider.Session(ctx)
-			if err != nil {
-				return errors.Wrapf(err, "lease acquisition was unable to resolve liveness session")
-			}
-			batch, _, err := m.storage.acquireBatch(ctx, session, idsToFetch, lastVersion, lastSession)
-			if err != nil {
-				return err
-			}
-			// Upsert the descriptors into the descriptor state.
-			for idx, id := range idsToFetch {
-				// If any descriptors in the batch have failed to acquire, we are going
-				// to skip them. This can be due to validation error, being dropped, or
-				// being added, or missing. The caller can surface these when it attempts
-				// to access these leases, and we will attempt acquisition again.
-				if batch.errs[idx] != nil {
-					continue
-				}
-				if err := m.upsertDescriptorIntoState(ctx, id, session, batch.descs[idx]); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-		if err := processNextBatch(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // If the lease cannot be obtained because the descriptor is in the process of
 // being dropped or offline, the error will be of type inactiveTableError.
 // The boolean returned is true if this call was actually responsible for the
-// lease acquisition. Any callers must allocate the descriptor state and mark
-// that an acquisition is in progress with descriptorState.markAcquisitionStart,
-// before invoking this method.
+// lease acquisition.
 func (m *Manager) acquireNodeLease(
 	ctx context.Context, id descpb.ID, typ AcquireType,
 ) (bool, error) {
-	// Precondition: Ensure that the descriptor state is setup and ready for any
-	// acquisition.
-	if buildutil.CrdbTestBuild {
-		state := m.findDescriptorState(id, false)
-		if state == nil {
-			return false, errors.AssertionFailedf("descriptor state must be allocated before acquistion of %d", id)
-		}
-		state.mu.Lock()
-		acquisition := state.mu.acquisitionsInProgress
-		state.mu.Unlock()
-		if acquisition <= 0 {
-			return false, errors.AssertionFailedf("descriptor acquistion must be marked before invoking acquire node lease on %d.", id)
-		}
-	}
 	start := timeutil.Now()
 	log.VEventf(ctx, 2, "acquiring lease for descriptor %d...", id)
 	future, didAcquire := m.storage.group.DoChan(ctx,
@@ -1216,25 +1050,6 @@ func (m *Manager) acquireNodeLease(
 		func(ctx context.Context) (interface{}, error) {
 			if m.IsDraining() {
 				return false, errLeaseManagerIsDraining
-			}
-			waitedForBulkAcquire, err := func() (bool, error) {
-				state := m.findDescriptorState(id, false)
-				state.mu.Lock()
-				acquisitionChannel := state.mu.acquisitionChannel
-				state.mu.Unlock()
-				if acquisitionChannel == nil {
-					return false, nil
-				}
-				select {
-				case <-acquisitionChannel:
-					return true, nil
-				case <-ctx.Done():
-					return false, ctx.Err()
-				}
-			}()
-			if waitedForBulkAcquire || err != nil {
-				// We didn't do any acquiring and just waited for a bulk operation.
-				return false, err
 			}
 			newest := m.findNewest(id)
 			var currentVersion descpb.DescriptorVersion
@@ -1258,6 +1073,22 @@ func (m *Manager) acquireNodeLease(
 				return desc, nil
 			}
 
+			doUpsertion := func(desc catalog.Descriptor) error {
+				t := m.findDescriptorState(id, false /* create */)
+				if t == nil {
+					return errors.AssertionFailedf("could not find descriptor state for id %d", id)
+				}
+				t.mu.Lock()
+				t.mu.takenOffline = false
+				defer t.mu.Unlock()
+				err = t.upsertLeaseLocked(ctx, desc, session, m.storage.getRegionPrefix())
+				if err != nil {
+					return err
+				}
+
+				return nil
+			}
+
 			// These tables are special and can have their versions bumped
 			// without blocking on other nodes converging to that version.
 			if newest != nil && (id == keys.UsersTableID ||
@@ -1273,7 +1104,8 @@ func (m *Manager) acquireNodeLease(
 				if err != nil {
 					return false, err
 				}
-				if err := m.upsertDescriptorIntoState(ctx, id, session, desc); err != nil {
+				err = doUpsertion(desc)
+				if err != nil {
 					return false, err
 				}
 
@@ -1294,7 +1126,8 @@ func (m *Manager) acquireNodeLease(
 				if desc == nil {
 					return true, nil
 				}
-				if err := m.upsertDescriptorIntoState(ctx, id, session, desc); err != nil {
+				err = doUpsertion(desc)
+				if err != nil {
 					return false, err
 				}
 			}
@@ -1442,7 +1275,7 @@ func (m *Manager) purgeOldVersions(
 		retry.Options{
 			MaxDuration: time.Second * 30}); r.Next(); {
 		// Acquire a refcount on the descriptor on the latest version to maintain an
-		// active lease so that it doesn't get released when removeInactives()
+		// active lease, so that it doesn't get released when removeInactives()
 		// is called below. Release this lease after calling removeInactives().
 		desc, _, err = t.findForTimestamp(ctx, TimestampToReadTimestamp(m.storage.clock.Now()))
 		if err == nil || !errors.Is(err, errRenewLease) {
@@ -1458,7 +1291,7 @@ func (m *Manager) purgeOldVersions(
 		// Assert this should never happen due to a fixed expiration, since the range
 		// feed is responsible for purging old versions and acquiring new versions.
 		if newest.hasFixedExpiration() {
-			return errors.AssertionFailedf("the latest version of the descriptor has " +
+			return errors.AssertionFailedf("the latest version of the descriptor has" +
 				"a fixed expiration, this should never happen")
 		}
 		// Otherwise, we ran into some type of transient issue, where the sqllivness
@@ -1475,82 +1308,7 @@ func (m *Manager) purgeOldVersions(
 		err = nil
 	}
 
-	// Optionally, acquire the refcount on the previous version for the locked
-	// leasing mode.
-	acquireLeaseOnPrevious := func() error {
-		if !LockedLeaseTimestamp.Get(&m.storage.settings.SV) {
-			return nil
-		}
-		var handles []*closeTimeStampHandle
-		// Release the timestamp handles, which will allow this lease to be cleaned
-		// up if the timestamps are destroyed. Note: The descriptor state cannot
-		// be locked for the release mechanism.
-		defer func() {
-			for _, handle := range handles {
-				handle.release(ctx)
-			}
-		}()
-		prev, newest := func() (*descriptorVersionState, *descriptorVersionState) {
-			state := m.findDescriptorState(id, false)
-			state.mu.Lock()
-			defer state.mu.Unlock()
-			// Find the previous version and determine the timestamp handle that
-			// it belongs to.
-			return state.mu.active.findPrevious(), state.mu.active.findNewest()
-		}()
-		// If there is no previous or the previous version is a historical descriptor,
-		// nothing needs to be done (i.e. no active lease or already setup for
-		// expiration).
-		if prev == nil || prev.session.Load() == nil || prev.expiration.Load() != nil {
-			return nil
-		}
-		// Get all the close timestamp handles that require this descriptor version.
-		handles = m.shouldRetainPriorVersions(ctx, prev.GetModificationTime())
-		if handles == nil {
-			return nil
-		}
-		var gatheredErrors error
-		for _, handle := range handles {
-			if err := func() error {
-				handle.mu.Lock()
-				defer handle.mu.Unlock()
-				if handle.mu.leasesToRelease == nil {
-					return nil
-				}
-				// If there is already an old version of the descriptor, then we have
-				// a huge problem. We are violating the two versions invariant, since at
-				// least 3 versions exist.
-				if _, ok := handle.mu.leasesToRelease[id]; ok {
-					return errors.AssertionFailedf("two version invariant was violated, since "+
-						"we are retaining more than two versions for %s (%d) (versions: %d (%s), %d (%s), %d (%s))",
-						prev.Underlying().GetName(),
-						prev.GetID(),
-						handle.mu.leasesToRelease[id].Underlying().GetVersion(),
-						handle.mu.leasesToRelease[id].(*descriptorVersionState).getExpiration(ctx),
-						prev.GetVersion(),
-						prev.getExpiration(ctx),
-						newest.GetVersion(),
-						newest.getExpiration(ctx))
-				}
-				// Bump the refcount on the previous version of the descriptor and attach
-				// it to the relevant timestamp.
-				prev.incRefCount(ctx, false)
-				handle.mu.leasesToRelease[id] = prev
-				return nil
-			}(); err != nil {
-				// Gather errors and keep acquiring for other timestamps.
-				gatheredErrors = errors.Join(gatheredErrors, err)
-			}
-		}
-		return gatheredErrors
-	}
-
 	if isInactive := catalog.HasInactiveDescriptorError(err); err == nil || isInactive {
-		// If previous versions are released, then acquire a lease on the previous
-		// version for the locked leasing mode.
-		if acquirePreviousErr := acquireLeaseOnPrevious(); acquirePreviousErr != nil {
-			log.Dev.Errorf(ctx, "unable to acquire lease on previous version of descriptor: %s", acquirePreviousErr)
-		}
 		removeInactives(isInactive)
 		if desc != nil {
 			t.release(ctx, desc)
@@ -1590,61 +1348,6 @@ type descriptorTxnUpdate struct {
 	key       roachpb.Key
 }
 
-// closeTimeStampHandle represents a close timestamp tracked by the lease
-// manager.
-type closeTimeStampHandle struct {
-	timestamp hlc.Timestamp
-	// refCount is the reference count for this handle.
-	refCount atomic.Int64
-	// freeOnRelease is set to true if the handle should be released when the
-	// refCount hits zero.
-	freeOnRelease atomic.Bool
-	mu            struct {
-		syncutil.Mutex
-		// leasesToRelease tracks old leases that should be released when the
-		// the reference count hits zero.
-		leasesToRelease map[descpb.ID]LeasedDescriptor
-	}
-}
-
-// newCloseTimeStampHandle creates a new close timestamp handle for the lease
-// manager.
-func newCloseTimeStampHandle(timestamp hlc.Timestamp) *closeTimeStampHandle {
-	ch := &closeTimeStampHandle{
-		timestamp: timestamp,
-	}
-	ch.mu.leasesToRelease = make(map[descpb.ID]LeasedDescriptor)
-	return ch
-}
-
-// acquire acquires a reference on the close timestamp.
-func (c *closeTimeStampHandle) acquire(_ context.Context) {
-	c.refCount.Add(1)
-}
-
-// release releases a close timestamp handle.
-func (c *closeTimeStampHandle) release(ctx context.Context) {
-	// If freeOnRelease is set when the reference count hits zero, then
-	// clean up instantly.
-	newCount := c.refCount.Add(-1)
-	if newCount == 0 && c.freeOnRelease.Load() {
-		c.cleanupHandle(ctx)
-	}
-	if buildutil.CrdbTestBuild && newCount < 0 {
-		panic(errors.AssertionFailedf("double free of a close timestamp handle"))
-	}
-}
-
-// cleanupHandle releases all old leases held by this older timestamp.
-func (c *closeTimeStampHandle) cleanupHandle(ctx context.Context) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, v := range c.mu.leasesToRelease {
-		v.Release(ctx)
-	}
-	c.mu.leasesToRelease = nil
-}
-
 // Manager manages acquiring and releasing per-descriptor leases. It also
 // handles resolving descriptor names to descriptor IDs. The leases are managed
 // internally with a descriptor and expiration time exported by the
@@ -1663,7 +1366,7 @@ type Manager struct {
 	settings         *cluster.Settings
 	mu               struct {
 		syncutil.Mutex
-
+		// TODO(james): Track size of leased descriptors in memory.
 		descriptors map[descpb.ID]*descriptorState
 
 		// Session based leases that will be removed with expiry, since
@@ -1691,14 +1394,10 @@ type Manager struct {
 		// hasUpdatesToDelete tracks if there is data in the key space that
 		// should be cleaned up.
 		hasUpdatesToDelete bool
-
-		// activeCloseTimestamps contains the most recent timestamp handles currently
-		// in use by transactions.
-		activeCloseTimestamps []*closeTimeStampHandle
 	}
 
-	// closeTimeStamp is the most recent closeTimeStamp handle, for
-	// which the range feed will have all the updates for.
+	// closeTimeStamp for the range feed, which is the timestamp
+	// that we have all the updates for.
 	closeTimestamp atomic.Value
 
 	draining atomic.Bool
@@ -1739,11 +1438,6 @@ type Manager struct {
 	bytesMonitor *mon.BytesMonitor
 	// boundAccount tracks the memory usage from leased descriptors.
 	boundAccount *mon.ConcurrentBoundAccount
-
-	// TestingDisableRangeFeedCheckpoint is used to disable rangefeed checkpoints.
-	// Ideally, this would be inside StorageTestingKnobs, but those get copied into
-	// the lease manager.
-	TestingDisableRangeFeedCheckpoint atomic.Bool
 }
 
 const leaseConcurrencyLimit = 5
@@ -1871,7 +1565,7 @@ func NewLeaseManager(
 	// that will be generated will be after the current time. So, historical
 	// queries with in this tenant (i.e. PCR catalog reader) before this point are
 	// guaranteed to be up to date.
-	lm.closeTimestamp.Store(newCloseTimeStampHandle(clock.Now()))
+	lm.closeTimestamp.Store(db.KV().Clock().Now())
 	lm.draining.Store(false)
 	lm.descUpdateCh = make(chan catalog.Descriptor)
 	lm.descDelCh = make(chan descpb.ID)
@@ -2066,8 +1760,6 @@ func (m *Manager) resolveName(
 	parentSchemaID descpb.ID,
 	name string,
 ) (id descpb.ID, _ error) {
-	log.VEventf(ctx, 2, "resolving name %q with parentID=%d parentSchemaID=%d",
-		name, parentID, parentSchemaID)
 	req := []descpb.NameInfo{{ParentID: parentID, ParentSchemaID: parentSchemaID, Name: name}}
 	if err := m.storage.db.KV().Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
 		// Run the name lookup as high-priority, thereby pushing any intents out of
@@ -2093,8 +1785,6 @@ func (m *Manager) resolveName(
 		return id, err
 	}
 	if id == descpb.InvalidID {
-		log.VEventf(ctx, 2, "name %q not found with parentID=%d parentSchemaID=%d",
-			name, parentID, parentSchemaID)
 		return id, errors.Wrapf(catalog.ErrDescriptorNotFound,
 			"resolving name %s with parentID %d and parentSchemaID %d",
 			name, parentID, parentSchemaID,
@@ -2362,7 +2052,7 @@ func (m *Manager) processDescriptorUpdate(
 			}
 			// Remove one element from the end after.
 			entry.mu.DescriptorIDs = entry.mu.DescriptorIDs[:len(entry.mu.DescriptorIDs)-1]
-			entry.mu.DescriptorVersions = entry.mu.DescriptorVersions[:len(entry.mu.DescriptorVersions)-1]
+			entry.mu.DescriptorVersions = entry.mu.DescriptorVersions[:len(entry.mu.DescriptorIDs)-1]
 			break
 		}
 		return len(entry.mu.DescriptorIDs) == 0
@@ -2373,7 +2063,7 @@ func (m *Manager) processDescriptorUpdate(
 		// and remove this entry.
 		targetTimestamp := m.markDescriptorUpdatesAsComplete()
 		if !targetTimestamp.IsEmpty() {
-			m.advanceCloseTimestamp(ctx, targetTimestamp)
+			m.advanceCloseTimestamp(targetTimestamp)
 		}
 	}
 }
@@ -2405,86 +2095,19 @@ func (m *Manager) markDescriptorUpdatesAsComplete() hlc.Timestamp {
 
 // advanceCloseTimestamp advances the close timestamp atomically, if the current
 // close timestamp is smaller.
-func (m *Manager) advanceCloseTimestamp(ctx context.Context, timestamp hlc.Timestamp) {
-	timestampHandle := newCloseTimeStampHandle(timestamp)
+func (m *Manager) advanceCloseTimestamp(timestamp hlc.Timestamp) {
 	for {
-		oldTimestamp := m.closeTimestamp.Load().(*closeTimeStampHandle)
+		oldTimestamp := m.closeTimestamp.Load().(hlc.Timestamp)
 		// Timestamp has already been advanced.
-		if !oldTimestamp.timestamp.Less(timestamp) {
+		if !oldTimestamp.Less(timestamp) {
 			return
 		}
-		// Otherwise, attempt to swap the timestamp, if successful, we
+		// Otherwise, attempt to swap the timestamp, if successful we
 		// will return.
-		if m.closeTimestamp.CompareAndSwap(oldTimestamp, timestampHandle) {
-			// Insert the new timestamp handle.
-			m.insertNewTimestampHandle(timestampHandle)
-			// Now that the new timestamp is set, we can mark the old one as ready
-			// for removal.
-			oldTimestamp.freeOnRelease.Swap(true)
-			// Purge any old timestamp handles.
-			m.maybeFreeOldTimestampHandles(ctx)
+		if m.closeTimestamp.CompareAndSwap(oldTimestamp, timestamp) {
+			return
 		}
 	}
-}
-
-// insertNewTimestampHandle adds a new close timestamp handle.
-func (m *Manager) insertNewTimestampHandle(handle *closeTimeStampHandle) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	// Insert at a lower position
-	idx := sort.Search(len(m.mu.activeCloseTimestamps), func(i int) bool {
-		return !m.mu.activeCloseTimestamps[i].timestamp.Less(handle.timestamp)
-	})
-	if idx == len(m.mu.activeCloseTimestamps) {
-		m.mu.activeCloseTimestamps = append(m.mu.activeCloseTimestamps, handle)
-		return
-	}
-	// Otherwise insert in the middle.
-	m.mu.activeCloseTimestamps = append(m.mu.activeCloseTimestamps, nil)
-	copy(m.mu.activeCloseTimestamps[idx+1:], m.mu.activeCloseTimestamps[idx:])
-	m.mu.activeCloseTimestamps[idx] = handle
-}
-
-// shouldRetainPriorVersions acquires the close timestamp handles that can make
-// use of leases at the modification timestamp.
-func (m *Manager) shouldRetainPriorVersions(
-	ctx context.Context, modificationTime hlc.Timestamp,
-) []*closeTimeStampHandle {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var result []*closeTimeStampHandle
-	// We will retain this lease with all active prior close timestamp handles.
-	for i := 0; i < len(m.mu.activeCloseTimestamps); i++ {
-		t := m.mu.activeCloseTimestamps[i]
-		if modificationTime.LessEq(t.timestamp) {
-			t.acquire(ctx)
-			result = append(result, t)
-		}
-	}
-	return result
-}
-
-// maybeFreeOldTimestampHandles cleans up any old close timestamps that
-// have hit a refcount of zero.
-func (m *Manager) maybeFreeOldTimestampHandles(ctx context.Context) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	numTimestamps := len(m.mu.activeCloseTimestamps)
-	for i := 0; i < numTimestamps; i++ {
-		t := m.mu.activeCloseTimestamps[i]
-		if !t.freeOnRelease.Load() || t.refCount.Load() != 0 {
-			continue
-		}
-		t.cleanupHandle(ctx)
-		// Move complete elements to the end.
-		if numTimestamps > 1 {
-			m.mu.activeCloseTimestamps[numTimestamps-1], m.mu.activeCloseTimestamps[i] =
-				m.mu.activeCloseTimestamps[i], m.mu.activeCloseTimestamps[numTimestamps-1]
-		}
-		numTimestamps--
-		i--
-	}
-	m.mu.activeCloseTimestamps = m.mu.activeCloseTimestamps[:numTimestamps]
 }
 
 // StartRefreshLeasesTask starts a goroutine that refreshes the lease manager
@@ -2505,7 +2128,6 @@ func (m *Manager) StartRefreshLeasesTask(ctx context.Context, s *stop.Stopper, d
 				panic(err)
 			}
 		}()
-
 		for {
 			select {
 			case id := <-m.descDelCh:
@@ -2639,7 +2261,10 @@ func (m *Manager) StartRefreshLeasesTask(ctx context.Context, s *stop.Stopper, d
 					return false
 				}()
 				if advanceTimestamp {
-					m.advanceCloseTimestamp(ctx, descUpdate.timestamp)
+					if m.testingKnobs.TestingOnUpdateReadTimestamp != nil {
+						m.testingKnobs.TestingOnUpdateReadTimestamp(descUpdate.timestamp)
+					}
+					m.advanceCloseTimestamp(descUpdate.timestamp)
 				}
 			case <-s.ShouldQuiesce():
 				return
@@ -2658,24 +2283,7 @@ func (m *Manager) GetLeaseGeneration() int64 {
 // GetSafeReplicationTS gets the timestamp till which the leased descriptors
 // have been synced.
 func (m *Manager) GetSafeReplicationTS() hlc.Timestamp {
-	return m.closeTimestamp.Load().(*closeTimeStampHandle).timestamp
-}
-
-// getSafeReplicationTSHandle returns a handle for the current close time
-// stamp and acquires a ref count. The caller is responsible for releasing
-// this ref count.
-func (m *Manager) getSafeReplicationTSHandle(ctx context.Context) *closeTimeStampHandle {
-	for {
-		handle := m.closeTimestamp.Load().(*closeTimeStampHandle)
-		handle.acquire(ctx)
-		// Ensure that the timestamp is not marked as released. Otherwise, backing
-		// descriptors may get freed from under us.
-		if !handle.freeOnRelease.Load() {
-			return handle
-		}
-		// Handle is being freed, acquire a new one.
-		handle.release(ctx)
-	}
+	return m.closeTimestamp.Load().(hlc.Timestamp)
 }
 
 // closeRangeFeed closes the currently open range feed, which will involve
@@ -2706,7 +2314,7 @@ func (m *Manager) watchForUpdates(ctx context.Context) {
 		ctx context.Context, ev *kvpb.RangeFeedValue,
 	) {
 		// Skip updates if rangefeeds are disabled.
-		if m.TestingDisableRangeFeedCheckpoint.Load() {
+		if m.testingKnobs.DisableRangeFeedCheckpoint {
 			return
 		}
 		// Check first if it is the special descriptor metadata key used to track
@@ -2772,15 +2380,18 @@ func (m *Manager) watchForUpdates(ctx context.Context) {
 	}
 
 	handleCheckpoint := func(ctx context.Context, checkpoint *kvpb.RangeFeedCheckpoint) {
-		if m.TestingDisableRangeFeedCheckpoint.Load() {
-			return
+		if m.testingKnobs.TestingOnUpdateReadTimestamp != nil {
+			m.testingKnobs.TestingOnUpdateReadTimestamp(checkpoint.ResolvedTS)
 		}
 		// Track checkpoints that occur from the rangefeed to make sure progress
 		// is always made.
-		m.advanceCloseTimestamp(ctx, checkpoint.ResolvedTS)
 		m.mu.Lock()
 		defer m.mu.Unlock()
+		if m.testingKnobs.DisableRangeFeedCheckpoint {
+			return
+		}
 		m.mu.rangeFeedCheckpoints += 1
+		m.advanceCloseTimestamp(checkpoint.ResolvedTS)
 		// Clean up all entries before the resolve timestamp.
 		for {
 			minTS, hasMin := m.mu.descriptorTxnUpdatesToProcess.Min()
@@ -3110,10 +2721,6 @@ func (m *Manager) refreshSomeLeases(ctx context.Context, refreshAndPurgeAllDescr
 						return
 					}
 				}
-				// Mark that an acquisition is in progress.
-				state := m.findDescriptorState(id, false)
-				state.markAcquisitionStart(ctx)
-				defer state.markAcquisitionDone(ctx)
 				if _, err := m.acquireNodeLease(ctx, id, AcquireBackground); err != nil {
 					log.Dev.Errorf(ctx, "refreshing descriptor: %d lease failed: %s", id, err)
 
@@ -3354,7 +2961,7 @@ func (m *Manager) TestingSetDisableRangeFeedCheckpointFn(disable bool) chan stru
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.mu.rangeFeedCheckpoints = 0
-	m.TestingDisableRangeFeedCheckpoint.Store(disable)
+	m.testingKnobs.DisableRangeFeedCheckpoint = disable
 	if disable {
 		m.testingKnobs.RangeFeedResetChannel = make(chan struct{})
 	} else {
@@ -3397,21 +3004,9 @@ func (m *Manager) deleteOrphanedLeasesFromStaleSession(
 
 	var distinctSessions []tree.Datums
 	aostTime := hlc.Timestamp{WallTime: initialTimestamp}
+	distinctSessionQuery := `SELECT DISTINCT(session_id) FROM system.lease AS OF SYSTEM TIME %s WHERE crdb_region=$1 AND NOT crdb_internal.sql_liveness_is_alive(session_id, true) LIMIT $2`
+	syntheticDescriptors := catalog.Descriptors{systemschema.LeaseTable()}
 	const limit = 50
-
-	// Build the query based on whether the system database is multi-region.
-	// For multi-region, we need to cast the region parameter to the enum type.
-	// For single-region, we use the bytes representation.
-	var distinctSessionQuery string
-	var regionParam interface{}
-	isMultiRegion := bool(multiRegionSystemDb)
-	if isMultiRegion {
-		distinctSessionQuery = `SELECT DISTINCT(session_id) FROM system.lease AS OF SYSTEM TIME %s WHERE crdb_region=$1::system.crdb_internal_region AND NOT crdb_internal.sql_liveness_is_alive(session_id, true) LIMIT $2`
-		regionParam = region
-	} else {
-		distinctSessionQuery = `SELECT DISTINCT(session_id) FROM system.lease AS OF SYSTEM TIME %s WHERE crdb_region=$1 AND NOT crdb_internal.sql_liveness_is_alive(session_id, true) LIMIT $2`
-		regionParam = enum.One
-	}
 
 	totalSessionsProcessed := 0
 	totalLeasesDeleted := 0
@@ -3419,14 +3014,17 @@ func (m *Manager) deleteOrphanedLeasesFromStaleSession(
 	for r := retry.StartWithCtx(ctx, retryOpts); r.Next(); {
 		// Get a list of distinct, dead session IDs that exist in the system.lease
 		// table.
-		distinctSessions, err = ex.QueryBufferedEx(ctx,
-			"query-lease-table-dead-sessions",
-			nil,
-			sessiondata.NodeUserSessionDataOverride,
-			fmt.Sprintf(distinctSessionQuery, aostTime.AsOfSystemTime()),
-			regionParam,
-			limit,
-		)
+		err = ex.WithSyntheticDescriptors(syntheticDescriptors, func() error {
+			distinctSessions, err = ex.QueryBufferedEx(ctx,
+				"query-lease-table-dead-sessions",
+				nil,
+				sessiondata.NodeUserSessionDataOverride,
+				fmt.Sprintf(distinctSessionQuery, aostTime.AsOfSystemTime()),
+				region,
+				limit,
+			)
+			return err
+		})
 		if err != nil {
 			if !startup.IsRetryableReplicaError(err) {
 				log.Dev.Warningf(ctx, "unable to read session IDs for orphaned leases: %v", err)
@@ -3441,7 +3039,7 @@ func (m *Manager) deleteOrphanedLeasesFromStaleSession(
 		// Delete rows in our lease table with orphaned sessions.
 		for _, sessionRow := range distinctSessions {
 			sessionID := sqlliveness.SessionID(tree.MustBeDBytes(sessionRow[0]))
-			sessionLeasesDeleted, err := deleteLeaseWithSessionIDWithBatch(ctx, ex, retryOpts, isMultiRegion, sessionID, regionParam, limit)
+			sessionLeasesDeleted, err := deleteLeaseWithSessionIDWithBatch(ctx, ex, retryOpts, syntheticDescriptors, sessionID, region, limit)
 			if err != nil {
 				log.Dev.Warningf(ctx, "unable to delete orphaned leases for session %s: %v", sessionID, err)
 				break
@@ -3476,32 +3074,25 @@ func deleteLeaseWithSessionIDWithBatch(
 	ctx context.Context,
 	ex isql.Executor,
 	retryOpts retry.Options,
-	multiRegionSystemDb bool,
+	syntheticDescriptors catalog.Descriptors,
 	sessionID sqlliveness.SessionID,
-	regionParam interface{},
+	region string,
 	batchSize int,
 ) (int, error) {
-	// Build the query based on whether the system database is multi-region.
-	// For multi-region, we need to cast the region parameter to the enum type.
-	// For single-region, we use the bytes representation.
-	var deleteOrphanedQuery string
-	if multiRegionSystemDb {
-		deleteOrphanedQuery = `DELETE FROM system.lease WHERE session_id=$1 AND crdb_region=$2::system.crdb_internal_region LIMIT $3`
-	} else {
-		deleteOrphanedQuery = `DELETE FROM system.lease WHERE session_id=$1 AND crdb_region=$2 LIMIT $3`
-	}
-
 	totalDeleted := 0
 	for r := retry.StartWithCtx(ctx, retryOpts); r.Next(); {
 		var rowsDeleted int
-		var err error
-		rowsDeleted, err = ex.ExecEx(ctx, "delete-orphaned-leases-by-session", nil,
-			sessiondata.NodeUserSessionDataOverride,
-			deleteOrphanedQuery,
-			sessionID.UnsafeBytes(),
-			regionParam,
-			batchSize)
-		if err != nil {
+		deleteOrphanedQuery := `DELETE FROM system.lease WHERE session_id=$1 AND crdb_region=$2 LIMIT $3`
+		if err := ex.WithSyntheticDescriptors(syntheticDescriptors, func() error {
+			var err error
+			rowsDeleted, err = ex.ExecEx(ctx, "delete-orphaned-leases-by-session", nil,
+				sessiondata.NodeUserSessionDataOverride,
+				deleteOrphanedQuery,
+				sessionID.UnsafeBytes(),
+				region,
+				batchSize)
+			return err
+		}); err != nil {
 			if !startup.IsRetryableReplicaError(err) {
 				return totalDeleted, err
 			}
@@ -3604,17 +3195,15 @@ func (m *Manager) deleteOrphanedLeasesWithSameInstanceID(
 }
 
 // GetReadTimestamp returns a locked timestamp to use for lease management.
-func (m *Manager) GetReadTimestamp(ctx context.Context, timestamp hlc.Timestamp) ReadTimestamp {
+func (m *Manager) GetReadTimestamp(timestamp hlc.Timestamp) ReadTimestamp {
 	if LockedLeaseTimestamp.Get(&m.settings.SV) {
-		replicationTS := m.getSafeReplicationTSHandle(ctx)
-		if replicationTS.timestamp.Less(timestamp) {
+		replicationTS := m.GetSafeReplicationTS()
+		if !replicationTS.IsEmpty() && replicationTS.Less(timestamp) {
 			return LeaseTimestamp{
 				ReadTimestamp:  timestamp,
-				LeaseTimestamp: replicationTS.timestamp,
-				handle:         replicationTS,
+				LeaseTimestamp: replicationTS,
 			}
 		}
-		replicationTS.release(ctx)
 	}
 	// Fallback to existing behavior with timestamps.
 	return LeaseTimestamp{

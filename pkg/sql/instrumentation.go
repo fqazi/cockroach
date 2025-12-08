@@ -207,10 +207,6 @@ type instrumentationHelper struct {
 	// stats scanned by this query.
 	nanosSinceStatsForecasted time.Duration
 
-	// stmtHintsCount is the number of hints from system.statement_hints applied
-	// to the statement.
-	stmtHintsCount uint64
-
 	// retryCount is the number of times the transaction was retried.
 	retryCount uint64
 
@@ -433,7 +429,6 @@ func (ih *instrumentationHelper) Setup(
 	ih.implicitTxn = implicitTxn
 	ih.txnPriority = txnPriority
 	ih.txnBufferedWritesEnabled = p.txn.BufferedWritesEnabled()
-	ih.stmtHintsCount = uint64(len(stmt.Hints))
 	ih.retryCount = uint64(retryCount)
 	ih.codec = cfg.Codec
 	ih.origCtx = ctx
@@ -866,7 +861,6 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 	ob.AddDistribution(ih.distribution.String())
 	ob.AddVectorized(ih.vectorized)
 	ob.AddPlanType(ih.generic, ih.optimized)
-	ob.AddStmtHintCount(ih.stmtHintsCount)
 	ob.AddRetryCount("transaction", ih.retryCount)
 	ob.AddRetryTime("transaction", phaseTimes.GetTransactionRetryLatency())
 	ob.AddRetryCount("statement", ih.retryStmtCount)
@@ -888,9 +882,6 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 		if queryStats.LatchWaitTime != 0 {
 			ob.AddLatchWaitTime(queryStats.LatchWaitTime)
 		}
-		if queryStats.AdmissionWaitTime != 0 {
-			ob.AddAdmissionWaitTime(queryStats.AdmissionWaitTime)
-		}
 
 		ob.AddMaxMemUsage(queryStats.MaxMemUsage)
 		ob.AddDistSQLNetworkStats(queryStats.DistSQLNetworkMessages, queryStats.DistSQLNetworkBytesSent)
@@ -902,16 +893,13 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 			ob.AddTopLevelField("used follower read", "")
 		}
 
-		if grunning.Supported {
-			ob.AddKVCPUTime(ih.topLevelStats.kvCPUTimeNanos)
-		}
 		if !ih.containsMutation && ih.vectorized && grunning.Supported {
 			// Currently we cannot separate SQL CPU time from local KV CPU time for
 			// mutations, since they do not collect statistics. Additionally, CPU time
 			// is only collected for vectorized plans since it is gathered by the
 			// vectorizedStatsCollector operator.
 			// TODO(drewk): lift these restrictions.
-			ob.AddSQLCPUTime(queryStats.SQLCPUTime)
+			ob.AddCPUTime(queryStats.CPUTime)
 		}
 		if ih.isTenant && ih.vectorized {
 			// Only output RU estimate if this is a tenant. Additionally, RUs aren't

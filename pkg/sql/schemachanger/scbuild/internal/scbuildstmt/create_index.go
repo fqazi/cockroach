@@ -820,7 +820,7 @@ func maybeCreateAndAddShardCol(
 		}
 	})
 	scpb.ForEachColumn(elts, func(_ scpb.Status, _ scpb.TargetStatus, col *scpb.Column) {
-		if col.ColumnID == existingShardColID && !(col.IsHidden || retrieveColumnHidden(b, tbl.TableID, col.ColumnID) != nil) {
+		if col.ColumnID == existingShardColID && !col.IsHidden {
 			// The user managed to reverse-engineer our crazy shard column name, so
 			// we'll return an error here rather than try to be tricky.
 			panic(pgerror.Newf(pgcode.DuplicateColumn,
@@ -841,6 +841,7 @@ func maybeCreateAndAddShardCol(
 		col: &scpb.Column{
 			TableID:  tbl.TableID,
 			ColumnID: shardColID,
+			IsHidden: true,
 		},
 		name: &scpb.ColumnName{
 			TableID:  tbl.TableID,
@@ -852,6 +853,7 @@ func maybeCreateAndAddShardCol(
 			ColumnID:                shardColID,
 			TypeT:                   newTypeT(types.Int),
 			IsVirtual:               true,
+			IsNullable:              false,
 			ElementCreationMetadata: scdecomp.NewElementCreationMetadata(b.EvalCtx().Settings.Version.ActiveVersion(b)),
 		},
 		notNull: true,
@@ -865,12 +867,6 @@ func maybeCreateAndAddShardCol(
 		}
 	} else {
 		spec.colType.ComputeExpr = wexpr
-	}
-
-	if spec.colType.ElementCreationMetadata.In_26_1OrLater {
-		spec.hidden = true
-	} else {
-		spec.col.IsHidden = true
 	}
 
 	backing := addColumn(b, spec, n)
@@ -983,15 +979,7 @@ func maybeCreateVirtualColumnForIndex(
 	d.Nullable.Nullability = tree.Null
 	// Infer column type from expression.
 	{
-		_, columnType := b.ComputedColumnExpression(
-			tbl, d, tree.ExpressionIndexElementExpr,
-			func() colinfo.ResultColumns {
-				return getNonDropResultColumns(b, tbl.TableID)
-			},
-			func(columnName tree.Name) (exists, accessible, computed bool, id catid.ColumnID, typ *types.T) {
-				return columnLookupFn(b, tbl.TableID, columnName)
-			},
-		)
+		_, columnType := b.ComputedColumnExpression(tbl, d, tree.ExpressionIndexElementExpr)
 		d.Type = columnType
 		validateColumnIndexableType(columnType)
 	}

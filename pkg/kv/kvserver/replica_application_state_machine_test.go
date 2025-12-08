@@ -255,7 +255,7 @@ func TestReplicaStateMachineRaftLogTruncationStronglyCoupled(t *testing.T) {
 			require.Equal(t, expectedSize, ls.shMu.size)
 			require.Equal(t, accurate, ls.shMu.sizeTrusted)
 			truncState, err := logstore.NewStateLoader(r.RangeID).LoadRaftTruncatedState(
-				context.Background(), tc.raftEng)
+				context.Background(), tc.engine)
 			require.NoError(t, err)
 			require.Equal(t, ls.shMu.trunc.Index, truncState.Index)
 		}()
@@ -280,7 +280,7 @@ func TestReplicaStateMachineRaftLogTruncationLooselyCoupled(t *testing.T) {
 		looselyCoupledTruncationEnabled.Override(ctx, &st.SV, true)
 		// Remove the flush completed callback since we don't want a
 		// non-deterministic flush to cause the test to fail.
-		tc.store.StateEngine().RegisterFlushCompletedCallback(func() {})
+		tc.store.TODOEngine().RegisterFlushCompletedCallback(func() {})
 		r := tc.repl
 
 		{
@@ -375,7 +375,7 @@ func TestReplicaStateMachineRaftLogTruncationLooselyCoupled(t *testing.T) {
 			require.True(t, trunc.isDeltaTrusted)
 			return raftLogSize, truncatedIndex
 		}()
-		require.NoError(t, tc.store.StateEngine().Flush())
+		require.NoError(t, tc.store.TODOEngine().Flush())
 		// Asynchronous call to advance durability.
 		tc.store.raftTruncator.durabilityAdvancedCallback()
 		expectedSize := raftLogSize - 1

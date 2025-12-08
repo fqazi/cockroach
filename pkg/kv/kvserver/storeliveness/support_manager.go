@@ -34,7 +34,7 @@ var Enabled = settings.RegisterBoolSetting(
 // MessageSender is the interface that defines how Store Liveness messages are
 // sent. Transport is the production implementation of MessageSender.
 type MessageSender interface {
-	EnqueueMessage(ctx context.Context, msg slpb.Message) (sent bool)
+	SendAsync(ctx context.Context, msg slpb.Message) (sent bool)
 }
 
 // SupportManager orchestrates requesting and providing Store Liveness support.
@@ -121,15 +121,15 @@ func (sm *SupportManager) SupportFor(id slpb.StoreIdent) (slpb.Epoch, bool) {
 }
 
 // InspectSupportFrom implements the InspectFabric interface.
-func (sm *SupportManager) InspectSupportFrom() slpb.InspectSupportFromStatesPerStore {
-	supportFromStates := sm.requesterStateHandler.exportAllSupportFrom()
-	return slpb.InspectSupportFromStatesPerStore{StoreID: sm.storeID, SupportFromStates: supportFromStates}
+func (sm *SupportManager) InspectSupportFrom() slpb.SupportStatesPerStore {
+	supportStates := sm.requesterStateHandler.exportAllSupportFrom()
+	return slpb.SupportStatesPerStore{StoreID: sm.storeID, SupportStates: supportStates}
 }
 
 // InspectSupportFor implements the InspectFabric interface.
-func (sm *SupportManager) InspectSupportFor() slpb.InspectSupportForStatesPerStore {
-	supportForStates := sm.supporterStateHandler.exportAllSupportFor()
-	return slpb.InspectSupportForStatesPerStore{StoreID: sm.storeID, SupportForStates: supportForStates}
+func (sm *SupportManager) InspectSupportFor() slpb.SupportStatesPerStore {
+	supportStates := sm.supporterStateHandler.exportAllSupportFor()
+	return slpb.SupportStatesPerStore{StoreID: sm.storeID, SupportStates: supportStates}
 }
 
 // SupportFrom implements the Fabric interface. It delegates the response to the
@@ -323,7 +323,7 @@ func (sm *SupportManager) sendHeartbeats(ctx context.Context) {
 	// Send heartbeats to each remote store.
 	successes := 0
 	for _, msg := range heartbeats {
-		if sent := sm.sender.EnqueueMessage(ctx, msg); sent {
+		if sent := sm.sender.SendAsync(ctx, msg); sent {
 			successes++
 		} else {
 			log.KvExec.Warningf(ctx, "failed to send heartbeat to store %+v", msg.To)
@@ -424,7 +424,7 @@ func (sm *SupportManager) handleMessages(ctx context.Context, msgs []*slpb.Messa
 	sm.metrics.SupportForStores.Update(int64(sm.supporterStateHandler.getNumSupportFor()))
 
 	for _, response := range responses {
-		_ = sm.sender.EnqueueMessage(ctx, response)
+		_ = sm.sender.SendAsync(ctx, response)
 	}
 	log.KvExec.VInfof(ctx, 2, "sent %d heartbeat responses", len(responses))
 }
@@ -432,7 +432,7 @@ func (sm *SupportManager) handleMessages(ctx context.Context, msgs []*slpb.Messa
 // maxReceiveQueueSize is the maximum number of messages the receive queue can
 // store. If message consumption is slow (e.g. due to a disk stall) and the
 // queue reaches maxReceiveQueueSize, incoming messages will be dropped.
-const maxReceiveQueueSize = 10_000
+const maxReceiveQueueSize = 10000
 
 var receiveQueueSizeLimitReachedErr = errors.Errorf("store liveness receive queue is full")
 

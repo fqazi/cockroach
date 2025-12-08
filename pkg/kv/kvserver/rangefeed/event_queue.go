@@ -79,38 +79,21 @@ func (q *eventQueue) pushBack(e sharedMuxEvent) {
 	q.size++
 }
 
-// popFrontInto appends up to eventsToPop events into dest.
-func (q *eventQueue) popFrontInto(dest []sharedMuxEvent, eventsToPop int) []sharedMuxEvent {
-	if eventsToPop == 0 || q.size == 0 {
-		return dest
+func (q *eventQueue) popFront() (sharedMuxEvent, bool) {
+	if q.size == 0 {
+		return sharedMuxEvent{}, false
 	}
-
 	if q.read == eventQueueChunkSize {
-		assertTrue(q.first.nextChunk != nil, "nextChunk should be non-nil")
 		removed := q.first
 		q.first = q.first.nextChunk
 		putPooledQueueChunk(removed)
 		q.read = 0
 	}
-
-	// We only read out of the current chunk. We could loop until we've reached
-	// eventsToPop.
-	availableInChunk := eventQueueChunkSize - q.read
-	if q.first == q.last {
-		// Last chunk - only up to write position.
-		availableInChunk = q.write - q.read
-	}
-
-	if eventsToPop > availableInChunk {
-		eventsToPop = availableInChunk
-	}
-
-	dest = append(dest, q.first.data[q.read:q.read+eventsToPop]...)
-	clear(q.first.data[q.read : q.read+eventsToPop])
-
-	q.read += eventsToPop
-	q.size -= eventsToPop
-	return dest
+	res := q.first.data[q.read]
+	q.first.data[q.read] = sharedMuxEvent{}
+	q.read++
+	q.size--
+	return res, true
 }
 
 // free drops references held by the queue.

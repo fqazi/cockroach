@@ -537,14 +537,12 @@ var _ metric.Iterable = (*HighCardinalityGauge)(nil)
 var _ metric.PrometheusEvictable = (*HighCardinalityGauge)(nil)
 
 // NewHighCardinalityGauge constructs a new HighCardinalityGauge that uses cache storage
-// with eviction for child metrics. The opts parameter contains the metadata and allows configuring
-// the maximum number of label combinations (MaxLabelValues) and retention time (RetentionTimeTillEviction).
-// If opts has zero values for MaxLabelValues or RetentionTimeTillEviction, defaults will be used.
+// with eviction for child metrics.
 func NewHighCardinalityGauge(
-	opts metric.HighCardinalityMetricOptions, childLabels ...string,
+	metadata metric.Metadata, childLabels ...string,
 ) *HighCardinalityGauge {
-	g := &HighCardinalityGauge{g: *metric.NewGauge(opts.Metadata)}
-	g.initWithCacheStorageType(childLabels, opts.Metadata.Name, opts)
+	g := &HighCardinalityGauge{g: *metric.NewGauge(metadata)}
+	g.initWithCacheStorageType(childLabels, metadata.Name)
 	return g
 }
 

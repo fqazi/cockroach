@@ -20,6 +20,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble/objstorage"
+	"github.com/cockroachdb/pebble/sstable"
 	"github.com/cockroachdb/pebble/vfs"
 	"golang.org/x/crypto/pbkdf2"
 )
@@ -219,7 +220,7 @@ type readerAndReaderAt interface {
 	io.ReaderAt
 }
 
-func decryptingReader(ciphertext readerAndReaderAt, key []byte) (objstorage.ReadableFile, error) {
+func decryptingReader(ciphertext readerAndReaderAt, key []byte) (sstable.ReadableFile, error) {
 	gcm, err := aesgcm(key)
 	if err != nil {
 		return nil, err

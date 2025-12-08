@@ -67,4 +67,3 @@ pkg/testutils/serverutils/*_generated.go
 .DS_Store
 .idea/
 .vscode/
-CLAUDE.local.md

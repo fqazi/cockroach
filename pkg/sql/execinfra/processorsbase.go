@@ -295,10 +295,7 @@ func (h *ProcOutputHelper) ProcessRow(
 			if err != nil {
 				return nil, false, err
 			}
-			h.outputRow[i], err = rowenc.DatumToEncDatum(h.OutputTypes[i], datum)
-			if err != nil {
-				return nil, false, err
-			}
+			h.outputRow[i] = rowenc.DatumToEncDatum(h.OutputTypes[i], datum)
 		}
 	} else if h.outputCols != nil {
 		// Projection.
@@ -526,9 +523,7 @@ const (
 // at init() time), then we move straight to the StateTrailingMeta.
 //
 // An error can be optionally passed. It will be the first piece of metadata
-// returned by DrainHelper(), unless the processor's context has already been
-// canceled, in which case the context's error is returned instead (as often an
-// error passed to MoveToDraining() is a consequence of context cancellation).
+// returned by DrainHelper().
 //
 // MoveToDraining should only be called from the main goroutine of the
 // processor.
@@ -549,18 +544,6 @@ func (pb *ProcessorBaseNoHelper) MoveToDraining(err error) {
 	}
 
 	if err != nil {
-		// If processor ctx was canceled, reply with that err rather than whatever
-		// error was passed to MoveToDraining by a processor running on top of a
-		// canceled context, which is expected to error. Generally the error passed
-		// in this case will be context.Canceled anyway, but doing this ensures that
-		// distsql can promise that if it cancels a context, the emitted error will
-		// reflect that, making cancellation detectable by callers.
-		if pb.Ctx().Err() != nil {
-			if !errors.Is(err, pb.Ctx().Err()) {
-				log.Dev.Warningf(pb.Ctx(), "overriding non-cancelation emitted after context cancellation: %+v", err)
-			}
-			err = pb.Ctx().Err()
-		}
 		pb.trailingMeta = append(pb.trailingMeta, execinfrapb.ProducerMetadata{Err: err})
 	}
 	if pb.curInputToDrain < len(pb.inputsToDrain) {

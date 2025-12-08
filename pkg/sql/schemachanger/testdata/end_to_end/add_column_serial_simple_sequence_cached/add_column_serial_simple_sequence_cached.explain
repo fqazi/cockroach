@@ -11,7 +11,7 @@ Schema change plan for ALTER TABLE ‹db›.‹public›.‹tbl› ADD COLUMN �
  │    └── Stage 1 of 1 in StatementPhase
  │         ├── 24 elements transitioning toward PUBLIC
  │         │    ├── ABSENT → PUBLIC        Sequence:{DescID: 107 (tbl_serial_id_seq+)}
- │         │    ├── ABSENT → PUBLIC        Namespace:{DescID: 107 (tbl_serial_id_seq+), Name: "tbl_serial_id_seq", ReferencedDescID: 105 (public)}
+ │         │    ├── ABSENT → PUBLIC        Namespace:{DescID: 107 (tbl_serial_id_seq+), Name: "tbl_serial_id_seq", ReferencedDescID: 104 (db)}
  │         │    ├── ABSENT → PUBLIC        SchemaChild:{DescID: 107 (tbl_serial_id_seq+), ReferencedDescID: 105 (public)}
  │         │    ├── ABSENT → PUBLIC        TableData:{DescID: 107 (tbl_serial_id_seq+), ReferencedDescID: 104 (db)}
  │         │    ├── ABSENT → PUBLIC        SequenceOption:{DescID: 107 (tbl_serial_id_seq+), Name: "PER SESSION CACHE"}
@@ -46,7 +46,7 @@ Schema change plan for ALTER TABLE ‹db›.‹public›.‹tbl› ADD COLUMN �
  │              ├── SetNameInDescriptor {"DescriptorID":107,"Name":"tbl_serial_id_se..."}
  │              ├── AddDescriptorName {"Namespace":{"DatabaseID":104,"DescriptorID":107,"Name":"tbl_serial_id_se...","SchemaID":105}}
  │              ├── SetObjectParentID {"ObjParent":{"ChildObjectID":107,"SchemaID":105}}
- │              ├── SetSequenceOption {"Key":"PER SESSION CACH...","SequenceID":107,"Value":"256"}
+ │              ├── SetSequenceOptions {"Key":"PER SESSION CACH...","SequenceID":107,"Value":"256"}
  │              ├── MakeAbsentColumnDeleteOnly {"Column":{"ColumnID":1,"TableID":107}}
  │              ├── UpsertColumnType {"ColumnType":{"ColumnID":1,"TableID":107}}
  │              ├── SetColumnName {"ColumnID":1,"Name":"value","TableID":107}
@@ -83,7 +83,7 @@ Schema change plan for ALTER TABLE ‹db›.‹public›.‹tbl› ADD COLUMN �
  │    ├── Stage 1 of 2 in PreCommitPhase
  │    │    ├── 24 elements transitioning toward PUBLIC
  │    │    │    ├── PUBLIC        → ABSENT Sequence:{DescID: 107 (tbl_serial_id_seq+)}
- │    │    │    ├── PUBLIC        → ABSENT Namespace:{DescID: 107 (tbl_serial_id_seq+), Name: "tbl_serial_id_seq", ReferencedDescID: 105 (public)}
+ │    │    │    ├── PUBLIC        → ABSENT Namespace:{DescID: 107 (tbl_serial_id_seq+), Name: "tbl_serial_id_seq", ReferencedDescID: 104 (db)}
  │    │    │    ├── PUBLIC        → ABSENT SchemaChild:{DescID: 107 (tbl_serial_id_seq+), ReferencedDescID: 105 (public)}
  │    │    │    ├── PUBLIC        → ABSENT TableData:{DescID: 107 (tbl_serial_id_seq+), ReferencedDescID: 104 (db)}
  │    │    │    ├── PUBLIC        → ABSENT SequenceOption:{DescID: 107 (tbl_serial_id_seq+), Name: "PER SESSION CACHE"}
@@ -117,7 +117,7 @@ Schema change plan for ALTER TABLE ‹db›.‹public›.‹tbl› ADD COLUMN �
  │    └── Stage 2 of 2 in PreCommitPhase
  │         ├── 24 elements transitioning toward PUBLIC
  │         │    ├── ABSENT → PUBLIC        Sequence:{DescID: 107 (tbl_serial_id_seq+)}
- │         │    ├── ABSENT → PUBLIC        Namespace:{DescID: 107 (tbl_serial_id_seq+), Name: "tbl_serial_id_seq", ReferencedDescID: 105 (public)}
+ │         │    ├── ABSENT → PUBLIC        Namespace:{DescID: 107 (tbl_serial_id_seq+), Name: "tbl_serial_id_seq", ReferencedDescID: 104 (db)}
  │         │    ├── ABSENT → PUBLIC        SchemaChild:{DescID: 107 (tbl_serial_id_seq+), ReferencedDescID: 105 (public)}
  │         │    ├── ABSENT → PUBLIC        TableData:{DescID: 107 (tbl_serial_id_seq+), ReferencedDescID: 104 (db)}
  │         │    ├── ABSENT → PUBLIC        SequenceOption:{DescID: 107 (tbl_serial_id_seq+), Name: "PER SESSION CACHE"}
@@ -153,7 +153,7 @@ Schema change plan for ALTER TABLE ‹db›.‹public›.‹tbl› ADD COLUMN �
  │              ├── AddDescriptorName {"Namespace":{"DatabaseID":104,"DescriptorID":107,"Name":"tbl_serial_id_se...","SchemaID":105}}
  │              ├── UpdateTTLScheduleMetadata {"NewName":"tbl_serial_id_se...","TableID":107}
  │              ├── SetObjectParentID {"ObjParent":{"ChildObjectID":107,"SchemaID":105}}
- │              ├── SetSequenceOption {"Key":"PER SESSION CACH...","SequenceID":107,"Value":"256"}
+ │              ├── SetSequenceOptions {"Key":"PER SESSION CACH...","SequenceID":107,"Value":"256"}
  │              ├── MakeAbsentColumnDeleteOnly {"Column":{"ColumnID":1,"TableID":107}}
  │              ├── UpsertColumnType {"ColumnType":{"ColumnID":1,"TableID":107}}
  │              ├── SetColumnName {"ColumnID":1,"Name":"value","TableID":107}

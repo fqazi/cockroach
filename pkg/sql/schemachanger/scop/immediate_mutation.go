@@ -247,33 +247,6 @@ type RemoveColumnComputeExpression struct {
 	ColumnID descpb.ColumnID
 }
 
-// AddColumnGeneratedAsIdentity will add a new generated as identity to a column.
-type AddColumnGeneratedAsIdentity struct {
-	immediateMutationOp
-	GeneratedAsIdentity scpb.ColumnGeneratedAsIdentity
-}
-
-// RemoveColumnGeneratedAsIdentity will remove the generated as identity from a column.
-type RemoveColumnGeneratedAsIdentity struct {
-	immediateMutationOp
-	TableID  descpb.ID
-	ColumnID descpb.ColumnID
-}
-
-// MakeColumnHidden will add the hidden attribute to a column.
-type MakeColumnHidden struct {
-	immediateMutationOp
-	TableID  descpb.ID
-	ColumnID descpb.ColumnID
-}
-
-// MakeColumnHidden will remove the hidden attribute from a column.
-type MakeColumnVisible struct {
-	immediateMutationOp
-	TableID  descpb.ID
-	ColumnID descpb.ColumnID
-}
-
 // MakeWriteOnlyColumnPublic moves a new column from its mutation to public.
 type MakeWriteOnlyColumnPublic struct {
 	immediateMutationOp
@@ -1099,7 +1072,7 @@ type CreateSequenceDescriptor struct {
 	Temporary  bool
 }
 
-type SetSequenceOption struct {
+type SetSequenceOptions struct {
 	immediateMutationOp
 	SequenceID descpb.ID
 	Key        string

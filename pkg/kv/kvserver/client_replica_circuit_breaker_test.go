@@ -794,7 +794,9 @@ func TestReplicaCircuitBreaker_Partial_Retry(t *testing.T) {
 	skip.UnderDeadlock(t)
 
 	// To help debug issues like #154179.
-	testutils.SetVModule(t, "dist_sender=3")
+	prevVModule := log.GetVModule()
+	defer func() { _ = log.SetVModule(prevVModule) }()
+	require.NoError(t, log.SetVModule("dist_sender=3"))
 
 	testutils.RunValues(t, "lease-type", roachpb.ExpirationAndLeaderLeaseType(),
 		func(t *testing.T, leaseType roachpb.LeaseType) {
@@ -863,20 +865,14 @@ func TestReplicaCircuitBreaker_Partial_Retry(t *testing.T) {
 			requireRUEs := func(t *testing.T, dbs []*kv.DB) {
 				t.Helper()
 				for _, db := range dbs {
-					ctx, finishAndGetRec := tracing.ContextWithRecordingSpan(context.Background(), db.Tracer, "requireRUEs")
-					defer func() {
-						rec := finishAndGetRec()
-						if !t.Failed() {
-							return
-						}
-						t.Logf("failure trace:\n%s", rec)
-					}()
+					backoffMetric := (db.NonTransactionalSender().(*kv.CrossRangeTxnWrapperSender)).Wrapped().(*kvcoord.DistSender).Metrics().InLeaseTransferBackoffs
+					initialBackoff := backoffMetric.Count()
 					err := db.Put(ctx, key, value)
+					// Verify that we did not perform any backoff while executing this request.
+					require.EqualValues(t, 0, backoffMetric.Count()-initialBackoff)
 					require.Error(t, err)
 					require.True(t, errors.HasType(err, (*kvpb.ReplicaUnavailableError)(nil)),
 						"expected ReplicaUnavailableError, got %v", err)
-					// Verify that we did not perform any backoff while executing this request.
-					require.NotContains(t, finishAndGetRec(), kvcoord.InLeaseTransferBackoffTraceMessage)
 				}
 				t.Logf("writes failed with ReplicaUnavailableError")
 			}
@@ -927,7 +923,7 @@ func TestReplicaCircuitBreaker_Partial_Retry(t *testing.T) {
 			// and it will return RUE.
 			lease, _ := repl3.GetLease()
 			manualClock.Increment(tc.Servers[0].RaftConfig().RangeLeaseDuration.Nanoseconds())
-			t.Logf("expired first lease (n%d)", lease.Replica.ReplicaID) // always n3
+			t.Logf("expired n%d lease", lease.Replica.ReplicaID)
 
 			requireRUEs(t, dbs)
 
@@ -974,7 +970,7 @@ func TestReplicaCircuitBreaker_Partial_Retry(t *testing.T) {
 			// because the leader's circuit breaker is tripped.
 			lease, _ = repl1.GetLease()
 			manualClock.Increment(tc.Servers[0].RaftConfig().RangeLeaseDuration.Nanoseconds())
-			t.Logf("expired second lease (n%d)", lease.Replica.ReplicaID)
+			t.Logf("expired n%d lease", lease.Replica.ReplicaID)
 
 			requireRUEs(t, dbs)
 
@@ -988,7 +984,7 @@ func TestReplicaCircuitBreaker_Partial_Retry(t *testing.T) {
 				}
 				return true
 			}, 10*time.Second, 100*time.Millisecond)
-			t.Logf("expired raft leader")
+			t.Logf("no raft leader")
 
 			requireRUEs(t, dbs)
 

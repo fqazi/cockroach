@@ -40,7 +40,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/trigram"
 	"github.com/cockroachdb/cockroach/pkg/util/vector"
@@ -1077,6 +1076,7 @@ func TestEncodeTrigramInvertedIndexSpans(t *testing.T) {
 
 	runTest := func(indexedValue, value string, searchType trigramSearchType,
 		expectContainsKeys, expected, expectUnique bool) {
+		t.Logf("test case: %s %s %v %t %t %t", indexedValue, value, searchType, expectContainsKeys, expected, expectUnique)
 		keys, err := EncodeInvertedIndexTableKeys(tree.NewDString(indexedValue), nil, descpb.LatestIndexDescriptorVersion)
 		require.NoError(t, err)
 
@@ -1285,7 +1285,6 @@ func TestDecodeKeyVals(t *testing.T) {
 // write leaf keys, so that's what's tested here.
 func TestVectorEncoding(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
 	srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
@@ -1377,7 +1376,6 @@ func TestVectorEncoding(t *testing.T) {
 
 func TestVectorCompositeEncoding(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
 	srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})

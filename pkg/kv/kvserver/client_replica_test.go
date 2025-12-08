@@ -32,13 +32,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/leases"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts/ptpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts/ptutil"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftutil"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvtestutils"
 	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
@@ -213,7 +213,7 @@ func TestLeaseholdersRejectClockUpdateWithJump(t *testing.T) {
 	// The clock did not advance and the final command was not executed.
 	ts3 := s.Clock().Now()
 	require.Zero(t, ts3.GoTime().Sub(ts2.GoTime()))
-	valRes, err := storage.MVCCGet(context.Background(), store.StateEngine(), key, ts3,
+	valRes, err := storage.MVCCGet(context.Background(), store.TODOEngine(), key, ts3,
 		storage.MVCCGetOptions{})
 	require.NoError(t, err)
 	require.Equal(t, incArgs.Increment*numCmds, mustGetInt(valRes.Value))
@@ -778,7 +778,7 @@ func TestTxnReadWithinUncertaintyIntervalAfterLeaseTransfer(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	// Increase the verbosity of the test to help investigate failures.
-	testutils.SetVModule(t, "replica_range_lease=3,raft=4,txn=3,txn_coord_sender=3")
+	defer testutils.SetVModule(t, "replica_range_lease=3,raft=4,txn=3,txn_coord_sender=3")()
 	const numNodes = 2
 	var manuals []*hlc.HybridManualClock
 	var clocks []*hlc.Clock
@@ -2955,7 +2955,7 @@ func TestLossQuorumCauseLeaderlessWatcherToSignalUnavailable(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	// Increase the verbosity of the test to help investigate failures.
-	testutils.SetVModule(t, "replica_range_lease=3,raft=4")
+	defer testutils.SetVModule(t, "replica_range_lease=3,raft=4")()
 
 	ctx := context.Background()
 	stickyVFSRegistry := fs.NewStickyRegistry()
@@ -3199,7 +3199,7 @@ func TestClearRange(t *testing.T) {
 		t.Helper()
 		start := prefix
 		end := prefix.PrefixEnd()
-		kvs, err := storage.Scan(context.Background(), store.StateEngine(), start, end, 0)
+		kvs, err := storage.Scan(context.Background(), store.TODOEngine(), start, end, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4169,7 +4169,7 @@ func TestReplicaTombstone(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					ts, err := kvstorage.MakeStateLoader(rhsDesc.RangeID).LoadRangeTombstone(
+					ts, err := stateloader.Make(rhsDesc.RangeID).LoadRangeTombstone(
 						context.Background(), store.StateEngine(),
 					)
 					require.NoError(t, err)
@@ -5357,8 +5357,8 @@ func TestRangeMigration(t *testing.T) {
 			t.Fatalf("expected in-memory version %s, got %s", expV, gotV)
 		}
 
-		sl := kvstorage.MakeStateLoader(rangeID)
-		persistedV, err := sl.LoadVersion(ctx, store.StateEngine())
+		sl := stateloader.Make(rangeID)
+		persistedV, err := sl.LoadVersion(ctx, store.TODOEngine())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -6072,7 +6072,7 @@ func TestLeaseTransferReplicatesLocks(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "cmd_lease=2")
+	defer testutils.SetVModule(t, "cmd_lease=2")()
 
 	// Test Setup:
 	//
@@ -6182,7 +6182,7 @@ func TestLeaseTransferDropsLocksIfLargerThanCommandSize(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "cmd_lease=2")
+	defer testutils.SetVModule(t, "cmd_lease=2")()
 
 	// Test Plan:
 	//
@@ -6233,7 +6233,7 @@ func TestMergeDropsLocksIfLargerThanMax(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "cmd_subsume=2")
+	defer testutils.SetVModule(t, "cmd_subsume=2")()
 
 	// Test Plan:
 	//

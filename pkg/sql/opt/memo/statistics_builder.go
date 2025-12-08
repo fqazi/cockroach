@@ -680,7 +680,15 @@ func (sb *statisticsBuilder) makeTableStatistics(tabID opt.TableID) *props.Stati
 	// Make now and annotate the metadata table with it for next time.
 	stats = &props.Statistics{}
 
-	first := cat.FindLatestFullStat(tab, sb.evalCtx.SessionData())
+	// Find the most recent full statistic. (Stats are ordered with most recent first.)
+	var first int
+	for first < tab.StatisticCount() &&
+		(tab.Statistic(first).IsPartial() ||
+			tab.Statistic(first).IsMerged() && !sb.evalCtx.SessionData().OptimizerUseMergedPartialStatistics ||
+			tab.Statistic(first).IsForecast() && !sb.evalCtx.SessionData().OptimizerUseForecasts) {
+		first++
+	}
+
 	if first >= tab.StatisticCount() {
 		// No statistics.
 		stats.Available = false
@@ -4724,7 +4732,7 @@ func (sb *statisticsBuilder) selectivityFromConstrainedCols(
 
 	// Find the minimum upper bound selectivity.
 	selectivityUpperBound =
-		props.MinSelectivity(selectivityUpperBound, selectivityUpperBound2, selectivityUpperBound3)
+		props.MinSelectivity3(selectivityUpperBound, selectivityUpperBound2, selectivityUpperBound3)
 
 	selectivity.Add(props.MakeSelectivity(
 		correlation * (selectivityUpperBound.AsFloat() - selectivity.AsFloat()),

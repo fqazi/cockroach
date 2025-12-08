@@ -87,31 +87,9 @@ type logicalReplicationResumer struct {
 
 var _ jobs.Resumer = (*logicalReplicationResumer)(nil)
 
-func (r *logicalReplicationResumer) jobUsesUDF() bool {
-	payload := r.job.Details().(jobspb.LogicalReplicationDetails)
-
-	if payload.DefaultConflictResolution.FunctionId != 0 {
-		return true
-	}
-
-	for _, pair := range payload.ReplicationPairs {
-		if pair.DstFunctionID != 0 {
-			return true
-		}
-	}
-
-	return false
-}
-
 // Resume is part of the jobs.Resumer interface.
 func (r *logicalReplicationResumer) Resume(ctx context.Context, execCtx interface{}) error {
 	jobExecCtx := execCtx.(sql.JobExecContext)
-
-	if r.jobUsesUDF() && !crosscluster.LogicalReplicationUDFWriterEnabled.Get(&jobExecCtx.ExecCfg().Settings.SV) {
-		r.updateStatusMessage(ctx, "job paused because UDF-based logical replication writer is disabled")
-		return jobs.MarkPauseRequestError(errors.Newf("UDF-based logical replication writer is disabled and will be deleted in a future CockroachDB release"))
-	}
-
 	return r.handleResumeError(ctx, jobExecCtx, r.ingestWithRetries(ctx, jobExecCtx))
 }
 
@@ -311,10 +289,8 @@ func (r *logicalReplicationResumer) ingest(
 			settings:              &execCfg.Settings.SV,
 			job:                   r.job,
 			frontierUpdates:       heartbeatSender.FrontierUpdates,
-			rangeStats: replicationutils.NewAggregateRangeStatsCollector(
-				planInfo.writeProcessorCount,
-			),
-			r: r,
+			rangeStats:            newRangeStatsCollector(planInfo.writeProcessorCount),
+			r:                     r,
 		}
 		rowResultWriter := sql.NewCallbackResultWriter(rh.handleRow)
 		distSQLReceiver := sql.MakeDistSQLReceiver(
@@ -478,11 +454,9 @@ type logicalReplicationPlanner struct {
 }
 
 type logicalReplicationPlanInfo struct {
-	sourceSpans      []roachpb.Span
-	partitionPgUrls  []string
-	destTableBySrcID map[descpb.ID]dstTableMetadata
-	// Number of processors writing data on the destination cluster (offline or
-	// otherwise).
+	sourceSpans         []roachpb.Span
+	partitionPgUrls     []string
+	destTableBySrcID    map[descpb.ID]dstTableMetadata
 	writeProcessorCount int
 }
 
@@ -762,7 +736,6 @@ func (p *logicalReplicationPlanner) planOfflineInitialScan(
 				SQLInstanceID: instanceID,
 				Core:          execinfrapb.ProcessorCoreUnion{LogicalReplicationOfflineScan: &spec},
 			})
-			info.writeProcessorCount++
 		}
 	}
 
@@ -790,7 +763,7 @@ type rowHandler struct {
 	job                   *jobs.Job
 	frontierUpdates       chan hlc.Timestamp
 
-	rangeStats replicationutils.AggregateRangeStatsCollector
+	rangeStats rangeStatsByProcessorID
 
 	lastPartitionUpdate time.Time
 

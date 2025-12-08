@@ -148,7 +148,6 @@ var validationMap = []struct {
 			"RowLevelSecurityEnabled": {status: thisFieldReferencesNoObjects},
 			"RowLevelSecurityForced":  {status: thisFieldReferencesNoObjects},
 			"RBRUsingConstraint":      {status: iSolemnlySwearThisFieldIsValidated},
-			"StatsCanaryWindow":       {status: thisFieldReferencesNoObjects},
 		},
 	},
 	{

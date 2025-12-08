@@ -185,7 +185,6 @@ func cleanLogEntries(logs []logpb.Entry) []logpb.Entry {
 	for _, l := range logs {
 		l.Time = 0
 		l.Goroutine = 0
-		l.Line = 0
 		newLogs = append(newLogs, l)
 	}
 	return newLogs

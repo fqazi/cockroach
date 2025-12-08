@@ -6,11 +6,11 @@
 package install
 
 import (
+	"bytes"
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/util/yamlutil"
 	"github.com/stretchr/testify/require"
-	"go.yaml.in/yaml/v4"
+	"gopkg.in/yaml.v3"
 )
 
 func TestClusterSettingOptionListCodec(t *testing.T) {
@@ -22,7 +22,10 @@ func TestClusterSettingOptionListCodec(t *testing.T) {
 	require.NoError(t, err)
 
 	var decOpts ClusterSettingOptionList
-	require.NoError(t, yamlutil.UnmarshalStrict(data, &decOpts))
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	err = dec.Decode(&decOpts)
+	require.NoError(t, err)
 
 	require.Equal(t, opts, decOpts)
 	require.Equal(t, MakeClusterSettings(opts...), MakeClusterSettings(decOpts...))

@@ -28,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 )
 
@@ -319,7 +318,7 @@ func (c *rowFetcherCache) RowFetcherForColumnFamily(
 			Alloc:             &c.a,
 			Spec:              &spec,
 			TraceKV:           c.rfArgs.traceKV,
-			TraceKVEvery:      &util.EveryN[crtime.Mono]{N: c.rfArgs.traceKVLogFrequency},
+			TraceKVEvery:      &util.EveryN{N: c.rfArgs.traceKVLogFrequency},
 		},
 	); err != nil {
 		return nil, nil, err

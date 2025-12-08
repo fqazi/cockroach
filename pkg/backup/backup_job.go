@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/backup/backupbase"
 	"github.com/cockroachdb/cockroach/pkg/backup/backupdest"
 	"github.com/cockroachdb/cockroach/pkg/backup/backupencryption"
 	"github.com/cockroachdb/cockroach/pkg/backup/backupinfo"
@@ -23,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/ccl/kvccl/kvfollowerreadsccl"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
+	"github.com/cockroachdb/cockroach/pkg/cloud/cloudpb"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/joberror"
@@ -59,6 +61,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logutil"
+	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
@@ -78,6 +81,8 @@ var BackupCheckpointInterval = settings.RegisterDurationSetting(
 	"bulkio.backup.checkpoint_interval",
 	"the minimum time between writing progress checkpoints during a backup",
 	time.Minute)
+
+var forceReadBackupManifest = metamorphic.ConstantWithTestBool("backup-read-manifest", false)
 
 var useBulkOracle = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
@@ -122,8 +127,10 @@ func backup(
 	details jobspb.BackupDetails,
 	settings *cluster.Settings,
 	defaultStore cloud.ExternalStorage,
+	storageByLocalityKV map[string]*cloudpb.ExternalStorage,
 	resumer *backupResumer,
 	backupManifest *backuppb.BackupManifest,
+	makeExternalStorage cloud.ExternalStorageFactory,
 ) (_ roachpb.RowCount, numBackupInstances int, _ error) {
 	resumerSpan := tracing.SpanFromContext(ctx)
 	var lastCheckpoint time.Time
@@ -380,9 +387,75 @@ func backup(
 		}
 	}
 
-	statsTable := getTableStatsForBackup(ctx, execCtx.ExecCfg().InternalDB.Executor(), backupManifest.Descriptors)
-	if err := backupinfo.WriteBackupMetadata(ctx, execCtx, defaultStore, details, &kmsEnv, backupManifest, statsTable); err != nil {
+	backupID := uuid.MakeV4()
+	backupManifest.ID = backupID
+	// Write additional partial descriptors to each node for partitioned backups.
+	if len(storageByLocalityKV) > 0 {
+		resumerSpan.RecordStructured(&types.StringValue{Value: "writing partition descriptors for partitioned backup"})
+		filesByLocalityKV := make(map[string][]backuppb.BackupManifest_File)
+		for _, file := range backupManifest.Files {
+			filesByLocalityKV[file.LocalityKV] = append(filesByLocalityKV[file.LocalityKV], file)
+		}
+
+		nextPartitionedDescFilenameID := 1
+		for kv, conf := range storageByLocalityKV {
+			backupManifest.LocalityKVs = append(backupManifest.LocalityKVs, kv)
+			// Set a unique filename for each partition backup descriptor. The ID
+			// ensures uniqueness, and the kv string appended to the end is for
+			// readability.
+			filename := fmt.Sprintf("%s_%d_%s", backupPartitionDescriptorPrefix,
+				nextPartitionedDescFilenameID, backupinfo.SanitizeLocalityKV(kv))
+			nextPartitionedDescFilenameID++
+			backupManifest.PartitionDescriptorFilenames = append(backupManifest.PartitionDescriptorFilenames, filename)
+			desc := backuppb.BackupPartitionDescriptor{
+				LocalityKV: kv,
+				Files:      filesByLocalityKV[kv],
+				BackupID:   backupID,
+			}
+
+			if err := func() error {
+				store, err := makeExternalStorage(ctx, *conf)
+				if err != nil {
+					return err
+				}
+				defer store.Close()
+				return backupinfo.WriteBackupPartitionDescriptor(ctx, store, filename,
+					encryption, &kmsEnv, &desc)
+			}(); err != nil {
+				return roachpb.RowCount{}, 0, err
+			}
+		}
+	}
+
+	// TODO(msbutler): version gate writing the old manifest once we can guarantee
+	// a cluster version that will not read the old manifest. This will occur when we delete
+	// LegacyFindPriorBackups and the fallback path in
+	// ListFullBackupsInCollection, which can occur when we completely rely on the
+	// backup index.
+	if err := backupinfo.WriteBackupManifest(ctx, defaultStore, backupbase.DeprecatedBackupManifestName,
+		encryption, &kmsEnv, backupManifest); err != nil {
 		return roachpb.RowCount{}, 0, err
+	}
+
+	if err := backupinfo.WriteMetadataWithExternalSSTs(ctx, defaultStore, encryption,
+		&kmsEnv, backupManifest); err != nil {
+		return roachpb.RowCount{}, 0, err
+	}
+
+	statsTable := getTableStatsForBackup(ctx, execCtx.ExecCfg().InternalDB.Executor(), backupManifest.Descriptors)
+	if err := backupinfo.WriteTableStatistics(ctx, defaultStore, encryption, &kmsEnv, &statsTable); err != nil {
+		return roachpb.RowCount{}, 0, err
+	}
+
+	if err := backupdest.WriteBackupIndexMetadata(
+		ctx,
+		execCtx.ExecCfg(),
+		execCtx.User(),
+		execCtx.ExecCfg().DistSQLSrv.ExternalStorageFromURI,
+		details,
+		backupManifest.RevisionStartTime,
+	); err != nil {
+		return roachpb.RowCount{}, 0, errors.Wrapf(err, "writing backup index metadata")
 	}
 
 	return backupManifest.EntryCounts, numBackupInstances, nil
@@ -622,11 +695,20 @@ func (b *backupResumer) Resume(ctx context.Context, execCtx interface{}) error {
 		}
 	}
 
+	storageByLocalityKV := make(map[string]*cloudpb.ExternalStorage)
+	for kv, uri := range details.URIsByLocalityKV {
+		conf, err := cloud.ExternalStorageConfFromURI(uri, p.User())
+		if err != nil {
+			return err
+		}
+		storageByLocalityKV[kv] = &conf
+	}
+
 	mem := p.ExecCfg().RootMemoryMonitor.MakeBoundAccount()
 	defer mem.Close(ctx)
 	var memSize int64
 
-	if backupManifest == nil {
+	if backupManifest == nil || forceReadBackupManifest {
 		backupManifest, memSize, err = b.readManifestOnResume(ctx, &mem, p.ExecCfg(), defaultStore,
 			details, p.User(), &kmsEnv)
 		if err != nil {
@@ -663,8 +745,10 @@ func (b *backupResumer) Resume(ctx context.Context, execCtx interface{}) error {
 			details,
 			p.ExecCfg().Settings,
 			defaultStore,
+			storageByLocalityKV,
 			b,
 			backupManifest,
+			p.ExecCfg().DistSQLSrv.ExternalStorage,
 		)
 		if err == nil {
 			break
@@ -1037,7 +1121,7 @@ func spansForAllTableIndexes(
 	// Attempt to merge any contiguous spans generated from the tables and revs.
 	// No need to check if the spans are distinct, since some of the merged
 	// indexes may overlap between different revisions of the same descriptor.
-	mergedSpans, _ := roachpb.MergeSpans(spans)
+	mergedSpans, _ := roachpb.MergeSpans(&spans)
 
 	knobs := execCfg.BackupRestoreTestingKnobs
 	if knobs != nil && knobs.CaptureResolvedTableDescSpans != nil {

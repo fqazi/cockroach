@@ -15,30 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 )
 
-func isSupportedType(t *types.T) bool {
-	switch t.Family() {
-	case types.RefCursorFamily:
-		// We don't support RefCursor columns in LDR tables because they do not
-		// support equality.
-		return false
-	case types.ArrayFamily:
-		// We don't allow Arrays of bits because rand.LoadTable doesn't correctly identify their bit width.
-		if t.ArrayContents().Family() == types.BitFamily {
-			return false
-		}
-		return isSupportedType(t.ArrayContents())
-	case types.TupleFamily:
-		for _, elemType := range t.TupleContents() {
-			if !isSupportedType(elemType) {
-				return false
-			}
-		}
-		return true
-	default:
-		return true
-	}
-}
-
 func GenerateLDRTable(
 	ctx context.Context, rng *rand.Rand, tableName string, supportKVWriter bool,
 ) *tree.CreateTable {
@@ -55,7 +31,16 @@ func GenerateLDRTable(
 		randgen.WithPrimaryIndexRequired(),
 		randgen.WithSkipColumnFamilyMutations(),
 		randgen.WithColumnFilter(func(columnDef *tree.ColumnTableDef) bool {
-			return isSupportedType(columnDef.Type.(*types.T))
+			// We don't allow Arrays of bits because rand.LoadTable doesn't correctly identify their bit width.
+			if columnDef.Type.(*types.T).Family() == types.ArrayFamily && columnDef.Type.(*types.T).ArrayContents().Family() == types.BitFamily {
+				return false
+			}
+			// We don't allow the special '"char"' column because pgwire truncates the value to 1 byte.
+			// TODO(jeffswenson): remove this once #149427 is fixed.
+			if columnDef.Type.(*types.T).Family() == types.StringFamily && columnDef.Type.(*types.T).Width() == 1 {
+				return false
+			}
+			return true
 		}),
 		randgen.WithPrimaryIndexFilter(func(indexDef *tree.IndexTableDef, columnDefs []*tree.ColumnTableDef) bool {
 			for _, col := range indexDef.Columns {

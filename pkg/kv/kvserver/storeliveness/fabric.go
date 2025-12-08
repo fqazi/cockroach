@@ -73,6 +73,6 @@ type Fabric interface {
 // InspectFabric is an interface that exposes all in-memory support state for a
 // given store. It is used to power the Store Liveness /inspectz functionality.
 type InspectFabric interface {
-	InspectSupportFrom() slpb.InspectSupportFromStatesPerStore
-	InspectSupportFor() slpb.InspectSupportForStatesPerStore
+	InspectSupportFrom() slpb.SupportStatesPerStore
+	InspectSupportFor() slpb.SupportStatesPerStore
 }

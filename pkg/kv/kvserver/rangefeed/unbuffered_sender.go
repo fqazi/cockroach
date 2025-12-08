@@ -127,16 +127,10 @@ func (ubs *UnbufferedSender) sendBuffered(
 // Important to be thread-safe.
 func (ubs *UnbufferedSender) sendUnbuffered(event *kvpb.MuxRangeFeedEvent) error {
 	if event.Error != nil {
-		log.KvExec.Fatalf(context.Background(), "unexpected: SendUnbuffered called with error event")
+		log.KvDistribution.Fatalf(context.Background(), "unexpected: SendUnbuffered called with error event")
 	}
 	return ubs.sender.Send(event)
 }
-
-// addStream implements sender.
-func (ubs *UnbufferedSender) addStream(int64) {}
-
-// cleanup implements sender.
-func (ubs *UnbufferedSender) cleanup(context.Context) {}
 
 // run forwards rangefeed completion errors back to the client. run is expected
 // to be called in a goroutine and will block until the context is done or the
@@ -153,7 +147,7 @@ func (ubs *UnbufferedSender) run(
 			for _, clientErr := range toSend {
 				onError(clientErr.StreamID)
 				if err := ubs.sender.Send(clientErr); err != nil {
-					log.KvExec.Infof(ctx, "failed to send rangefeed error to client: %v", err)
+					log.KvDistribution.Infof(ctx, "failed to send rangefeed error to client: %v", err)
 					return err
 				}
 			}
@@ -191,3 +185,5 @@ func (ubs *UnbufferedSender) detachMuxErrors() []*kvpb.MuxRangeFeedEvent {
 	ubs.mu.muxErrors = nil
 	return toSend
 }
+
+func (ubs *UnbufferedSender) cleanup(context.Context) {}

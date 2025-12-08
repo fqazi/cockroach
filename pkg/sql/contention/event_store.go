@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -207,15 +206,15 @@ func (s *eventStore) startResolver(ctx context.Context, stopper *stop.Stopper) {
 	})
 
 	_ = stopper.RunAsyncTask(ctx, "contention-event-resolver", func(ctx context.Context) {
-		rng, _ := randutil.NewPseudoRand()
-		initialDelay := s.resolutionIntervalWithJitter(rng)
+
+		initialDelay := s.resolutionIntervalWithJitter()
 		var timer timeutil.Timer
 		defer timer.Stop()
 
 		timer.Reset(initialDelay)
 
 		for {
-			waitInterval := s.resolutionIntervalWithJitter(rng)
+			waitInterval := s.resolutionIntervalWithJitter()
 			timer.Reset(waitInterval)
 
 			select {
@@ -364,11 +363,11 @@ func (s *eventStore) addEventsForTest(events []contentionpb.ExtendedContentionEv
 	}
 }
 
-func (s *eventStore) resolutionIntervalWithJitter(rng *rand.Rand) time.Duration {
+func (s *eventStore) resolutionIntervalWithJitter() time.Duration {
 	baseInterval := TxnIDResolutionInterval.Get(&s.st.SV)
 
 	// Jitter the interval a by +/- 15%.
-	frac := 1 + (2*rng.Float64()-1)*0.15
+	frac := 1 + (2*rand.Float64()-1)*0.15
 	jitteredInterval := time.Duration(frac * float64(baseInterval.Nanoseconds()))
 	return jitteredInterval
 }

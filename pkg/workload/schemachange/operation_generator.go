@@ -1709,7 +1709,7 @@ func (og *operationGenerator) dropColumn(ctx context.Context, tx pgx.Tx) (*opStm
 	if err != nil {
 		return nil, err
 	}
-	columnDropViolatesFKIndexRequirements, err := og.columnDropViolatesFKIndexRequirements(ctx, tx, tableName, columnName)
+	columnRemovalWillDropFKBackingIndexes, err := og.columnRemovalWillDropFKBackingIndexes(ctx, tx, tableName, columnName)
 	if err != nil {
 		return nil, err
 	}
@@ -1731,7 +1731,7 @@ func (og *operationGenerator) dropColumn(ctx context.Context, tx pgx.Tx) (*opStm
 		{code: pgcode.ObjectNotInPrerequisiteState, condition: columnIsInAddingOrDroppingIndex},
 		{code: pgcode.UndefinedColumn, condition: !columnExists},
 		{code: pgcode.InvalidColumnReference, condition: colIsPrimaryKey || colIsRefByComputed},
-		{code: pgcode.DependentObjectsStillExist, condition: columnIsDependedOn || columnDropViolatesFKIndexRequirements},
+		{code: pgcode.DependentObjectsStillExist, condition: columnIsDependedOn || columnRemovalWillDropFKBackingIndexes},
 		{code: pgcode.FeatureNotSupported, condition: hasAlterPKSchemaChange && !og.useDeclarativeSchemaChanger},
 	})
 	stmt.potentialExecErrors.addAll(codesWithConditions{
@@ -3454,89 +3454,6 @@ func (og *operationGenerator) validate(ctx context.Context, tx pgx.Tx) (*opStmt,
 		return validateStmt, nil
 	}
 	return validateStmt, errors.Errorf("Validation FAIL:\n%s", strings.Join(errs, "\n"))
-}
-
-func (og *operationGenerator) inspect(ctx context.Context, tx pgx.Tx) (*opStmt, error) {
-	stmt := makeOpStmt(OpStmtDML)
-
-	var sb strings.Builder
-	sb.WriteString("INSPECT ")
-
-	if og.randIntn(2) == 0 {
-		tableName, err := og.randTable(ctx, tx, og.pctExisting(true), "")
-		if err != nil {
-			return nil, err
-		}
-		tableExists, err := og.tableExists(ctx, tx, tableName)
-		if err != nil {
-			return nil, err
-		}
-		sb.WriteString("TABLE ")
-		sb.WriteString(tableName.String())
-		if !tableExists {
-			stmt.expectedExecErrors.add(pgcode.UndefinedTable)
-		}
-	} else {
-		database, err := og.getDatabase(ctx, tx)
-		if err != nil {
-			return nil, err
-		}
-		useExisting := og.randIntn(100) < og.pctExisting(true)
-		var databaseName string
-		if useExisting {
-			databaseName = database
-		} else {
-			databaseName = fmt.Sprintf("inspect_db_%s", og.newUniqueSeqNumSuffix())
-			stmt.expectedExecErrors.add(pgcode.InvalidCatalogName)
-		}
-		sb.WriteString("DATABASE ")
-		sb.WriteString(databaseName)
-	}
-
-	asof := og.randomInspectAsOfClause()
-	sb.WriteString(asof)
-	// If we use an ASOF time with inspect, chances are it will conflict with
-	// the timestamp chosen for the transaction, and return an "inconsistent AS
-	// OF SYSTEM TIME timestamp" error.
-	stmt.potentialExecErrors.addAll(codesWithConditions{
-		{pgcode.FeatureNotSupported, asof != ""},
-	})
-	// Detached flag was added in 26.1, so we expect errors till the user upgrades.
-	isDetachedUnsupported, err := isClusterVersionLessThan(ctx, tx, clusterversion.V26_1.Version())
-	if err != nil {
-		return nil, err
-	}
-	if isDetachedUnsupported {
-		stmt.potentialExecErrors.add(pgcode.FeatureNotSupported)
-	}
-	// Always run DETACHED as this allows us to use INSPECT inside of a
-	// transaction. We have post-processing at the end of the run to verify
-	// INSPECT didn't find any issues.
-	sb.WriteString(" WITH OPTIONS DETACHED")
-	stmt.sql = sb.String()
-
-	// If INSPECT is not supported yet, so we expect a syntax error or feature
-	// not supported.
-	isInspectUnsupported, err := isClusterVersionLessThan(ctx, tx, clusterversion.V25_4.Version())
-	if err != nil {
-		return nil, err
-	}
-	if isInspectUnsupported {
-		stmt.expectedExecErrors.add(pgcode.FeatureNotSupported)
-		stmt.expectedExecErrors.add(pgcode.Syntax)
-	}
-
-	return stmt, nil
-}
-
-func (og *operationGenerator) randomInspectAsOfClause() string {
-	// Use AS OF SYSTEM TIME infrequently (~10% of the time) because transactions
-	// are never started with AS OF SYSTEM TIME, and INSPECT with AS OF inside a
-	// transaction without AS OF can cause conflicts.
-	if og.randIntn(10) == 0 {
-		return fmt.Sprintf(" AS OF SYSTEM TIME '-%ds'", og.randIntn(30)+1)
-	}
-	return ""
 }
 
 type column struct {
@@ -5658,68 +5575,4 @@ func (og *operationGenerator) findExistingTrigger(
 	}
 
 	return &triggerWithInfo, nil
-}
-
-// truncateTable generates a TRUNCATE TABLE statement.
-func (og *operationGenerator) truncateTable(ctx context.Context, tx pgx.Tx) (*opStmt, error) {
-	tbls, err := Collect(ctx, og, tx, pgx.RowTo[string],
-		`SELECT quote_ident(schema_name) || '.' || quote_ident(table_name) FROM [SHOW TABLES] WHERE type = 'table'`)
-	if err != nil {
-		return nil, err
-	}
-
-	const MaxTruncateTables = 8
-	stmt, expectedCode, err := Generate[*tree.Truncate](og.params.rng, og.produceError(), []GenerationCase{
-		{pgcode.SuccessfulCompletion, `TRUNCATE TABLE {MultipleTableNames}`},
-		{pgcode.SuccessfulCompletion, `TRUNCATE TABLE {MultipleTableNames} CASCADE`},
-		{pgcode.UndefinedTable, `TRUNCATE TABLE {TableNameDoesNotExist}`},
-		{pgcode.UndefinedTable, `TRUNCATE TABLE {TableNameDoesNotExist} CASCADE`},
-	}, template.FuncMap{
-		"MultipleTableNames": func() (string, error) {
-			selectedTables, err := PickBetween(og.params.rng, 1, MaxTruncateTables, tbls)
-			if err != nil {
-				return "", err
-			}
-			return strings.Join(selectedTables, ","), nil
-		},
-		"TableNameDoesNotExist": func() (string, error) {
-			return "TableThatDoesNotExist", nil
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	op := newOpStmt(stmt, codesWithConditions{
-		{expectedCode, true},
-	})
-
-	// If the the TRUNCATE is not cascaded, then the operation can fail
-	// if foreign key references exist.
-	if expectedCode == pgcode.SuccessfulCompletion &&
-		stmt.DropBehavior != tree.DropCascade {
-		tableSet := map[string]struct{}{}
-		fkSet := map[string]struct{}{}
-		// Gather the set of tables handled by this statement, and
-		// any foreign keys that reference these tables.
-		for _, table := range stmt.Tables {
-			tableSet[table.FQString()] = struct{}{}
-			fkReferenceTables, err := og.getTableForeignKeyReferences(ctx, tx, &table)
-			if err != nil {
-				return nil, err
-			}
-			for _, fk := range fkReferenceTables {
-				fkSet[fk.FQString()] = struct{}{}
-			}
-		}
-		// Check if any of the foreign keys that reference these
-		// tables are not truncated. If they are, then the TRUNCATE
-		// will fail with an error.
-		for fk := range fkSet {
-			if _, hasTable := tableSet[fk]; !hasTable {
-				op.expectedExecErrors.add(pgcode.FeatureNotSupported)
-				break
-			}
-		}
-	}
-	return op, nil
 }

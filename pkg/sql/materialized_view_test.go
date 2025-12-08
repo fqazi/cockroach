@@ -30,7 +30,9 @@ func TestMaterializedViewClearedAfterRefresh(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	s, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+
+	s, sqlDB, kvDB := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
 	// Disable strict GC TTL enforcement because we're going to shove a zero-value
@@ -95,7 +97,7 @@ func TestMaterializedViewRefreshVisibility(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 
 	waitForCommit, waitToProceed, refreshDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	params.Knobs = base.TestingKnobs{
@@ -143,7 +145,7 @@ func TestMaterializedViewCleansUpOnRefreshFailure(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 
 	// Protects shouldError
 	var mu syncutil.Mutex
@@ -209,7 +211,8 @@ func TestDropMaterializedView(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	s, sqlRaw, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, sqlRaw, kvDB := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
 
 	// Disable strict GC TTL enforcement because we're going to shove a zero-value

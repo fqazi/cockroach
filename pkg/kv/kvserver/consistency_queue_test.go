@@ -23,6 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -358,7 +359,7 @@ func TestCheckConsistencyInconsistent(t *testing.T) {
 	var val roachpb.Value
 	val.SetInt(42)
 	// Put an inconsistent key "e" to s2, and have s1 and s3 still agree.
-	_, err := storage.MVCCPut(context.Background(), s2.StateEngine(),
+	_, err := storage.MVCCPut(context.Background(), s2.TODOEngine(),
 		roachpb.Key("e"), tc.Server(0).Clock().Now(), val, storage.MVCCWriteOptions{})
 	require.NoError(t, err)
 
@@ -558,7 +559,7 @@ func testConsistencyQueueRecomputeStatsImpl(t *testing.T, hadEstimates bool) {
 		require.NoError(t, err)
 		defer eng.Close()
 
-		rsl := kvstorage.MakeStateLoader(rangeID)
+		rsl := stateloader.Make(rangeID)
 		ms, err := rsl.LoadMVCCStats(ctx, eng)
 		require.NoError(t, err)
 

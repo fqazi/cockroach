@@ -260,10 +260,9 @@ func (s *authenticationServer) UserLogin(
 // DemoLogin is the same as UserLogin but using the GET method.
 // It is only available for 'cockroach demo' and test clusters.
 func (s *authenticationServer) DemoLogin(w http.ResponseWriter, req *http.Request) {
-	tags := logtags.BuildBuffer()
-	tags.Add("client", log.SafeOperational(req.RemoteAddr))
-	tags.Add("demologin", nil)
-	ctx := logtags.WithTags(context.Background(), tags.Finish())
+	ctx := context.Background()
+	ctx = logtags.AddTag(ctx, "client", log.SafeOperational(req.RemoteAddr))
+	ctx = logtags.AddTag(ctx, "demologin", nil)
 
 	fail := func(err error) {
 		w.WriteHeader(500)

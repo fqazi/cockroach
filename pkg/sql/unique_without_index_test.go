@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/constraint"
@@ -37,9 +38,8 @@ func TestUWIConstraintReferencingTypes(t *testing.T) {
 	testutils.RunTrueAndFalse(t, "use-declarative-schema-changer", func(
 		t *testing.T, useDeclarativeSchemaChanger bool,
 	) {
-		srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
-		defer srv.Stopper().Stop(ctx)
-		s := srv.ApplicationLayer()
+		s, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+		defer s.Stopper().Stop(ctx)
 		tdb := sqlutils.MakeSQLRunner(sqlDB)
 
 		if useDeclarativeSchemaChanger {
@@ -54,8 +54,10 @@ func TestUWIConstraintReferencingTypes(t *testing.T) {
 		tdb.Exec(t, "ALTER TABLE t ADD UNIQUE WITHOUT INDEX (j) WHERE (j::typ != 'a');")
 
 		// Ensure that `typ` has a back-reference to table `t`.
-		tableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, s.Codec(), "defaultdb", "t")
-		typDesc := desctestutils.TestingGetPublicTypeDescriptor(kvDB, s.Codec(), "defaultdb", "typ")
+		tableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, keys.SystemSQLCodec,
+			"defaultdb", "t")
+		typDesc := desctestutils.TestingGetPublicTypeDescriptor(kvDB, keys.SystemSQLCodec,
+			"defaultdb", "typ")
 		require.Equal(t, 1, typDesc.NumReferencingDescriptors())
 		require.Equal(t, tableDesc.GetID(), typDesc.GetReferencingDescriptorID(0))
 
@@ -64,7 +66,8 @@ func TestUWIConstraintReferencingTypes(t *testing.T) {
 
 		// Ensure that dropping the constraint removes the back-reference from `typ`.
 		tdb.Exec(t, "ALTER TABLE t DROP CONSTRAINT unique_j")
-		typDesc = desctestutils.TestingGetPublicTypeDescriptor(kvDB, s.Codec(), "defaultdb", "typ")
+		typDesc = desctestutils.TestingGetPublicTypeDescriptor(kvDB, keys.SystemSQLCodec,
+			"defaultdb", "typ")
 		require.Zero(t, typDesc.NumReferencingDescriptors())
 
 		// Ensure that now we can succeed dropping `typ`.

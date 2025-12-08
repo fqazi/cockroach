@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/rangedesc"
@@ -315,7 +314,6 @@ func (s *systemStatusServer) statsForSpan(
 				stats, err := storage.ComputeStats(
 					ctx,
 					s.TODOEngine(),
-					fs.UnknownReadCategory,
 					scanStart.AsRawKey(),
 					scanEnd.AsRawKey(),
 					timeutil.Now().UnixNano(),

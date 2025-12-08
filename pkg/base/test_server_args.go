@@ -258,21 +258,6 @@ const (
 	TestDRPCEnabledRandomly
 )
 
-func (d DefaultTestDRPCOption) String() string {
-	switch d {
-	case TestDRPCUnset:
-		return "unset"
-	case TestDRPCDisabled:
-		return "disabled"
-	case TestDRPCEnabled:
-		return "enabled"
-	case TestDRPCEnabledRandomly:
-		return "enabled-randomly"
-	default:
-		panic("unreachable")
-	}
-}
-
 // TestClusterArgs contains the parameters one can set when creating a test
 // cluster. It contains a TestServerArgs instance which will be copied over to
 // every server.
@@ -333,8 +318,7 @@ type DefaultTestTenantOptions struct {
 	// warn".
 	noWarnImplicitInterfaces bool
 
-	// If test tenant is disabled, issue and label to link in log message. These
-	// can be left unset if one of the tenant modes is explicitly skipped.
+	// If test tenant is disabled, issue and label to link in log message.
 	issueNum int
 	label    string
 }
@@ -386,6 +370,11 @@ var (
 	// unless there is a good reason to do so. We want the common case
 	// to use TestTenantProbabilistic or TestTenantProbabilisticOnly.
 	SharedTestTenantAlwaysEnabled = DefaultTestTenantOptions{testBehavior: ttEnabled | ttSharedProcess, allowAdditionalTenants: true}
+
+	// TODOTestTenantDisabled should not be used anymore. Use the
+	// other values instead.
+	// TODO(#76378): Review existing tests and use the proper value instead.
+	TODOTestTenantDisabled = DefaultTestTenantOptions{testBehavior: ttDisabled, allowAdditionalTenants: true}
 
 	// TestRequiresExplicitSQLConnection is used when the test is unable to pass
 	// the cluster as an option in the connection URL. The test could still
@@ -622,7 +611,9 @@ func InternalNonDefaultDecision(
 // with no special attributes.
 var DefaultTestStoreSpec = storageconfig.Store{
 	InMemory: true,
-	Size:     storageconfig.BytesSize(512 << 20),
+	Size: storageconfig.Size{
+		Bytes: 512 << 20,
+	},
 }
 
 // DefaultTestTempStorageConfig is the associated temp storage for

@@ -30,7 +30,7 @@ func TestMain(m *testing.M) {
 	)()
 
 	defer serverutils.TestingGlobalDRPCOption(
-		base.TestDRPCDisabled,
+		base.TestDRPCEnabledRandomly,
 	)()
 
 	os.Exit(m.Run())

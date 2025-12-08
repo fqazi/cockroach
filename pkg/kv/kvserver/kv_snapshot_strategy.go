@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
@@ -408,7 +407,7 @@ func (kvSS *kvBatchSnapshotStrategy) Send(
 		}
 		return err
 	}
-	if err := rditer.IterateReplicaKeySpans(ctx, snap.State.Desc, snap.StateSnap, fs.RangeSnapshotReadCategory, rditer.SelectOpts{
+	if err := rditer.IterateReplicaKeySpans(ctx, snap.State.Desc, snap.EngineSnap, rditer.SelectOpts{
 		Ranged: rditer.SelectRangedOptions{
 			SystemKeys: true,
 			LockTable:  true,
@@ -477,7 +476,7 @@ func (kvSS *kvBatchSnapshotStrategy) Send(
 			}
 		}
 		kvsBefore := kvs
-		err := rditer.IterateReplicaKeySpansShared(ctx, snap.State.Desc, kvSS.st, kvSS.clusterID, snap.StateSnap, func(key *pebble.InternalKey, value pebble.LazyValue, _ pebble.IteratorLevel) error {
+		err := rditer.IterateReplicaKeySpansShared(ctx, snap.State.Desc, kvSS.st, kvSS.clusterID, snap.EngineSnap, func(key *pebble.InternalKey, value pebble.LazyValue, _ pebble.IteratorLevel) error {
 			kvs++
 			if b == nil {
 				b = kvSS.newWriteBatch()
@@ -540,7 +539,7 @@ func (kvSS *kvBatchSnapshotStrategy) Send(
 			//
 			// See: https://github.com/cockroachdb/cockroach/issues/142673
 			transitionFromSharedToRegularReplicate = true
-			err = rditer.IterateReplicaKeySpans(ctx, snap.State.Desc, snap.StateSnap, fs.RangeSnapshotReadCategory, rditer.SelectOpts{
+			err = rditer.IterateReplicaKeySpans(ctx, snap.State.Desc, snap.EngineSnap, rditer.SelectOpts{
 				Ranged: rditer.SelectRangedOptions{
 					UserKeys: true,
 				},

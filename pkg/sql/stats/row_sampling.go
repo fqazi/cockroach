@@ -135,7 +135,9 @@ func (sr *SampleReservoir) MaybeResize(ctx context.Context, k int) bool {
 	heap.Init(sr)
 	for len(sr.samples) > k {
 		samp := heap.Pop(sr).(SampledRow)
-		sr.memAcc.Shrink(ctx, int64(samp.Row.Size()))
+		if sr.memAcc != nil {
+			sr.memAcc.Shrink(ctx, int64(samp.Row.Size()))
+		}
 	}
 	// Copy to a new array to allow garbage collection.
 	samples := make([]SampledRow, len(sr.samples), k)
@@ -173,8 +175,10 @@ func (sr *SampleReservoir) SampleRow(
 
 			// Perform memory accounting for the allocated EncDatumRow. We will
 			// account for the additional memory used after copying inside copyRow.
-			if err := sr.memAcc.Grow(ctx, int64(rowCopy.Size())); err != nil {
-				return err
+			if sr.memAcc != nil {
+				if err := sr.memAcc.Grow(ctx, int64(rowCopy.Size())); err != nil {
+					return err
+				}
 			}
 			if err := sr.copyRow(ctx, evalCtx, rowCopy, row); err != nil {
 				return err
@@ -212,8 +216,10 @@ func (sr *SampleReservoir) GetNonNullDatums(
 ) (values tree.Datums, err error) {
 	err = sr.retryMaybeResize(ctx, func() error {
 		// Account for the memory we'll use copying the samples into values.
-		if err := memAcc.Grow(ctx, memsize.DatumOverhead*int64(len(sr.samples))); err != nil {
-			return err
+		if memAcc != nil {
+			if err := memAcc.Grow(ctx, memsize.DatumOverhead*int64(len(sr.samples))); err != nil {
+				return err
+			}
 		}
 		values = make(tree.Datums, 0, len(sr.samples))
 		for _, sample := range sr.samples {
@@ -262,11 +268,7 @@ func (sr *SampleReservoir) copyRow(
 			return err
 		}
 		beforeRowSize += int64(dst[i].Size())
-		var err error
-		sr.scratch[i], err = rowenc.DatumToEncDatum(sr.colTypes[i], src[i].Datum)
-		if err != nil {
-			return err
-		}
+		sr.scratch[i] = rowenc.DatumToEncDatum(sr.colTypes[i], src[i].Datum)
 		afterSize := sr.scratch[i].Size()
 
 		// If the datum is too large, truncate it.
@@ -278,8 +280,10 @@ func (sr *SampleReservoir) copyRow(
 	}
 	// Now that we know the exact row sizes we're dealing with, we perform the
 	// memory accounting.
-	if err := sr.memAcc.Resize(ctx, beforeRowSize, afterRowSize); err != nil {
-		return err
+	if sr.memAcc != nil {
+		if err := sr.memAcc.Resize(ctx, beforeRowSize, afterRowSize); err != nil {
+			return err
+		}
 	}
 	// The memory reservation, if needed, was approved, so we're ok to keep the
 	// row.

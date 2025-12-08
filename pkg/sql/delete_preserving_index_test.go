@@ -57,8 +57,7 @@ import (
 func TestDeletePreservingIndexEncoding(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	mergeFinished := make(chan struct{})
 	completeSchemaChange := make(chan struct{})
 	errorChan := make(chan error, 1)
@@ -247,7 +246,8 @@ func TestDeletePreservingIndexEncodingUsesNormalDeletesInDeleteOnly(t *testing.T
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	server, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	server, sqlDB, kvDB := serverutils.StartServer(t, params)
 	defer server.Stopper().Stop(context.Background())
 
 	// The descriptor changes made must have an immediate effect
@@ -311,7 +311,8 @@ func TestDeletePreservingIndexEncodingWithEmptyValues(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	server, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	server, sqlDB, kvDB := serverutils.StartServer(t, params)
 	defer server.Stopper().Stop(context.Background())
 
 	// The descriptor changes made must have an immediate effect
@@ -514,6 +515,8 @@ func TestMergeProcessor(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 
+	params, _ := createTestServerParamsAllowTenants()
+
 	type TestCase struct {
 		name                   string
 		setupSQL               string
@@ -608,7 +611,7 @@ func TestMergeProcessor(t *testing.T) {
 	}
 
 	run := func(t *testing.T, test TestCase) {
-		server, tdb, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+		server, tdb, kvDB := serverutils.StartServer(t, params)
 		defer server.Stopper().Stop(context.Background())
 		defer lease.TestingDisableTableLeases()()
 

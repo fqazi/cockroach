@@ -37,11 +37,6 @@ import (
 // the session configuration, pass the necessary input in the
 // tenantIndependentClientParameters struct then add logic to
 // finalizeClientParameters() accordingly.
-//
-// The function also returns a list of unrecognized protocol options (parameters
-// starting with "_pq_."). These are reserved for protocol-level options and
-// should be reported back to the client via NegotiateProtocolVersion message
-// if the client requested a protocol version higher than what we support.
 func parseClientProvidedSessionParameters(
 	ctx context.Context,
 	buf *pgwirebase.ReadBuffer,
@@ -49,7 +44,7 @@ func parseClientProvidedSessionParameters(
 	trustClientProvidedRemoteAddr bool,
 	acceptTenantName bool,
 	acceptSystemIdentityOption bool,
-) (args tenantIndependentClientParameters, unrecognizedProtocolOptions []string, err error) {
+) (args tenantIndependentClientParameters, err error) {
 	args.SessionArgs = sql.SessionArgs{
 		SessionDefaults:             make(map[string]string),
 		CustomOptionSessionDefaults: make(map[string]string),
@@ -63,7 +58,7 @@ func parseClientProvidedSessionParameters(
 		// life of the message.
 		key, err := buf.GetSafeString()
 		if err != nil {
-			return args, nil, pgerror.Wrap(
+			return args, pgerror.Wrap(
 				err, pgcode.ProtocolViolation,
 				"error reading option key",
 			)
@@ -74,7 +69,7 @@ func parseClientProvidedSessionParameters(
 		}
 		value, err := buf.GetSafeString()
 		if err != nil {
-			return args, nil, pgerror.Wrapf(
+			return args, pgerror.Wrapf(
 				err, pgcode.ProtocolViolation,
 				"error reading option value for key %q", key,
 			)
@@ -82,15 +77,6 @@ func parseClientProvidedSessionParameters(
 
 		// Case-fold for the key for easier comparison.
 		key = strings.ToLower(key)
-
-		// Check for protocol-level options (parameters starting with "_pq_.").
-		// These are reserved for protocol extensions. Currently no such options
-		// are defined, so any _pq_.* parameter is unrecognized.
-		// See: https://www.postgresql.org/docs/current/protocol-overview.html
-		if strings.HasPrefix(key, "_pq_.") {
-			unrecognizedProtocolOptions = append(unrecognizedProtocolOptions, key)
-			continue
-		}
 
 		// Load the parameter.
 		switch key {
@@ -108,18 +94,18 @@ func parseClientProvidedSessionParameters(
 			// We chose to make the "replication" connection parameter to be
 			// represented by a session variable.
 			if err := loadParameter(ctx, key, value, &args.SessionArgs); err != nil {
-				return args, nil, pgerror.Wrapf(err, pgerror.GetPGCode(err), "replication parameter")
+				return args, pgerror.Wrapf(err, pgerror.GetPGCode(err), "replication parameter")
 			}
 			// Cache the value into session args.
 			args.ReplicationMode, err = sql.ReplicationModeFromString(args.SessionArgs.SessionDefaults["replication"])
 			if err != nil {
-				return args, nil, err
+				return args, err
 			}
 
 		case "crdb:session_revival_token_base64":
 			token, err := base64.StdEncoding.DecodeString(value)
 			if err != nil {
-				return args, nil, pgerror.Wrapf(
+				return args, pgerror.Wrapf(
 					err, pgcode.ProtocolViolation,
 					"%s", key,
 				)
@@ -128,39 +114,39 @@ func parseClientProvidedSessionParameters(
 
 		case "results_buffer_size":
 			if args.ConnResultsBufferSize, err = humanizeutil.ParseBytes(value); err != nil {
-				return args, nil, errors.WithSecondaryError(
+				return args, errors.WithSecondaryError(
 					pgerror.Newf(pgcode.ProtocolViolation,
 						"error parsing results_buffer_size option value '%s' as bytes", value), err)
 			}
 			if args.ConnResultsBufferSize < 0 {
-				return args, nil, pgerror.Newf(pgcode.ProtocolViolation,
+				return args, pgerror.Newf(pgcode.ProtocolViolation,
 					"results_buffer_size option value '%s' cannot be negative", value)
 			}
 			args.foundBufferSize = true
 
 		case "crdb:remote_addr":
 			if !trustClientProvidedRemoteAddr {
-				return args, nil, pgerror.Newf(pgcode.ProtocolViolation,
+				return args, pgerror.Newf(pgcode.ProtocolViolation,
 					"server not configured to accept remote address override (requested: %q)",
 					value)
 			}
 			hostS, portS, err := net.SplitHostPort(value)
 			if err != nil {
-				return args, nil, pgerror.Wrap(
+				return args, pgerror.Wrap(
 					err, pgcode.ProtocolViolation,
 					"invalid address format",
 				)
 			}
 			port, err := strconv.Atoi(portS)
 			if err != nil {
-				return args, nil, pgerror.Wrap(
+				return args, pgerror.Wrap(
 					err, pgcode.ProtocolViolation,
 					"remote port is not numeric",
 				)
 			}
 			ip := net.ParseIP(hostS)
 			if ip == nil {
-				return args, nil, pgerror.New(pgcode.ProtocolViolation,
+				return args, pgerror.New(pgcode.ProtocolViolation,
 					"remote address is not numeric")
 			}
 			args.RemoteAddr = &net.TCPAddr{IP: ip, Port: port}
@@ -168,7 +154,7 @@ func parseClientProvidedSessionParameters(
 		case "options":
 			opts, err := pgurl.ParseExtendedOptions(value)
 			if err != nil {
-				return args, nil, pgerror.WithCandidateCode(err, pgcode.ProtocolViolation)
+				return args, pgerror.WithCandidateCode(err, pgcode.ProtocolViolation)
 			}
 			for opt, values := range opts {
 				var optvalue string
@@ -181,14 +167,14 @@ func parseClientProvidedSessionParameters(
 				case "crdb:jwt_auth_enabled":
 					b, err := strconv.ParseBool(optvalue)
 					if err != nil {
-						return args, nil, pgerror.Wrapf(err, pgcode.InvalidParameterValue, "crdb:jwt_auth_enabled")
+						return args, pgerror.Wrapf(err, pgcode.InvalidParameterValue, "crdb:jwt_auth_enabled")
 					}
 					args.JWTAuthEnabled = b
 					continue
 
 				case "system_identity":
 					if !acceptSystemIdentityOption {
-						return args, nil, pgerror.Newf(pgcode.InvalidParameterValue,
+						return args, pgerror.Newf(pgcode.InvalidParameterValue,
 							"cannot specify system identity via options")
 					}
 					args.SystemIdentity = optvalue
@@ -196,7 +182,7 @@ func parseClientProvidedSessionParameters(
 
 				case "cluster":
 					if !acceptTenantName {
-						return args, nil, pgerror.Newf(pgcode.InvalidParameterValue,
+						return args, pgerror.Newf(pgcode.InvalidParameterValue,
 							"tenant selection is not available on this server")
 					}
 					// The syntax after '.' will be extended in later versions.
@@ -207,12 +193,12 @@ func parseClientProvidedSessionParameters(
 					continue
 				case "results_buffer_size":
 					if args.ConnResultsBufferSize, err = humanizeutil.ParseBytes(optvalue); err != nil {
-						return args, nil, errors.WithSecondaryError(
+						return args, errors.WithSecondaryError(
 							pgerror.Newf(pgcode.ProtocolViolation,
 								"error parsing results_buffer_size option value '%s' as bytes", optvalue), err)
 					}
 					if args.ConnResultsBufferSize < 0 {
-						return args, nil, pgerror.Newf(pgcode.ProtocolViolation,
+						return args, pgerror.Newf(pgcode.ProtocolViolation,
 							"results_buffer_size option value '%s' cannot be negative", value)
 					}
 					args.foundBufferSize = true
@@ -220,13 +206,13 @@ func parseClientProvidedSessionParameters(
 				}
 				err = loadParameter(ctx, opt, optvalue, &args.SessionArgs)
 				if err != nil {
-					return args, nil, pgerror.Wrapf(err, pgerror.GetPGCode(err), "options")
+					return args, pgerror.Wrapf(err, pgerror.GetPGCode(err), "options")
 				}
 			}
 		default:
 			err = loadParameter(ctx, key, value, &args.SessionArgs)
 			if err != nil {
-				return args, nil, err
+				return args, err
 			}
 		}
 	}
@@ -264,7 +250,7 @@ func parseClientProvidedSessionParameters(
 			telemetry.Inc(sqltelemetry.CockroachShellCounter)
 		}
 	}
-	return args, unrecognizedProtocolOptions, nil
+	return args, nil
 }
 
 // tenantSelectionRe is the regular expression applied to the start of the

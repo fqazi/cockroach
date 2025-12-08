@@ -188,7 +188,6 @@ func pushReplicateChange(
 		if as != nil {
 			// as may be nil in some tests.
 			changeID = as.NonMMAPreTransferLease(
-				ctx,
 				repl.Desc(),
 				repl.RangeUsageInfo(),
 				op.Source,
@@ -205,7 +204,6 @@ func pushReplicateChange(
 		if as != nil {
 			// as may be nil in some tests.
 			changeID = as.NonMMAPreChangeReplicas(
-				ctx,
 				repl.Desc(),
 				repl.RangeUsageInfo(),
 				op.Chgs,

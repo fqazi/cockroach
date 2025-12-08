@@ -13,7 +13,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/storage/pebbleiter"
 	"github.com/cockroachdb/cockroach/pkg/util"
@@ -22,7 +21,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/cockroachkvs"
-	"github.com/cockroachdb/pebble/objstorage"
+	"github.com/cockroachdb/pebble/sstable"
 )
 
 // pebbleIterator is a wrapper around a pebble.Iterator that implements the
@@ -127,7 +126,7 @@ func newPebbleIteratorByCloning(
 
 // newPebbleSSTIterator creates a new Pebble iterator for the given SSTs.
 func newPebbleSSTIterator(
-	files [][]objstorage.ReadableFile, opts IterOptions,
+	files [][]sstable.ReadableFile, opts IterOptions,
 ) (*pebbleIterator, error) {
 	p := pebbleIterPool.Get().(*pebbleIterator)
 	p.reusable = false // defensive
@@ -187,6 +186,7 @@ func (p *pebbleIterator) initReuseOrCreate(
 
 	p.init(ctx, nil, opts, durability, statsReporter)
 	if iter == nil {
+		// TODO(sumeer): fix after bumping to latest Pebble.
 		innerIter, err := handle.NewIterWithContext(ctx, &p.options)
 		if err != nil {
 			return err
@@ -222,9 +222,12 @@ func (p *pebbleIterator) setOptions(
 	}
 
 	// Generate new Pebble iterator options.
-	p.options = makeIterOptions(opts.ReadCategory, durability)
-	p.options.KeyTypes = opts.KeyTypes
-	p.options.UseL6Filters = opts.useL6Filters
+	p.options = pebble.IterOptions{
+		OnlyReadGuaranteedDurable: durability == GuaranteedDurability,
+		KeyTypes:                  opts.KeyTypes,
+		UseL6Filters:              opts.useL6Filters,
+		Category:                  opts.ReadCategory.PebbleCategory(),
+	}
 	p.prefix = opts.Prefix
 
 	if opts.LowerBound != nil {
@@ -1039,21 +1042,4 @@ func (p *pebbleIterator) assertMVCCInvariants() error {
 	}
 
 	return nil
-}
-
-// We avoid tracking iterators with read categories that indicate very hot
-// paths.
-const exemptFromTracking = (uint32(1) << fs.BatchEvalReadCategory) |
-	(uint32(1) << fs.ScanRegularBatchEvalReadCategory) |
-	(uint32(1) << fs.IntentResolutionReadCategory) |
-	(uint32(1) << fs.AbortSpanReadCategory)
-
-func makeIterOptions(
-	readCategory fs.ReadCategory, durability DurabilityRequirement,
-) pebble.IterOptions {
-	return pebble.IterOptions{
-		OnlyReadGuaranteedDurable: durability == GuaranteedDurability,
-		Category:                  readCategory.PebbleCategory(),
-		ExemptFromTracking:        (exemptFromTracking>>readCategory)&1 == 1,
-	}
 }

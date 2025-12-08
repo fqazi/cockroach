@@ -8,7 +8,6 @@ package changefeedccl
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvevent"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvfeed"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/resolvedspan"
@@ -87,10 +86,6 @@ type TestingKnobs struct {
 	// when the changefeed is planned.
 	SpanPartitionsCallback func([]sql.SpanPartition)
 
-	// RangeDistributionStrategyCallback is called with the resolved
-	// range distribution strategy when the changefeed is planned.
-	RangeDistributionStrategyCallback func(changefeedbase.ChangefeedRangeDistributionStrategy)
-
 	// PreserveDeprecatedPts is used to prevent a changefeed from upgrading
 	// its PTS record from the deprecated style to the new style.
 	PreserveDeprecatedPts func() bool
@@ -128,11 +123,6 @@ type TestingKnobs struct {
 	// MakeKVFeedToAggregatorBufferKnobs is used to make a fresh set of testing knobs
 	// to pass to the constructor of the kv feed to change aggregator buffer.
 	MakeKVFeedToAggregatorBufferKnobs func() kvevent.BlockingBufferTestingKnobs
-
-	// AfterComputeDistChangefeedTimestamps is called when a changefeed is starting, after
-	// the initial timestamps are computed and before the changefeed targets'
-	// descriptors are fetched.
-	AfterComputeDistChangefeedTimestamps func(context.Context)
 }
 
 // ModuleTestingKnobs is part of the base.ModuleTestingKnobs interface.

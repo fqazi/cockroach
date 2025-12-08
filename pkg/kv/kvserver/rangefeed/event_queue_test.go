@@ -50,90 +50,45 @@ func TestEventQueue(t *testing.T) {
 		}
 	}
 
-	t.Run("add and remove", func(t *testing.T) {
+	t.Run("basic operation: add one event and remove it", func(t *testing.T) {
 		q := newEventQueue()
 		defer q.free()
 
 		require.True(t, q.empty())
 		q.pushBack(sharedMuxEvent{})
 		require.False(t, q.empty())
-		dest := make([]sharedMuxEvent, 0, 4)
-		dest = q.popFrontInto(dest[:0], 1)
-		require.Equal(t, 1, len(dest))
+		_, ok := q.popFront()
+		require.True(t, ok)
 		require.True(t, q.empty())
-	})
-
-	t.Run("empty queue", func(t *testing.T) {
-		q := newEventQueue()
-		defer q.free()
-		dest := make([]sharedMuxEvent, 0, 1)
-		require.Equal(t, 0, len(q.popFrontInto(dest, 4)))
-	})
-
-	t.Run("multiple events", func(t *testing.T) {
-		q := newEventQueue()
-		defer q.free()
-		dest := make([]sharedMuxEvent, 0, 4)
-		q.pushBack(sharedMuxEvent{})
-		q.pushBack(sharedMuxEvent{})
-		q.pushBack(sharedMuxEvent{})
-		q.pushBack(sharedMuxEvent{})
-		q.pushBack(sharedMuxEvent{})
-		require.Equal(t, int64(5), q.len())
-		require.Equal(t, 4, len(q.popFrontInto(dest[:0], 4)))
-		require.Equal(t, int64(1), q.len())
-		require.Equal(t, 1, len(q.popFrontInto(dest[:0], 4)))
-		require.Equal(t, int64(0), q.len())
-	})
-
-	t.Run("pops up to page boundary", func(t *testing.T) {
-		q := newEventQueue()
-		defer q.free()
-		bufSize := eventQueueChunkSize + 100
-		dest := make([]sharedMuxEvent, 0, bufSize)
-		// Push 2 pages of events
-		for range eventQueueChunkSize * 2 {
-			q.pushBack(sharedMuxEvent{})
-		}
-
-		require.Equal(t, int64(eventQueueChunkSize*2), q.len())
-		require.Equal(t, eventQueueChunkSize, len(q.popFrontInto(dest[:0], bufSize)))
-		require.Equal(t, int64(eventQueueChunkSize), q.len())
-		require.Equal(t, eventQueueChunkSize, len(q.popFrontInto(dest[:0], bufSize)))
-		require.Equal(t, int64(0), q.len())
 	})
 
 	t.Run("repeatedly popping empty queue should be fine", func(t *testing.T) {
 		q := newEventQueue()
 		defer q.free()
-		dest := make([]sharedMuxEvent, 0, 4)
-
-		dest = q.popFrontInto(dest[:0], 4)
-		require.Equal(t, 0, len(dest))
-		dest = q.popFrontInto(dest[:0], 4)
-		require.Equal(t, 0, len(dest))
+		_, ok := q.popFront()
+		require.False(t, ok)
+		_, ok = q.popFront()
+		require.False(t, ok)
 		require.True(t, q.empty())
 	})
 
 	t.Run("fill and empty queue", func(t *testing.T) {
 		q := newEventQueue()
-		eventCount := 4 * 2500
+		eventCount := 10000
 		pushEmptyEvents(t, q, eventCount)
 		require.Equal(t, int64(eventCount), q.len())
-		dest := make([]sharedMuxEvent, 0, 4)
-
 		for eventCount != 0 {
 			require.False(t, q.empty())
 			checkInvariants(t, q)
-			dest = q.popFrontInto(dest[:0], 4)
-			require.Equal(t, 4, len(dest))
-			eventCount = eventCount - 4
+			_, ok := q.popFront()
+			require.True(t, ok)
+			eventCount--
 		}
 		require.Equal(t, int64(0), q.len())
 		require.True(t, q.empty())
 		checkInvariants(t, q)
-		dest = q.popFrontInto(dest[:0], 4)
-		require.Equal(t, 0, len(dest))
+		_, ok := q.popFront()
+		require.False(t, ok)
 	})
 
 	t.Run("free sets queue to nil", func(t *testing.T) {
@@ -151,8 +106,7 @@ func TestEventQueue(t *testing.T) {
 		q := newEventQueue()
 		var lastPop int64 = -1
 		var lastPush int64 = -1
-		eventCount := 4 * 2500
-		dest := make([]sharedMuxEvent, 0, 4)
+		eventCount := 10000
 		for eventCount > 0 {
 			op := rng.Intn(5)
 			if op < 3 {
@@ -164,16 +118,14 @@ func TestEventQueue(t *testing.T) {
 				})
 				lastPush++
 			} else {
-				dest = q.popFrontInto(dest[:0], 4)
-				if len(dest) == 0 {
+				e, ok := q.popFront()
+				if !ok {
 					require.Equal(t, lastPop, lastPush)
 					require.True(t, q.empty())
 				} else {
-					for _, e := range dest {
-						require.Equal(t, lastPop+1, e.ev.StreamID)
-						lastPop++
-						eventCount--
-					}
+					require.Equal(t, lastPop+1, e.ev.StreamID)
+					lastPop++
+					eventCount--
 				}
 			}
 		}
@@ -210,8 +162,6 @@ func TestEventQueue(t *testing.T) {
 func BenchmarkEventQueue(b *testing.B) {
 	b.ReportAllocs()
 	events := eventQueueChunkSize * 2
-	bufSize := 64
-	dest := make([]sharedMuxEvent, 0, bufSize)
 	b.Run(fmt.Sprintf("pushBack/events=%d", events), func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			q := newEventQueue()
@@ -222,7 +172,7 @@ func BenchmarkEventQueue(b *testing.B) {
 		}
 	})
 
-	b.Run(fmt.Sprintf("popFrontInto/events=%d/bufSize=%d", events, bufSize), func(b *testing.B) {
+	b.Run(fmt.Sprintf("popFront/events=%d", events), func(b *testing.B) {
 		q := newEventQueue()
 		defer q.free()
 		for i := 0; i < b.N; i++ {
@@ -233,10 +183,11 @@ func BenchmarkEventQueue(b *testing.B) {
 			b.StartTimer()
 
 			for {
-				dest = q.popFrontInto(dest[:0], bufSize)
-				if len(dest) == 0 {
+				_, ok := q.popFront()
+				if !ok {
 					break
 				}
+
 			}
 		}
 	})
@@ -249,18 +200,17 @@ func BenchmarkEventQueueChunkCreation(b *testing.B) {
 	evt := sharedMuxEvent{
 		ev: &kvpb.MuxRangeFeedEvent{},
 	}
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		bufSize := 64
-		dest := make([]sharedMuxEvent, 0, bufSize)
 		// Create 10 pages of events
 		for range eventQueueChunkSize * 10 {
 			q.pushBack(evt)
 		}
 		// Drain
 		for {
-			dest = q.popFrontInto(dest[:0], bufSize)
-			if len(dest) == 0 {
+			_, ok := q.popFront()
+			if !ok {
 				break
 			}
 		}
@@ -289,19 +239,19 @@ func (lq *lockedQueue) pushBack(e sharedMuxEvent) {
 	}
 }
 
-func (lq *lockedQueue) popFrontIntoInner(dest []sharedMuxEvent, maxToPop int) []sharedMuxEvent {
+func (lq *lockedQueue) pop() (sharedMuxEvent, bool) {
 	lq.Lock()
 	defer lq.Unlock()
-	return lq.q.popFrontInto(dest, maxToPop)
+	return lq.q.popFront()
 }
 
-func (lq *lockedQueue) popFrontInto(dest []sharedMuxEvent, maxToPop int) []sharedMuxEvent {
-	ret := lq.popFrontIntoInner(dest, maxToPop)
-	if len(ret) > 0 {
-		return ret
+func (lq *lockedQueue) popFront() (sharedMuxEvent, bool) {
+	e, ok := lq.pop()
+	if ok {
+		return e, ok
 	}
 	<-lq.notifyC
-	return lq.popFrontInto(dest, maxToPop)
+	return lq.pop()
 }
 
 // chanQueue is a queue implementation using simple channels for
@@ -315,26 +265,9 @@ func (c *chanQueue) pushBack(e sharedMuxEvent) {
 	c.c <- e
 }
 
-func (c *chanQueue) popFrontInto(dest []sharedMuxEvent, maxToPop int) []sharedMuxEvent {
+func (c *chanQueue) popFront() (sharedMuxEvent, bool) {
 	e, ok := <-c.c
-	if !ok {
-		return dest
-	}
-	popped := 1
-	dest = append(dest, e)
-	for popped < maxToPop {
-		select {
-		case e, ok := <-c.c:
-			if !ok {
-				return dest
-			}
-			dest = append(dest, e)
-			popped++
-		default:
-			return dest
-		}
-	}
-	return dest
+	return e, ok
 }
 
 // BenchmarkEventQueueMPSC tries to compare this queue to a simple
@@ -344,13 +277,12 @@ func BenchmarkEventQueueMPSC(b *testing.B) {
 	b.ReportAllocs()
 
 	type queue interface {
-		pushBack(sharedMuxEvent)
-		popFrontInto([]sharedMuxEvent, int) []sharedMuxEvent
+		pushBack(e sharedMuxEvent)
+		popFront() (sharedMuxEvent, bool)
 	}
 
 	eventsPerWorker := 10 * eventQueueChunkSize
 	producerCount := 10
-	bufSize := 64
 	runBench := func(b *testing.B, q queue) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
@@ -358,11 +290,10 @@ func BenchmarkEventQueueMPSC(b *testing.B) {
 			g.GoCtx(func(ctx context.Context) error {
 				expectedEventCount := eventsPerWorker * producerCount
 				eventCount := 0
-				dest := make([]sharedMuxEvent, 0, bufSize)
 				for {
-					dest = q.popFrontInto(dest[:0], bufSize)
-					if len(dest) > 0 {
-						eventCount += len(dest)
+					_, t := q.popFront()
+					if t {
+						eventCount++
 					}
 					if eventCount >= expectedEventCount {
 						return nil

@@ -8,6 +8,7 @@ package kvserver
 import (
 	"context"
 	"reflect"
+	"runtime/pprof"
 	"runtime/trace"
 	"time"
 
@@ -29,7 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/grunning"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/pprofutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
@@ -131,13 +131,16 @@ func (r *Replica) SendWithWriteBytes(
 	defer r.MeasureReqCPUNanos(ctx, startCPU)
 
 	if r.store.cfg.Settings.CPUProfileType() == cluster.CPUProfileWithLabels {
-		var reset func()
+		defer pprof.SetGoroutineLabels(ctx)
+		// Note: the defer statement captured the previous context.
+		var lbls pprof.LabelSet
 		if tenantIDOrZero.IsSet() {
-			ctx, reset = pprofutil.SetProfilerLabels(ctx, "range_str", r.rangeStr.ID(), "tenant_id", tenantIDOrZero.String())
+			lbls = pprof.Labels("range_str", r.rangeStr.ID(), "tenant_id", tenantIDOrZero.String())
 		} else {
-			ctx, reset = pprofutil.SetProfilerLabels(ctx, "range_str", r.rangeStr.ID())
+			lbls = pprof.Labels("range_str", r.rangeStr.ID())
 		}
-		defer reset()
+		ctx = pprof.WithLabels(ctx, lbls)
+		pprof.SetGoroutineLabels(ctx)
 	}
 	if trace.IsEnabled() {
 		defer trace.StartRegion(ctx, r.rangeStr.String() /* cheap */).End()
@@ -203,10 +206,6 @@ func (r *Replica) SendWithWriteBytes(
 		}
 	}
 
-	cpuTime := grunning.Difference(startCPU, grunning.Time())
-	if br != nil {
-		br.CPUTime = int64(cpuTime)
-	}
 	if pErr == nil {
 		// Return range information if it was requested. Note that we don't return it
 		// on errors because the code doesn't currently support returning both a br
@@ -214,7 +213,7 @@ func (r *Replica) SendWithWriteBytes(
 		// ways of returning range info.
 		r.maybeAddRangeInfoToResponse(ctx, ba, br)
 		// Handle load-based splitting, if necessary.
-		r.recordBatchForLoadBasedSplitting(ctx, ba, br, int(cpuTime))
+		r.recordBatchForLoadBasedSplitting(ctx, ba, br, int(grunning.Difference(startCPU, grunning.Time())))
 	}
 
 	// Record summary throughput information about the batch request for

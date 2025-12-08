@@ -1166,7 +1166,7 @@ func (c *copyMachine) insertRows(ctx context.Context, finalBatch bool) error {
 			// for the next batch.
 			return c.doneWithRows(ctx)
 		} else {
-			if ErrIsRetryable(err) {
+			if errIsRetryable(err) {
 				log.SqlExec.Infof(ctx, "%s failed on attempt %d and with retryable error %+v", c.copyFromAST.String(), r.CurrentAttempt(), err)
 				// It is currently only safe to retry if we are not in atomic copy
 				// mode & we are in an implicit transaction.

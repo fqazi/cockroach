@@ -705,8 +705,7 @@ func TestBatchResponseCombine(t *testing.T) {
 		)
 		brTxn := &BatchResponse{
 			BatchResponse_Header: BatchResponse_Header{
-				Txn:     &txn,
-				CPUTime: 123,
+				Txn: &txn,
 			},
 		}
 		if err := br.Combine(context.Background(), brTxn, nil, &BatchRequest{}); err != nil {
@@ -714,9 +713,6 @@ func TestBatchResponseCombine(t *testing.T) {
 		}
 		if br.Txn.Name != "test" {
 			t.Fatal("Combine() did not update the header")
-		}
-		if br.CPUTime != 123 {
-			t.Fatalf("Combine() did not accumulate CPUTime: expected 123, got %d", br.CPUTime)
 		}
 	}
 

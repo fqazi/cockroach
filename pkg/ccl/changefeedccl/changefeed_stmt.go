@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/backup/backupresolver"
+	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdceval"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdcprogresspb"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
@@ -47,7 +48,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/asof"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
@@ -67,7 +67,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
-	pbtypes "github.com/gogo/protobuf/types"
 )
 
 // featureChangefeedEnabled is used to enable and disable the CHANGEFEED feature.
@@ -194,6 +193,13 @@ func changefeedPlanHook(
 	if changefeedStmt == nil {
 		return nil, nil, false, nil
 	}
+	if changefeedStmt.Level != tree.ChangefeedLevelTable {
+		return nil, nil, false,
+			errors.UnimplementedError(
+				errors.IssueLink{IssueURL: build.MakeIssueURL(154053)},
+				"database-level changefeed is not implemented yet",
+			)
+	}
 
 	exprEval := p.ExprEvaluator("CREATE CHANGEFEED")
 	var sinkURI string
@@ -230,18 +236,9 @@ func changefeedPlanHook(
 		return nil, nil, false, err
 	}
 
+	// Treat all tables inside a database as if "split_column_families" is set.
 	if changefeedStmt.Level == tree.ChangefeedLevelDatabase {
-		// Treat all tables inside a database as if "split_column_families" is set.
 		rawOpts[changefeedbase.OptSplitColumnFamilies] = `yes`
-
-		// The default behavior for a database-level changefeed is
-		// NOT to perform an initial scan, unlike table-level changefeeds.
-		_, initialScanSet := rawOpts[changefeedbase.OptInitialScan]
-		_, initialScanOnlySet := rawOpts[changefeedbase.OptInitialScanOnly]
-		_, noInitialScanSet := rawOpts[changefeedbase.OptNoInitialScan]
-		if !initialScanOnlySet && !noInitialScanSet && !initialScanSet {
-			rawOpts[changefeedbase.OptInitialScan] = `no`
-		}
 	}
 	opts := changefeedbase.MakeStatementOptions(rawOpts)
 
@@ -336,9 +333,6 @@ func changefeedPlanHook(
 			// perTablePTSRecords is the per-table protected timestamp records which exist when
 			// per-table protected timestamps are enabled.
 			var perTablePTSRecords []*ptpb.Record
-			// systemTablesPTSRecord is the system tables protected timestamp record which exists when
-			// per-table protected timestamps are enabled.
-			var systemTablesPTSRecord *ptpb.Record
 			// ptsRecords is the protected timestamp records object containing all per-table protected
 			// timestamp records. Its format matches what will be persisted to the job info table.
 			var ptsRecords *cdcprogresspb.ProtectedTimestampRecords
@@ -346,16 +340,15 @@ func changefeedPlanHook(
 
 			// We do not yet have the progress config here, so we need to check the settings directly.
 			perTableTrackingEnabled := changefeedbase.TrackPerTableProgress.Get(&p.ExecCfg().Settings.SV)
-			perTableProtectedTimestampsEnabled := changefeedbase.PerTableProtectedTimestamps.Get(&p.ExecCfg().Settings.SV)
+			// In 25.4 we are hard disabling per table protected timestamps.
+			perTableProtectedTimestampsEnabled := false
 			usingPerTablePTS := perTableTrackingEnabled && perTableProtectedTimestampsEnabled
 			if usingPerTablePTS {
 				protectedTimestampRecords := make(map[descpb.ID]uuid.UUID)
 				if err := targets.EachTarget(func(target changefeedbase.Target) error {
-					// TODO(#155957): We are likely leaking PTS records here in
-					// the column families case.
 					ptsTargets := changefeedbase.Targets{}
 					ptsTargets.Add(target)
-					ptsRecord := createUserTablesProtectedTimestampRecord(
+					ptsRecord := createProtectedTimestampRecord(
 						ctx,
 						codec,
 						jobID,
@@ -369,18 +362,11 @@ func changefeedPlanHook(
 				}); err != nil {
 					return err
 				}
-				systemTablesPTSRecord = createSystemTablesProtectedTimestampRecord(
-					ctx,
-					codec,
-					jobID,
-					details.StatementTime,
-				)
 				ptsRecords = &cdcprogresspb.ProtectedTimestampRecords{
-					UserTables:   protectedTimestampRecords,
-					SystemTables: systemTablesPTSRecord.ID.GetUUID(),
+					ProtectedTimestampRecords: protectedTimestampRecords,
 				}
 			} else {
-				ptr = createCombinedProtectedTimestampRecord(
+				ptr = createProtectedTimestampRecord(
 					ctx,
 					codec,
 					jobID,
@@ -401,14 +387,11 @@ func changefeedPlanHook(
 					}
 				}
 				if usingPerTablePTS {
-					pts := p.ExecCfg().ProtectedTimestampProvider.WithTxn(p.InternalSQLTxn())
 					for _, perTableRecord := range perTablePTSRecords {
+						pts := p.ExecCfg().ProtectedTimestampProvider.WithTxn(p.InternalSQLTxn())
 						if err := pts.Protect(ctx, perTableRecord); err != nil {
 							return err
 						}
-					}
-					if err := pts.Protect(ctx, systemTablesPTSRecord); err != nil {
-						return err
 					}
 					if err := writeChangefeedJobInfo(
 						ctx, perTableProtectedTimestampsFilename, ptsRecords, p.InternalSQLTxn(), jobID,
@@ -452,9 +435,6 @@ func changefeedPlanHook(
 							return err
 						}
 					}
-					if err := pts.Protect(ctx, systemTablesPTSRecord); err != nil {
-						return err
-					}
 					if err := writeChangefeedJobInfo(
 						ctx, perTableProtectedTimestampsFilename, ptsRecords, txn, jobID,
 					); err != nil {
@@ -473,7 +453,7 @@ func changefeedPlanHook(
 				}
 				return err
 			}
-			recordPTSMetricsTime.End()
+			recordPTSMetricsTime()
 		}
 
 		// Start the job.
@@ -543,15 +523,7 @@ func coreChangefeed(
 			knobs.BeforeDistChangefeed()
 		}
 
-		initialHighWater, schemaTS, err := computeDistChangefeedTimestamps(ctx, p, details, localState)
-		if err != nil {
-			return err
-		}
-		maybeCfKnobs, haveKnobs := p.ExecCfg().DistSQLSrv.TestingKnobs.Changefeed.(*TestingKnobs)
-		if haveKnobs && maybeCfKnobs.AfterComputeDistChangefeedTimestamps != nil {
-			maybeCfKnobs.AfterComputeDistChangefeedTimestamps(ctx)
-		}
-		err = startDistChangefeed(ctx, p, 0 /* jobID */, schemaTS, details, description, initialHighWater, localState, resultsCh, nil, targets)
+		err := distChangefeedFlow(ctx, p, 0 /* jobID */, details, description, localState, resultsCh, nil, targets)
 		if err == nil {
 			log.Changefeed.Infof(ctx, "core changefeed completed with no error")
 			return nil
@@ -737,21 +709,11 @@ func createChangefeedJobRecord(
 		if len(targetDatabaseDescs) == 0 || len(targetDatabaseDescs) > 1 {
 			return nil, changefeedbase.Targets{}, errors.Errorf("changefeed only supports one database target")
 		}
-		targetDatabaseDesc := targetDatabaseDescs[0]
-		if targetDatabaseDesc.GetID() == keys.SystemDatabaseID {
+		if targetDatabaseDescs[0].GetID() == keys.SystemDatabaseID {
 			return nil, changefeedbase.Targets{}, errors.Errorf("changefeed cannot target the system database")
 		}
-		fqTableNames, err := getFullyQualifiedTableNames(
-			targetDatabaseDesc.GetName(), changefeedStmt.FilterOption.Tables,
-		)
-		if err != nil {
-			return nil, changefeedbase.Targets{}, err
-		}
-		changefeedStmt.FilterOption.Tables = fqTableNames
-
-		targetSpec := getDatabaseTargetSpec(targetDatabaseDesc, changefeedStmt.FilterOption)
 		details = jobspb.ChangefeedDetails{
-			TargetSpecifications: []jobspb.ChangefeedTargetSpecification{targetSpec},
+			TargetSpecifications: getDatabaseTargets(targetDatabaseDescs),
 			SinkURI:              sinkURI,
 			StatementTime:        statementTime,
 			EndTime:              endTime,
@@ -761,7 +723,7 @@ func createChangefeedJobRecord(
 		return nil, changefeedbase.Targets{}, errors.AssertionFailedf("unknown changefeed level: %s", changefeedStmt.Level)
 	}
 
-	targets, err := AllTargets(ctx, details, p.ExecCfg(), statementTime)
+	targets, err := AllTargets(ctx, details, p.ExecCfg())
 	if err != nil {
 		return nil, changefeedbase.Targets{}, err
 	}
@@ -1260,51 +1222,19 @@ func getTargetsAndTables(
 	return targets, tables, nil
 }
 
-func getDatabaseTargetSpec(
-	targetDatabaseDesc catalog.DatabaseDescriptor, filterOpt tree.ChangefeedFilterOption,
-) jobspb.ChangefeedTargetSpecification {
-	target := jobspb.ChangefeedTargetSpecification{
-		DescID:            targetDatabaseDesc.GetID(),
-		Type:              jobspb.ChangefeedTargetSpecification_DATABASE,
-		StatementTimeName: targetDatabaseDesc.GetName(),
-	}
-	filterTables := make(map[string]pbtypes.Empty)
-	for _, table := range filterOpt.Tables {
-		filterTables[table.FQString()] = pbtypes.Empty{}
-	}
-	target.FilterList = &jobspb.FilterList{
-		FilterType: filterOpt.FilterType,
-		Tables:     filterTables,
-	}
-	return target
-}
+func getDatabaseTargets(
+	targetDatabaseDescs []catalog.DatabaseDescriptor,
+) []jobspb.ChangefeedTargetSpecification {
+	targets := make([]jobspb.ChangefeedTargetSpecification, len(targetDatabaseDescs))
 
-func getFullyQualifiedTableNames(
-	targetDatabase string, tableNames tree.TableNames,
-) (tree.TableNames, error) {
-	var fqTableNames tree.TableNames
-
-	for _, tableName := range tableNames {
-		if tableName.SchemaName == "" {
-			// The table name is non-qualified e.g. foo. This will resolve to <targetDatabase>.public.foo.
-			tableName.SchemaName = catconstants.PublicSchemaName
-			tableName.CatalogName = tree.Name(targetDatabase)
-		} else if tableName.CatalogName == "" {
-			// The table name is partially qualified e.g. foo.bar. This will resolve to
-			// <targetDatabase>.foo.bar.
-			tableName.CatalogName = tree.Name(targetDatabase)
-		} else {
-			// Table name is fully qualfied e.g. foo.bar.fizz. This will resolve to
-			// foo.bar.fizz unless foo != <targetDatabase>, in which case it would fail.
-			if tableName.CatalogName != tree.Name(targetDatabase) {
-				return nil, errors.AssertionFailedf(
-					"table %q must be in target database %q", tableName.FQString(), targetDatabase,
-				)
-			}
+	for i, desc := range targetDatabaseDescs {
+		targets[i] = jobspb.ChangefeedTargetSpecification{
+			DescID:            desc.GetID(),
+			Type:              jobspb.ChangefeedTargetSpecification_DATABASE,
+			StatementTimeName: desc.GetName(),
 		}
-		fqTableNames = append(fqTableNames, tableName)
 	}
-	return fqTableNames, nil
+	return targets
 }
 
 func validateSink(
@@ -1470,16 +1400,6 @@ func validateDetailsAndOptions(
 ) error {
 	if err := opts.ValidateForCreateChangefeed(details.Select != ""); err != nil {
 		return err
-	}
-	if isDBLevelChangefeed(details) {
-		scanType, err := opts.GetInitialScanType()
-		if err != nil {
-			return err
-		}
-		if scanType == changefeedbase.OnlyInitialScan {
-			return errors.Errorf(
-				`cannot specify %s on a database level changefeed`, changefeedbase.OptInitialScanOnly)
-		}
 	}
 	if opts.HasEndTime() {
 		scanType, err := opts.GetInitialScanType()
@@ -1784,22 +1704,13 @@ func (b *changefeedResumer) resumeWithRetries(
 
 			confPoller := make(chan struct{})
 			g := ctxgroup.WithContext(ctx)
-			initialHighWater, schemaTS, err := computeDistChangefeedTimestamps(ctx, jobExec, details, localState)
-			if err != nil {
-				return err
-			}
-			maybeCfKnobs, haveKnobs := execCfg.DistSQLSrv.TestingKnobs.Changefeed.(*TestingKnobs)
-			if haveKnobs && maybeCfKnobs.AfterComputeDistChangefeedTimestamps != nil {
-				maybeCfKnobs.AfterComputeDistChangefeedTimestamps(ctx)
-			}
-			targets, err := AllTargets(ctx, details, execCfg, schemaTS)
+			targets, err := AllTargets(ctx, details, execCfg)
 			if err != nil {
 				return err
 			}
 			g.GoCtx(func(ctx context.Context) error {
 				defer close(confPoller)
-				return startDistChangefeed(ctx, jobExec, jobID, schemaTS, details, description,
-					initialHighWater, localState, startedCh, onTracingEvent, targets)
+				return distChangefeedFlow(ctx, jobExec, jobID, details, description, localState, startedCh, onTracingEvent, targets)
 			})
 			g.GoCtx(func(ctx context.Context) error {
 				t := time.NewTicker(15 * time.Second)
@@ -2020,9 +1931,6 @@ func (b *changefeedResumer) OnFailOrCancel(
 	}
 
 	maybeCleanUpProtectedTimestamp(progress.GetChangefeed().ProtectedTimestampRecord)
-	// We clean up the per-table protected timestamps (and their accompanying
-	// system tables protected timestamp record) in a transaction since we need
-	// to read from the job info.
 	if err := execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 		ptsEntries := cdcprogresspb.ProtectedTimestampRecords{}
 		if err := readChangefeedJobInfo(
@@ -2030,17 +1938,13 @@ func (b *changefeedResumer) OnFailOrCancel(
 		); err != nil {
 			return err
 		}
-		// In the event that the changefeed is not using per-table protected
-		// timestamps, the ptsEntries populated from the job info table
-		// (in the file perTableProtectedTimestampsFilename) will be empty.
-		// There is nothing to clean up, so we can safely return here.
-		if len(ptsEntries.UserTables) == 0 && ptsEntries.SystemTables == uuid.Nil {
+
+		if len(ptsEntries.ProtectedTimestampRecords) == 0 {
 			return nil
 		}
-		for _, record := range ptsEntries.UserTables {
+		for _, record := range ptsEntries.ProtectedTimestampRecords {
 			maybeCleanUpProtectedTimestamp(record)
 		}
-		maybeCleanUpProtectedTimestamp(ptsEntries.SystemTables)
 		return deleteChangefeedJobInfo(ctx, perTableProtectedTimestampsFilename, txn, b.job.ID())
 	}); err != nil {
 		return err
@@ -2048,12 +1952,7 @@ func (b *changefeedResumer) OnFailOrCancel(
 
 	var numTargets uint
 	if b.job != nil {
-		targetsTS := progress.GetHighWater()
-		if targetsTS == nil || targetsTS.IsEmpty() {
-			details := b.job.Details().(jobspb.ChangefeedDetails)
-			targetsTS = &details.StatementTime
-		}
-		targets, err := AllTargets(ctx, b.job.Details().(jobspb.ChangefeedDetails), execCfg, *targetsTS)
+		targets, err := AllTargets(ctx, b.job.Details().(jobspb.ChangefeedDetails), execCfg)
 		if err != nil {
 			return err
 		}
@@ -2140,14 +2039,6 @@ func getQualifiedTableNameObj(
 		tree.Name(desc.GetName()),
 	)
 	return tbName, nil
-}
-
-func isDBLevelChangefeed(details jobspb.ChangefeedDetails) bool {
-	targetSpecs := details.TargetSpecifications
-	if len(targetSpecs) == 0 {
-		return false
-	}
-	return targetSpecs[0].Type == jobspb.ChangefeedTargetSpecification_DATABASE
 }
 
 // getChangefeedTargetName gets a table name with or without the dots
@@ -2391,7 +2282,7 @@ func getChangefeedEventMigrator(migrateEvent bool) log.StructuredEventMigrator {
 		func() bool {
 			return migrateEvent
 		},
-		channel.TELEMETRY,
+		channel.CHANGEFEED,
 	)
 }
 

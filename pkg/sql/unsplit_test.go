@@ -26,7 +26,7 @@ func TestUnsplitAt(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	// TODO(jeffreyxiao): Disable the merge queue due to a race condition. The
 	// merge queue might issue an AdminMerge and before the actual merge happens,
 	// the LHS of the merge is manually split and is later merged even though a

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"container/list"
 	"context"
+	"runtime/pprof"
 	"sync/atomic"
 	"time"
 
@@ -23,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/pprofutil"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -639,9 +639,10 @@ func (q *Queue) MaybeWaitForPush(
 	)
 	var res *kvpb.PushTxnResponse
 	var err *kvpb.Error
-	pprofutil.Do(ctx, func(ctx context.Context) {
+	labels := pprof.Labels("pushee", req.PusheeTxn.ID.String(), "pusher", pusherStr)
+	pprof.Do(ctx, labels, func(ctx context.Context) {
 		res, err = q.waitForPush(ctx, req, push, pending)
-	}, "pushee", req.PusheeTxn.ID.String(), "pusher", pusherStr)
+	})
 	return res, err
 }
 

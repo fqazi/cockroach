@@ -241,7 +241,6 @@ func TestBackfillQueryWithProtectedTS(t *testing.T) {
 	var db *gosql.DB
 	var tableID uint32
 	s, db, _ = serverutils.StartServer(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(156127),
 		Knobs: base.TestingKnobs{
 			SQLEvalContext: &eval.TestingKnobs{
 				ForceProductionValues: true,

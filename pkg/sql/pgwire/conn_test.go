@@ -764,7 +764,7 @@ func getSessionArgs(
 			}
 		}()
 		ctx := context.Background()
-		cp, _, err := parseClientProvidedSessionParameters(ctx, &buf, netConn.RemoteAddr(), trustRemoteAddr,
+		cp, err := parseClientProvidedSessionParameters(ctx, &buf, netConn.RemoteAddr(), trustRemoteAddr,
 			false /* acceptTenantName */, false /* acceptSystemIdentityOption */)
 		if err != nil {
 			return netConn, sql.SessionArgs{}, err

@@ -57,14 +57,14 @@ import (
 type testSpec struct {
 	format roachpb.IOFileFormat
 	inputs map[int32]string
-	table  *execinfrapb.ReadImportDataSpec_ImportTable
+	tables map[string]*execinfrapb.ReadImportDataSpec_ImportTable
 }
 
 // Given test spec returns ReadImportDataSpec suitable creating input converter.
 func (spec *testSpec) getConverterSpec() *execinfrapb.ReadImportDataSpec {
 	return &execinfrapb.ReadImportDataSpec{
 		Format:            spec.format,
-		Table:             spec.table,
+		Tables:            spec.tables,
 		Uri:               spec.inputs,
 		ReaderParallelism: 1, // Make tests deterministic
 	}
@@ -326,12 +326,6 @@ func (fakeDB) Txn(
 }
 
 func (fakeDB) Executor(option ...isql.ExecutorOption) isql.Executor {
-	panic("unimplemented")
-}
-
-func (fakeDB) Session(
-	ctx context.Context, name string, options ...isql.ExecutorOption,
-) (isql.Session, error) {
 	panic("unimplemented")
 }
 
@@ -682,8 +676,11 @@ func TestCSVImportCanBeResumed(t *testing.T) {
 	defer TestingSetParallelImporterReaderBatchSize(batchSize)()
 	defer row.TestingSetDatumRowConverterBatchSize(2 * batchSize)()
 
-	srv, db, _ := serverutils.StartServer(t,
+	s, db, _ := serverutils.StartServer(t,
 		base.TestServerArgs{
+			// Hangs when run from a test tenant. More investigation is
+			// required here. Tracked with #76378.
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 			Knobs: base.TestingKnobs{
 				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 				DistSQL: &execinfra.TestingKnobs{
@@ -691,10 +688,9 @@ func TestCSVImportCanBeResumed(t *testing.T) {
 				},
 			},
 		})
-	ctx := context.Background()
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
 	registry := s.JobRegistry().(*jobs.Registry)
+	ctx := context.Background()
+	defer s.Stopper().Stop(ctx)
 
 	sqlDB := sqlutils.MakeSQLRunner(db)
 	setSmallIngestBufferSizes(t, sqlDB)
@@ -792,8 +788,11 @@ func TestCSVImportMarksFilesFullyProcessed(t *testing.T) {
 	defer TestingSetParallelImporterReaderBatchSize(batchSize)()
 	defer row.TestingSetDatumRowConverterBatchSize(2 * batchSize)()
 
-	srv, db, _ := serverutils.StartServer(t,
+	s, db, _ := serverutils.StartServer(t,
 		base.TestServerArgs{
+			// Test hangs when run within a test tenant. More investigation
+			// is required here. Tracked with #76378.
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 			Knobs: base.TestingKnobs{
 				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 				DistSQL: &execinfra.TestingKnobs{
@@ -801,10 +800,9 @@ func TestCSVImportMarksFilesFullyProcessed(t *testing.T) {
 				},
 			},
 		})
-	ctx := context.Background()
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
 	registry := s.JobRegistry().(*jobs.Registry)
+	ctx := context.Background()
+	defer s.Stopper().Stop(ctx)
 
 	sqlDB := sqlutils.MakeSQLRunner(db)
 	sqlDB.Exec(t, `CREATE DATABASE d`)
@@ -955,9 +953,8 @@ func newTestSpec(
 	}
 	assert.True(t, numCols > 0)
 
-	spec.table = &execinfrapb.ReadImportDataSpec_ImportTable{
-		Desc:       descr.TableDesc(),
-		TargetCols: targetCols[0:numCols],
+	spec.tables = map[string]*execinfrapb.ReadImportDataSpec_ImportTable{
+		"simple": {Desc: descr.TableDesc(), TargetCols: targetCols[0:numCols]},
 	}
 
 	for id, path := range inputs {

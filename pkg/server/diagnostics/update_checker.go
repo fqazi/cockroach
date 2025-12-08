@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -75,7 +74,6 @@ func (u *UpdateChecker) PeriodicallyCheckForUpdates(ctx context.Context, stopper
 		SpanOpt:  stop.SterileRootSpan,
 	}, func(ctx context.Context) {
 		defer logcrash.RecoverAndReportNonfatalPanic(ctx, &u.Settings.SV)
-		rng, _ := randutil.NewPseudoRand()
 		nextUpdateCheck := u.StartTime
 
 		var timer timeutil.Timer
@@ -86,7 +84,7 @@ func (u *UpdateChecker) PeriodicallyCheckForUpdates(ctx context.Context, stopper
 
 			nextUpdateCheck = u.maybeCheckForUpdates(ctx, now, nextUpdateCheck, runningTime)
 
-			timer.Reset(addJitter(nextUpdateCheck.Sub(timeutil.Now()), rng))
+			timer.Reset(addJitter(nextUpdateCheck.Sub(timeutil.Now())))
 			select {
 			case <-stopper.ShouldQuiesce():
 				return

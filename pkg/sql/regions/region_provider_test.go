@@ -206,11 +206,6 @@ func (f fakeLeaseManager) Acquire(
 	return ld, nil
 }
 
-func (f fakeLeaseManager) EnsureBatch(ctx context.Context, ids []descpb.ID) error {
-	// Nothing needs to be cached in memory for this implementation.
-	return nil
-}
-
 func (f fakeLeaseManager) IncGaugeAfterLeaseDuration(gauge lease.AfterLeaseDurationGauge) func() {
 	return func() {}
 }
@@ -223,9 +218,7 @@ func (f fakeLeaseManager) GetLeaseGeneration() int64 {
 	return 0
 }
 
-func (f fakeLeaseManager) GetReadTimestamp(
-	_ context.Context, timestamp hlc.Timestamp,
-) lease.ReadTimestamp {
+func (f fakeLeaseManager) GetReadTimestamp(timestamp hlc.Timestamp) lease.ReadTimestamp {
 	return lease.TimestampToReadTimestamp(timestamp)
 }
 

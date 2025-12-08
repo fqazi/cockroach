@@ -42,9 +42,8 @@ func TestDatabaseHasChildSchemas(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	s, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
 
 	// Create a database and schema.
 	if _, err := sqlDB.Exec(`
@@ -56,7 +55,7 @@ CREATE SCHEMA sc;
 	}
 
 	// Now get the database descriptor from disk.
-	db := desctestutils.TestingGetDatabaseDescriptor(kvDB, s.Codec(), "d")
+	db := desctestutils.TestingGetDatabaseDescriptor(kvDB, keys.SystemSQLCodec, "d")
 	if db.GetSchemaID("sc") == descpb.InvalidID {
 		t.Fatal("expected to find child schema sc in db")
 	}
@@ -66,7 +65,7 @@ CREATE SCHEMA sc;
 		t.Fatal(err)
 	}
 
-	db = desctestutils.TestingGetDatabaseDescriptor(kvDB, s.Codec(), "d")
+	db = desctestutils.TestingGetDatabaseDescriptor(kvDB, keys.SystemSQLCodec, "d")
 	if db.GetSchemaID("sc2") == descpb.InvalidID {
 		t.Fatal("expected to find child schema sc2 in db")
 	}

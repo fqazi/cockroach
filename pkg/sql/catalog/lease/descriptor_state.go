@@ -58,9 +58,6 @@ type descriptorState struct {
 		// acquisition finishes but indicate that that new lease is expired are not
 		// ignored.
 		acquisitionsInProgress int
-
-		// acquisitionChannel indicates that a bulk acquisition is in progress.
-		acquisitionChannel chan struct{}
 	}
 }
 
@@ -95,39 +92,18 @@ func (t *descriptorState) findForTimestamp(
 	if len(t.mu.active.data) == 0 {
 		return nil, false, errRenewLease
 	}
-	return t.findForTimestampImpl(ctx, timestamp.GetTimestamp(), timestamp.GetBaseTimestamp(), expensiveLogEnabled)
-}
 
-// findForTimestampImpl searches for a descriptor that is valid for both the lease
-// timestamp and read timestamp. If no such descriptor exists, then this function
-// will return a descriptor satisfying the read timestamp (when using locked leases
-// this means we will allow mixing versions on first reads).
-func (t *descriptorState) findForTimestampImpl(
-	ctx context.Context,
-	leaseTimestamp hlc.Timestamp,
-	readTimestamp hlc.Timestamp,
-	expensiveLogEnabled bool,
-) (*descriptorVersionState, bool, error) {
-	// Normally this is true if an older timestamp is intentionally used for
-	// locked leasing.
-	hasDifferentReadTimeStamp := leaseTimestamp != readTimestamp
 	// Walk back the versions to find one that is valid for the timestamp.
 	for i := len(t.mu.active.data) - 1; i >= 0; i-- {
 		// Check to see if the ModificationTime is valid. If only the initial version
 		// of the descriptor is known, then read it at the base timestamp.
-		if desc := t.mu.active.data[i]; desc.GetModificationTime().LessEq(leaseTimestamp) {
+		if desc := t.mu.active.data[i]; desc.GetModificationTime().LessEq(timestamp.GetTimestamp()) ||
+			(len(t.mu.active.data) == 1 && desc.GetModificationTime().LessEq(timestamp.GetBaseTimestamp())) {
 			latest := i+1 == len(t.mu.active.data)
-			if !desc.hasExpired(ctx, readTimestamp) {
+			if !desc.hasExpired(ctx, timestamp.GetBaseTimestamp()) {
 				// Existing valid descriptor version.
 				desc.incRefCount(ctx, expensiveLogEnabled)
 				return desc, latest, nil
-			} else if !latest && hasDifferentReadTimeStamp {
-				// The lease timestamp is not compatible with the read timestamp, since
-				// the descriptor returned will be expired. This means we are seeing the
-				// first read of this descriptor, since the prior version was not locked.
-				// In this scenario, we will allow this transaction to mix versions as a
-				// last resort.
-				return t.findForTimestampImpl(ctx, readTimestamp, readTimestamp, expensiveLogEnabled)
 			}
 
 			if latest {
@@ -137,16 +113,6 @@ func (t *descriptorState) findForTimestampImpl(
 			}
 			break
 		}
-	}
-
-	// If we have the initial version of the descriptor, and it satisfies the read
-	// timestamp, then the object was just created. We can confirm it satisfies
-	// the request by executing findForTimestampImpl with the readTimestamp instead.
-	if oldest := t.mu.active.findOldest(); hasDifferentReadTimeStamp &&
-		oldest != nil &&
-		oldest.GetVersion() == 1 &&
-		oldest.GetModificationTime().LessEq(readTimestamp) {
-		return t.findForTimestampImpl(ctx, readTimestamp, readTimestamp, expensiveLogEnabled)
 	}
 
 	return nil, false, errReadOlderVersion

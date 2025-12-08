@@ -29,8 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/settingswatcher"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -53,7 +51,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scop"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scplan"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlinstance/instancestorage"
@@ -1770,7 +1767,7 @@ func TestTableCreationPushesTxnsInRecentPast(t *testing.T) {
 		ServerArgs: base.TestServerArgs{
 			Knobs: base.TestingKnobs{
 				Store: &kvserver.StoreTestingKnobs{
-					MaxOffset: 2 * time.Second,
+					MaxOffset: time.Second,
 				},
 			},
 		},
@@ -1831,13 +1828,12 @@ func TestDeleteOrphanedLeasesBySession(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	srv, conn, _ := serverutils.StartServer(t, base.TestServerArgs{
+	s, conn, _ := serverutils.StartServer(t, base.TestServerArgs{
 		Locality: roachpb.Locality{
 			Tiers: []roachpb.Tier{{Key: "region", Value: "us-east1"}},
 		},
 	})
-	defer srv.Stop(ctx)
-	s := srv.ApplicationLayer()
+	defer s.Stop(ctx)
 	idb := s.InternalDB().(*sql.InternalDB)
 	ie := idb.Executor()
 	// Validate only one session exists.
@@ -2845,12 +2841,11 @@ func TestLeaseTxnDeadlineExtensionWithSession(t *testing.T) {
 		},
 	}
 
-	srv, sqlDB, _ := serverutils.StartServer(t, params)
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	s, sqlDB, _ := serverutils.StartServer(t, params)
 	lm := s.LeaseManager().(*lease.Manager)
 	leasesWaitingToExpireGauge := lm.TestingSessionBasedLeasesWaitingToExpireGauge()
 	leasesExpiredGauge := lm.TestingSessionBasedLeasesExpiredGauge()
+	defer s.Stopper().Stop(ctx)
 	// Setup tables for the test.
 	_, err := sqlDB.Exec(`
 CREATE TABLE t1(val int);
@@ -3506,7 +3501,6 @@ func TestLongLeaseWaitMetrics(t *testing.T) {
 		},
 	})
 	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
 	runner := sqlutils.MakeSQLRunner(sqlDB)
 	runner.Exec(t, "CREATE TABLE t1(n int)")
 	descIDRow := runner.QueryRow(t, "SELECT 't1'::REGCLASS::INT")
@@ -3515,7 +3509,7 @@ func TestLongLeaseWaitMetrics(t *testing.T) {
 	grp := ctxgroup.WithContext(ctx)
 
 	startWaiters := make(chan struct{})
-	cachedDatabaseRegions, err := regions.NewCachedDatabaseRegions(ctx, s.DB(), s.LeaseManager().(*lease.Manager))
+	cachedDatabaseRegions, err := regions.NewCachedDatabaseRegions(ctx, srv.DB(), srv.LeaseManager().(*lease.Manager))
 	require.NoError(t, err)
 
 	grp.GoCtx(func(ctx context.Context) error {
@@ -3535,13 +3529,13 @@ func TestLongLeaseWaitMetrics(t *testing.T) {
 		r := retry.StartWithCtx(ctx, retry.Options{})
 		// Wait until long waits are detected in our metrics.
 		for r.Next() {
-			if s.MustGetSQLCounter("sql.leases.long_wait_for_no_version") == 0 {
+			if srv.MustGetSQLCounter("sql.leases.long_wait_for_no_version") == 0 {
 				continue
 			}
-			if s.MustGetSQLCounter("sql.leases.long_wait_for_two_version_invariant") == 0 {
+			if srv.MustGetSQLCounter("sql.leases.long_wait_for_two_version_invariant") == 0 {
 				continue
 			}
-			if s.MustGetSQLCounter("sql.leases.long_wait_for_one_version") == 0 {
+			if srv.MustGetSQLCounter("sql.leases.long_wait_for_one_version") == 0 {
 				continue
 			}
 			break
@@ -3569,11 +3563,11 @@ func TestLongLeaseWaitMetrics(t *testing.T) {
 		r := retry.StartWithCtx(ctx, retry.Options{})
 		for r.Next() {
 			// Wait for the two versions to exist.
-			if s.MustGetSQLCounter("sql.leases.long_wait_for_two_version_invariant") == 0 {
+			if srv.MustGetSQLCounter("sql.leases.long_wait_for_two_version_invariant") == 0 {
 				continue
 			}
 			// Wait for there to be a single version.
-			lm := s.LeaseManager().(*lease.Manager)
+			lm := srv.ApplicationLayer().LeaseManager().(*lease.Manager)
 			_, err := lm.WaitForOneVersion(ctx, descpb.ID(descID), cachedDatabaseRegions, retry.Options{})
 			return err
 		}
@@ -3583,16 +3577,16 @@ func TestLongLeaseWaitMetrics(t *testing.T) {
 	// Waits for no version of the descriptor to exist.
 	grp.GoCtx(func(ctx context.Context) error {
 		<-startWaiters
-		lm := s.LeaseManager().(*lease.Manager)
+		lm := srv.ApplicationLayer().LeaseManager().(*lease.Manager)
 		return lm.WaitForNoVersion(ctx, descpb.ID(descID), cachedDatabaseRegions, retry.Options{})
 	})
 
 	require.NoError(t, grp.Wait())
 
 	// Validate the metrics are 0 again.
-	require.Equal(t, int64(0), s.MustGetSQLCounter("sql.leases.long_wait_for_no_version"))
-	require.Equal(t, int64(0), s.MustGetSQLCounter("sql.leases.long_wait_for_two_version_invariant"))
-	require.Equal(t, int64(0), s.MustGetSQLCounter("sql.leases.long_wait_for_one_version"))
+	require.Equal(t, int64(0), srv.MustGetSQLCounter("sql.leases.long_wait_for_no_version"))
+	require.Equal(t, int64(0), srv.MustGetSQLCounter("sql.leases.long_wait_for_two_version_invariant"))
+	require.Equal(t, int64(0), srv.MustGetSQLCounter("sql.leases.long_wait_for_one_version"))
 }
 
 // TestWaitForInitialVersionConcurrent this test is a basic sanity test that
@@ -3678,9 +3672,8 @@ func BenchmarkAcquireLeaseConcurrent(b *testing.B) {
 	defer log.Scope(b).Close(b)
 
 	ctx := context.Background()
-	srv, sqlDB, _ := serverutils.StartServer(b, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	s, sqlDB, _ := serverutils.StartServer(b, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
 
 	runner := sqlutils.MakeSQLRunner(sqlDB)
 
@@ -3717,9 +3710,8 @@ func TestLeaseManagerIsMemoryMonitored(t *testing.T) {
 	skip.UnderDuress(t)
 
 	ctx := context.Background()
-	srv, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
 	lm := s.LeaseManager().(*lease.Manager)
 	startBytes := lm.TestingGetBoundAccount().Used()
 	lastBytes := startBytes
@@ -3739,214 +3731,4 @@ func TestLeaseManagerIsMemoryMonitored(t *testing.T) {
 	}
 	currentBytes := lm.TestingGetBoundAccount().Used()
 	require.Lessf(t, currentBytes, lastBytes, "memory usage should be decreasing after dropping a table")
-}
-
-// TestLeaseManagerLockedTimestampConcurrent test does a simple concurrency
-// stress test with the locked timestamps in the lease manager.
-func TestLeaseManagerLockedTimestampConcurrent(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	numTablesToCreate := 100
-	// This test can get super expensive, so under stress create fewer tables
-	// and use the parallelism to detect bugs.
-	if skip.Stress() {
-		numTablesToCreate = 10
-	}
-	st := cluster.MakeTestingClusterSettings()
-	ctx := context.Background()
-	// Disable the automatic stats collection, which can make things slower
-	// with the large number of objects in this test.
-	stats.AutomaticStatisticsClusterMode.Override(ctx, &st.SV, false)
-	lease.LockedLeaseTimestamp.Override(ctx, &st.SV, true)
-	tc := serverutils.StartCluster(
-		t, 3, base.TestClusterArgs{
-			ServerArgs: base.TestServerArgs{
-				Settings: st,
-				Knobs: base.TestingKnobs{
-					SQLEvalContext: &eval.TestingKnobs{
-						ForceProductionValues: true,
-					},
-				},
-			},
-		})
-	defer tc.Stopper().Stop(ctx)
-
-	grp := ctxgroup.WithContext(ctx)
-
-	nextObjectToRead := make(chan string)
-	nextObjectToModify := make(chan string)
-	var objectModified atomic.Bool
-
-	// Creates tables in the background.
-	createThreads := func(ctx context.Context) (err error) {
-		defer close(nextObjectToRead)
-		conn := tc.ServerConn(0)
-		for i := range numTablesToCreate {
-			objectName := fmt.Sprintf("t%d", i)
-			sql := fmt.Sprintf("CREATE TABLE %s(n int PRIMARY KEY)\n", objectName)
-			if _, err := conn.ExecContext(ctx, sql); err != nil {
-				panic(err)
-			}
-			select {
-			case nextObjectToRead <- objectName:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-		return nil
-	}
-
-	// Reads from the object while a modification maybe occurring.
-	readThreads := func(ctx context.Context) (err error) {
-		defer close(nextObjectToModify)
-		conn := tc.ServerConn(0)
-		for objectName := range nextObjectToRead {
-			// Initial usage of the descriptor.
-			sql := fmt.Sprintf("SELECT * FROM %s", objectName)
-			if _, err := conn.ExecContext(ctx, sql); err != nil {
-				panic(err)
-			}
-			objectModified.Store(false)
-			select {
-			case nextObjectToModify <- objectName:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-			for !objectModified.Load() {
-				// Repeat usage of the descriptor.
-				sql := fmt.Sprintf("SELECT * FROM %s", objectName)
-				if _, err := conn.ExecContext(ctx, sql); err != nil {
-					panic(err)
-				}
-			}
-		}
-		return nil
-	}
-
-	// Alters the object in the background.
-	modifyThreads := func(ctx context.Context) (err error) {
-		defer objectModified.Store(true)
-		conn := tc.ServerConn(0)
-		for objectName := range nextObjectToModify {
-			sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN n2 int", objectName)
-			if _, err := conn.ExecContext(ctx, sql); err != nil {
-				panic(err)
-			}
-			objectModified.Store(true)
-		}
-		return nil
-	}
-
-	grp.GoCtx(createThreads)
-	grp.GoCtx(readThreads)
-	grp.GoCtx(modifyThreads)
-	require.NoError(t, grp.Wait())
-}
-
-// BenchmarkLargeDatabaseColdPgClass measures the cold performance for selecting
-// descriptors for the first time in pg_class. When leased descriptors are used,
-// a large number of individual round trips can occur.
-func BenchmarkLargeDatabaseColdPgClass(b *testing.B) {
-	defer leaktest.AfterTest(b)()
-	defer log.Scope(b).Close(b)
-
-	for _, useLeasedDescriptors := range []bool{true, false} {
-		for _, usePrefetch := range []bool{true, false} {
-			// There is no concept of prefetching without leased descriptors.
-			if !useLeasedDescriptors && usePrefetch {
-				continue
-			}
-			const numTables = 8192
-			b.Run(fmt.Sprintf("pg_class/leased_descriptors=%t/use_prefetch=%t/tables=%d", useLeasedDescriptors, usePrefetch, numTables), func(b *testing.B) {
-				ctx := context.Background()
-				s, sqlDB, _ := serverutils.StartServer(b, base.TestServerArgs{
-					Knobs: base.TestingKnobs{
-						DialerKnobs: nodedialer.DialerTestingKnobs{
-							// Disable RPC optimizations for the local case so that there is
-							// more round trip overhead.
-							TestingNoLocalClientOptimization: true,
-						},
-						Server: &server.TestingKnobs{
-							ContextTestingKnobs: rpc.ContextTestingKnobs{
-								// Disable RPC optimizations for the local case so that there is
-								// more round trip overhead.
-								NoLoopbackDialer: true,
-							},
-						},
-					},
-				})
-				sqlConn, err := sqlDB.Conn(ctx)
-				require.NoError(b, err)
-				defer s.Stopper().Stop(ctx)
-				b.ResetTimer()
-				b.StopTimer()
-				tdb := sqlutils.MakeSQLRunner(sqlConn)
-				tdb.Exec(b, fmt.Sprintf("SET CLUSTER SETTING sql.catalog.descriptor_lease.use_locked_timestamps.enabled= %t;", useLeasedDescriptors))
-				tdb.Exec(b, fmt.Sprintf("SET CLUSTER SETTING sql.catalog.allow_leased_descriptors.enabled = %t;", useLeasedDescriptors))
-				tdb.Exec(b, fmt.Sprintf("SET CLUSTER SETTING sql.catalog.allow_leased_descriptors.prefetch.enabled = %t;", usePrefetch))
-				tdb.Exec(b, fmt.Sprintf(`SELECT crdb_internal.generate_test_objects('{"names":"gen.public.foo","counts":[1,1,%d], "name_gen": {"noise": false}}'::JSONB);`, numTables))
-				tdb.Exec(b, "USE gen_1")
-				// Cold run.
-				b.StartTimer()
-				tdb.Exec(b, "SELECT * FROM pg_class")
-				b.StopTimer()
-			})
-		}
-	}
-}
-
-// BenchmarkLargeDatabaseWarmPgClass measures the warm performance for selecting
-// descriptors for using leased descriptors repeatedly in a bulk fashion.
-func BenchmarkLargeDatabaseWarmPgClass(b *testing.B) {
-	defer leaktest.AfterTest(b)()
-	defer log.Scope(b).Close(b)
-
-	for _, tables := range []int{8192, 16384, 32768} {
-		for _, useLeasedDescriptors := range []bool{true, false} {
-			for _, usePrefetch := range []bool{true, false} {
-				// There is no concept of prefetching without leased descriptors.
-				if !useLeasedDescriptors && usePrefetch {
-					continue
-				}
-				b.Run(fmt.Sprintf("pg_class/leased_descriptors=%t/use_prefetch=%t/tables=%d", useLeasedDescriptors, usePrefetch, tables), func(b *testing.B) {
-					ctx := context.Background()
-					s, sqlDB, _ := serverutils.StartServer(b, base.TestServerArgs{
-						Knobs: base.TestingKnobs{
-							DialerKnobs: nodedialer.DialerTestingKnobs{
-								// Disable RPC optimizations for the local case so that there is
-								// more round trip overhead.
-								TestingNoLocalClientOptimization: true,
-							},
-							Server: &server.TestingKnobs{
-								ContextTestingKnobs: rpc.ContextTestingKnobs{
-									// Disable RPC optimizations for the local case so that there is
-									// more round trip overhead.
-									NoLoopbackDialer: true,
-								},
-							},
-						},
-					})
-					sqlConn, err := sqlDB.Conn(ctx)
-					require.NoError(b, err)
-					defer s.Stopper().Stop(ctx)
-					b.ResetTimer()
-					b.StopTimer()
-					tdb := sqlutils.MakeSQLRunner(sqlConn)
-					tdb.Exec(b, fmt.Sprintf("SET CLUSTER SETTING sql.catalog.descriptor_lease.use_locked_timestamps.enabled= %t;", useLeasedDescriptors))
-					tdb.Exec(b, fmt.Sprintf("SET CLUSTER SETTING sql.catalog.allow_leased_descriptors.enabled = %t;", useLeasedDescriptors))
-					tdb.Exec(b, fmt.Sprintf("SET CLUSTER SETTING sql.catalog.allow_leased_descriptors.prefetch.enabled = %t;", usePrefetch))
-					tdb.Exec(b, fmt.Sprintf(`SELECT crdb_internal.generate_test_objects('{"names":"gen.public.foo","counts":[1,1,%d], "name_gen": {"noise": false}}'::JSONB);`, tables))
-					tdb.Exec(b, "USE gen_1")
-					// Cold run.
-					tdb.Exec(b, "SELECT * FROM pg_class")
-					b.StartTimer()
-					// Warm iterations.
-					for range b.N {
-						tdb.Exec(b, "SELECT * FROM pg_class")
-					}
-					b.StopTimer()
-				})
-			}
-		}
-	}
 }

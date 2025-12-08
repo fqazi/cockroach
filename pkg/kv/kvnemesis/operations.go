@@ -66,14 +66,6 @@ func (op Operation) Result() *Result {
 		return &o.Result
 	case *MutateBatchHeaderOperation:
 		return &o.Result
-	case *AddNetworkPartitionOperation:
-		return &o.Result
-	case *RemoveNetworkPartitionOperation:
-		return &o.Result
-	case *StopNodeOperation:
-		return &o.Result
-	case *RestartNodeOperation:
-		return &o.Result
 	default:
 		panic(errors.AssertionFailedf(`unknown operation: %T %v`, o, o))
 	}
@@ -245,14 +237,6 @@ func (op Operation) format(w *strings.Builder, fctx formatCtx) {
 	case *SavepointRollbackOperation:
 		o.format(w, fctx)
 	case *MutateBatchHeaderOperation:
-		o.format(w, fctx)
-	case *AddNetworkPartitionOperation:
-		o.format(w, fctx)
-	case *RemoveNetworkPartitionOperation:
-		o.format(w, fctx)
-	case *StopNodeOperation:
-		o.format(w, fctx)
-	case *RestartNodeOperation:
 		o.format(w, fctx)
 	default:
 		fmt.Fprintf(w, "%v", op.GetValue())
@@ -507,32 +491,6 @@ func (op MutateBatchHeaderOperation) format(w *strings.Builder, fctx formatCtx) 
 	if op.MaxSpanRequestKeys > 0 {
 		fmt.Fprintf(w, `%s.Header.MaxSpanRequestKeys = %d // MutateBatchHeaderOperation`, fctx.receiver, op.MaxSpanRequestKeys)
 	}
-}
-
-func (op AddNetworkPartitionOperation) format(w *strings.Builder, fctx formatCtx) {
-	fmt.Fprintf(
-		w, `%s.AddNetworkPartition(fromNode=%d, toNode=%d)`, fctx.receiver, int(op.FromNode),
-		int(op.ToNode),
-	)
-	op.Result.format(w)
-}
-
-func (op RemoveNetworkPartitionOperation) format(w *strings.Builder, fctx formatCtx) {
-	fmt.Fprintf(
-		w, `%s.RemoveNetworkPartition(fromNode=%d, toNode=%d)`, fctx.receiver, int(op.FromNode),
-		int(op.ToNode),
-	)
-	op.Result.format(w)
-}
-
-func (op StopNodeOperation) format(w *strings.Builder, fctx formatCtx) {
-	fmt.Fprintf(w, `env.Restarter.StopNode(%d)`, int(op.NodeId))
-	op.Result.format(w)
-}
-
-func (op RestartNodeOperation) format(w *strings.Builder, fctx formatCtx) {
-	fmt.Fprintf(w, `env.Restarter.RestartNode(%d)`, int(op.NodeId))
-	op.Result.format(w)
 }
 
 func (r Result) format(w *strings.Builder) {
