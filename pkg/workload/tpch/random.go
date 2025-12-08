@@ -16,8 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/workload/faker"
 )
 
-// The spec can be found at https://www.tpc.org/tpc_documents_current_versions/pdf/tpc-h_v2.17.1.pdf.
-
 const alphanumericLen64 = `abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890, `
 
 // randInt returns a random value between x and y inclusively, with a mean of
@@ -77,7 +75,7 @@ func (p *fakeTextPool) randString(rng *rand.Rand, minLen, maxLen int) []byte {
 // string is a random value between min and max inclusive". See 4.2.2.7.
 func randVString(rng *rand.Rand, a *bufalloc.ByteAllocator, minLen, maxLen int) []byte {
 	var buf []byte
-	*a, buf = a.Alloc(randInt(rng, minLen, maxLen))
+	*a, buf = a.Alloc(randInt(rng, minLen, maxLen), 0)
 	for i := range buf {
 		buf[i] = alphanumericLen64[rng.IntN(len(alphanumericLen64))]
 	}
@@ -87,7 +85,7 @@ func randVString(rng *rand.Rand, a *bufalloc.ByteAllocator, minLen, maxLen int) 
 // randPhone returns a phone number generated according to 4.2.2.9.
 func randPhone(rng *rand.Rand, a *bufalloc.ByteAllocator, nationKey int16) []byte {
 	var buf []byte
-	*a, buf = a.Alloc(15)
+	*a, buf = a.Alloc(15, 0)
 	buf = buf[:0]
 
 	countryCode := nationKey + 10
@@ -112,9 +110,9 @@ var randPartNames = [...]string{
 	"hot", "indian", "ivory", "khaki", "lace", "lavender", "lawn", "lemon", "light", "lime", "linen",
 	"magenta", "maroon", "medium", "metallic", "midnight", "mint", "misty", "moccasin", "navajo",
 	"navy", "olive", "orange", "orchid", "pale", "papaya", "peach", "peru", "pink", "plum", "powder",
-	"puff", "purple", "red", "rose", "rosy", "royal", "saddle", "salmon", "sandy", "seashell", "sienna",
-	"sky", "slate", "smoke", "snow", "spring", "steel", "tan", "thistle", "tomato", "turquoise", "violet",
-	"wheat", "white", "yellow",
+	"puff", "purple", "red", "rose", "rosy", "royal", "saddle", "salmon", "sandy", "seashell",
+	"sienna", "sky", "slate", "smoke", "snow", "spring", "steel", "tan", "thistle", "tomato",
+	"turquoise", "violet", "wheat", "white", "yellow",
 }
 
 const maxPartNameLen = 10
@@ -135,7 +133,7 @@ func randPartName(rng *rand.Rand, a *bufalloc.ByteAllocator) []byte {
 		namePerm[i], namePerm[j] = namePerm[j], namePerm[i]
 	}
 	var buf []byte
-	*a, buf = a.Alloc(maxPartNameLen*nPartNames + nPartNames)
+	*a, buf = a.Alloc(maxPartNameLen*nPartNames+nPartNames, 0)
 	buf = buf[:0]
 	for i := 0; i < nPartNames; i++ {
 		if i != 0 {
@@ -150,7 +148,7 @@ const manufacturerString = "Manufacturer#"
 
 func randMfgr(rng *rand.Rand, a *bufalloc.ByteAllocator) (byte, []byte) {
 	var buf []byte
-	*a, buf = a.Alloc(len(manufacturerString) + 1)
+	*a, buf = a.Alloc(len(manufacturerString)+1, 0)
 
 	copy(buf, manufacturerString)
 	m := byte(rng.IntN(5) + '1')
@@ -162,7 +160,7 @@ const brandString = "Brand#"
 
 func randBrand(rng *rand.Rand, a *bufalloc.ByteAllocator, m byte) []byte {
 	var buf []byte
-	*a, buf = a.Alloc(len(brandString) + 2)
+	*a, buf = a.Alloc(len(brandString)+2, 0)
 
 	copy(buf, brandString)
 	n := byte(rng.IntN(5) + '1')
@@ -175,7 +173,7 @@ const clerkString = "Clerk#"
 
 func randClerk(rng *rand.Rand, a *bufalloc.ByteAllocator, scaleFactor int) []byte {
 	var buf []byte
-	*a, buf = a.Alloc(len(clerkString) + 9)
+	*a, buf = a.Alloc(len(clerkString)+9, 0)
 	copy(buf, clerkString)
 	ninePaddedInt(buf[len(clerkString):], int64(randInt(rng, 1, scaleFactor*1000)))
 	return buf
@@ -185,7 +183,7 @@ const supplierString = "Supplier#"
 
 func supplierName(a *bufalloc.ByteAllocator, suppKey int64) []byte {
 	var buf []byte
-	*a, buf = a.Alloc(len(supplierString) + 9)
+	*a, buf = a.Alloc(len(supplierString)+9, 0)
 	copy(buf, supplierString)
 	ninePaddedInt(buf[len(supplierString):], suppKey)
 	return buf
@@ -195,7 +193,7 @@ const customerString = "Customer#"
 
 func customerName(a *bufalloc.ByteAllocator, custKey int64) []byte {
 	var buf []byte
-	*a, buf = a.Alloc(len(customerString) + 9)
+	*a, buf = a.Alloc(len(customerString)+9, 0)
 	copy(buf, customerString)
 	ninePaddedInt(buf[len(customerString):], custKey)
 	return buf
@@ -215,7 +213,7 @@ func randSyllables(
 	rng *rand.Rand, a *bufalloc.ByteAllocator, maxLen int, syllables [][]string,
 ) []byte {
 	var buf []byte
-	*a, buf = a.Alloc(maxLen)
+	*a, buf = a.Alloc(maxLen, 0)
 	buf = buf[:0]
 
 	for i, syl := range syllables {
@@ -240,8 +238,8 @@ func randType(rng *rand.Rand, a *bufalloc.ByteAllocator) []byte {
 }
 
 var containerSyllables = [][]string{
-	{"SM", "LG", "MED", "JUMBO", "WRAP"},
-	{"CASE", "BOX", "BAG", "JAR", "PKG", "PACK", "CAN", "DRUM"},
+	{"SM", "MED", "JUMBO", "WRAP"},
+	{"BOX", "BAG", "JAR", "PKG", "PACK", "CAN", "DRUM"},
 }
 
 const maxContainerLen = 10
@@ -259,7 +257,7 @@ func randSegment(rng *rand.Rand) []byte {
 }
 
 var priorities = []string{
-	"1-URGENT", "2-HIGH", "3-MEDIUM", "4-NOT SPECIFIED", "5-LOW",
+	"1-URGENT", "2-HIGH", "3-MEDIUM", "4-NOT SPECIFIED",
 }
 
 func randPriority(rng *rand.Rand) []byte {
@@ -267,7 +265,9 @@ func randPriority(rng *rand.Rand) []byte {
 }
 
 var instructions = []string{
-	"DELIVER IN PERSON", "COLLECT COD", "NONE", "TAKE BACK RETURN",
+	"DELIVER IN PERSON",
+	"COLLECT COD", "NONE",
+	"TAKE BACK RETURN",
 }
 
 func randInstruction(rng *rand.Rand) []byte {

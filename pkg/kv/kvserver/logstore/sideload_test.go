@@ -86,7 +86,7 @@ func newTestingSideloadStorage(eng storage.Engine) *DiskSideloadStorage {
 	return NewDiskSideloadStorage(
 		cluster.MakeTestingClusterSettings(), 1,
 		filepath.Join(eng.GetAuxiliaryDir(), "fake", "testing", "dir"),
-		rate.NewLimiter(rate.Inf, math.MaxInt64), eng.Env())
+		rate.NewLimiter(rate.Inf, math.MaxInt64), eng)
 }
 
 // TODO(pavelkalinnikov): give these tests a good refactor.
@@ -96,7 +96,7 @@ func testSideloadingSideloadedStorage(t *testing.T, eng storage.Engine) {
 
 	assertExists := func(exists bool) {
 		t.Helper()
-		_, err := ss.fs.Stat(ss.dir)
+		_, err := ss.eng.Env().Stat(ss.dir)
 		if !exists {
 			require.True(t, oserror.IsNotExist(err), err)
 		} else {
@@ -520,24 +520,24 @@ func TestRaftSSTableSideloadingSideload(t *testing.T) {
 			eng := storage.NewDefaultInMemForTesting()
 			defer eng.Close()
 			sideloaded := newTestingSideloadStorage(eng)
-			postEnts, stats, err := MaybeSideloadEntries(ctx, test.preEnts, sideloaded)
+			postEnts, numSideloaded, size, nonSideloadedSize, err := MaybeSideloadEntries(ctx, test.preEnts, sideloaded)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(addSST.Data) == 0 {
 				t.Fatal("invocation mutated original AddSSTable struct in memory")
 			}
-			require.Equal(t, test.nonSideloadedSize, stats.RegularBytes)
+			require.Equal(t, test.nonSideloadedSize, nonSideloadedSize)
 			var expNumSideloaded int
 			if test.size > 0 {
 				expNumSideloaded = 1
 			}
-			require.Equal(t, expNumSideloaded, stats.SideloadedEntries)
+			require.Equal(t, expNumSideloaded, numSideloaded)
 			require.Equal(t, test.postEnts, postEnts)
-			if test.size != stats.SideloadedBytes {
-				t.Fatalf("expected %d sideloadedSize, but found %d", test.size, stats.SideloadedBytes)
+			if test.size != size {
+				t.Fatalf("expected %d sideloadedSize, but found %d", test.size, size)
 			}
-			actKeys, err := sideloaded.fs.List(sideloaded.Dir())
+			actKeys, err := sideloaded.eng.Env().List(sideloaded.Dir())
 			if oserror.IsNotExist(err) {
 				t.Log("swallowing IsNotExist")
 				err = nil
@@ -575,12 +575,9 @@ func TestSideloadStorageSync(t *testing.T) {
 		// able to emulate crash restart by rolling it back to last synced state.
 		ctx := context.Background()
 		memFS := vfs.NewCrashableMem()
-		settings := cluster.MakeTestingClusterSettings()
-		env, err := fs.InitEnv(ctx, memFS, "", fs.EnvConfig{
-			Version: settings.Version,
-		}, nil /* statsCollector */)
+		env, err := fs.InitEnv(ctx, memFS, "", fs.EnvConfig{}, nil /* statsCollector */)
 		require.NoError(t, err)
-		eng, err := storage.Open(ctx, env, settings, storage.ForTesting)
+		eng, err := storage.Open(ctx, env, cluster.MakeTestingClusterSettings(), storage.ForTesting)
 		require.NoError(t, err)
 		ss := newTestingSideloadStorage(eng)
 
@@ -598,11 +595,9 @@ func TestSideloadStorageSync(t *testing.T) {
 		// Reset filesystem to the last synced state.
 
 		// Emulate process restart. Load from the last synced state.
-		env, err = fs.InitEnv(ctx, crashFS, "", fs.EnvConfig{
-			Version: settings.Version,
-		}, nil /* statsCollector */)
+		env, err = fs.InitEnv(ctx, crashFS, "", fs.EnvConfig{}, nil /* statsCollector */)
 		require.NoError(t, err)
-		eng, err = storage.Open(ctx, env, settings, storage.ForTesting)
+		eng, err = storage.Open(ctx, env, cluster.MakeTestingClusterSettings(), storage.ForTesting)
 		require.NoError(t, err)
 		defer eng.Close()
 		ss = newTestingSideloadStorage(eng)

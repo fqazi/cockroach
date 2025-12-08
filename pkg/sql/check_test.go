@@ -15,6 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobstest"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -41,12 +42,12 @@ func TestValidateTTLScheduledJobs(t *testing.T) {
 
 	testCases := []struct {
 		desc          string
-		setup         func(t *testing.T, sqlDB *gosql.DB, kvDB *kv.DB, s serverutils.ApplicationLayerInterface, tableDesc *tabledesc.Mutable, scheduleID jobspb.ScheduleID)
+		setup         func(t *testing.T, sqlDB *gosql.DB, kvDB *kv.DB, s serverutils.TestServerInterface, tableDesc *tabledesc.Mutable, scheduleID jobspb.ScheduleID)
 		expectedErrRe func(tableID descpb.ID, scheduleID jobspb.ScheduleID) string
 	}{
 		{
 			desc: "not pointing at a valid scheduled job",
-			setup: func(t *testing.T, sqlDB *gosql.DB, kvDB *kv.DB, s serverutils.ApplicationLayerInterface, tableDesc *tabledesc.Mutable, scheduleID jobspb.ScheduleID) {
+			setup: func(t *testing.T, sqlDB *gosql.DB, kvDB *kv.DB, s serverutils.TestServerInterface, tableDesc *tabledesc.Mutable, scheduleID jobspb.ScheduleID) {
 				require.NoError(t, sqltestutils.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
 					// We need the collection to read the descriptor from storage for
 					// the subsequent write to succeed.
@@ -65,7 +66,7 @@ func TestValidateTTLScheduledJobs(t *testing.T) {
 		},
 		{
 			desc: "scheduled job points at an different table",
-			setup: func(t *testing.T, sqlDB *gosql.DB, kvDB *kv.DB, s serverutils.ApplicationLayerInterface, tableDesc *tabledesc.Mutable, scheduleID jobspb.ScheduleID) {
+			setup: func(t *testing.T, sqlDB *gosql.DB, kvDB *kv.DB, s serverutils.TestServerInterface, tableDesc *tabledesc.Mutable, scheduleID jobspb.ScheduleID) {
 				db := s.InternalDB().(isql.DB)
 				require.NoError(t, db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 					schedules := jobs.ScheduledJobTxn(txn)
@@ -102,14 +103,13 @@ func TestValidateTTLScheduledJobs(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
-			srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
-			defer srv.Stopper().Stop(ctx)
-			s := srv.ApplicationLayer()
+			s, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+			defer s.Stopper().Stop(ctx)
 
 			_, err := sqlDB.Exec(`CREATE TABLE t () WITH (ttl_expire_after = '10 mins')`)
 			require.NoError(t, err)
 
-			tableDesc := desctestutils.TestingGetMutableExistingTableDescriptor(kvDB, s.Codec(), "defaultdb", "t")
+			tableDesc := desctestutils.TestingGetMutableExistingTableDescriptor(kvDB, keys.SystemSQLCodec, "defaultdb", "t")
 			require.NotNil(t, tableDesc.GetRowLevelTTL())
 			scheduleID := tableDesc.GetRowLevelTTL().ScheduleID
 

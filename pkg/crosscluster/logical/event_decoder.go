@@ -7,11 +7,8 @@ package logical
 
 import (
 	"context"
-	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdcevent"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
-	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -27,7 +24,7 @@ import (
 // that are appropriate for the destination table.
 type eventDecoder struct {
 	decoder   cdcevent.Decoder
-	srcToDest map[descpb.ID]*destinationTable
+	srcToDest map[descpb.ID]destinationTable
 
 	// TODO(jeffswenson): clean this interface up. There's a problem with
 	// layering that requires the event decoder to know about the most recent
@@ -71,7 +68,7 @@ func newEventDecoder(
 	settings *cluster.Settings,
 	procConfigByDestID map[descpb.ID]sqlProcessorTableConfig,
 ) (*eventDecoder, error) {
-	srcToDest := make(map[descpb.ID]*destinationTable, len(procConfigByDestID))
+	srcToDest := make(map[descpb.ID]destinationTable, len(procConfigByDestID))
 	err := descriptors.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
 		for dstID, s := range procConfigByDestID {
 			descriptor, err := txn.Descriptors().GetLeasedImmutableTableByID(ctx, txn.KV(), dstID)
@@ -81,16 +78,13 @@ func newEventDecoder(
 
 			columns := getColumnSchema(descriptor)
 			columnNames := make([]string, 0, len(columns))
-			columnTypes := make([]*types.T, 0, len(columns))
 			for _, column := range columns {
 				columnNames = append(columnNames, column.column.GetName())
-				columnTypes = append(columnTypes, column.column.GetType().Canonical())
 			}
 
-			srcToDest[s.srcDesc.GetID()] = &destinationTable{
-				id:          dstID,
-				columns:     columnNames,
-				columnTypes: columnTypes,
+			srcToDest[s.srcDesc.GetID()] = destinationTable{
+				id:      dstID,
+				columns: columnNames,
 			}
 		}
 		return nil
@@ -110,83 +104,10 @@ func newEventDecoder(
 	}, nil
 }
 
-// decodeAndCoalesceEvents returns the decoded events sorted by key and
-// deduplicated to a single event for each primary key.
-func (d *eventDecoder) decodeAndCoalesceEvents(
-	ctx context.Context,
-	batch []streampb.StreamEvent_KV,
-	discard jobspb.LogicalReplicationDetails_Discard,
-) ([]decodedEvent, error) {
-	// Basic idea:
-	// 1. Sort the batch so the keys and mvcc timestamps are in ascending order. Sorting by key
-	//    ensures that all events for a given table and row are adjacent. Sorting by timestamp
-	//    ensures that if i < j then row[i] comes before row[j] in application time.
-	// 2. For eacy row in the batch, decode the first row and use it as the previous value. We use
-	//    the earliest row as the previous value because as long as the batch is not a replay, the
-	//    previous value of the first instance of the row is expected to match the local value.
-	// 3. For the last event for each row, decode it as the value to insert.
-
-	toDecode := make([]streampb.StreamEvent_KV, 0, len(batch))
-	for _, event := range batch {
-		// Discard deletes before sorting and coalescing updates. Its possible that
-		// the correct previous value was attached to a deleted event. That's okay because:
-		// 1. The previous value is only a guess at the previous value. It does not have to match
-		//    the actual local value.
-		// 2. DELETE -> INSERT isn't expected to be a super common pattern. Trying to coalesce the previous value
-		//    and discard deletes is more complex than just discarding them.
-		if discard == jobspb.LogicalReplicationDetails_DiscardAllDeletes && event.KeyValue.Value.RawBytes == nil {
-			continue
-		}
-
-		var err error
-		event.KeyValue.Key, err = keys.StripTenantPrefix(event.KeyValue.Key)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to strip tenant prefix")
-		}
-
-		toDecode = append(toDecode, event)
-	}
-
-	if len(toDecode) == 0 {
-		return nil, nil
-	}
-
-	sort.Slice(toDecode, func(i, j int) bool {
-		cmp := toDecode[i].KeyValue.Key.Compare(toDecode[j].KeyValue.Key)
-		if cmp != 0 {
-			return cmp < 0
-		}
-		return toDecode[i].KeyValue.Value.Timestamp.Less(toDecode[j].KeyValue.Value.Timestamp)
-	})
-
-	var result []decodedEvent
-
-	first, last := toDecode[0], toDecode[0]
-	for _, event := range toDecode[1:] {
-		if event.KeyValue.Key.Compare(first.KeyValue.Key) != 0 {
-			decoded, err := d.decodeEvent(ctx, first, last)
-			if err != nil {
-				return nil, err
-			}
-			result = append(result, decoded)
-			first, last = event, event
-		} else {
-			last = event
-		}
-	}
-	decoded, err := d.decodeEvent(ctx, first, last)
-	if err != nil {
-		return nil, err
-	}
-	result = append(result, decoded)
-
-	return result, nil
-}
-
 func (d *eventDecoder) decodeEvent(
-	ctx context.Context, first streampb.StreamEvent_KV, last streampb.StreamEvent_KV,
+	ctx context.Context, event streampb.StreamEvent_KV,
 ) (decodedEvent, error) {
-	decodedRow, err := d.decoder.DecodeKV(ctx, last.KeyValue, cdcevent.CurrentRow, last.KeyValue.Value.Timestamp, false)
+	decodedRow, err := d.decoder.DecodeKV(ctx, event.KeyValue, cdcevent.CurrentRow, event.KeyValue.Value.Timestamp, false)
 	if err != nil {
 		return decodedEvent{}, err
 	}
@@ -196,22 +117,24 @@ func (d *eventDecoder) decodeEvent(
 		return decodedEvent{}, errors.AssertionFailedf("table %d not found", decodedRow.TableID)
 	}
 
-	row, err := dstTable.toLocalDatums(decodedRow)
+	row := make(tree.Datums, 0, len(dstTable.columns))
+	row, err = appendDatums(row, decodedRow, dstTable.columns)
 	if err != nil {
 		return decodedEvent{}, err
 	}
 	d.lastRow = decodedRow
 
 	var prevKV roachpb.KeyValue
-	prevKV.Key = first.KeyValue.Key
-	prevKV.Value = first.PrevValue
+	prevKV.Key = event.KeyValue.Key
+	prevKV.Value = event.PrevValue
 
-	decodedPrevRow, err := d.decoder.DecodeKV(ctx, prevKV, cdcevent.PrevRow, first.PrevValue.Timestamp, false)
+	decodedPrevRow, err := d.decoder.DecodeKV(ctx, prevKV, cdcevent.PrevRow, event.PrevValue.Timestamp, false)
 	if err != nil {
 		return decodedEvent{}, err
 	}
 
-	prevRow, err := dstTable.toLocalDatums(decodedPrevRow)
+	prevRow := make(tree.Datums, 0, len(dstTable.columns))
+	prevRow, err = appendDatums(prevRow, decodedPrevRow, dstTable.columns)
 	if err != nil {
 		return decodedEvent{}, err
 	}
@@ -219,49 +142,43 @@ func (d *eventDecoder) decodeEvent(
 	return decodedEvent{
 		dstDescID:       dstTable.id,
 		isDelete:        decodedRow.IsDeleted(),
-		originTimestamp: last.KeyValue.Value.Timestamp,
+		originTimestamp: event.KeyValue.Value.Timestamp,
 		row:             row,
 		prevRow:         prevRow,
 	}, nil
 }
 
-// toLocalDatums creates a row with the types of the datums converted to to the
-// types required by the remote descriptor. toLocalDatums takes ownerhsip of
-// the input row and may modify datums from the decoded input row.
-func (d *destinationTable) toLocalDatums(row cdcevent.Row) (tree.Datums, error) {
-	localRow := make(tree.Datums, len(d.columns))
-
-	it, err := row.DatumsNamed(d.columns)
+// appendDatums appends datums for the specified column names from the cdcevent.Row
+// to the datums slice and returns the updated slice.
+func appendDatums(datums tree.Datums, row cdcevent.Row, columnNames []string) (tree.Datums, error) {
+	it, err := row.DatumsNamed(columnNames)
 	if err != nil {
 		return nil, err
 	}
 
-	columnIndex := 0
-	if err := it.Datum(func(datum tree.Datum, col cdcevent.ResultColumn) error {
-		typ := d.columnTypes[columnIndex]
-
-		switch d := datum.(type) {
-		case *tree.DEnum:
-			d.EnumTyp = typ
-		case *tree.DArray:
-			d.ParamTyp = typ
-		case *tree.DTuple:
-			datum = tree.NewDTuple(typ, d.D...)
+	if err := it.Datum(func(d tree.Datum, col cdcevent.ResultColumn) error {
+		if dEnum, ok := d.(*tree.DEnum); ok {
+			// Override the type to Unknown to avoid a mismatched type OID error
+			// during execution. Note that Unknown is the type used by default
+			// when a SQL statement is executed without type hints.
+			//
+			// TODO(jeffswenson): this feels like the wrong place to do this,
+			// but its inspired by the implementation in queryBuilder.AddRow.
+			//
+			// Really we should be mapping from the source datum type to the
+			// destination datum type.
+			dEnum.EnumTyp = types.Unknown
 		}
-
-		localRow[columnIndex] = datum
-
-		columnIndex += 1
+		datums = append(datums, d)
 		return nil
 	}); err != nil {
 		return nil, err
 	}
 
-	return localRow, nil
+	return datums, nil
 }
 
 type destinationTable struct {
-	id          descpb.ID
-	columns     []string
-	columnTypes []*types.T
+	id      descpb.ID
+	columns []string
 }

@@ -16,6 +16,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
+	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
@@ -28,16 +30,18 @@ import (
 
 func newCrudBatchHandler(
 	t *testing.T, s serverutils.ApplicationLayerInterface, tableName string,
-) (BatchHandler, catalog.TableDescriptor) {
+) (*sqlCrudWriter, catalog.TableDescriptor) {
 	ctx := context.Background()
 	desc := cdctest.GetHydratedTableDescriptor(t, s.ExecutorConfig(), tree.Name(tableName))
 	sd := sql.NewInternalSessionData(ctx, s.ClusterSettings(), "" /* opName */)
-
-	executorConfig := s.ExecutorConfig().(sql.ExecutorConfig)
-
 	handler, err := newCrudSqlWriter(
 		ctx,
-		&executorConfig.DistSQLSrv.ServerConfig,
+		&execinfra.ServerConfig{
+			DB:           s.InternalDB().(descs.DB),
+			Codec:        s.Codec(),
+			LeaseManager: s.LeaseManager(),
+			Settings:     s.ClusterSettings(),
+		},
 		&eval.Context{
 			Codec:            s.Codec(),
 			Settings:         s.ClusterSettings(),
@@ -75,7 +79,6 @@ func TestBatchHandlerFastPath(t *testing.T) {
 	`)
 
 	handler, desc := newCrudBatchHandler(t, s, "test_table")
-	defer handler.Close(ctx)
 	defer handler.ReleaseLeases(ctx)
 	eb := newKvEventBuilder(t, desc.TableDesc())
 
@@ -137,7 +140,6 @@ func TestBatchHandlerSlowPath(t *testing.T) {
 	`)
 
 	handler, desc := newCrudBatchHandler(t, s, "test_table")
-	defer handler.Close(ctx)
 	defer handler.ReleaseLeases(ctx)
 	eb := newKvEventBuilder(t, desc.TableDesc())
 
@@ -198,24 +200,21 @@ func TestBatchHandlerDuplicateBatchEntries(t *testing.T) {
 	runner.Exec(t, `
 		CREATE TABLE test_table (
 			id INT PRIMARY KEY,
-			value VARCHAR(100)
+			value STRING
 		)
 	`)
 
 	handler, desc := newCrudBatchHandler(t, s, "test_table")
-	defer handler.Close(ctx)
 	defer handler.ReleaseLeases(ctx)
 	eb := newKvEventBuilder(t, desc.TableDesc())
 
 	before := s.Clock().Now()
 	after := s.Clock().Now()
-	later := s.Clock().Now()
 
 	// TODO(jeffswenson): think about the different weird grouped batches that
 	// could exist. Is it sensitive to order? What happens when an update chain
 	// hits a refresh?
 	_, err := handler.HandleBatch(ctx, []streampb.StreamEvent_KV{
-		// First row: insert followed by delete
 		eb.updateEvent(before,
 			[]tree.Datum{tree.NewDInt(tree.DInt(1)), tree.NewDString("insert-followed-by-delete")},
 			[]tree.Datum{tree.NewDInt(tree.DInt(1)), tree.NewDString("wrong-value")},
@@ -224,23 +223,9 @@ func TestBatchHandlerDuplicateBatchEntries(t *testing.T) {
 			tree.NewDInt(tree.DInt(1)),
 			tree.NewDString("insert-followed-by-delete"),
 		}),
-		// Second row: pair of updates - newest should win
-		eb.updateEvent(before,
-			[]tree.Datum{tree.NewDInt(tree.DInt(2)), tree.NewDString("older-update")},
-			[]tree.Datum{tree.NewDInt(tree.DInt(2)), tree.NewDString("original-value")},
-		),
-		eb.updateEvent(later,
-			[]tree.Datum{tree.NewDInt(tree.DInt(2)), tree.NewDString("newer-update")},
-			[]tree.Datum{tree.NewDInt(tree.DInt(2)), tree.NewDString("older-update")},
-		),
 	})
-	// With duplicate entry handling fixed, the batch should now succeed
-	require.NoError(t, err)
-
-	// Verify the results:
-	// Row 1 should be deleted (not exist)
-	// Row 2 should have the newer update value
-	runner.CheckQueryResults(t, `SELECT id, value FROM test_table ORDER BY id`, [][]string{
-		{"2", "newer-update"},
-	})
+	// The update causes a refresh and then after the refresh, the delete ends up
+	// taking the update tombstone path because there is no local row, but the
+	// cput fails because it observes the insert/delete.
+	require.ErrorContains(t, err, "unexpected value")
 }

@@ -7,7 +7,6 @@ package tests
 
 import (
 	"context"
-	"math/rand"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
@@ -19,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -109,25 +107,10 @@ func runMultiStoreRemove(ctx context.Context, t test.Test, c cluster.Cluster) {
 		t.Fatal(err)
 	}
 
-	// Metamorphically enable the decommissioning nudger to get more test coverage
-	// on decommissioning nudger.
-	{
-		seed := timeutil.Now().UnixNano()
-		t.L().Printf("seed: %d", seed)
-		rng := rand.New(rand.NewSource(seed))
-
-		if rng.Intn(2) == 0 {
-			if _, err := conn.ExecContext(ctx, `SET CLUSTER SETTING kv.enqueue_in_replicate_queue_on_problem.interval = '10m'`); err != nil {
-				t.Fatal(err)
-			}
-			t.L().Printf("metamorphically enabled decommissioning nudger")
-		}
-	}
-
 	// Bring down node 1.
 	t.Status("removing store from n1")
 	node := c.Node(1)
-	m := c.NewDeprecatedMonitor(ctx, node)
+	m := c.NewMonitor(ctx, node)
 	m.ExpectDeaths(1)
 	stopOpts := option.DefaultStopOpts()
 	c.Stop(ctx, t.L(), stopOpts, node)

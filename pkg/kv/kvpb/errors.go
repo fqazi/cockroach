@@ -299,8 +299,6 @@ const (
 	LockConflictErrType                     ErrorDetailType = 45
 	ReplicaUnavailableErrType               ErrorDetailType = 46
 	ProxyFailedErrType                      ErrorDetailType = 47
-	ExclusionViolationErrType               ErrorDetailType = 48
-
 	// When adding new error types, don't forget to update NumErrors below.
 
 	// CommunicationErrType indicates a gRPC error; this is not an ErrorDetail.
@@ -310,7 +308,7 @@ const (
 	// detail. The value 25 is chosen because it's reserved in the errors proto.
 	InternalErrType ErrorDetailType = 25
 
-	NumErrors int = 49
+	NumErrors int = 48
 )
 
 // Register the migration of all errors that used to be in the roachpb package
@@ -436,7 +434,7 @@ func (e *Error) checkTxnStatusValid() {
 		return
 	}
 	if txn.Status.IsFinalized() {
-		log.Dev.Fatalf(context.TODO(), "transaction unexpectedly finalized in (%T): %v", err, e)
+		log.Fatalf(context.TODO(), "transaction unexpectedly finalized in (%T): %v", err, e)
 	}
 }
 
@@ -660,7 +658,7 @@ func (e *RangeKeyMismatchError) AppendRangeInfo(ctx context.Context, ris ...roac
 	for _, ri := range ris {
 		if !ri.Lease.Empty() {
 			if _, ok := ri.Desc.GetReplicaDescriptorByID(ri.Lease.Replica.ReplicaID); !ok {
-				log.Dev.Fatalf(ctx, "lease names missing replica; lease: %s, desc: %s", ri.Lease, ri.Desc)
+				log.Fatalf(ctx, "lease names missing replica; lease: %s, desc: %s", ri.Lease, ri.Desc)
 			}
 		}
 		e.Ranges = append(e.Ranges, ri)
@@ -1571,10 +1569,10 @@ func NewRefreshFailedError(
 		o.apply(&options)
 	}
 	if reason == RefreshFailedError_REASON_INTENT && options.conflictingTxn == nil {
-		log.Dev.Fatal(ctx, "conflictingTxn should be set if refresh failed with REASON_INTENT")
+		log.Fatal(ctx, "conflictingTxn should be set if refresh failed with REASON_INTENT")
 	}
 	if reason != RefreshFailedError_REASON_INTENT && options.conflictingTxn != nil {
-		log.Dev.Fatal(ctx, "conflictingTxn should not be set if refresh failed without REASON_INTENT")
+		log.Fatal(ctx, "conflictingTxn should not be set if refresh failed without REASON_INTENT")
 	}
 	return &RefreshFailedError{
 		Reason:         reason,
@@ -1830,51 +1828,6 @@ func NewKeyCollisionError(key roachpb.Key, value []byte) error {
 	return ret
 }
 
-// NewExclusionViolationError creates a new ExclusionViolationError. This error
-// is returned by requests that encounter an existing value written at a
-// timestamp at which they expected to have an exclusive lock on the key. This
-// error implies that the lock was lost, which is possible for unreplicated locks.
-func NewExclusionViolationError(
-	exclusionTS, actualTS hlc.Timestamp, key roachpb.Key,
-) *ExclusionViolationError {
-	return &ExclusionViolationError{
-		ExpectedExclusionSinceTimestamp: exclusionTS,
-		ViolationTimestamp:              actualTS,
-		Key:                             key.Clone(),
-	}
-}
-
-func (e *ExclusionViolationError) SafeFormatError(p errors.Printer) (next error) {
-	p.Printf("write exclusion on key %s expected since %s but found write at %s",
-		e.Key,
-		e.ExpectedExclusionSinceTimestamp,
-		e.ViolationTimestamp,
-	)
-	return nil
-}
-
-func (e *ExclusionViolationError) Error() string {
-	return redact.Sprint(e).StripMarkers()
-}
-
-func (*ExclusionViolationError) canRestartTransaction() TransactionRestart {
-	return TransactionRestart_IMMEDIATE
-}
-
-// Type is part of the ErrorDetailInterface.
-func (e *ExclusionViolationError) Type() ErrorDetailType {
-	return ExclusionViolationErrType
-}
-
-// RetryTimestamp returns the timestamp that should be used to retry an
-// operation after encountering a ExclusionViolationError.
-func (e *ExclusionViolationError) RetryTimestamp() hlc.Timestamp {
-	return e.ViolationTimestamp.Next()
-}
-
-var _ ErrorDetailInterface = &ExclusionViolationError{}
-var _ transactionRestartError = &ExclusionViolationError{}
-
 func init() {
 	encode := func(ctx context.Context, err error) (msgPrefix string, safeDetails []string, payload proto.Message) {
 		errors.As(err, &payload) // payload = err.(proto.Message)
@@ -1974,4 +1927,3 @@ var _ errors.SafeFormatter = &UnhandledRetryableError{}
 var _ errors.SafeFormatter = &ReplicaUnavailableError{}
 var _ errors.SafeFormatter = &ProxyFailedError{}
 var _ errors.SafeFormatter = &KeyCollisionError{}
-var _ errors.SafeFormatter = &ExclusionViolationError{}

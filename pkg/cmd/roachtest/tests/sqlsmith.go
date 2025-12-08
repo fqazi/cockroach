@@ -35,15 +35,35 @@ func registerSQLSmith(r registry.Registry) {
 		sqlsmith.RandTableSetupName: sqlsmith.Setups[sqlsmith.RandTableSetupName],
 		"tpch-sf1": func(r *rand.Rand) []string {
 			return []string{`
-RESTORE TABLE tpch.* FROM LATEST IN 'gs://cockroach-fixtures-us-east1/workload/tpch/scalefactor=1/backup_25_3?AUTH=implicit'
+RESTORE TABLE tpch.* FROM '/' IN 'gs://cockroach-fixtures-us-east1/workload/tpch/scalefactor=1/backup?AUTH=implicit'
 WITH into_db = 'defaultdb', unsafe_restore_incompatible_version;
 `}
 		},
 		"tpcc": func(r *rand.Rand) []string {
-			return []string{`
-RESTORE TABLE tpcc.* FROM LATEST IN 'gs://cockroach-fixtures-us-east1/workload/tpcc/version=25.3,fks=true,seed=1,warehouses=1?AUTH=implicit'
+			const version = "version=2.1.0,fks=true,interleaved=false,seed=1,warehouses=1"
+			var stmts []string
+			for _, t := range []string{
+				"customer",
+				"district",
+				"history",
+				"item",
+				"new_order",
+				"order",
+				"order_line",
+				"stock",
+				"warehouse",
+			} {
+				stmts = append(
+					stmts,
+					fmt.Sprintf(`
+RESTORE TABLE tpcc.%s FROM '/' IN 'gs://cockroach-fixtures-us-east1/workload/tpcc/%[2]s/%[1]s?AUTH=implicit'
 WITH into_db = 'defaultdb', unsafe_restore_incompatible_version;
-`}
+`,
+						t, version,
+					),
+				)
+			}
+			return stmts
 		},
 	}
 	settings := map[string]sqlsmith.SettingFunc{
@@ -171,7 +191,7 @@ WITH into_db = 'defaultdb', unsafe_restore_incompatible_version;
 			stmt := ""
 			err := func() error {
 				done := make(chan error, 1)
-				m := c.NewDeprecatedMonitor(ctx, c.Node(1))
+				m := c.NewMonitor(ctx, c.Node(1))
 				m.Go(func(context.Context) error {
 					// Generate can potentially panic in bad cases, so
 					// to avoid Go routines from dying we are going
@@ -400,15 +420,12 @@ func setupMultiRegionDatabase(t test.Test, conn *gosql.DB, rnd *rand.Rand, logSt
 	}
 
 	for _, table := range tables {
-		// Locality changes can only be made if schema_locked is toggled.
-		execStmt(fmt.Sprintf(`ALTER TABLE %s SET (schema_locked=false);`, table.String()))
 		// Maybe change the locality of the table.
 		if val := rnd.Intn(3); val == 0 {
 			execStmt(fmt.Sprintf(`ALTER TABLE %s SET LOCALITY REGIONAL BY ROW;`, table.String()))
 		} else if val == 1 {
 			execStmt(fmt.Sprintf(`ALTER TABLE %s SET LOCALITY GLOBAL;`, table.String()))
 		}
-		execStmt(fmt.Sprintf(`ALTER TABLE %s SET (schema_locked=true);`, table.String()))
 		// Else keep the locality as REGIONAL BY TABLE.
 	}
 }

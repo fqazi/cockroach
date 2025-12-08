@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
-	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -24,9 +23,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
-	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/blobs"
-	"github.com/cockroachdb/cockroach/pkg/cloud"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
@@ -41,8 +37,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
-	"github.com/cockroachdb/cockroach/pkg/security/username"
-	clustersettings "github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -53,7 +47,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/version"
 )
 
 const (
@@ -625,15 +618,14 @@ func newFingerprintContents(db *gosql.DB, table string) *fingerprintContents {
 	return &fingerprintContents{db: db, table: table}
 }
 
-// Load computes the fingerprints for the underlying table and stores the
-// contents in the `fingeprints` field. If timestamp is not set, computes
-// the fingerprint for the current time.
+// Load computes the fingerprints for the underlying table and stores
+// the contents in the `fingeprints` field.
 func (fc *fingerprintContents) Load(
 	ctx context.Context, l *logger.Logger, timestamp string, _ tableContents,
 ) error {
 	l.Printf("computing fingerprints for table %s", fc.table)
 	query := fmt.Sprintf(
-		"SELECT index_name, COALESCE(fingerprint, '') FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE %s]%s ORDER BY index_name",
+		"SELECT index_name, fingerprint FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE %s]%s ORDER BY index_name",
 		fc.table, aostFor(timestamp),
 	)
 	rows, err := fc.db.QueryContext(ctx, query)
@@ -697,9 +689,7 @@ func (sr *systemTableRow) skip() bool {
 // callback will be passed the value associated with that column, if
 // found, and its return value overwrites the value for that
 // column. The callback is not called if the column name is invalid.
-func (sr *systemTableRow) processColumn(
-	column string, skipMissing bool, fn func(interface{}) interface{},
-) {
+func (sr *systemTableRow) processColumn(column string, fn func(interface{}) interface{}) {
 	if sr.skip() {
 		return
 	}
@@ -708,9 +698,6 @@ func (sr *systemTableRow) processColumn(
 	hasCol := colIdx < len(sr.columns) && sr.columns[colIdx] == column
 
 	if !hasCol {
-		if skipMissing {
-			return
-		}
 		sr.err = fmt.Errorf("could not find column %s on %s", column, sr.table)
 		return
 	}
@@ -721,7 +708,7 @@ func (sr *systemTableRow) processColumn(
 // Matches allows the caller to only apply certain changes if the
 // value of a certain column matches a given value.
 func (sr *systemTableRow) Matches(column string, value interface{}) *systemTableRow {
-	sr.processColumn(column, false /*skipMissing */, func(actualValue interface{}) interface{} {
+	sr.processColumn(column, func(actualValue interface{}) interface{} {
 		sr.matches = reflect.DeepEqual(actualValue, value)
 		return actualValue
 	})
@@ -729,11 +716,11 @@ func (sr *systemTableRow) Matches(column string, value interface{}) *systemTable
 	return sr
 }
 
-// WithSentinelIfExists replaces the contents of the given columns with a
-// fixed sentinel value, if the column exists.
-func (sr *systemTableRow) WithSentinelIfExists(columns ...string) *systemTableRow {
+// WithSentinel replaces the contents of the given columns with a
+// fixed sentinel value.
+func (sr *systemTableRow) WithSentinel(columns ...string) *systemTableRow {
 	for _, column := range columns {
-		sr.processColumn(column, true /* skipMissing */, func(value interface{}) interface{} {
+		sr.processColumn(column, func(value interface{}) interface{} {
 			return systemTableSentinel
 		})
 	}
@@ -828,7 +815,7 @@ func (sc *systemTableContents) settingsHandler(
 		// `name` column equals 'version'
 		Matches("name", "version").
 		// use the sentinel value for every column in the settings table
-		WithSentinelIfExists(columns...).
+		WithSentinel(columns...).
 		Values()
 }
 
@@ -846,18 +833,7 @@ func (sc *systemTableContents) scheduledJobsHandler(
 	values []interface{}, columns []string,
 ) ([]interface{}, error) {
 	return newSystemTableRow(sc.table, values, columns).
-		WithSentinelIfExists("next_run", "schedule_details", "schedule_state").
-		Values()
-}
-
-// usersHandler replaces the contents of "estimated_last_login_time" which gets
-// updated on every user login attempt, which means the post restore fingerprint
-// could observe an updated log in time value.
-func (sc *systemTableContents) usersHandler(
-	values []interface{}, columns []string,
-) ([]interface{}, error) {
-	return newSystemTableRow(sc.table, values, columns).
-		WithSentinelIfExists("estimated_last_login_time").
+		WithSentinel("next_run", "schedule_details", "schedule_state").
 		Values()
 }
 
@@ -865,7 +841,7 @@ func (sc *systemTableContents) commentsHandler(
 	values []interface{}, columns []string,
 ) ([]interface{}, error) {
 	return newSystemTableRow(sc.table, values, columns).
-		WithSentinelIfExists("object_id"). // object_id is rekeyed
+		WithSentinel("object_id"). // object_id is rekeyed
 		Values()
 }
 
@@ -898,8 +874,6 @@ func (sc *systemTableContents) handleSpecialCases(
 		return sc.commentsHandler(row, columns)
 	case "system.tenant_settings":
 		return sc.tenantSettingsHandler(row, columns)
-	case "system.users":
-		return sc.usersHandler(row, columns)
 	default:
 		return row, nil
 	}
@@ -1257,197 +1231,6 @@ func newBackupRestoreTestDriver(
 	}
 
 	return d, nil
-}
-
-// verifyBackupCollection restores the backup collection passed and verifies
-// that the contents after the restore match the contents when the backup was
-// taken. For cluster level backups, the cluster needs to be wiped before
-// verifyBackupCollection is called or else the cluster restore will fail.
-func (d *BackupRestoreTestDriver) verifyBackupCollection(
-	ctx context.Context,
-	l *logger.Logger,
-	rng *rand.Rand,
-	bc *backupCollection,
-	checkFiles bool,
-	internalSystemJobs bool,
-	mvHelper *mixedversion.Helper,
-) error {
-	restoredTables, _, err := d.runRestore(ctx, l, rng, bc, checkFiles, internalSystemJobs, mvHelper)
-	if err != nil {
-		return fmt.Errorf("error restoring backup: %w", err)
-	}
-	restoredContents, err := d.getRestoredContents(
-		ctx, l, rng, restoredTables, bc, internalSystemJobs,
-	)
-	if err != nil {
-		return err
-	}
-
-	for j, contents := range bc.contents {
-		table := bc.tables[j]
-		restoredTableContents := restoredContents[j]
-		l.Printf("%s: verifying %s", bc.name, table)
-		if err := contents.ValidateRestore(ctx, l, restoredTableContents); err != nil {
-			return fmt.Errorf("backup %s: %w", bc.name, err)
-		}
-	}
-	_, db := d.testUtils.RandomDB(rng, d.testUtils.roachNodes)
-	if err := roachtestutil.CheckInvalidDescriptors(ctx, l, db); err != nil {
-		return fmt.Errorf("failed descriptor check: %w", err)
-	}
-
-	l.Printf("%s: OK", bc.name)
-	return nil
-}
-
-// runRestore runs the restore statement for the backup collection and waits for
-// a job success. It returns the tables that were restored and the database that
-// was restored into.
-func (d *BackupRestoreTestDriver) runRestore(
-	ctx context.Context,
-	l *logger.Logger,
-	rng *rand.Rand,
-	bc *backupCollection,
-	checkFiles bool,
-	internalSystemJobs bool,
-	mvHelper *mixedversion.Helper,
-) ([]string, string, error) {
-	restoreStmt, restoredTables, restoreDB := d.buildRestoreStatement(bc)
-	if _, isTableBackup := bc.btype.(*tableBackup); isTableBackup {
-		// If we are restoring a table backup , we need to create the database
-		// first.
-		if err := d.testUtils.Exec(ctx, rng, fmt.Sprintf("CREATE DATABASE %s", restoreDB)); err != nil {
-			return nil, "", fmt.Errorf("backup %s: error creating database %s: %w", bc.name, restoreDB, err)
-		}
-	}
-	// As a sanity check, make sure that a `check_files` check passes
-	// before attempting a restore.
-	if checkFiles {
-		if err := d.testUtils.checkFiles(ctx, rng, bc); err != nil {
-			return nil, "", fmt.Errorf("backup %s: check_files failed: %w", bc.name, err)
-		}
-	}
-	l.Printf("Running restore: %s", restoreStmt)
-	var jobID int
-	if err := d.testUtils.QueryRow(ctx, rng, restoreStmt).Scan(&jobID); err != nil {
-		return nil, "", fmt.Errorf("backup %s: error in restore statement: %w", bc.name, err)
-	}
-	if jobErr := d.testUtils.waitForJobSuccess(ctx, l, rng, jobID, internalSystemJobs); jobErr != nil {
-		if mvHelper == nil {
-			return nil, "", jobErr
-		}
-		v25_4 := version.MajorVersion{Year: 25, Ordinal: 4}
-		isUpgradeTo25_4 := mvHelper.System.ToVersion.Major().Equals(v25_4) &&
-			mvHelper.System.FromVersion.Major().LessThan(v25_4)
-		if !isUpgradeTo25_4 {
-			return nil, "", jobErr
-		}
-		// In the 25.4 upgrade, all descriptors are rewritten in the migration to use
-		// the new serialization format. If this upgrade occurs in the middle of the
-		// restore, we may encounter a version mismatch error. As a short-term fix for
-		// this test flake, we retry the restore if we encounter this error.
-		if !strings.Contains(jobErr.Error(), "version mismatch for descriptor") {
-			return nil, "", jobErr
-		}
-		l.Printf(
-			"encountered version mismatch error due to mixed-version upgrade, retrying restore: %v", jobErr,
-		)
-		if err := d.testUtils.QueryRow(ctx, rng, restoreStmt).Scan(&jobID); err != nil {
-			return nil, "", fmt.Errorf("backup %s: error in restore statement: %w", bc.name, err)
-		}
-		if jobErr = d.testUtils.waitForJobSuccess(ctx, l, rng, jobID, internalSystemJobs); jobErr != nil {
-			return nil, "", jobErr
-		}
-	}
-
-	return restoredTables, restoreDB, nil
-}
-
-// getRestoredContents loads the contents (e.g. non system table fingerprints)
-// of the tables that were restored from the backup collection. This should be
-// called after runRestore has been called.
-func (d *BackupRestoreTestDriver) getRestoredContents(
-	ctx context.Context,
-	l *logger.Logger,
-	rng *rand.Rand,
-	restoredTables []string,
-	bc *backupCollection,
-	internalSystemJobs bool,
-) ([]tableContents, error) {
-	var restoredContents []tableContents
-	var err error
-	if d.testUtils.onlineRestore {
-		waitForDownloadJob := rng.Intn(3) == 0
-		restoredContents, err = d.getOnlineRestoredContents(
-			ctx, l, rng, bc, restoredTables, internalSystemJobs, waitForDownloadJob,
-		)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"backup %s: error loading online restore contents: %w (waitForDownloadJob: %v)",
-				bc.name, err, waitForDownloadJob,
-			)
-		}
-	} else {
-		restoredContents, err = d.computeTableContents(
-			ctx, l, rng, restoredTables, bc.contents, "", /* timestamp */
-		)
-		if err != nil {
-			return nil, fmt.Errorf("backup %s: error loading restored contents: %w", bc.name, err)
-		}
-	}
-	return restoredContents, nil
-}
-
-// buildRestoreStatement builds the restore statement for the backup collection
-// and returns the command, the tables being restored and the database being
-// restored.
-// Note: the database being restored into may not exist and may need to be
-// created (e.g. when restoring a table backup).
-func (d *BackupRestoreTestDriver) buildRestoreStatement(
-	bc *backupCollection,
-) (restoreStmt string, tables []string, database string) {
-	tables, database = d.getRestoredTablesAndDB(bc)
-	restoreCmd, options := bc.btype.RestoreCommand(database)
-	restoreOptions := append([]string{"detached"}, options...)
-	// If the backup was created with an encryption passphrase, we
-	// need to include it when restoring as well.
-	if opt := bc.encryptionOption(); opt != nil {
-		restoreOptions = append(restoreOptions, opt.String())
-	}
-	if d.testUtils.onlineRestore {
-		restoreOptions = append(restoreOptions, "experimental deferred copy")
-	}
-
-	var optionsStr string
-	if len(restoreOptions) > 0 {
-		optionsStr = fmt.Sprintf(" WITH %s", strings.Join(restoreOptions, ", "))
-	}
-	restoreStmt = fmt.Sprintf(
-		"%s FROM LATEST IN '%s'%s %s",
-		restoreCmd, bc.uri(), aostFor(bc.restoreAOST), optionsStr,
-	)
-	return restoreStmt, tables, database
-}
-
-// getRestoredTablesAndDB returns the name of the database being restored *into*
-// along with the names of the tables being restored.
-// Note: the database being restored into may not exist and may need to be
-// created (e.g. when restoring a table backup).
-func (d *BackupRestoreTestDriver) getRestoredTablesAndDB(bc *backupCollection) ([]string, string) {
-	// Defaults for the database where the backup will be restored,
-	// along with the expected names of the tables after restore.
-	restoreDB := fmt.Sprintf(
-		"restore_%s_%d", invalidDBNameRE.ReplaceAllString(bc.name, "_"), d.nextRestoreID(),
-	)
-	restoredTables := tableNamesWithDB(restoreDB, bc.tables)
-	_, ok := bc.btype.(*clusterBackup)
-	if ok {
-		// For cluster backups, the restored tables are always the same
-		// as the tables we backed up. In addition, we need to wipe the
-		// cluster before attempting a restore.
-		restoredTables = bc.tables
-	}
-	return restoredTables, restoreDB
 }
 
 func (mvb *mixedVersionBackup) initBackupRestoreTestDriver(
@@ -2147,10 +1930,7 @@ func (d *BackupRestoreTestDriver) runBackup(
 			backupErr <- err
 		}
 		return nil
-	},
-		task.Logger(l),
-		task.Name(fmt.Sprintf("backup %s", collection.name)),
-	)
+	}, task.Name(fmt.Sprintf("backup %s", collection.name)))
 
 	var numPauses int
 	for {
@@ -2366,74 +2146,6 @@ func (d *BackupRestoreTestDriver) createBackupCollection(
 		fingerprintAOST = collection.restoreAOST
 	}
 	return d.saveContents(ctx, l, rng, &collection, fingerprintAOST)
-}
-
-// deleteUserTableSST deletes an SST that covers a user table from the full
-// backup in a collection. This is used to test online restore recovery. We
-// delete from the full backup specifically to avoid deleting an SST from an
-// incremental that is skipped due to a compacted backup. This ensures that
-// deleting an SST will cause the download job to fail (assuming it hasn't
-// already been downloaded).
-// Note: We delete specifically a user-table SST as opposed to choosing a random
-// SST because the temporary system table SSTs may be GC'd before the download
-// phase attempts to download the SST. This would cause the download job to
-// succeed instead of failing as expected. See
-// https://github.com/cockroachdb/cockroach/issues/148408 for more details.
-// TODO (kev-cao): Investigate if blocking storage level compaction would
-// prevent GC of temporary system tables and allow us to delete a random SST
-// instead. Technically, it is still possible, but unlikely, for storage to
-// compact away a user-table SST before the download job attempts to download
-// it, which would result in false positives in the test.
-func (d *BackupRestoreTestDriver) deleteUserTableSST(
-	ctx context.Context, l *logger.Logger, db *gosql.DB, collection *backupCollection,
-) error {
-	var sstPath string
-	var startPretty, endPretty string
-	var sizeBytes, numRows int
-	if err := db.QueryRowContext(
-		ctx,
-		`SELECT path, start_pretty, end_pretty, size_bytes, rows FROM
-		(
-			SELECT row_number() OVER (), * FROM
-			[SHOW BACKUP FILES FROM LATEST IN $1]
-		)
-		WHERE backup_type = 'full'
-		ORDER BY row_number DESC
-		LIMIT 1`,
-		collection.uri(),
-	).Scan(&sstPath, &startPretty, &endPretty, &sizeBytes, &numRows); err != nil {
-		return errors.Wrapf(err, "failed to get SST path from %s", collection.uri())
-	}
-	uri, err := url.Parse(collection.uri())
-	if err != nil {
-		return errors.Wrapf(err, "failed to parse backup collection URI %q", collection.uri())
-	}
-	l.Printf(
-		"deleting sst %s at %s: covering %d bytes and %d rows in [%s, %s)",
-		sstPath, uri, sizeBytes, numRows, startPretty, endPretty,
-	)
-	storage, err := cloud.ExternalStorageFromURI(
-		ctx,
-		collection.uri(),
-		base.ExternalIODirConfig{},
-		clustersettings.MakeTestingClusterSettings(),
-		blobs.TestBlobServiceClient(uri.Path),
-		username.RootUserName(),
-		nil, /* db */
-		nil, /* limiters */
-		cloud.NilMetrics,
-	)
-	if err != nil {
-		return errors.Wrapf(err, "failed to create external storage for %q", collection.uri())
-	}
-	defer storage.Close()
-	return errors.Wrapf(
-		storage.Delete(ctx, sstPath),
-		"failed to delete sst %s from backup %s at %s",
-		sstPath,
-		collection.name,
-		uri,
-	)
 }
 
 // sentinelFilePath returns the path to the file that prevents job
@@ -2654,21 +2366,124 @@ func (u *CommonTestUtils) collectFailureArtifacts(
 	return fmt.Errorf("%w (artifacts collected in %s)", restoreErr, dirName), nil
 }
 
-func (d BackupRestoreTestDriver) getOnlineRestoredContents(
+// verifyBackupCollection restores the backup collection passed and verifies
+// that the contents after the restore match the contents when the backup was
+// taken. For cluster level backups, the cluster needs to be wiped before
+// verifyBackupCollection is called or else the cluster restore will fail.
+func (bc *backupCollection) verifyBackupCollection(
 	ctx context.Context,
 	l *logger.Logger,
 	rng *rand.Rand,
-	bc *backupCollection,
-	restoredTables []string,
+	d *BackupRestoreTestDriver,
+	checkFiles bool,
 	internalSystemJobs bool,
-	waitForDownloadJob bool,
-) ([]tableContents, error) {
-	downloadJobID, err := d.getORDownloadJobID(ctx, l, rng)
-	if err != nil {
-		return nil, fmt.Errorf("backup %s: error getting download job ID: %w", bc.name, err)
+) error {
+	// Defaults for the database where the backup will be restored,
+	// along with the expected names of the tables after restore.
+	restoreDB := fmt.Sprintf(
+		"restore_%s_%d", invalidDBNameRE.ReplaceAllString(bc.name, "_"), d.nextRestoreID(),
+	)
+	restoredTables := tableNamesWithDB(restoreDB, bc.tables)
+
+	// Pre-requisites:
+	switch bc.btype.(type) {
+	case *clusterBackup:
+		// For cluster backups, the restored tables are always the same
+		// as the tables we backed up. In addition, we need to wipe the
+		// cluster before attempting a restore.
+		restoredTables = bc.tables
+
+	case *tableBackup:
+		// If we are restoring a table backup , we need to create it
+		// first.
+		if err := d.testUtils.Exec(ctx, rng, fmt.Sprintf("CREATE DATABASE %s", restoreDB)); err != nil {
+			return fmt.Errorf("backup %s: error creating database %s: %w", bc.name, restoreDB, err)
+		}
 	}
 
-	if waitForDownloadJob {
+	// As a sanity check, make sure that a `check_files` check passes
+	// before attempting a restore.
+	if checkFiles {
+		if err := d.testUtils.checkFiles(ctx, rng, bc); err != nil {
+			return fmt.Errorf("backup %s: check_files failed: %w", bc.name, err)
+		}
+	}
+
+	restoreCmd, options := bc.btype.RestoreCommand(restoreDB)
+	restoreOptions := append([]string{"detached"}, options...)
+	// If the backup was created with an encryption passphrase, we
+	// need to include it when restoring as well.
+	if opt := bc.encryptionOption(); opt != nil {
+		restoreOptions = append(restoreOptions, opt.String())
+	}
+	if d.testUtils.onlineRestore {
+		restoreOptions = append(restoreOptions, "experimental deferred copy")
+	}
+
+	var optionsStr string
+	if len(restoreOptions) > 0 {
+		optionsStr = fmt.Sprintf(" WITH %s", strings.Join(restoreOptions, ", "))
+	}
+	restoreStmt := fmt.Sprintf(
+		"%s FROM LATEST IN '%s'%s %s",
+		restoreCmd, bc.uri(), aostFor(bc.restoreAOST), optionsStr,
+	)
+	l.Printf("Running restore: %s", restoreStmt)
+	var jobID int
+	if err := d.testUtils.QueryRow(ctx, rng, restoreStmt).Scan(&jobID); err != nil {
+		return fmt.Errorf("backup %s: error in restore statement: %w", bc.name, err)
+	}
+
+	if err := d.testUtils.waitForJobSuccess(ctx, l, rng, jobID, internalSystemJobs); err != nil {
+		return err
+	}
+	var restoredContents []tableContents
+	var err error
+	if d.testUtils.onlineRestore {
+		restoredContents, err = bc.verifyOnlineRestore(ctx, l, rng, d, restoredTables, internalSystemJobs)
+		if err != nil {
+			return fmt.Errorf("backup %s: error verifying online restore: %w", bc.name, err)
+		}
+	} else {
+		restoredContents, err = d.computeTableContents(
+			ctx, l, rng, restoredTables, bc.contents, "", /* timestamp */
+		)
+		if err != nil {
+			return fmt.Errorf("backup %s: error loading restored contents: %w", bc.name, err)
+		}
+	}
+
+	for j, contents := range bc.contents {
+		table := bc.tables[j]
+		restoredTableContents := restoredContents[j]
+		l.Printf("%s: verifying %s", bc.name, table)
+		if err := contents.ValidateRestore(ctx, l, restoredTableContents); err != nil {
+			return fmt.Errorf("backup %s: %w", bc.name, err)
+		}
+	}
+	_, db := d.testUtils.RandomDB(rng, d.testUtils.roachNodes)
+	if err := roachtestutil.CheckInvalidDescriptors(ctx, l, db); err != nil {
+		return fmt.Errorf("failed descriptor check: %w", err)
+	}
+
+	l.Printf("%s: OK", bc.name)
+	return nil
+}
+
+func (bc *backupCollection) verifyOnlineRestore(
+	ctx context.Context,
+	l *logger.Logger,
+	rng *rand.Rand,
+	d *BackupRestoreTestDriver,
+	restoredTables []string,
+	internalSystemJobs bool,
+) ([]tableContents, error) {
+	var downloadJobID int
+	if err := d.testUtils.QueryRow(ctx, rng, `SELECT job_id FROM [SHOW JOBS] WHERE description LIKE '%Background Data Download%' ORDER BY created DESC LIMIT 1`).Scan(&downloadJobID); err != nil {
+		return nil, err
+	}
+
+	if rng.Intn(3) == 0 {
 		// Sometimes wait for the download job to complete before fingerprinting.
 		if err := d.testUtils.waitForJobSuccess(ctx, l, rng, downloadJobID, internalSystemJobs); err != nil {
 			return nil, err
@@ -2685,42 +2500,16 @@ func (d BackupRestoreTestDriver) getOnlineRestoredContents(
 	if err := d.testUtils.waitForJobSuccess(ctx, l, rng, downloadJobID, internalSystemJobs); err != nil {
 		return nil, err
 	}
-	db := d.testUtils.cluster.Conn(ctx, l, d.roachNodes[0])
-	defer db.Close()
-	if err := checkNoExternalBytesRemaining(ctx, db); err != nil {
-		return nil, fmt.Errorf("download job %d did not download all data", downloadJobID)
-	}
-	return restoredContents, nil
-}
-
-// checkNoExternalBytesRemaining checks that there are no external bytes
-// remaining of the tenant that runs the query. If there are, it returns an
-// error.
-func checkNoExternalBytesRemaining(ctx context.Context, db *gosql.DB) error {
+	conn := d.testUtils.cluster.Conn(ctx, l, d.roachNodes[0])
+	defer conn.Close()
 	var externalBytes uint64
-	if err := db.QueryRowContext(ctx, jobutils.GetExternalBytesForConnectedTenant).Scan(&externalBytes); err != nil {
-		return errors.Wrapf(err, "could not get external bytes")
+	if err := conn.QueryRowContext(ctx, jobutils.GetExternalBytesForConnectedTenant).Scan(&externalBytes); err != nil {
+		return nil, fmt.Errorf("could not get external bytes: %w", err)
 	}
 	if externalBytes != 0 {
-		return fmt.Errorf("cluster has %d external bytes remaining", externalBytes)
+		return nil, fmt.Errorf("download job %d did not download all data. Cluster has %d external bytes", downloadJobID, externalBytes)
 	}
-	return nil
-}
-
-func (d BackupRestoreTestDriver) getORDownloadJobID(
-	ctx context.Context, l *logger.Logger, rng *rand.Rand,
-) (int, error) {
-	var downloadJobID int
-	if err := d.testUtils.QueryRow(
-		ctx,
-		rng,
-		`SELECT job_id FROM [SHOW JOBS]
-		WHERE description LIKE '%Background Data Download%' AND job_type = 'RESTORE'
-		ORDER BY created DESC LIMIT 1`,
-	).Scan(&downloadJobID); err != nil {
-		return 0, err
-	}
-	return downloadJobID, nil
+	return restoredContents, nil
 }
 
 // resetCluster wipes the entire cluster and starts it again with the
@@ -2745,7 +2534,7 @@ func (u *CommonTestUtils) resetCluster(
 	}
 
 	cockroachPath := clusterupgrade.CockroachPathForVersion(u.t, version)
-	settings = append(settings, install.BinaryOption(cockroachPath), install.SimpleSecureOption(true))
+	settings = append(settings, install.BinaryOption(cockroachPath), install.SecureOption(true))
 	return clusterupgrade.StartWithSettings(
 		ctx, l, u.cluster, u.roachNodes, option.NewStartOpts(opts...), settings...,
 	)
@@ -2786,9 +2575,7 @@ func (mvb *mixedVersionBackup) verifySomeBackups(
 
 	for _, collection := range toBeRestored {
 		l.Printf("mixed-version: verifying %s", collection.name)
-		if err := mvb.backupRestoreTestDriver.verifyBackupCollection(
-			ctx, l, rng, collection, checkFiles, internalSystemJobs, h,
-		); err != nil {
+		if err := collection.verifyBackupCollection(ctx, l, rng, mvb.backupRestoreTestDriver, checkFiles, internalSystemJobs); err != nil {
 			return errors.Wrap(err, "mixed-version")
 		}
 	}
@@ -2839,10 +2626,7 @@ func (mvb *mixedVersionBackup) verifyAllBackups(
 			}
 
 			if isClusterBackup {
-				// The mixedversion framework uses the global test monitor, which
-				// already handles marking node deaths as expected for simple restarts.
-				expectDeaths := func(numNodes int) {}
-				err := u.resetCluster(ctx, l, v, expectDeaths, []install.ClusterSettingOption{})
+				err := u.resetCluster(ctx, l, v, h.ExpectDeaths, []install.ClusterSettingOption{})
 				if err != nil {
 					err := errors.Wrapf(err, "%s", v)
 					l.Printf("error resetting cluster: %v", err)
@@ -2868,9 +2652,7 @@ func (mvb *mixedVersionBackup) verifyAllBackups(
 				return
 			}
 
-			if err := mvb.backupRestoreTestDriver.verifyBackupCollection(
-				ctx, l, rng, collection, checkFiles, internalSystemJobs, h,
-			); err != nil {
+			if err := collection.verifyBackupCollection(ctx, l, rng, mvb.backupRestoreTestDriver, checkFiles, internalSystemJobs); err != nil {
 				err := errors.Wrapf(err, "%s", v)
 				l.Printf("restore error: %v", err)
 				// Attempt to collect logs and debug.zip at the time of this
@@ -2942,7 +2724,6 @@ func registerBackupMixedVersion(r registry.Registry) {
 		CompatibleClouds:          registry.Clouds(spec.GCE, spec.Local),
 		Suites:                    registry.Suites(registry.MixedVersion, registry.Nightly),
 		TestSelectionOptOutSuites: registry.Suites(registry.Nightly),
-		Monitor:                   true,
 		Randomized:                true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			enabledDeploymentModes := []mixedversion.DeploymentMode{
@@ -2960,7 +2741,6 @@ func registerBackupMixedVersion(r registry.Registry) {
 				// migrations enough time to finish considering all the data
 				// that might exist in the cluster by the time the upgrade is
 				// attempted.
-				mixedversion.WithWorkloadNodes(c.WorkloadNode()),
 				mixedversion.UpgradeTimeout(30*time.Minute),
 				mixedversion.AlwaysUseLatestPredecessors,
 				mixedversion.EnabledDeploymentModes(enabledDeploymentModes...),
@@ -2972,13 +2752,13 @@ func registerBackupMixedVersion(r registry.Registry) {
 				// TODO(renato): don't disable these mutators when the
 				// framework exposes some utility to provide mutual exclusion
 				// of concurrent steps.
-				mixedversion.DisableAllClusterSettingMutators(),
+				mixedversion.DisableMutators(
+					mixedversion.ClusterSettingMutator("kv.expiration_leases_only.enabled"),
+					mixedversion.ClusterSettingMutator("storage.ingest_split.enabled"),
+					mixedversion.ClusterSettingMutator("storage.sstable.compression_algorithm"),
+				),
 			)
 			testRNG := mvt.RNG()
-
-			// Workload can only take a positive int as a seed, but seed could be a
-			// negative int. Ensure the seed passed to workload is an int.
-			workloadSeed := testRNG.Int63()
 
 			dbs := []string{"bank", "tpcc"}
 			backupTest, err := newMixedVersionBackup(t, c, c.CRDBNodes(), dbs)
@@ -2997,8 +2777,8 @@ func registerBackupMixedVersion(r registry.Registry) {
 			// for the cluster used in this test without overloading it,
 			// which can make the backups take much longer to finish.
 			const numWarehouses = 100
-			bankInit, bankRun := bankWorkloadCmd(t.L(), testRNG, workloadSeed, c.CRDBNodes(), false)
-			tpccInit, tpccRun := tpccWorkloadCmd(t.L(), testRNG, workloadSeed, numWarehouses, c.CRDBNodes())
+			bankInit, bankRun := bankWorkloadCmd(t.L(), testRNG, c.CRDBNodes(), false)
+			tpccInit, tpccRun := tpccWorkloadCmd(t.L(), testRNG, numWarehouses, c.CRDBNodes())
 
 			mvt.OnStartup("set short job interval", backupTest.setShortJobIntervals)
 			mvt.OnStartup("take backup in previous version", backupTest.maybeTakePreviousVersionBackup)
@@ -3031,21 +2811,15 @@ func registerBackupMixedVersion(r registry.Registry) {
 }
 
 func tpccWorkloadCmd(
-	l *logger.Logger,
-	testRNG *rand.Rand,
-	seed int64,
-	numWarehouses int,
-	roachNodes option.NodeListOption,
+	l *logger.Logger, testRNG *rand.Rand, numWarehouses int, roachNodes option.NodeListOption,
 ) (init *roachtestutil.Command, run *roachtestutil.Command) {
 	init = roachtestutil.NewCommand("./cockroach workload init tpcc").
 		MaybeOption(testRNG.Intn(2) == 0, "families").
 		Arg("{pgurl%s}", roachNodes).
-		Flag("warehouses", numWarehouses).
-		MaybeFlag(seed != 0, "seed", seed)
+		Flag("warehouses", numWarehouses)
 	run = roachtestutil.NewCommand("./cockroach workload run tpcc").
 		Arg("{pgurl%s}", roachNodes).
 		Flag("warehouses", numWarehouses).
-		MaybeFlag(seed != 0, "seed", seed).
 		Option("tolerate-errors")
 	l.Printf("tpcc init: %s", init)
 	l.Printf("tpcc run: %s", run)
@@ -3053,7 +2827,7 @@ func tpccWorkloadCmd(
 }
 
 func bankWorkloadCmd(
-	l *logger.Logger, testRNG *rand.Rand, seed int64, roachNodes option.NodeListOption, mock bool,
+	l *logger.Logger, testRNG *rand.Rand, roachNodes option.NodeListOption, mock bool,
 ) (init *roachtestutil.Command, run *roachtestutil.Command) {
 	bankRows := bankPossibleRows[testRNG.Intn(len(bankPossibleRows))]
 	possiblePayloads := bankPossiblePayloadBytes
@@ -3068,15 +2842,14 @@ func bankWorkloadCmd(
 		bankPayload = 9
 		bankRows = 10
 	}
+
 	init = roachtestutil.NewCommand("./cockroach workload init bank").
 		Flag("rows", bankRows).
 		MaybeFlag(bankPayload != 0, "payload-bytes", bankPayload).
-		MaybeFlag(seed != 0, "seed", seed).
 		Flag("ranges", 0).
 		Arg("{pgurl%s}", roachNodes)
 	run = roachtestutil.NewCommand("./cockroach workload run bank").
 		Arg("{pgurl%s}", roachNodes).
-		MaybeFlag(seed != 0, "seed", seed).
 		Option("tolerate-errors")
 	l.Printf("bank init: %s", init)
 	l.Printf("bank run: %s", run)
@@ -3084,7 +2857,7 @@ func bankWorkloadCmd(
 }
 
 func schemaChangeWorkloadCmd(
-	l *logger.Logger, testRNG *rand.Rand, seed int64, roachNodes option.NodeListOption, mock bool,
+	l *logger.Logger, testRNG *rand.Rand, roachNodes option.NodeListOption, mock bool,
 ) (init *roachtestutil.Command, run *roachtestutil.Command) {
 	maxOps := 1000
 	concurrency := 5
@@ -3092,15 +2865,12 @@ func schemaChangeWorkloadCmd(
 		maxOps = 10
 		concurrency = 2
 	}
-	if seed == 0 {
-		seed = testRNG.Int63()
-	}
-	initCmd := roachtestutil.NewCommand("COCKROACH_RANDOM_SEED=%d ./workload init schemachange", seed).
+	initCmd := roachtestutil.NewCommand("./workload init schemachange").
 		Arg("{pgurl%s}", roachNodes)
 	// TODO (msbutler): ideally we'd use the `db` flag to explicitly set the
 	// database, but it is currently broken:
 	// https://github.com/cockroachdb/cockroach/issues/115545
-	runCmd := roachtestutil.NewCommand("COCKROACH_RANDOM_SEED=%d ./workload run schemachange", seed).
+	runCmd := roachtestutil.NewCommand("COCKROACH_RANDOM_SEED=%d ./workload run schemachange", testRNG.Int63()).
 		Flag("verbose", 1).
 		Flag("max-ops", maxOps).
 		Flag("concurrency", concurrency).

@@ -643,9 +643,14 @@ func addDependentPrivileges(
 			targetKeyword = "TO"
 		}
 
+		objectKeyword := strings.ToUpper(object.String())
+		if object == privilege.Routines {
+			objectKeyword = "FUNCTIONS"
+		}
+
 		return fmt.Sprintf("USE %s; ALTER DEFAULT PRIVILEGES FOR %s%s %s %s ON %s %s %s;",
 			dbName, roleString, strings.ToUpper(inSchemaMsg), action, string(privilegeKind.DisplayName()),
-			strings.ToUpper(object.String()), targetKeyword, grantee.SQLIdentifier())
+			objectKeyword, targetKeyword, grantee.SQLIdentifier())
 	}
 
 	for _, privs := range defaultPrivs.Users {

@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/securityassets"
 	"github.com/cockroachdb/cockroach/pkg/security/securitytest"
 	"github.com/cockroachdb/cockroach/pkg/server"
+	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/logictest"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -30,6 +31,7 @@ const configIdx = 4
 
 var logicTestDir string
 var cclLogicTestDir string
+var execBuildLogicTestDir string
 
 func init() {
 	if bazel.BuiltWithBazel() {
@@ -50,6 +52,15 @@ func init() {
 	} else {
 		cclLogicTestDir = "../../../../ccl/logictestccl/testdata/logic_test"
 	}
+	if bazel.BuiltWithBazel() {
+		var err error
+		execBuildLogicTestDir, err = bazel.Runfile("pkg/sql/opt/exec/execbuilder/testdata")
+		if err != nil {
+			panic(err)
+		}
+	} else {
+		execBuildLogicTestDir = "../../../../sql/opt/exec/execbuilder/testdata"
+	}
 }
 
 func TestMain(m *testing.M) {
@@ -60,7 +71,7 @@ func TestMain(m *testing.M) {
 	serverutils.InitTestClusterFactory(testcluster.TestClusterFactory)
 
 	defer serverutils.TestingSetDefaultTenantSelectionOverride(
-		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(156124),
+		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(76378),
 	)()
 
 	os.Exit(m.Run())
@@ -73,6 +84,17 @@ func runLogicTest(t *testing.T, file string) {
 func runCCLLogicTest(t *testing.T, file string) {
 	skip.UnderDeadlock(t, "times out and/or hangs")
 	logictest.RunLogicTest(t, logictest.TestServerArgs{}, configIdx, filepath.Join(cclLogicTestDir, file))
+}
+func runExecBuildLogicTest(t *testing.T, file string) {
+	defer sql.TestingOverrideExplainEnvVersion("CockroachDB execbuilder test version")()
+	skip.UnderDeadlock(t, "times out and/or hangs")
+	serverArgs := logictest.TestServerArgs{
+		DisableWorkmemRandomization: true,
+		// Disable the direct scans in order to keep the output of EXPLAIN (VEC)
+		// deterministic.
+		DisableDirectColumnarScans: true,
+	}
+	logictest.RunLogicTest(t, serverArgs, configIdx, filepath.Join(execBuildLogicTestDir, file))
 }
 
 // TestLogic_tmp runs any tests that are prefixed with "_", in which a dedicated
@@ -89,6 +111,11 @@ func TestLogic_tmp(t *testing.T) {
 	logictest.RunLogicTests(t, logictest.TestServerArgs{}, configIdx, glob)
 	glob = filepath.Join(cclLogicTestDir, "_*")
 	logictest.RunLogicTests(t, logictest.TestServerArgs{}, configIdx, glob)
+	glob = filepath.Join(execBuildLogicTestDir, "_*")
+	serverArgs := logictest.TestServerArgs{
+		DisableWorkmemRandomization: true,
+	}
+	logictest.RunLogicTests(t, serverArgs, configIdx, glob)
 }
 
 func TestRepeatableReadLogic_aggregate(
@@ -336,13 +363,6 @@ func TestRepeatableReadLogic_bytes(
 	runLogicTest(t, "bytes")
 }
 
-func TestRepeatableReadLogic_canary_stats(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "canary_stats")
-}
-
 func TestRepeatableReadLogic_cascade(
 	t *testing.T,
 ) {
@@ -369,13 +389,6 @@ func TestRepeatableReadLogic_check_constraints(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "check_constraints")
-}
-
-func TestRepeatableReadLogic_citext(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "citext")
 }
 
 func TestRepeatableReadLogic_cluster_settings(
@@ -593,13 +606,6 @@ func TestRepeatableReadLogic_dependencies(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "dependencies")
-}
-
-func TestRepeatableReadLogic_direct_columnar_scans(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "direct_columnar_scans")
 }
 
 func TestRepeatableReadLogic_discard(
@@ -1050,13 +1056,6 @@ func TestRepeatableReadLogic_insert(
 	runLogicTest(t, "insert")
 }
 
-func TestRepeatableReadLogic_inspect(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "inspect")
-}
-
 func TestRepeatableReadLogic_int_size(
 	t *testing.T,
 ) {
@@ -1169,13 +1168,6 @@ func TestRepeatableReadLogic_jsonb_path_exists(
 	runLogicTest(t, "jsonb_path_exists")
 }
 
-func TestRepeatableReadLogic_jsonb_path_exists_index_acceleration(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "jsonb_path_exists_index_acceleration")
-}
-
 func TestRepeatableReadLogic_jsonb_path_match(
 	t *testing.T,
 ) {
@@ -1251,13 +1243,6 @@ func TestRepeatableReadLogic_lookup_join_spans(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "lookup_join_spans")
-}
-
-func TestRepeatableReadLogic_ltree(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "ltree")
 }
 
 func TestRepeatableReadLogic_manual_retry(
@@ -1932,13 +1917,6 @@ func TestRepeatableReadLogic_show_create(
 	runLogicTest(t, "show_create")
 }
 
-func TestRepeatableReadLogic_show_create_all_routines(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_create_all_routines")
-}
-
 func TestRepeatableReadLogic_show_create_all_schemas(
 	t *testing.T,
 ) {
@@ -1958,13 +1936,6 @@ func TestRepeatableReadLogic_show_create_all_tables_builtin(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "show_create_all_tables_builtin")
-}
-
-func TestRepeatableReadLogic_show_create_all_triggers(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_create_all_triggers")
 }
 
 func TestRepeatableReadLogic_show_create_all_types(
@@ -2023,13 +1994,6 @@ func TestRepeatableReadLogic_show_indexes(
 	runLogicTest(t, "show_indexes")
 }
 
-func TestRepeatableReadLogic_show_inspect_errors(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "show_inspect_errors")
-}
-
 func TestRepeatableReadLogic_show_transfer_state(
 	t *testing.T,
 ) {
@@ -2084,13 +2048,6 @@ func TestRepeatableReadLogic_srfs(
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "srfs")
-}
-
-func TestRepeatableReadLogic_statement_hint_builtins(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "statement_hint_builtins")
 }
 
 func TestRepeatableReadLogic_statement_source(
@@ -2380,25 +2337,18 @@ func TestRepeatableReadLogic_udf_fk(
 	runLogicTest(t, "udf_fk")
 }
 
+func TestRepeatableReadLogic_udf_in_column_defaults(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runLogicTest(t, "udf_in_column_defaults")
+}
+
 func TestRepeatableReadLogic_udf_in_constraints(
 	t *testing.T,
 ) {
 	defer leaktest.AfterTest(t)()
 	runLogicTest(t, "udf_in_constraints")
-}
-
-func TestRepeatableReadLogic_udf_in_index(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "udf_in_index")
-}
-
-func TestRepeatableReadLogic_udf_in_table(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runLogicTest(t, "udf_in_table")
 }
 
 func TestRepeatableReadLogic_udf_insert(
@@ -2723,13 +2673,6 @@ func TestRepeatableReadLogic_zone_config_system_tenant(
 	runLogicTest(t, "zone_config_system_tenant")
 }
 
-func TestRepeatableReadLogicCCL_buffered_writes_lock_loss(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "buffered_writes_lock_loss")
-}
-
 func TestRepeatableReadLogicCCL_fips_ready(
 	t *testing.T,
 ) {
@@ -2863,13 +2806,6 @@ func TestRepeatableReadLogicCCL_procedure_plpgsql(
 	runCCLLogicTest(t, "procedure_plpgsql")
 }
 
-func TestRepeatableReadLogicCCL_provisioning(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "provisioning")
-}
-
 func TestRepeatableReadLogicCCL_read_committed(
 	t *testing.T,
 ) {
@@ -2926,13 +2862,6 @@ func TestRepeatableReadLogicCCL_triggers(
 	runCCLLogicTest(t, "triggers")
 }
 
-func TestRepeatableReadLogicCCL_txn_retry(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "txn_retry")
-}
-
 func TestRepeatableReadLogicCCL_udf_params(
 	t *testing.T,
 ) {
@@ -2973,4 +2902,11 @@ func TestRepeatableReadLogicCCL_vector(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "vector")
+}
+
+func TestRepeatableReadExecBuild_geospatial(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runExecBuildLogicTest(t, "geospatial")
 }

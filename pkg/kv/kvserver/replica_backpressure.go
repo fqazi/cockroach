@@ -88,11 +88,9 @@ var backpressureByteTolerance = settings.RegisterByteSizeSetting(
 // to be backpressured.
 var backpressurableSpans = []roachpb.Span{
 	{Key: keys.TimeseriesPrefix, EndKey: keys.TimeseriesKeyMax},
-	// Exclude the span_configurations table to avoid
-	// catch-22 situations where protected timestamp updates or garbage
-	// collection TTL updates are blocked by backpressure.
-	{Key: keys.SystemConfigTableDataMax, EndKey: keys.SpanConfigTableMin},
-	{Key: keys.SpanConfigTableMax, EndKey: keys.TableDataMax},
+	// Backpressure from the end of the system config forward instead of
+	// over all table data to avoid backpressuring unsplittable ranges.
+	{Key: keys.SystemConfigTableDataMax, EndKey: keys.TableDataMax},
 }
 
 // canBackpressureBatch returns whether the provided BatchRequest is eligible
@@ -155,16 +153,13 @@ func (r *Replica) signallerForBatch(ba *kvpb.BatchRequest) signaller {
 // range's size is already larger than the absolute maximum we'll allow.
 func (r *Replica) shouldBackpressureWrites() bool {
 	r.mu.RLock()
-	size := r.shMu.state.Stats.Total()
-	rangeMaxBytes := r.mu.conf.RangeMaxBytes
-	largestPreviousMaxRangeSize := r.mu.largestPreviousMaxRangeSizeBytes
-	r.mu.RUnlock()
+	defer r.mu.RUnlock()
 
 	// Check if the current range's size is already over the absolute maximum
 	// we'll allow. Don't bother with any multipliers/byte tolerance calculations
 	// if it is.
 	rangeSizeHardCap := backpressureRangeHardCap.Get(&r.store.cfg.Settings.SV)
-
+	size := r.shMu.state.Stats.Total()
 	if size >= rangeSizeHardCap {
 		return true
 	}
@@ -175,8 +170,7 @@ func (r *Replica) shouldBackpressureWrites() bool {
 		return false
 	}
 
-	exceeded, bytesOver := exceedsMultipleOfSplitSize(mult, rangeMaxBytes,
-		largestPreviousMaxRangeSize, size)
+	exceeded, bytesOver := r.exceedsMultipleOfSplitSizeRLocked(mult)
 	if !exceeded {
 		return false
 	}
@@ -203,23 +197,14 @@ func (r *Replica) maybeBackpressureBatch(ctx context.Context, ba *kvpb.BatchRequ
 			defer r.store.metrics.BackpressuredOnSplitRequests.Dec(1) //nolint:deferloop
 
 			if backpressureLogLimiter.ShouldLog() {
-				log.KvExec.Warningf(ctx, "applying backpressure to limit range growth on batch %s", ba)
+				log.Warningf(ctx, "applying backpressure to limit range growth on batch %s", ba)
 			}
 		}
 
 		// Register a callback on an ongoing split for this range in the splitQueue.
 		splitC := make(chan error, 1)
-		if !r.store.splitQueue.MaybeAddCallback(r.RangeID, processCallback{
-			onEnqueueResult: func(rank int, err error) {},
-			onProcessResult: func(err error) {
-				select {
-				case splitC <- err:
-				default:
-					// Drop the error if the channel is already full. This prevents
-					// blocking if the callback is invoked multiple times.
-					return
-				}
-			},
+		if !r.store.splitQueue.MaybeAddCallback(r.RangeID, func(err error) {
+			splitC <- err
 		}) {
 			// No split ongoing. We may have raced with its completion. There's
 			// no good way to prevent this race, so we conservatively allow the

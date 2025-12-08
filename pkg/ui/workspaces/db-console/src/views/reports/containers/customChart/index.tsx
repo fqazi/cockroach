@@ -92,11 +92,9 @@ export const getSources = (
   if (isStoreMetric(metricsMetadata.recordedNames, metricState.metric)) {
     // If a specific node is selected, return the storeIDs associated with that node.
     // Otherwise, we're at the cluster level, so we grab each store ID.
-    const storeIDs = metricState.nodeSource
+    return metricState.nodeSource
       ? nodesSummary.storeIDsByNodeID[metricState.nodeSource]
       : Object.values(nodesSummary.storeIDsByNodeID).flatMap(s => s);
-    // Sort store IDs to ensure consistent ordering
-    return storeIDs.sort();
   } else {
     // If it's not a store metric, and a specific nodeSource is chosen, just return that.
     // Otherwise, return all known node IDs.
@@ -316,7 +314,7 @@ export class CustomChart extends React.Component<
     return (
       <MetricsDataProvider
         id={`debug-custom-chart.${index}`}
-        key={`${index}-${units}`}
+        key={index}
         setMetricsFixedWindow={this.props.setMetricsFixedWindow}
         setTimeScale={this.props.setTimeScale}
         history={this.props.history}

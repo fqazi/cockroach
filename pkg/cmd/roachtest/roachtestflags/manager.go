@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/errors"
 	"github.com/spf13/pflag"
 )
@@ -75,8 +74,6 @@ func (m *manager) AddFlagsToCommand(cmd cmdID, cmdFlags *pflag.FlagSet) {
 			cmdFlags.StringToStringVarP(p, f.Name, f.Shorthand, *p, usage)
 		case *spec.Cloud:
 			cmdFlags.VarP(&cloudValue{val: p}, f.Name, f.Shorthand, usage)
-		case *vm.Filesystem:
-			cmdFlags.VarP(&filesystemValue{val: p}, f.Name, f.Shorthand, usage)
 		default:
 			panic(fmt.Sprintf("unsupported pointer type %T", p))
 		}
@@ -147,28 +144,5 @@ func (cv *cloudValue) Set(str string) error {
 		return errors.Errorf("invalid cloud %q", str)
 	}
 	*cv.val = val
-	return nil
-}
-
-type filesystemValue struct {
-	val *vm.Filesystem
-}
-
-var _ pflag.Value = (*filesystemValue)(nil)
-
-func (fv *filesystemValue) String() string {
-	return string(*fv.val)
-}
-
-func (fv *filesystemValue) Type() string {
-	return "string"
-}
-
-func (fv *filesystemValue) Set(str string) error {
-	val, err := vm.ParseFilesystemString(str)
-	if err != nil {
-		return err
-	}
-	*fv.val = val
 	return nil
 }

@@ -9,7 +9,6 @@ import (
 	"os"
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/base"
 	// Since we are testing multi-tenancy, we need to blank import kvtenantccl.
 	_ "github.com/cockroachdb/cockroach/pkg/ccl/kvccl/kvtenantccl"
 	"github.com/cockroachdb/cockroach/pkg/security/securityassets"
@@ -25,6 +24,5 @@ func TestMain(m *testing.M) {
 	securityassets.SetLoader(securitytest.EmbeddedAssets)
 	serverutils.InitTestServerFactory(server.TestServerFactory)
 	serverutils.InitTestClusterFactory(testcluster.TestClusterFactory)
-	serverutils.TestingGlobalDRPCOption(base.TestDRPCEnabledRandomly)
 	os.Exit(m.Run())
 }

@@ -262,7 +262,7 @@ func (p *pulsarSink) msgCallback(
 	oneMsgCb := p.metrics.recordOneMessage()
 
 	return func(id pulsar.MessageID, message *pulsar.ProducerMessage, err error) {
-		sendCb.End()
+		sendCb()
 		if err == nil {
 			oneMsgCb(mvcc, len(message.Payload), len(message.Payload))
 		} else {
@@ -319,13 +319,6 @@ func makePulsarSink(
 	topicNamer, err := MakeTopicNamer(targets)
 	if err != nil {
 		return nil, err
-	}
-
-	switch encodingOpts.Envelope {
-	case changefeedbase.OptEnvelopeEnriched:
-		return nil, errors.Errorf(`this sink is incompatible with %s=%s`,
-			changefeedbase.OptEnvelope, encodingOpts.Envelope)
-	default:
 	}
 
 	sink := &pulsarSink{

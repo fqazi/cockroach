@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -188,8 +187,8 @@ func UnderDuressWithIssue(t SkippableTest, githubIssueID int, args ...interface{
 	}
 }
 
-// Duress captures the conditions that currently lead us to believe that tests
-// may be slower than normal.
+// Duress catures the conditions that currently lead us to
+// believe that tests may be slower than normal.
 func Duress() bool {
 	return util.RaceEnabled || Stress() || syncutil.DeadlockEnabled
 }
@@ -213,14 +212,6 @@ func UnderRemoteExecutionWithIssue(t SkippableTest, githubIssueID int, args ...i
 		maybeSkip(t, withIssue("disabled under race", githubIssueID), args...)
 	}
 
-}
-
-func OnArch(t SkippableTest, arch string, args ...interface{}) {
-	t.Helper()
-	if runtime.GOARCH == arch {
-		skipReason := fmt.Sprintf("on-arch %s (current config %s)", arch, testConfig())
-		maybeSkip(t, skipReason, args...)
-	}
 }
 
 func testConfig() string {
@@ -253,16 +244,4 @@ func maybeSkip(t SkippableTest, reason string, args ...interface{}) {
 	}
 
 	t.Skip(append([]interface{}{reason}, args...)...)
-}
-
-var miscNightly = envutil.EnvOrDefaultBool("COCKROACH_MISC_NIGHTLY", false)
-
-// IfNotMiscNightly skips this test unless the COCKROACH_MISC_NIGHTLY env var is
-// set to 'true'.
-//
-// Does not respect COCKROACH_FORCE_RUN_SKIPPED_TESTS.
-func IfNotMiscNightly(t SkippableTest) {
-	if !miscNightly {
-		t.Skip("only runs in Misc Nightly CI")
-	}
 }

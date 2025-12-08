@@ -103,11 +103,6 @@ func (s *server) GetNodeMetrics() *Metrics {
 // The received delta is combined with the infostore, and this
 // node's own gossip is returned to requesting client.
 func (s *server) Gossip(stream Gossip_GossipServer) error {
-	return s.gossip(stream)
-}
-
-// gossip is the shared implementation for Gossip for both gRPC and DRPC.
-func (s *server) gossip(stream RPCGossip_GossipStream) error {
 	args, err := stream.Recv()
 	if err != nil {
 		return err
@@ -173,7 +168,7 @@ func (s *server) gossip(stream RPCGossip_GossipStream) error {
 		// the remote node receives our high water stamps in a timely fashion.
 		if infoCount := len(delta); init || infoCount > 0 {
 			if log.V(1) {
-				log.Dev.Infof(ctx, "returning %d info(s) to n%d: %s",
+				log.Infof(ctx, "returning %d info(s) to n%d: %s",
 					infoCount, args.NodeID, extractKeys(delta))
 			}
 			// Ensure that the high water stamps for the remote client are kept up to
@@ -238,7 +233,7 @@ func (s *server) gossipReceiver(
 			// Let the connection through so that the client can get a node ID. Once it
 			// has one, we'll run the logic below to decide whether to keep the
 			// connection to it or to forward it elsewhere.
-			log.Dev.Infof(ctx, "received initial cluster-verification connection from %s", args.Addr)
+			log.Infof(ctx, "received initial cluster-verification connection from %s", args.Addr)
 		} else if !nodeIdentified {
 			nodeIdentified = true
 
@@ -248,14 +243,14 @@ func (s *server) gossipReceiver(
 				// This is an incoming loopback connection which should be closed by
 				// the client.
 				if log.V(2) {
-					log.Dev.Infof(ctx, "ignoring gossip from n%d (loopback)", args.NodeID)
+					log.Infof(ctx, "ignoring gossip from n%d (loopback)", args.NodeID)
 				}
 			} else if _, ok := s.mu.nodeMap[args.Addr]; ok {
 				// This is a duplicate incoming connection from the same node as an existing
 				// connection. This can happen when bootstrap connections are initiated
 				// through a load balancer.
 				if log.V(2) {
-					log.Dev.Infof(ctx, "duplicate connection received from n%d at %s", args.NodeID, args.Addr)
+					log.Infof(ctx, "duplicate connection received from n%d at %s", args.NodeID, args.Addr)
 				}
 				return errors.Errorf("duplicate connection from node at %s", args.Addr)
 			} else if s.mu.incoming.hasSpace() {
@@ -289,7 +284,7 @@ func (s *server) gossipReceiver(
 				}
 
 				s.nodeMetrics.ConnectionsRefused.Inc(1)
-				log.Dev.Infof(ctx, "refusing gossip from n%d (max %d conns); forwarding to n%d (%s)",
+				log.Infof(ctx, "refusing gossip from n%d (max %d conns); forwarding to n%d (%s)",
 					args.NodeID, s.mu.incoming.maxSize, alternateNodeID, alternateAddr)
 
 				*reply = Response{
@@ -324,10 +319,10 @@ func (s *server) gossipReceiver(
 
 		freshCount, err := s.mu.is.combine(args.Delta, args.NodeID)
 		if err != nil {
-			log.Dev.Warningf(ctx, "failed to fully combine gossip delta from n%d: %s", args.NodeID, err)
+			log.Warningf(ctx, "failed to fully combine gossip delta from n%d: %s", args.NodeID, err)
 		}
 		if log.V(1) {
-			log.Dev.Infof(ctx, "received %s from n%d (%d fresh)", extractKeys(args.Delta), args.NodeID, freshCount)
+			log.Infof(ctx, "received %s from n%d (%d fresh)", extractKeys(args.Delta), args.NodeID, freshCount)
 		}
 		s.maybeTightenLocked()
 
@@ -396,7 +391,7 @@ func (s *server) start(addr net.Addr) {
 	// We require redundant callbacks here as the broadcast callback is
 	// propagating gossip infos to other nodes and needs to propagate the new
 	// expiration info.
-	unregister := s.mu.is.registerCallback(".*", func(_ string, _ roachpb.Value, _ int64) {
+	unregister := s.mu.is.registerCallback(".*", func(_ string, _ roachpb.Value) {
 		broadcast()
 	}, Redundant)
 

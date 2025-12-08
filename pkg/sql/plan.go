@@ -75,7 +75,8 @@ type planNode interface {
 	// of results each time that Next() returns true.
 	//
 	// Available after startPlan(). It is illegal to call Next() after it returns
-	// false.
+	// false. It is legal to call Next() even if the node implements
+	// planNodeFastPath and the FastPathResults() method returns true.
 	Next(params runParams) (bool, error)
 
 	// Values returns the values at the current row. The result is only valid
@@ -160,15 +161,17 @@ type mutationPlanNode interface {
 	// modified by this planNode. It should only be called once Next returns
 	// false.
 	indexBytesWritten() int64
+}
 
-	// returnsRowsAffected indicates that the planNode returns the number of
-	// rows affected by the mutation, rather than the rows themselves.
-	returnsRowsAffected() bool
-
-	// kvCPUTime returns the cumulative CPU time (in nanoseconds) that KV reported
-	// in BatchResponse headers during the execution of this mutation. It should
-	// only be called once Next returns false.
-	kvCPUTime() int64
+// planNodeFastPath is implemented by nodes that can perform all their
+// work during startPlan(), possibly affecting even multiple rows. For
+// example, DELETE can do this.
+type planNodeFastPath interface {
+	// FastPathResults returns the affected row count and true if the
+	// node has no result set and has already executed when startPlan() completes.
+	// Note that Next() must still be valid even if this method returns
+	// true, although it may have nothing left to do.
+	FastPathResults() (int, bool)
 }
 
 // planNodeReadingOwnWrites can be implemented by planNodes which do
@@ -214,7 +217,6 @@ var _ planNode = &CreateRoleNode{}
 var _ planNode = &createViewNode{}
 var _ planNode = &delayedNode{}
 var _ planNode = &deleteNode{}
-var _ planNode = &deleteSwapNode{}
 var _ planNode = &deleteRangeNode{}
 var _ planNode = &distinctNode{}
 var _ planNode = &dropDatabaseNode{}
@@ -251,9 +253,11 @@ var _ planNode = &renameIndexNode{}
 var _ planNode = &renameTableNode{}
 var _ planNode = &renderNode{}
 var _ planNode = &RevokeRoleNode{}
+var _ planNode = &rowCountNode{}
 var _ planNode = &scanBufferNode{}
 var _ planNode = &scanNode{}
 var _ planNode = &scatterNode{}
+var _ planNode = &serializeNode{}
 var _ planNode = &sequenceSelectNode{}
 var _ planNode = &showFingerprintsNode{}
 var _ planNode = &showTraceNode{}
@@ -266,7 +270,6 @@ var _ planNode = &truncateNode{}
 var _ planNode = &unaryNode{}
 var _ planNode = &unionNode{}
 var _ planNode = &updateNode{}
-var _ planNode = &updateSwapNode{}
 var _ planNode = &upsertNode{}
 var _ planNode = &valuesNode{}
 var _ planNode = &vectorMutationSearchNode{}
@@ -274,6 +277,13 @@ var _ planNode = &vectorSearchNode{}
 var _ planNode = &virtualTableNode{}
 var _ planNode = &windowNode{}
 var _ planNode = &zeroNode{}
+
+var _ planNodeFastPath = &deleteRangeNode{}
+var _ planNodeFastPath = &rowCountNode{}
+var _ planNodeFastPath = &serializeNode{}
+var _ planNodeFastPath = &setZoneConfigNode{}
+var _ planNodeFastPath = &controlJobsNode{}
+var _ planNodeFastPath = &controlSchedulesNode{}
 
 var _ planNodeReadingOwnWrites = &alterIndexNode{}
 var _ planNodeReadingOwnWrites = &alterSchemaNode{}
@@ -293,11 +303,33 @@ var _ planNodeReadingOwnWrites = &dropTypeNode{}
 var _ planNodeReadingOwnWrites = &refreshMaterializedViewNode{}
 var _ planNodeReadingOwnWrites = &setZoneConfigNode{}
 
+// planNodeRequireSpool serves as marker for nodes whose parent must
+// ensure that the node is fully run to completion (and the results
+// spooled) during the start phase. This is currently implemented by
+// all mutation statements except for upsert.
+type planNodeRequireSpool interface {
+	requireSpool()
+}
+
+var _ planNodeRequireSpool = &serializeNode{}
+
+// planNodeSpool serves as marker for nodes that can perform all their
+// execution during the start phase. This is different from the "fast
+// path" interface because a node that performs all its execution
+// during the start phase might still have some result rows and thus
+// not implement the fast path.
+//
+// This interface exists for the following optimization: nodes
+// that require spooling but are the children of a spooled node
+// do not require the introduction of an explicit spool.
+type planNodeSpooled interface {
+	spooled()
+}
+
+var _ planNodeSpooled = &spoolNode{}
+
 type flowInfo struct {
-	typ planComponentType
-	// diagram is only populated when instrumentationHelper.shouldSaveDiagrams()
-	// returns true. (Even in that case we've seen a sentry report #149987 where
-	// it was nil.)
+	typ     planComponentType
 	diagram execinfrapb.FlowDiagram
 	// explainVec and explainVecVerbose are only populated when collecting a
 	// statement bundle when the plan was vectorized.
@@ -416,7 +448,6 @@ const (
 	planComponentTypeMainQuery
 	planComponentTypeSubquery
 	planComponentTypePostquery
-	planComponentTypeInner
 )
 
 func (t planComponentType) String() string {

@@ -47,8 +47,6 @@ func registerSnapshotOverloadIO(r registry.Registry) {
 				spec.VolumeSize(cfg.volumeSize),
 				spec.ReuseNone(),
 				spec.DisableLocalSSD(),
-				// TODO(darryl): Enable FIPS once we can upgrade to Ubuntu 22 and use cgroups v2 for disk stalls.
-				spec.Arch(spec.AllExceptFIPS),
 			),
 			Leases:  registry.MetamorphicLeases,
 			Timeout: 12 * time.Hour,
@@ -177,7 +175,7 @@ func runAdmissionControlSnapshotOverloadIO(
 		const bandwidthLimitMbs = 128
 		t.Status(fmt.Sprintf("limiting disk bandwidth to %d MB/s", bandwidthLimitMbs))
 		staller := roachtestutil.MakeCgroupDiskStaller(t, c,
-			false /* readsToo */, false /* logsToo */, false /* disableStateValidation */)
+			false /* readsToo */, false /* logsToo */)
 		staller.Setup(ctx)
 		staller.Slow(ctx, c.CRDBNodes(), bandwidthLimitMbs<<20 /* bytesPerSecond */)
 
@@ -192,7 +190,7 @@ func runAdmissionControlSnapshotOverloadIO(
 	}
 
 	t.Status(fmt.Sprintf("starting kv workload thread (<%s)", time.Minute))
-	m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+	m := c.NewMonitor(ctx, c.CRDBNodes())
 	m.Go(func(ctx context.Context) error {
 
 		labels := map[string]string{

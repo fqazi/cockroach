@@ -32,7 +32,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/regions"
-	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -534,7 +533,8 @@ func ApplyZoneConfigForMultiRegionTable(
 	if update == nil || err != nil {
 		return err
 	}
-	return writeZoneConfigUpdate(ctx, txn, kvTrace, update)
+	_, err = writeZoneConfigUpdate(ctx, txn, kvTrace, update)
+	return err
 }
 
 // generateAndValidateZoneConfigForMultiRegionDatabase returns a validated
@@ -571,7 +571,7 @@ func generateAndValidateZoneConfigForMultiRegionDatabase(
 		if validateLocalities {
 			return zonepb.ZoneConfig{}, err
 		}
-		log.Dev.Warningf(ctx, "ignoring locality validation error for DB zone config %v", err)
+		log.Warningf(ctx, "ignoring locality validation error for DB zone config %v", err)
 		err = nil
 	}
 
@@ -653,14 +653,15 @@ func applyZoneConfigForMultiRegionDatabase(
 	)
 	// If the new zone config is the same as a blank zone config, delete it.
 	if newZoneConfig.Equal(zonepb.NewZoneConfig()) {
-		return writeZoneConfigUpdate(
+		_, err = writeZoneConfigUpdate(
 			ctx,
 			txn,
 			kvTrace,
 			&zoneConfigUpdate{id: dbID, zoneConfig: nil},
 		)
+		return err
 	}
-	return writeZoneConfig(
+	if _, err := writeZoneConfig(
 		ctx,
 		txn,
 		dbID,
@@ -670,7 +671,10 @@ func applyZoneConfigForMultiRegionDatabase(
 		execConfig,
 		false, /* hasNewSubzones */
 		kvTrace,
-	)
+	); err != nil {
+		return err
+	}
+	return nil
 }
 
 type refreshZoneConfigOptions struct {
@@ -782,7 +786,7 @@ func (p *planner) refreshZoneConfigsForTablesWithValidation(
 	// TODO(janexing): if any write failed, do we roll back? Same question to the
 	// original p.forEachMutableTableInDatabase().
 	for _, update := range zoneConfigUpdates {
-		if err = writeZoneConfigUpdate(
+		if _, err := writeZoneConfigUpdate(
 			ctx,
 			p.InternalSQLTxn(),
 			p.ExtendedEvalContext().Tracing.KVTracingEnabled(),
@@ -1932,22 +1936,6 @@ func (p *planner) checkNoRegionalByRowChangeUnderway(
 						),
 						"is currently undergoing an ALTER PRIMARY KEY change",
 					)
-				}
-			}
-			// For declarative schema changer check if we are trying to add
-			// a primary index to detect primary key changes.
-			if table.GetDeclarativeSchemaChangerState() != nil {
-				for idx, target := range table.GetDeclarativeSchemaChangerState().Targets {
-					if target.GetPrimaryIndex() != nil &&
-						table.GetDeclarativeSchemaChangerState().CurrentStatuses[idx] != scpb.Status_PUBLIC {
-						return wrapErr(
-							pgerror.Newf(
-								pgcode.ObjectNotInPrerequisiteState,
-								"cannot perform database region changes while a ALTER PRIMARY KEY is underway",
-							),
-							"is currently undergoing an ALTER PRIMARY KEY change",
-						)
-					}
 				}
 			}
 			// Disallow index changes for REGIONAL BY ROW tables.

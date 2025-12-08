@@ -10,7 +10,6 @@ import (
 	"math"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
@@ -77,7 +76,7 @@ type DoesNotUseTxn interface {
 type ProcOutputHelper struct {
 	// eh only contains expressions if we have at least one rendering. It will
 	// not be used if outputCols is set.
-	eh execexpr.MultiHelper
+	eh execinfrapb.MultiExprHelper
 	// outputCols is non-nil if we have a projection. Only one of renderExprs and
 	// outputCols can be set. Note that 0-length projections are possible, in
 	// which case outputCols will be 0-length but non-nil.
@@ -166,8 +165,7 @@ func (h *ProcOutputHelper) Init(
 		if evalCtx == flowCtx.EvalCtx {
 			// We haven't created a copy of the eval context, and we have some
 			// renders, then we'll need to create a copy ourselves since we're
-			// going to use the execexpr.Helper which might mutate the eval
-			// context.
+			// going to use the ExprHelper which might mutate the eval context.
 			evalCtx = flowCtx.NewEvalCtx()
 		}
 		if cap(h.OutputTypes) >= nRenders {
@@ -247,7 +245,7 @@ func (h *ProcOutputHelper) EmitRow(
 	// TODO(yuzefovich): consider removing this logging since the verbosity
 	// check is not exactly free.
 	if log.V(3) {
-		log.Dev.InfofDepth(ctx, 1, "pushing row %s", outRow.String(h.OutputTypes))
+		log.InfofDepth(ctx, 1, "pushing row %s", outRow.String(h.OutputTypes))
 	}
 	if r := output.Push(outRow, nil); r != NeedMoreRows {
 		log.VEventf(ctx, 1, "no more rows required. drain requested: %t",
@@ -295,10 +293,7 @@ func (h *ProcOutputHelper) ProcessRow(
 			if err != nil {
 				return nil, false, err
 			}
-			h.outputRow[i], err = rowenc.DatumToEncDatum(h.OutputTypes[i], datum)
-			if err != nil {
-				return nil, false, err
-			}
+			h.outputRow[i] = rowenc.DatumToEncDatum(h.OutputTypes[i], datum)
 		}
 	} else if h.outputCols != nil {
 		// Projection.
@@ -329,7 +324,6 @@ type ProcessorConstructor func(
 	ctx context.Context,
 	flowCtx *FlowCtx,
 	processorID int32,
-	stageID int32,
 	core *execinfrapb.ProcessorCoreUnion,
 	post *execinfrapb.PostProcessSpec,
 	inputs []RowSource,
@@ -526,9 +520,7 @@ const (
 // at init() time), then we move straight to the StateTrailingMeta.
 //
 // An error can be optionally passed. It will be the first piece of metadata
-// returned by DrainHelper(), unless the processor's context has already been
-// canceled, in which case the context's error is returned instead (as often an
-// error passed to MoveToDraining() is a consequence of context cancellation).
+// returned by DrainHelper().
 //
 // MoveToDraining should only be called from the main goroutine of the
 // processor.
@@ -549,18 +541,6 @@ func (pb *ProcessorBaseNoHelper) MoveToDraining(err error) {
 	}
 
 	if err != nil {
-		// If processor ctx was canceled, reply with that err rather than whatever
-		// error was passed to MoveToDraining by a processor running on top of a
-		// canceled context, which is expected to error. Generally the error passed
-		// in this case will be context.Canceled anyway, but doing this ensures that
-		// distsql can promise that if it cancels a context, the emitted error will
-		// reflect that, making cancellation detectable by callers.
-		if pb.Ctx().Err() != nil {
-			if !errors.Is(err, pb.Ctx().Err()) {
-				log.Dev.Warningf(pb.Ctx(), "overriding non-cancelation emitted after context cancellation: %+v", err)
-			}
-			err = pb.Ctx().Err()
-		}
 		pb.trailingMeta = append(pb.trailingMeta, execinfrapb.ProducerMetadata{Err: err})
 	}
 	if pb.curInputToDrain < len(pb.inputsToDrain) {

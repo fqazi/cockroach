@@ -50,8 +50,6 @@ type nodeStatus struct {
 	TotalSystemMemory int64 `json:"total_system_memory,omitempty"`
 	// NumCpus is the number of CPUs on this node.
 	NumCpus int32 `json:"num_cpus,omitempty"`
-	// NumVcpus is the number of vCPUs on this node.
-	NumVcpus float64 `json:"num_vcpus,omitempty"`
 	// UpdatedAt is the time at which the node status record was last updated,
 	// in nanoseconds since Unix epoch.
 	UpdatedAt int64 `json:"updated_at,omitempty"`
@@ -130,7 +128,6 @@ func (a *apiV2SystemServer) listNodes(w http.ResponseWriter, r *http.Request) {
 			StoreMetrics:      storeMetrics,
 			TotalSystemMemory: n.TotalSystemMemory,
 			NumCpus:           n.NumCpus,
-			NumVcpus:          n.NumVcpus,
 			UpdatedAt:         n.UpdatedAt,
 			LivenessStatus:    int32(nodes.LivenessByNodeID[n.Desc.NodeID]),
 		})
@@ -208,7 +205,7 @@ func (a *apiV2Server) listRange(w http.ResponseWriter, r *http.Request) {
 		RangeIDs: []roachpb.RangeID{roachpb.RangeID(rangeID)},
 	}
 
-	nodeFn := func(ctx context.Context, status serverpb.RPCStatusClient, _ roachpb.NodeID) (interface{}, error) {
+	nodeFn := func(ctx context.Context, status serverpb.StatusClient, _ roachpb.NodeID) (interface{}, error) {
 		return status.Ranges(ctx, rangesRequest)
 	}
 	responseFn := func(nodeID roachpb.NodeID, resp interface{}) {
@@ -501,7 +498,7 @@ func (a *apiV2Server) listHotRanges(w http.ResponseWriter, r *http.Request) {
 	}
 
 	remoteRequest := serverpb.HotRangesRequest{Nodes: []string{"local"}}
-	nodeFn := func(ctx context.Context, status serverpb.RPCStatusClient, nodeID roachpb.NodeID) ([]hotRangeInfo, error) {
+	nodeFn := func(ctx context.Context, status serverpb.StatusClient, nodeID roachpb.NodeID) ([]hotRangeInfo, error) {
 		resp, err := status.HotRangesV2(ctx, &remoteRequest)
 		if err != nil || resp == nil {
 			return nil, err

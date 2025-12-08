@@ -23,11 +23,7 @@ go_library(
         "@com_github_azure_azure_sdk_for_go//profiles/latest/network/mgmt/network",
         "@com_github_azure_azure_sdk_for_go//profiles/latest/resources/mgmt/resources",
         "@com_github_azure_azure_sdk_for_go//profiles/latest/resources/mgmt/subscriptions",
-        "@com_github_azure_azure_sdk_for_go_sdk_azcore//:azcore",
-        "@com_github_azure_azure_sdk_for_go_sdk_azcore//arm",
-        "@com_github_azure_azure_sdk_for_go_sdk_azcore//policy",
         "@com_github_azure_azure_sdk_for_go_sdk_resourcemanager_compute_armcompute//:armcompute",
-        "@com_github_azure_azure_sdk_for_go_sdk_resourcemanager_monitor_armmonitor//:armmonitor",
         "@com_github_azure_go_autorest_autorest//:autorest",
         "@com_github_azure_go_autorest_autorest_adal//:adal",
         "@com_github_azure_go_autorest_autorest_azure_auth//:auth",
@@ -41,10 +37,7 @@ go_library(
 
 go_test(
     name = "azure_test",
-    srcs = [
-        "ids_test.go",
-        "utils_test.go",
-    ],
+    srcs = ["utils_test.go"],
     data = glob(["testdata/**"]),
     embed = [":azure"],
     deps = [

@@ -11,7 +11,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/sql/backfill"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
@@ -63,14 +62,8 @@ func (p *planner) writeSchemaDescChange(
 	if recordExists {
 		// Update it.
 		record.AppendDescription(jobDesc)
-		log.Dev.Infof(ctx, "job %d: updated job's specification for change on schema %d", record.JobID, desc.ID)
+		log.Infof(ctx, "job %d: updated job's specification for change on schema %d", record.JobID, desc.ID)
 	} else {
-		mode, err := backfill.DetermineDistributedMergeMode(
-			ctx, p.extendedEvalCtx.ExecCfg.Settings, backfill.DistributedMergeConsumerLegacy,
-		)
-		if err != nil {
-			return err
-		}
 		// Or, create a new job.
 		jobRecord := jobs.Record{
 			JobID:         p.extendedEvalCtx.ExecCfg.JobRegistry.MakeJobID(),
@@ -81,15 +74,14 @@ func (p *planner) writeSchemaDescChange(
 				DescID: desc.ID,
 				// The version distinction for database jobs doesn't matter for schema
 				// jobs.
-				FormatVersion:        jobspb.DatabaseJobFormatVersion,
-				SessionData:          &p.SessionData().SessionData,
-				DistributedMergeMode: mode,
+				FormatVersion: jobspb.DatabaseJobFormatVersion,
+				SessionData:   &p.SessionData().SessionData,
 			},
 			Progress:      jobspb.SchemaChangeProgress{},
 			NonCancelable: true,
 		}
 		p.extendedEvalCtx.jobs.uniqueToCreate[desc.ID] = &jobRecord
-		log.Dev.Infof(ctx, "queued new schema change job %d for schema %d", jobRecord.JobID, desc.ID)
+		log.Infof(ctx, "queued new schema change job %d for schema %d", jobRecord.JobID, desc.ID)
 	}
 
 	return p.writeSchemaDesc(ctx, desc)

@@ -6,6 +6,7 @@
 package securityassets
 
 import (
+	"io/ioutil"
 	"os"
 
 	"github.com/cockroachdb/errors/oserror"
@@ -13,14 +14,14 @@ import (
 
 // Loader describes the functions necessary to read certificate and key files.
 type Loader struct {
-	ReadDir  func(dirname string) ([]os.DirEntry, error)
+	ReadDir  func(dirname string) ([]os.FileInfo, error)
 	ReadFile func(filename string) ([]byte, error)
 	Stat     func(name string) (os.FileInfo, error)
 }
 
 // defaultLoader uses real filesystem calls.
 var defaultLoader = Loader{
-	ReadDir:  os.ReadDir,
+	ReadDir:  ioutil.ReadDir,
 	ReadFile: os.ReadFile,
 	Stat:     os.Stat,
 }

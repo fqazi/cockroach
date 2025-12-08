@@ -7,7 +7,7 @@ package storage
 
 import (
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
+	"github.com/cockroachdb/cockroach/pkg/storage/storagepb"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/sysutil"
 	"github.com/cockroachdb/errors"
@@ -83,18 +83,20 @@ func IsDiskFull(fs vfs.FS, spec base.StoreSpec) (bool, error) {
 // BallastSizeBytes returns 1GiB or 1% of total capacity, whichever is
 // smaller.
 func BallastSizeBytes(spec base.StoreSpec, diskUsage vfs.DiskUsage) int64 {
-	if spec.BallastSize.IsSet() {
-		if spec.BallastSize.IsBytes() {
-			return spec.BallastSize.Bytes()
+	if spec.BallastSize != nil {
+		v := spec.BallastSize.Capacity
+		if spec.BallastSize.Percent != 0 {
+			v = int64(float64(diskUsage.TotalBytes) * spec.BallastSize.Percent / 100)
 		}
-		return int64(float64(diskUsage.TotalBytes) * spec.BallastSize.Percent() * 0.01)
+		return v
 	}
 
 	// Default to a 1% or 1GiB ballast, whichever is smaller.
-	return min(
-		1<<30, // 1 GiB
-		int64(diskUsage.TotalBytes/100),
-	)
+	var v int64 = 1 << 30 // 1 GiB
+	if p := int64(float64(diskUsage.TotalBytes) * 0.01); v > p {
+		v = p
+	}
+	return v
 }
 
 // SecondaryCacheBytes returns the desired size of the secondary cache, calculated
@@ -102,14 +104,12 @@ func BallastSizeBytes(spec base.StoreSpec, diskUsage vfs.DiskUsage) int64 {
 // explicit ballast size (either in bytes or as a percentage of the disk's total
 // capacity), that size is used. A zero value for cacheSize results in no
 // secondary cache.
-func SecondaryCacheBytes(cacheSize storageconfig.Size, diskUsage vfs.DiskUsage) int64 {
-	if !cacheSize.IsSet() {
-		return 0
+func SecondaryCacheBytes(cacheSize storagepb.SizeSpec, diskUsage vfs.DiskUsage) int64 {
+	v := cacheSize.Capacity
+	if cacheSize.Percent != 0 {
+		v = int64(float64(diskUsage.TotalBytes) * cacheSize.Percent / 100)
 	}
-	if cacheSize.IsBytes() {
-		return cacheSize.Bytes()
-	}
-	return int64(float64(diskUsage.TotalBytes) * cacheSize.Percent() * 0.01)
+	return v
 }
 
 func maybeEstablishBallast(
@@ -121,14 +121,6 @@ func maybeEstablishBallast(
 		return false, err
 	} else if err == nil {
 		currentSizeBytes = fi.Size()
-	}
-
-	// MemFS doesn't support resizing, so just return false. This exists
-	// primarily to ease testing. If starting a real cockroach binary with a
-	// store with a MemFS, we shouldn't even get this far because the StoreSpec
-	// is marked as InMemory.
-	if _, isMem := vfs.Root(fs).(*vfs.MemFS); isMem {
-		return false, nil
 	}
 
 	switch {

@@ -26,7 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 )
 
-const configIdx = 6
+const configIdx = 5
 
 var cclLogicTestDir string
 
@@ -50,7 +50,7 @@ func TestMain(m *testing.M) {
 	serverutils.InitTestClusterFactory(testcluster.TestClusterFactory)
 
 	defer serverutils.TestingSetDefaultTenantSelectionOverride(
-		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(156124),
+		base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(76378),
 	)()
 
 	os.Exit(m.Run())
@@ -73,13 +73,6 @@ func TestLogic_tmp(t *testing.T) {
 	var glob string
 	glob = filepath.Join(cclLogicTestDir, "_*")
 	logictest.RunLogicTests(t, logictest.TestServerArgs{}, configIdx, glob)
-}
-
-func TestCCLLogic_buffered_writes_lock_loss(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "buffered_writes_lock_loss")
 }
 
 func TestCCLLogic_fips_ready(
@@ -222,13 +215,6 @@ func TestCCLLogic_procedure_plpgsql(
 	runCCLLogicTest(t, "procedure_plpgsql")
 }
 
-func TestCCLLogic_provisioning(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "provisioning")
-}
-
 func TestCCLLogic_read_committed(
 	t *testing.T,
 ) {
@@ -283,13 +269,6 @@ func TestCCLLogic_triggers(
 ) {
 	defer leaktest.AfterTest(t)()
 	runCCLLogicTest(t, "triggers")
-}
-
-func TestCCLLogic_txn_retry(
-	t *testing.T,
-) {
-	defer leaktest.AfterTest(t)()
-	runCCLLogicTest(t, "txn_retry")
 }
 
 func TestCCLLogic_udf_params(

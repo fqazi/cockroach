@@ -87,7 +87,7 @@ func TestDistSenderReplicaStall(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer time.AfterFunc(29*time.Second, func() {
-			log.Dev.Errorf(ctx, "about to time out, all stacks:\n\n%s", allstacks.Get())
+			log.Errorf(ctx, "about to time out, all stacks:\n\n%s", allstacks.Get())
 		}).Stop()
 		defer cancel()
 
@@ -103,7 +103,7 @@ func TestDistSenderReplicaStall(t *testing.T) {
 		// Deadlock n3.
 		repl3, err := tc.GetFirstStoreFromServer(t, 2).GetReplica(desc.RangeID)
 		require.NoError(t, err)
-		mu := repl3.TestingGetMutex()
+		mu := repl3.GetMutexForTesting()
 		mu.Lock()
 		defer mu.Unlock()
 		t.Log("deadlocked n3")
@@ -211,7 +211,7 @@ func TestDistSenderCircuitBreakerModes(t *testing.T) {
 				// Deadlock either liveness or the scratch range.
 				repl, err := tc.GetFirstStoreFromServer(t, 2).GetReplica(desc.RangeID)
 				require.NoError(t, err)
-				mu := repl.TestingGetMutex()
+				mu := repl.GetMutexForTesting()
 				mu.Lock()
 				defer mu.Unlock()
 				t.Logf("deadlocked range on n3 - %v", desc)

@@ -34,6 +34,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -172,11 +173,15 @@ func TestAlterTableLocalityRegionalByRowCorrectZoneConfigBeforeBackfill(t *testi
 func TestAlterTableLocalityRegionalByRowError(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	skip.UnderDuress(t, "too slow")
+	skip.UnderRace(t, "takes >400s under race")
 
 	var chunkSize int64 = 100
 	var maxValue = 4000
+	if util.RaceEnabled {
+		// Race builds are a lot slower, so use a smaller number of rows.
+		maxValue = 200
+		chunkSize = 5
+	}
 	// BulkInsertIntoTable adds testCase 0 to maxValue inclusive, so
 	// we round (maxValue + 1) / chunkSize to the nearest int.
 	// To round up x / y using integers, we do (x + y - 1) / y.
@@ -344,6 +349,11 @@ func TestAlterTableLocalityRegionalByRowError(t *testing.T) {
 							params.Locality.Tiers = []roachpb.Tier{
 								{Key: "region", Value: "ajstorm-1"},
 							}
+							// Need to disable the test tenant here because
+							// when running inside a tenant, for some reason
+							// this test doesn't error when expected. More
+							// investigation is required. Tracked with #76378.
+							params.DefaultTestTenant = base.TODOTestTenantDisabled
 							var sqlDB *gosql.DB
 							params.Knobs = base.TestingKnobs{
 								SQLSchemaChanger: &sql.SchemaChangerTestingKnobs{
@@ -367,19 +377,17 @@ func TestAlterTableLocalityRegionalByRowError(t *testing.T) {
 								// Decrease the adopt loop interval so that retries happen quickly.
 								JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 							}
-							var srv serverutils.TestServerInterface
+							var s serverutils.TestServerInterface
 							var kvDB *kv.DB
-							srv, sqlDB, kvDB = serverutils.StartServer(t, params)
+							s, sqlDB, kvDB = serverutils.StartServer(t, params)
 							db = sqlDB
-							defer srv.Stopper().Stop(ctx)
-							s := srv.ApplicationLayer()
+							defer s.Stopper().Stop(ctx)
 
 							// Disable strict GC TTL enforcement because we're going to shove a zero-value
 							// TTL into the system with AddImmediateGCZoneConfig.
 							defer sqltestutils.DisableGCTTLStrictEnforcement(t, sqlDB)()
 
 							if _, err := sqlDB.Exec(fmt.Sprintf(`
-SET create_table_with_schema_locked=false;
 CREATE DATABASE t PRIMARY REGION "ajstorm-1";
 USE t;
 %s;
@@ -427,7 +435,7 @@ USE t;
 							// that the job did not succeed even though it was canceled.
 							testutils.SucceedsSoon(t, func() error {
 								tableDesc := desctestutils.TestingGetPublicTableDescriptor(
-									kvDB, s.Codec(), "t", "test",
+									kvDB, keys.SystemSQLCodec, "t", "test",
 								)
 								if len(tableDesc.AllMutations()) != 0 {
 									return errors.Errorf(
@@ -483,13 +491,13 @@ USE t;
 								return nil
 							})
 
-							tableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, s.Codec(), "t", "test")
+							tableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, keys.SystemSQLCodec, "t", "test")
 							if _, err := sqltestutils.AddImmediateGCZoneConfig(db, tableDesc.GetID()); err != nil {
 								t.Fatal(err)
 							}
 							// Ensure that the writes from the partial new indexes are cleaned up.
 							testutils.SucceedsSoon(t, func() error {
-								return sqltestutils.CheckTableKeyCount(ctx, kvDB, s.Codec(), 1, maxValue)
+								return sqltestutils.CheckTableKeyCount(ctx, kvDB, keys.SystemSQLCodec, 1, maxValue)
 							})
 						})
 					}
@@ -605,7 +613,6 @@ func TestIndexCleanupAfterAlterFromRegionalByRow(t *testing.T) {
 			defer cleanup()
 
 			sqlRunner := sqlutils.MakeSQLRunner(sqlDB)
-			sqlRunner.Exec(t, "SET create_table_with_schema_locked=false")
 			sqlRunner.Exec(t, `CREATE DATABASE "mr-zone-configs" WITH PRIMARY REGION "us-east1" REGIONS "us-east2","us-east3";`)
 			sqlRunner.Exec(t, `USE "mr-zone-configs";`)
 			sqlRunner.Exec(t, `
@@ -783,7 +790,6 @@ func TestRegionChangeRacingRegionalByRowChange(t *testing.T) {
 		require.NoError(t, err)
 
 		_, err = sqlDB.Exec(fmt.Sprintf(`
-SET create_table_with_schema_locked=false;
 DROP DATABASE IF EXISTS t;
 CREATE DATABASE t PRIMARY REGION "us-east1" REGION "us-east2";
 USE t;
@@ -930,7 +936,6 @@ func TestIndexDescriptorUpdateForImplicitColumns(t *testing.T) {
 	defer cleanup()
 
 	tdb := sqlutils.MakeSQLRunner(sqlDB)
-	tdb.Exec(t, "SET create_table_with_schema_locked=false")
 	tdb.Exec(t, `CREATE DATABASE test PRIMARY REGION "us-east1" REGIONS "us-east2"`)
 
 	fetchIndexes := func(tableName string) []catalog.Index {

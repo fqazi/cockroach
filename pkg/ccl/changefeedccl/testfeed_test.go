@@ -32,7 +32,6 @@ import (
 	"cloud.google.com/go/pubsub/pstest"
 	"github.com/IBM/sarama"
 	"github.com/apache/pulsar-client-go/pulsar"
-	"github.com/cockroachdb/changefeedpb"
 	"github.com/cockroachdb/cockroach-go/v2/crdb"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdcevent"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdctest"
@@ -179,33 +178,14 @@ func (t seenTrackerMap) markSeen(m *cdctest.TestFeedMessage) (isNew bool) {
 		// The second time we see a duplicated message, this field is not
 		// necessarily the same, so we remove it before marking it as seen.
 		delete(valueMap, "ts_ns")
-		// It's usually not necessary to delete the op field, but in the case of schema backfills
-		// the op is set to `u`, which can cause duplicates to surface in tests if the original was a `c` (likely).
-		delete(valueMap, "op")
 
 		if marshalledValue, err := gojson.Marshal(valueMap); err == nil {
 			normalizedValue = marshalledValue
 		} else {
-			log.Changefeed.Infof(context.Background(), "could not marshal test feed message %v", err)
+			log.Infof(context.Background(), "could not marshal test feed message %v", err)
 		}
 	} else {
-		// JSON unmarshal failed, try Protobuf
-		var msg changefeedpb.Message
-		if err := protoutil.Unmarshal(m.Value, &msg); err == nil {
-			switch data := msg.Data.(type) {
-			case *changefeedpb.Message_Enriched:
-				data.Enriched.TsNs = 0
-				data.Enriched.Op = changefeedpb.Op_OP_UNSPECIFIED
-			}
-			marshalledValue, err := protoutil.Marshal(&msg)
-			if err != nil {
-				log.Changefeed.Infof(context.Background(), "could not re-marshal normalized Protobuf: %v", err)
-			} else {
-				normalizedValue = marshalledValue
-			}
-		} else {
-			log.Changefeed.Infof(context.Background(), "could not decode test feed message as JSON or Protobuf: %v, %v", err, m.Value)
-		}
+		log.Infof(context.Background(), "could not unmarshal test feed message %v", err)
 	}
 
 	// TODO(dan): This skips duplicates, since they're allowed by the
@@ -216,7 +196,7 @@ func (t seenTrackerMap) markSeen(m *cdctest.TestFeedMessage) (isNew bool) {
 	seenKey := m.Topic + m.Partition + string(m.Key) + string(normalizedValue)
 	if _, ok := t[seenKey]; ok {
 		if log.V(1) {
-			log.Changefeed.Infof(context.Background(), "skip dup %s", seenKey)
+			log.Infof(context.Background(), "skip dup %s", seenKey)
 		}
 		return false
 	}
@@ -335,6 +315,7 @@ type externalConnectionCreator func(uri string) error
 func (e *externalConnectionFeedFactory) Feed(
 	create string, args ...interface{},
 ) (_ cdctest.TestFeed, err error) {
+
 	randomExternalConnectionName := fmt.Sprintf("testconn%d", rand.Int63())
 
 	var c externalConnectionCreator = func(uri string) error {
@@ -430,8 +411,6 @@ type jobFeed struct {
 		syncutil.Mutex
 		terminalErr error
 	}
-
-	forcedEnriched bool
 }
 
 var _ cdctest.EnterpriseTestFeed = (*jobFeed)(nil)
@@ -446,14 +425,6 @@ func newJobFeed(db *gosql.DB, wrapper wrapSinkFn) *jobFeed {
 
 type jobFailedMarker interface {
 	jobFailed(err error)
-}
-
-func (f *jobFeed) ForcedEnriched() bool {
-	return f.forcedEnriched
-}
-
-func (f *jobFeed) SetForcedEnriched(forced bool) {
-	f.forcedEnriched = forced
 }
 
 // jobFailed marks this job as failed.
@@ -507,7 +478,7 @@ func (f *jobFeed) WaitDurationForState(
 		if statusPred(jobs.State(status)) {
 			return nil
 		}
-		return errors.Newf("still waiting for job status; current status is %q", status)
+		return errors.Newf("still waiting for job status; current %s", status)
 	}, dur)
 }
 
@@ -650,7 +621,7 @@ func (f *jobFeed) Close() error {
 			return nil
 		}
 		if _, err := f.db.Exec(`CANCEL JOB $1`, f.jobID); err != nil {
-			log.Changefeed.Infof(context.Background(), `could not cancel feed %d: %v`, f.jobID, err)
+			log.Infof(context.Background(), `could not cancel feed %d: %v`, f.jobID, err)
 		} else {
 			return f.WaitForState(func(s jobs.State) bool { return s == jobs.StateCanceled })
 		}
@@ -877,7 +848,7 @@ func (e *enterpriseFeedFactory) AsUser(user string, fn func(*sqlutils.SQLRunner)
 }
 
 func (e enterpriseFeedFactory) startFeedJob(f *jobFeed, create string, args ...interface{}) error {
-	log.Changefeed.Infof(context.Background(), "Starting feed job: %q", create)
+	log.Infof(context.Background(), "Starting feed job: %q", create)
 	e.di.prepareJob(f)
 	if err := e.db.QueryRow(create, args...).Scan(&f.jobID); err != nil {
 		e.di.pendingJob = nil
@@ -1603,7 +1574,7 @@ func (c *cloudFeed) walkDir(path string, d fs.DirEntry, err error) error {
 		c.seenFiles = make(map[string]struct{})
 	}
 	if _, seen := c.seenFiles[path]; seen {
-		log.Changefeed.Infof(context.Background(), "Skip file %s", path)
+		log.Infof(context.Background(), "Skip file %s", path)
 		return nil
 	}
 	c.seenFiles[path] = struct{}{}
@@ -1761,10 +1732,6 @@ func (c *fakeKafkaClient) Close() error {
 	return nil
 }
 
-func (c *fakeKafkaClient) LeastLoadedBroker() *sarama.Broker {
-	return nil
-}
-
 func (c *fakeKafkaClient) Config() *sarama.Config {
 	return c.config
 }
@@ -1795,8 +1762,6 @@ func (p *asyncIgnoreCloseProducer) Close() error {
 type sinkKnobs struct {
 	// kafkaInterceptor is only valid for the v1 kafka sink.
 	kafkaInterceptor func(m *sarama.ProducerMessage, client kafkaClient) error
-	// BypassConnectionCheck is used for v1 kafka sink.
-	bypassKafkaV1ConnectionCheck bool
 }
 
 // fakeKafkaSink is a sink that arranges for fake kafka client and producer
@@ -1817,7 +1782,6 @@ func (s *fakeKafkaSink) Dial() error {
 		client := &fakeKafkaClient{config}
 		return client, nil
 	}
-	kafka.knobs.BypassConnectionCheck = s.knobs.bypassKafkaV1ConnectionCheck
 
 	kafka.knobs.OverrideAsyncProducerFromClient = func(client kafkaClient) (sarama.AsyncProducer, error) {
 		// The producer we give to kafka sink ignores close call.
@@ -1969,14 +1933,13 @@ func mustBeKafkaFeedFactory(f cdctest.TestFeedFactory) *kafkaFeedFactory {
 	}
 }
 
-func makeKafkaFeedFactoryWithConnectionCheck(
-	t *testing.T, srvOrCluster interface{}, rootDB *gosql.DB, forceKafkaV1ConnectionCheck bool,
+// makeKafkaFeedFactory returns a TestFeedFactory implementation using the `kafka` uri.
+func makeKafkaFeedFactory(
+	t *testing.T, srvOrCluster interface{}, rootDB *gosql.DB,
 ) cdctest.TestFeedFactory {
 	s, injectables := getInjectables(srvOrCluster)
 	return &kafkaFeedFactory{
-		knobs: &sinkKnobs{
-			bypassKafkaV1ConnectionCheck: !forceKafkaV1ConnectionCheck,
-		},
+		knobs: &sinkKnobs{},
 		enterpriseFeedFactory: enterpriseFeedFactory{
 			s:      s,
 			db:     rootDB,
@@ -1985,13 +1948,6 @@ func makeKafkaFeedFactoryWithConnectionCheck(
 		},
 		t: t,
 	}
-}
-
-// makeKafkaFeedFactory returns a TestFeedFactory implementation using the `kafka` uri.
-func makeKafkaFeedFactory(
-	t *testing.T, srvOrCluster interface{}, rootDB *gosql.DB,
-) cdctest.TestFeedFactory {
-	return makeKafkaFeedFactoryWithConnectionCheck(t, srvOrCluster, rootDB, false)
 }
 
 func exprAsString(expr tree.Expr) (string, error) {
@@ -2360,25 +2316,12 @@ func isResolvedTimestamp(message []byte) (bool, error) {
 func extractTopicFromJSONValue(
 	envelopeType changefeedbase.EnvelopeType, wrapped []byte,
 ) (topic string, value []byte, err error) {
-	// Enriched envelopes dont have the topic in them per se but they have the table name so use that.
-	if envelopeType == changefeedbase.OptEnvelopeEnriched {
-		var parsed map[string]any
-		if err := gojson.Unmarshal(wrapped, &parsed); err != nil {
-			return "", nil, err
-		}
-		source, ok := parsed["source"]
-		if !ok {
-			return "", wrapped, nil
-		}
-		topic = source.(map[string]any)["table_name"].(string)
-		return topic, wrapped, nil
-	}
-
 	var topicRaw gojson.RawMessage
 	topicRaw, value, err = extractFieldFromJSONValue("topic", envelopeType, wrapped)
 	if err != nil {
 		return "", nil, err
 	}
+	// TODO: this, or skip this method for enriched
 	if topicRaw == nil {
 		return "", value, nil
 	}
@@ -2417,27 +2360,12 @@ func extractValueFromJSONMessage(message []byte) (val []byte, err error) {
 	return value, nil
 }
 
-// Ignore these headers from the webhook sink, since they're always included and not interesting.
-var ignoreHeaders = []string{
-	"User-Agent",
-	"Content-Length",
-	"Content-Type",
-	"Accept-Encoding",
-}
-
 // Next implements TestFeed
 func (f *webhookFeed) Next() (*cdctest.TestFeedMessage, error) {
 	for {
-		msgWithHeaders := f.mockSink.PopWithHeaders()
-		msg := msgWithHeaders.Row
+		msg := f.mockSink.Pop()
 		if msg != "" {
 			m := &cdctest.TestFeedMessage{}
-			for k, v := range msgWithHeaders.Headers {
-				if slices.Contains(ignoreHeaders, k) {
-					continue
-				}
-				m.Headers = append(m.Headers, cdctest.Header{K: k, V: []byte(v[0])})
-			}
 			if msg != "" {
 				details, err := f.Details()
 				if err != nil {

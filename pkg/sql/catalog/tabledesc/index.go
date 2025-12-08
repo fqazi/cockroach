@@ -49,12 +49,6 @@ func (w index) IndexDescDeepCopy() descpb.IndexDescriptor {
 	return *protoutil.Clone(w.desc).(*descpb.IndexDescriptor)
 }
 
-func (w index) Adding() bool {
-	// Either the index is adding or is a recreated index that needs
-	// to be temporarily hidden.
-	return w.maybeMutation.Adding() || w.IndexDesc().HideForPrimaryKeyRecreate
-}
-
 // Ordinal returns the ordinal of the index in its parent TableDescriptor.
 // The ordinal is defined as follows:
 // - 0 is the ordinal of the primary index,
@@ -530,6 +524,11 @@ func (w index) GetConstraintValidity() descpb.ConstraintValidity {
 // IsEnforced implements the catalog.Constraint interface.
 func (w index) IsEnforced() bool {
 	return !w.IsMutation() || w.WriteAndDeleteOnly()
+}
+
+// NewTestIndex wraps an index descriptor in an index struct for use in unit tests.
+func NewTestIndex(desc *descpb.IndexDescriptor, ordinal int) index {
+	return index{desc: desc, ordinal: ordinal}
 }
 
 // partitioning is the backing struct for a catalog.Partitioning interface.

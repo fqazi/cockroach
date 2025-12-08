@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/geo"
 	"github.com/cockroachdb/cockroach/pkg/geo/geogen"
 	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
-	"github.com/cockroachdb/cockroach/pkg/sql/oidext"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgrepl/lsn"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
@@ -29,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/ipaddr"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
 	jsonpathparser "github.com/cockroachdb/cockroach/pkg/util/jsonpath/parser"
-	"github.com/cockroachdb/cockroach/pkg/util/ltree"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil/pgdate"
@@ -239,16 +237,19 @@ func RandDatumWithNullChance(
 		}
 		return tree.NewDJsonpath(*jp.AST)
 	case types.TupleFamily:
+		tuple := tree.DTuple{D: make(tree.Datums, len(typ.TupleContents()))}
 		if nullChance == 0 {
 			nullChance = 10
 		}
-		datums := make([]tree.Datum, len(typ.TupleContents()))
 		for i := range typ.TupleContents() {
-			datums[i] = RandDatumWithNullChance(
+			tuple.D[i] = RandDatumWithNullChance(
 				rng, typ.TupleContents()[i], nullChance, favorCommonData, targetColumnIsUnique,
 			)
 		}
-		return tree.NewDTuple(typ, datums...)
+		// Calling ResolvedType causes the internal TupleContents types to be
+		// populated.
+		tuple.ResolvedType()
+		return &tuple
 	case types.BitFamily:
 		width := typ.Width()
 		if width == 0 {
@@ -298,22 +299,13 @@ func RandDatumWithNullChance(
 			}
 			buf.WriteRune(r)
 		}
-		var d tree.Datum
-		var err error
-		switch typ.Oid() {
-		case oidext.T_citext:
-			d, err = tree.NewDCIText(buf.String(), &tree.CollationEnvironment{})
-		default:
-			d, err = tree.NewDCollatedString(buf.String(), typ.Locale(), &tree.CollationEnvironment{})
-		}
+		d, err := tree.NewDCollatedString(buf.String(), typ.Locale(), &tree.CollationEnvironment{})
 		if err != nil {
 			panic(err)
 		}
 		return d
 	case types.OidFamily:
 		return tree.NewDOidWithType(oid.Oid(rng.Uint32()), typ)
-	case types.LTreeFamily:
-		return tree.NewDLTree(ltree.RandLTree(rng))
 	case types.UnknownFamily:
 		return tree.DNull
 	case types.ArrayFamily:
@@ -378,9 +370,6 @@ func RandArrayWithCommonDataChance(
 		contents = RandArrayContentsType(rng)
 	}
 	arr := tree.NewDArray(contents)
-	if err := arr.MaybeSetCustomOid(typ); err != nil {
-		panic(err)
-	}
 	for i := 0; i < rng.Intn(10); i++ {
 		if err :=
 			arr.Append(
@@ -451,8 +440,6 @@ func adjustDatum(datum tree.Datum, typ *types.T) tree.Datum {
 		}
 		return datum
 
-	case types.OidFamily:
-		return tree.NewDOidWithType(datum.(*tree.DOid).Oid, typ)
 	default:
 		return datum
 	}
@@ -596,7 +583,7 @@ func randJSONSimpleDepth(rng *rand.Rand, depth int) json.JSON {
 
 const charSet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
-// TODO(#22513): Add support for more complex jsonpath queries.
+// TODO(normanchenn): Add support for more complex jsonpath queries.
 func randJsonpath(rng *rand.Rand) string {
 	var parts []string
 	depth := 1 + rng.Intn(20)
@@ -890,24 +877,6 @@ func getRandInterestingDatums(typ types.Family) ([]tree.Datum, bool) {
 					1<<63 - 1,
 				} {
 					d, err := tree.NewDBitArrayFromInt(i, 64)
-					if err != nil {
-						panic(err)
-					}
-					res = append(res, d)
-				}
-				return res
-			}(),
-			types.LTreeFamily: func() []tree.Datum {
-				var res []tree.Datum
-				for _, s := range []string{
-					"",
-					"foo",
-					"foo.bar",
-					"foo.bar.baz",
-					"foo_bar.baz",
-					"foo-bar.baz",
-				} {
-					d, err := tree.ParseDLTree(s)
 					if err != nil {
 						panic(err)
 					}

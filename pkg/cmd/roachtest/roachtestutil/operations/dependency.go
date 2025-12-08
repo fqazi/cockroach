@@ -52,18 +52,6 @@ func CheckDependencies(
 				return ok, err
 			}
 
-		case registry.OperationRequiresRunningBackupJob:
-			ok, err := checkBackupJobRunning(ctx, c, l)
-			if err != nil || !ok {
-				return ok, err
-			}
-
-		case registry.OperationRequiresRunningRestoreJob:
-			ok, err := checkRestoreJobRunning(ctx, c, l)
-			if err != nil || !ok {
-				return ok, err
-			}
-
 		default:
 			panic(fmt.Sprintf("unknown operation dependency %d", dep))
 		}
@@ -81,8 +69,6 @@ func checkPopulatedDatabase(
 	if err != nil {
 		return false, err
 	}
-	defer dbsCount.Close()
-
 	dbsCount.Next()
 	var count int
 	if err := dbsCount.Scan(&count); err != nil {
@@ -101,8 +87,6 @@ func checkZeroUnavailableRanges(
 	if err != nil {
 		return false, err
 	}
-	defer rangesCur.Close()
-
 	rangesCur.Next()
 	var count int
 	if err := rangesCur.Scan(&count); err != nil {
@@ -121,8 +105,6 @@ func checkZeroUnderreplicatedRanges(
 	if err != nil {
 		return false, err
 	}
-	defer rangesCur.Close()
-
 	rangesCur.Next()
 	var count int
 	if err := rangesCur.Scan(&count); err != nil {
@@ -141,46 +123,6 @@ func checkLDRJobRunning(
 	if err != nil {
 		return false, err
 	}
-	defer jobsCur.Close()
-
-	jobsCur.Next()
-	var jobId string
-	_ = jobsCur.Scan(&jobId)
-	return jobId != "", nil
-}
-
-func checkBackupJobRunning(
-	ctx context.Context, c cluster.Cluster, l *logger.Logger,
-) (ok bool, _ error) {
-	conn := c.Conn(ctx, l, 1, option.VirtualClusterName("system"))
-	defer conn.Close()
-
-	jobsCur, err := conn.QueryContext(ctx,
-		"(WITH x AS (SHOW JOBS) SELECT job_id FROM x WHERE job_type = 'BACKUP' AND status = 'running' LIMIT 1)")
-	if err != nil {
-		return false, err
-	}
-	defer jobsCur.Close()
-
-	jobsCur.Next()
-	var jobId string
-	_ = jobsCur.Scan(&jobId)
-	return jobId != "", nil
-}
-
-func checkRestoreJobRunning(
-	ctx context.Context, c cluster.Cluster, l *logger.Logger,
-) (ok bool, _ error) {
-	conn := c.Conn(ctx, l, 1, option.VirtualClusterName("system"))
-	defer conn.Close()
-
-	jobsCur, err := conn.QueryContext(ctx,
-		"WITH x AS (SHOW JOBS) SELECT job_id FROM x WHERE job_type = 'RESTORE' AND status = 'running' LIMIT 1)")
-	if err != nil {
-		return false, err
-	}
-	defer jobsCur.Close()
-
 	jobsCur.Next()
 	var jobId string
 	_ = jobsCur.Scan(&jobId)

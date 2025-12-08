@@ -190,7 +190,7 @@ var (
 	// that "violate" a hint like forcing a specific index or join algorithm.
 	// If the final expression has this cost or larger, it means that there was no
 	// plan that could satisfy the hints.
-	hugeCost = memo.Cost{C: 1e100, Penalties: memo.HugeCostPenalty}
+	hugeCost = memo.Cost{C: 1e100, Flags: memo.CostFlags{HugeCostPenalty: true}}
 
 	// SmallDistributeCost is the per-operation cost overhead for scans which may
 	// access remote regions, but the scanned table is unpartitioned with no lease
@@ -217,8 +217,8 @@ var (
 	//               region instead of relying on costing, which may not guarantee
 	//               the correct plan is found?
 	LargeDistributeCostWithHomeRegion = memo.Cost{
-		C:         LargeDistributeCost.C / 2,
-		Penalties: memo.HugeCostPenalty,
+		C:     LargeDistributeCost.C / 2,
+		Flags: memo.CostFlags{HugeCostPenalty: true},
 	}
 )
 
@@ -540,9 +540,6 @@ func (c *coster) ComputeCost(candidate memo.RelExpr, required *physical.Required
 	case opt.ScanOp:
 		cost = c.computeScanCost(candidate.(*memo.ScanExpr), required)
 
-	case opt.PlaceholderScanOp:
-		cost = c.computePlaceholderScanCost(candidate.(*memo.PlaceholderScanExpr), required)
-
 	case opt.SelectOp:
 		cost = c.computeSelectCost(candidate.(*memo.SelectExpr), required)
 
@@ -625,18 +622,6 @@ func (c *coster) ComputeCost(candidate memo.RelExpr, required *physical.Required
 	// preferable, all else being equal.
 	cost.C += cpuCostFactor
 
-	// Within a locality optimized search, distribution costs are added to the
-	// remote branch, but not the local branch. Scale the remote branch costs by
-	// a factor reflecting the likelihood of executing that branch. Right now
-	// this probability is not estimated, so just use a default probability of
-	// 1/10.
-	// TODO(msirek): Add an estimation of the probability of executing the
-	// remote branch, e.g., compare the size of the limit hint with the expected
-	// row count of the local branch. Is there a better approach?
-	if required.RemoteBranch {
-		cost.C /= 10
-	}
-
 	// Add a one-time cost for any operator with unbounded cardinality. This
 	// ensures we prefer plans that push limits as far down the tree as
 	// possible, all else being equal.
@@ -647,7 +632,7 @@ func (c *coster) ComputeCost(candidate memo.RelExpr, required *physical.Required
 	if candidate.Relational().Cardinality.IsUnbounded() {
 		cost.C += cpuCostFactor
 		if c.evalCtx.SessionData().OptimizerPreferBoundedCardinality {
-			cost.Penalties |= memo.UnboundedCardinalityPenalty
+			cost.Flags.UnboundedCardinality = true
 		}
 		switch candidate.Op() {
 		case opt.ScanOp, opt.PlaceholderScanOp, opt.LookupJoinOp, opt.IndexJoinOp,
@@ -916,54 +901,10 @@ func (c *coster) computeScanCost(scan *memo.ScanExpr, required *physical.Require
 		cost.IncrFullScanCount()
 		if scan.Flags.AvoidFullScan {
 			// Apply a penalty for a full scan if needed.
-			cost.Penalties |= memo.FullScanPenalty
+			cost.Flags.FullScanPenalty = true
 		}
 	}
 
-	return cost
-}
-
-// computePlaceholderScanCost computes the cost of a placeholder scan. It mimics
-// the logic in computeScanCost that is relevant for placeholder scans.
-func (c *coster) computePlaceholderScanCost(
-	scan *memo.PlaceholderScanExpr, required *physical.Required,
-) memo.Cost {
-	if !scan.Flags.Empty() {
-		panic(errors.AssertionFailedf("expected empty flags for placeholder scan"))
-	}
-
-	stats := scan.Relational().Statistics()
-	rowCount := stats.RowCount
-	const numSpans = 1 // A placeholder scan always has a single span.
-	baseCost := memo.Cost{C: numSpans * randIOCostFactor}
-
-	// Add the IO cost of retrieving and the CPU cost of emitting the rows. The
-	// row cost depends on the size of the columns scanned.
-	perRowCost := c.rowScanCost(scan.Table, scan.Index, scan.Cols)
-
-	// If this is a virtual scan, add the cost of fetching table descriptors.
-	if c.mem.Metadata().Table(scan.Table).IsVirtualTable() {
-		baseCost.C += virtualScanTableDescriptorFetchCost
-	}
-
-	// Add a penalty if the cardinality exceeds the row count estimate. Adding a
-	// few rows worth of cost helps prevent surprising plans for very small tables
-	// or for when stats are stale.
-	//
-	// Note: we add this to the baseCost rather than the rowCount, so that the
-	// number of index columns does not have an outsized effect on the cost of
-	// the scan. See issue #68556.
-	baseCost.Add(c.largeCardinalityCostPenalty(scan.Relational().Cardinality, rowCount))
-
-	if required.LimitHint != 0 {
-		rowCount = math.Min(rowCount, required.LimitHint)
-	}
-
-	cost := baseCost
-	cost.C += rowCount * (seqIOCostFactor + perRowCost.C)
-
-	// TODO(#148315): Consider adding distribution cost for RBR tables.
-	cost.Add(SmallDistributeCost)
 	return cost
 }
 

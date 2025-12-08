@@ -38,7 +38,6 @@ type colBatchScanBase struct {
 
 	flowCtx                *execinfra.FlowCtx
 	processorID            int32
-	stageID                int32
 	limitHint              rowinfra.RowLimit
 	batchBytesLimit        rowinfra.BytesLimit
 	parallelize            bool
@@ -123,7 +122,6 @@ func newColBatchScanBase(
 	kvFetcherMemAcc *mon.BoundAccount,
 	flowCtx *execinfra.FlowCtx,
 	processorID int32,
-	stageID int32,
 	spec *execinfrapb.TableReaderSpec,
 	post *execinfrapb.PostProcessSpec,
 	typeResolver *descs.DistSQLTypeResolver,
@@ -171,14 +169,14 @@ func newColBatchScanBase(
 		s.MakeSpansCopy()
 	}
 
-	if spec.LimitHint > 0 {
+	if spec.LimitHint > 0 || spec.BatchBytesLimit > 0 {
 		// Parallelize shouldn't be set when there's a limit hint, but double-check
 		// just in case.
 		spec.Parallelize = false
 	}
 	var batchBytesLimit rowinfra.BytesLimit
 	if !spec.Parallelize {
-		batchBytesLimit = rowinfra.BytesLimit(flowCtx.Cfg.TestingKnobs.TableReaderBatchBytesLimit)
+		batchBytesLimit = rowinfra.BytesLimit(spec.BatchBytesLimit)
 		if batchBytesLimit == 0 {
 			batchBytesLimit = rowinfra.GetDefaultBatchBytesLimit(flowCtx.EvalCtx.TestingKnobs.ForceProductionValues)
 		}
@@ -188,7 +186,6 @@ func newColBatchScanBase(
 		SpansWithCopy:          s.SpansWithCopy,
 		flowCtx:                flowCtx,
 		processorID:            processorID,
-		stageID:                stageID,
 		limitHint:              limitHint,
 		batchBytesLimit:        batchBytesLimit,
 		parallelize:            spec.Parallelize,
@@ -224,10 +221,11 @@ func (s *ColBatchScan) Init(ctx context.Context) {
 		s.Ctx, s.flowCtx, "colbatchscan", s.processorID,
 		&s.ContentionEventsListener, &s.ScanStatsListener, &s.TenantConsumptionListener,
 	)
+	limitBatches := !s.parallelize
 	if err := s.cf.StartScan(
 		s.Ctx,
 		s.Spans,
-		s.parallelize,
+		limitBatches,
 		s.batchBytesLimit,
 		s.limitHint,
 	); err != nil {
@@ -257,8 +255,6 @@ func (s *ColBatchScan) DrainMeta() []execinfrapb.ProducerMetadata {
 	meta.Metrics = execinfrapb.GetMetricsMeta()
 	meta.Metrics.BytesRead = s.GetBytesRead()
 	meta.Metrics.RowsRead = s.GetRowsRead()
-	meta.Metrics.KVCPUTime = s.GetKVResponseCPUTime()
-	meta.Metrics.StageID = s.stageID
 	trailingMeta = append(trailingMeta, *meta)
 	return trailingMeta
 }
@@ -275,13 +271,6 @@ func (s *ColBatchScan) GetKVPairsRead() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.cf.getKVPairsRead()
-}
-
-// GetKVResponseCPUTime is part of the colexecop.KVReader interface.
-func (s *ColBatchScan) GetKVResponseCPUTime() int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.cf.getKVCPUTime()
 }
 
 // GetBatchRequestsIssued is part of the colexecop.KVReader interface.
@@ -324,14 +313,13 @@ func NewColBatchScan(
 	kvFetcherMemAcc *mon.BoundAccount,
 	flowCtx *execinfra.FlowCtx,
 	processorID int32,
-	stageID int32,
 	spec *execinfrapb.TableReaderSpec,
 	post *execinfrapb.PostProcessSpec,
 	estimatedRowCount uint64,
 	typeResolver *descs.DistSQLTypeResolver,
 ) (*ColBatchScan, []*types.T, error) {
 	base, bsHeader, tableArgs, err := newColBatchScanBase(
-		ctx, kvFetcherMemAcc, flowCtx, processorID, stageID, spec, post, typeResolver,
+		ctx, kvFetcherMemAcc, flowCtx, processorID, spec, post, typeResolver,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -360,7 +348,6 @@ func NewColBatchScan(
 		shouldCollectStats,
 		false, /* alwaysReallocate */
 		flowCtx.Txn,
-		flowCtx.Codec().TenantID,
 	}
 	if err = fetcher.Init(fetcherAllocator, kvFetcher, tableArgs); err != nil {
 		fetcher.Release()

@@ -462,10 +462,10 @@ func (s *externalSorter) Next() coldata.Batch {
 			// resources to be properly released in CloseInactiveReadPartitions
 			// call below.
 			if err := s.partitioner.CloseAllOpenReadFileDescriptors(); err != nil {
-				colexecutils.HandleErrorFromDiskQueue(err)
+				colexecerror.InternalError(err)
 			}
 			if err := s.partitioner.CloseInactiveReadPartitions(s.Ctx); err != nil {
-				colexecutils.HandleErrorFromDiskQueue(err)
+				colexecerror.InternalError(err)
 			}
 			s.state = externalSorterNewPartition
 
@@ -703,7 +703,7 @@ func (s *externalSorter) createMergerForPartitions(n int) *colexec.OrderedSynchr
 			counts.WriteString(fmt.Sprintf("%d", s.partitionsInfo.tupleCount[partitionOrdinal]))
 			sizes.WriteString(string(humanizeutil.IBytes(s.partitionsInfo.totalSize[partitionOrdinal])))
 		}
-		log.Dev.Infof(s.Ctx,
+		log.Infof(s.Ctx,
 			"external sorter is merging partitions with partition indices %v with counts [%s] and sizes [%s]",
 			s.currentPartitionIdxs[s.numPartitions-n:s.numPartitions], counts.String(), sizes.String(),
 		)

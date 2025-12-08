@@ -94,37 +94,10 @@ func (ba *BatchRequest) EarliestActiveTimestamp() hlc.Timestamp {
 	ts := ba.Timestamp
 	for _, ru := range ba.Requests {
 		switch t := ru.GetInner().(type) {
-		case *DeleteRequest:
-			// A DeleteRequest with ExpectExclusionSince set need to be able to
-			// observe MVCC versions from the specified time to correctly detect
-			// isolation violations.
-			//
-			// See the example in RefreshRequest for more details.
-			if !t.ExpectExclusionSince.IsEmpty() {
-				ts.Backward(t.ExpectExclusionSince)
-			}
 		case *ExportRequest:
 			if !t.StartTime.IsEmpty() {
 				// NB: StartTime.Next() because StartTime is exclusive.
 				ts.Backward(t.StartTime.Next())
-			}
-		case *GetRequest:
-			// A GetRequest with ExpectExclusionSince set need to be able to observe
-			// MVCC versions from the specified time to correctly detect isolation
-			// violations.
-			//
-			// See the example in RefreshRequest for more details.
-			if !t.ExpectExclusionSince.IsEmpty() {
-				ts.Backward(t.ExpectExclusionSince)
-			}
-		case *PutRequest:
-			// A PutRequest with ExpectExclusionSince set need to be able to observe MVCC
-			// versions from the specified time to correctly detect isolation
-			// violations.
-			//
-			// See the example in RefreshRequest for more details.
-			if !t.ExpectExclusionSince.IsEmpty() {
-				ts.Backward(t.ExpectExclusionSince)
 			}
 		case *RevertRangeRequest:
 			// This method is only used to check GC Threshold so Revert requests that
@@ -954,15 +927,12 @@ func (ba *BatchRequest) ValidateForEvaluation() error {
 	if _, ok := ba.GetArg(EndTxn); ok && ba.Txn == nil {
 		return errors.AssertionFailedf("EndTxn request without transaction")
 	}
+	if ba.Txn != nil {
+		if ba.Txn.WriteTooOld && ba.Txn.ReadTimestamp == ba.Txn.WriteTimestamp {
+			return errors.AssertionFailedf("WriteTooOld set but no offset in timestamps. txn: %s", ba.Txn)
+		}
+	}
 	return nil
-}
-
-// MightStopEarly returns true if any of the batch's options might result in the
-// batch response being returned before all requests have been fully processed
-// without an error.
-func (ba *BatchRequest) MightStopEarly() bool {
-	h := ba.Header
-	return h.MaxSpanRequestKeys != 0 || h.TargetBytes != 0 || h.ReturnElasticCPUResumeSpans
 }
 
 func (cb ColBatches) Size() int {

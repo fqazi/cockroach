@@ -44,7 +44,7 @@ func TestBackupSucceededUpdatesMetrics(t *testing.T) {
 
 	t.Run("updates RPO tenant metric", func(t *testing.T) {
 		schedule := createSchedule(t, true)
-		tenantIDs := mustMakeTenantIDs(t, 1, 3)
+		tenantIDs := mustMakeTenantIDs(t, 1, 2)
 		endTime := hlc.Timestamp{WallTime: hlc.UnixNano()}
 		details := jobspb.BackupDetails{
 			EndTime:           endTime,
@@ -54,7 +54,7 @@ func TestBackupSucceededUpdatesMetrics(t *testing.T) {
 		err := executor.backupSucceeded(ctx, nil, schedule, details, nil)
 		require.NoError(t, err)
 
-		expectedTenantIDs := []string{"system", "3"}
+		expectedTenantIDs := []string{"system", "2"}
 		verifyRPOTenantMetricLabels(t, executor.metrics.RpoTenantMetric, expectedTenantIDs)
 		verifyRPOTenantMetricGaugeValue(t, executor.metrics.RpoTenantMetric, details.EndTime)
 	})

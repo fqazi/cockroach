@@ -107,11 +107,6 @@ func getInitialStateEngine(
 	require.NoError(b, err)
 	require.True(b, ok)
 
-	// Validate and set the minversion for the env after copy.
-	settings := cluster.MakeClusterSettings()
-	env.StoreClusterVersion, err = fs.ValidateMinVersionFile(env.UnencryptedFS, env.Dir, settings.Version)
-	require.NoError(b, err)
-
 	if !inMemory {
 		// Load all the files into the OS buffer cache for better determinism.
 		testutils.ReadAllFiles(filepath.Join(env.Dir, "*"))
@@ -147,13 +142,10 @@ func buildInitialState(
 		// or not, we build the conditions using an in-memory engine for
 		// performance.
 		buildFS = vfs.NewMem()
-		settings := cluster.MakeClusterSettings()
-		env, err := fs.InitEnv(ctx, buildFS, "", fs.EnvConfig{
-			Version: settings.Version,
-		}, nil /* statsCollector */)
+		env, err := fs.InitEnv(ctx, buildFS, "", fs.EnvConfig{}, nil /* statsCollector */)
 		require.NoError(b, err)
 
-		e, err := Open(ctx, env, settings, opts...)
+		e, err := Open(ctx, env, cluster.MakeClusterSettings(), opts...)
 		require.NoError(b, err)
 		require.NoError(b, initial.Build(ctx, b, e))
 		e.Close()
@@ -194,7 +186,7 @@ func (e extendedInitial) Build(ctx context.Context, b *testing.B, eng Engine) er
 func withCompactedDB(base initialState) initialState {
 	return extendInitialConditions(base,
 		func(ctx context.Context, b *testing.B, eng Engine) error {
-			return eng.Compact(ctx)
+			return eng.Compact()
 		}, "compacted")
 }
 
@@ -376,7 +368,7 @@ func (d mvccBenchData) Build(ctx context.Context, b *testing.B, eng Engine) erro
 		// optimizations which change the data size result in the same number of
 		// sstables.
 		if scaled := len(order) / 20; i > 0 && (i%scaled) == 0 {
-			log.Dev.Infof(ctx, "committing (%d/~%d)", i/scaled, 20)
+			log.Infof(ctx, "committing (%d/~%d)", i/scaled, 20)
 			if err := batch.Commit(false /* sync */); err != nil {
 				return err
 			}
@@ -520,7 +512,7 @@ func (i mvccImportedData) writeLayer(
 		// optimizations which change the data size result in the same number of
 		// sstables.
 		if scaled := len(keys) / 20; idx > 0 && (idx%scaled) == 0 {
-			log.Dev.Infof(ctx, "committing (%d/~%d)", idx/scaled, 20)
+			log.Infof(ctx, "committing (%d/~%d)", idx/scaled, 20)
 			if err := batch.Commit(false /* sync */); err != nil {
 				return err
 			}

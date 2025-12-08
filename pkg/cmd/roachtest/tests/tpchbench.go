@@ -54,15 +54,14 @@ func runTPCHBench(ctx context.Context, t test.Test, c cluster.Cluster, b tpchBen
 	t.Status("starting nodes")
 	c.Start(ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule), install.MakeClusterSettings(), c.CRDBNodes())
 
-	m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+	m := c.NewMonitor(ctx, c.CRDBNodes())
 	m.Go(func(ctx context.Context) error {
 		conn := c.Conn(ctx, t.L(), 1)
 		defer conn.Close()
 
 		t.Status("setting up dataset")
-		err := importTPCHDataset(
-			ctx, t, c, "" /* virtualClusterName */, conn, b.ScaleFactor, m,
-			c.CRDBNodes(), true /* disableMergeQueue */, true, /* smallRanges */
+		err := loadTPCHDataset(
+			ctx, t, c, conn, b.ScaleFactor, m, c.CRDBNodes(), true, /* disableMergeQueue */
 		)
 		if err != nil {
 			return err
@@ -135,9 +134,6 @@ func registerTPCHBenchSpec(r registry.Registry, b tpchBenchSpec) {
 				totalMeanCount++
 			}
 
-			if totalMeanCount == 0 {
-				totalMeanCount = 1 // Avoid division by zero.
-			}
 			aggregatedMetrics := roachtestutil.AggregatedPerfMetrics{
 				{
 					Name:           test + "_mean_latency",

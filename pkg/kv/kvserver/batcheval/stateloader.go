@@ -5,9 +5,9 @@
 
 package batcheval
 
-import "github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
+import "github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 
 // MakeStateLoader creates a StateLoader for the EvalContext.
-func MakeStateLoader(rec EvalContext) kvstorage.StateLoader {
-	return kvstorage.MakeStateLoader(rec.GetRangeID())
+func MakeStateLoader(rec EvalContext) stateloader.StateLoader {
+	return stateloader.Make(rec.GetRangeID())
 }

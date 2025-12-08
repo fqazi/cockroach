@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/hintpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
@@ -578,41 +577,6 @@ func (ep *DummyEvalPlanner) ClearQueryPlanCache() {}
 // ClearTableStatsCache is part of the eval.Planner interface.
 func (ep *DummyEvalPlanner) ClearTableStatsCache() {}
 
-// ClearStatementHintsCache is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) ClearStatementHintsCache() {}
-
-// AwaitStatementHintsCache is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) AwaitStatementHintsCache(ctx context.Context) {}
-
-// RetryCounter is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) RetryCounter() int {
-	return 0
-}
-
-// ProcessVectorIndexFixups is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) ProcessVectorIndexFixups(
-	ctx context.Context, tableID descpb.ID, indexID descpb.IndexID,
-) error {
-	return nil
-}
-
-// InsertStatementHint is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) InsertStatementHint(
-	ctx context.Context, statementFingerprint string, hint hintpb.StatementHintUnion,
-) (int64, error) {
-	return 0, nil
-}
-
-// UsingHintInjection is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) UsingHintInjection() bool {
-	return false
-}
-
-// GetHintIDs is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) GetHintIDs() []int64 {
-	return nil
-}
-
 // DummyPrivilegedAccessor implements the tree.PrivilegedAccessor interface by returning errors.
 type DummyPrivilegedAccessor struct{}
 
@@ -683,21 +647,6 @@ func (ep *DummySessionAccessor) HasViewActivityOrViewActivityRedactedRole(
 	return false, false, errors.WithStack(errEvalSessionVar)
 }
 
-// HasViewAccessToJob implements SessionAccessor.
-func (ep *DummySessionAccessor) HasViewAccessToJob(
-	ctx context.Context, owner username.SQLUsername,
-) bool {
-	// This is a no-op in the dummy implementation.
-	return false
-}
-
-func (ep *DummySessionAccessor) ForEachSessionPendingJob(
-	_ func(job jobspb.PendingJob) error,
-) error {
-	// This is a no-op in the dummy implementation.
-	return nil
-}
-
 // DummyClientNoticeSender implements the eval.ClientNoticeSender interface.
 type DummyClientNoticeSender struct{}
 
@@ -761,11 +710,8 @@ func (ps *DummyPreparedStatementState) HasActivePortals() bool {
 }
 
 // MigratablePreparedStatements is part of the tree.PreparedStatementState interface.
-func (ps *DummyPreparedStatementState) MigratablePreparedStatements() (
-	[]sessiondatapb.MigratableSession_PreparedStatement,
-	error,
-) {
-	return nil, nil
+func (ps *DummyPreparedStatementState) MigratablePreparedStatements() []sessiondatapb.MigratableSession_PreparedStatement {
+	return nil
 }
 
 // HasPortal is part of the tree.PreparedStatementState interface.

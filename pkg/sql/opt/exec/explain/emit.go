@@ -77,17 +77,11 @@ func emitInternal(
 	e := makeEmitter(ob, spanFormatFn)
 	var walk func(n *Node) error
 	walk = func(n *Node) error {
-		if n == nil {
-			return nil
-		}
 		// In non-verbose mode, we skip all projections.
 		// In verbose mode, we only skip trivial projections (which just rearrange
 		// or rename the columns).
 		if !ob.flags.Verbose {
 			if n.op == serializingProjectOp || n.op == simpleProjectOp {
-				if len(n.children) == 0 {
-					return nil
-				}
 				return walk(n.children[0])
 			}
 		}
@@ -105,7 +99,6 @@ func emitInternal(
 				return err
 			}
 		}
-		e.emitNodeFootnotes(n)
 		ob.LeaveNode()
 		return nil
 	}
@@ -239,9 +232,6 @@ func omitTrivialProjections(n *Node) (*Node, colinfo.ResultColumns, colinfo.Colu
 		return n, n.Columns(), n.Ordering()
 	}
 
-	if len(n.children) == 0 {
-		return n, n.Columns(), n.Ordering()
-	}
 	input, inputColumns, inputOrdering := omitTrivialProjections(n.children[0])
 
 	// Check if the projection is a bijection (i.e. permutation of all input
@@ -281,17 +271,14 @@ func makeEmitter(ob *OutputBuilder, spanFormatFn SpanFormatFn) emitter {
 	return emitter{ob: ob, spanFormatFn: spanFormatFn}
 }
 
-func usedStreamer(n *Node) bool {
-	if stats, ok := n.annotations[exec.ExecutionStatsID]; ok && !omitStats(n) {
-		return stats.(*exec.ExecutionStats).UsedStreamer
-	}
-	return false
-}
-
 func (e *emitter) nodeName(n *Node) (name string, _ error) {
-	if usedStreamer(n) {
-		defer func() { name += " (streamer)" }()
-	}
+	defer func() {
+		if stats, ok := n.annotations[exec.ExecutionStatsID]; ok && !omitStats(n) {
+			if stats.(*exec.ExecutionStats).UsedStreamer {
+				name += " (streamer)"
+			}
+		}
+	}()
 
 	switch n.op {
 	case scanOp:
@@ -408,7 +395,6 @@ var nodeNames = [...]string{
 	createViewOp:           "create view",
 	deleteOp:               "delete",
 	deleteRangeOp:          "delete range",
-	deleteSwapOp:           "delete swap",
 	distinctOp:             "distinct",
 	errorIfRowsOp:          "error if rows",
 	explainOp:              "explain",
@@ -446,7 +432,6 @@ var nodeNames = [...]string{
 	sortOp:                 "sort",
 	topKOp:                 "top-k",
 	updateOp:               "update",
-	updateSwapOp:           "update swap",
 	upsertOp:               "upsert",
 	valuesOp:               "", // This node does not have a fixed name.
 	vectorSearchOp:         "vector search",
@@ -590,7 +575,6 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 		}
 	}
 
-	// Note: This is the same inaccuracy criteria as DistSQLReceiver.maybeLogMisestimates.
 	var inaccurateEstimate bool
 	const inaccurateFactor = 2
 	const inaccurateAdditive = 100
@@ -756,8 +740,12 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 
 	case limitOp:
 		a := n.args.(*limitArgs)
-		ob.Expr("count", a.Limit, nil /* columns */)
-		ob.Expr("offset", a.Offset, nil /* columns */)
+		if a.Limit != nil {
+			ob.Expr("count", a.Limit, nil /* columns */)
+		}
+		if a.Offset != nil {
+			ob.Expr("offset", a.Offset, nil /* columns */)
+		}
 
 	case sortOp:
 		a := n.args.(*sortArgs)
@@ -793,9 +781,6 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 		}
 		ob.VAttr("key columns", strings.Join(cols, ", "))
 		e.emitLockingPolicy(a.Locking)
-		if a.Parallelize { // should always be true
-			ob.VAttr("parallel", "")
-		}
 
 	case groupByOp:
 		a := n.args.(*groupByArgs)
@@ -863,7 +848,9 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 
 	case applyJoinOp:
 		a := n.args.(*applyJoinArgs)
-		ob.Expr("pred", a.OnCond, appendColumns(a.Left.Columns(), a.RightColumns...))
+		if a.OnCond != nil {
+			ob.Expr("pred", a.OnCond, appendColumns(a.Left.Columns(), a.RightColumns...))
+		}
 
 	case lookupJoinOp:
 		a := n.args.(*lookupJoinArgs)
@@ -890,9 +877,6 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 		ob.Expr("remote lookup condition", a.RemoteLookupExpr, appendColumns(inputCols, tableColumns(a.Table, a.LookupCols)...))
 		ob.Expr("pred", a.OnCond, appendColumns(inputCols, tableColumns(a.Table, a.LookupCols)...))
 		e.emitLockingPolicy(a.Locking)
-		if a.Parallelize || usedStreamer(n) {
-			ob.VAttr("parallel", "")
-		}
 
 	case zigzagJoinOp:
 		a := n.args.(*zigzagJoinArgs)
@@ -1129,44 +1113,8 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 		}
 		e.emitPolicies(ob, a.Table, n)
 
-	case updateSwapOp:
-		a := n.args.(*updateSwapArgs)
-		ob.Attrf("table", "%s", a.Table.Name())
-		ob.Attr("set", printColumns(tableColumns(a.Table, a.UpdateCols)))
-		if a.AutoCommit {
-			ob.Attr("auto commit", "")
-		}
-		beforeTriggers := cat.GetRowLevelTriggers(
-			a.Table, tree.TriggerActionTimeBefore, tree.MakeTriggerEventTypeSet(tree.TriggerEventUpdate),
-		)
-		if len(beforeTriggers) > 0 {
-			ob.EnterMetaNode("before-triggers")
-			for _, trigger := range beforeTriggers {
-				ob.Attrf("trigger", "%s", trigger.Name())
-			}
-			ob.LeaveNode()
-		}
-		e.emitPolicies(ob, a.Table, n)
-
 	case deleteOp:
 		a := n.args.(*deleteArgs)
-		ob.Attrf("from", "%s", a.Table.Name())
-		if a.AutoCommit {
-			ob.Attr("auto commit", "")
-		}
-		beforeTriggers := cat.GetRowLevelTriggers(
-			a.Table, tree.TriggerActionTimeBefore, tree.MakeTriggerEventTypeSet(tree.TriggerEventDelete),
-		)
-		if len(beforeTriggers) > 0 {
-			ob.EnterMetaNode("before-triggers")
-			for _, trigger := range beforeTriggers {
-				ob.Attrf("trigger", "%s", trigger.Name())
-			}
-			ob.LeaveNode()
-		}
-
-	case deleteSwapOp:
-		a := n.args.(*deleteSwapArgs)
 		ob.Attrf("from", "%s", a.Table.Name())
 		if a.AutoCommit {
 			ob.Attr("auto commit", "")
@@ -1280,35 +1228,6 @@ func (e *emitter) emitNodeAttributes(ctx context.Context, evalCtx *eval.Context,
 	return nil
 }
 
-// emitNodeFootnotes populates the Node's information after having recursed into
-// the Node's children.
-func (e *emitter) emitNodeFootnotes(n *Node) {
-	switch n.op {
-	case applyJoinOp:
-		a := n.args.(*applyJoinArgs)
-		if a.RightSideForExplainFn != nil {
-			e.ob.EnterNode("inner loop (unoptimized)" /* name */, nil /* columns */, nil /* ordering */)
-			defer e.ob.LeaveNode()
-			// RightSideForExplainFn can produce multiple lines that correspond
-			// to the unoptimized right side plan.
-			lines := strings.Split(a.RightSideForExplainFn(e.ob.flags.RedactValues), "\n")
-			var enteredNode bool
-			for _, l := range lines {
-				if len(l) == 0 {
-					continue
-				}
-				if !enteredNode {
-					e.ob.EnterNode(l /* name */, nil /* columns */, nil /* ordering */)
-					defer e.ob.LeaveNode() //nolint:deferloop
-					enteredNode = true
-				} else {
-					e.ob.Attr(l, "")
-				}
-			}
-		}
-	}
-}
-
 func (e *emitter) emitTableAndIndex(field string, table cat.Table, index cat.Index, suffix string) {
 	partial := ""
 	if _, isPartial := index.Predicate(); isPartial {
@@ -1329,7 +1248,7 @@ func (e *emitter) spansStr(table cat.Table, index cat.Index, scanParams exec.Sca
 		if scanParams.HardLimit != 0 {
 			return "LIMITED SCAN"
 		}
-		if scanParams.SoftLimit != 0 {
+		if scanParams.SoftLimit > 0 {
 			return "FULL SCAN (SOFT LIMIT)"
 		}
 		return "FULL SCAN"
@@ -1509,16 +1428,14 @@ func (e *emitter) emitPolicies(ob *OutputBuilder, table cat.Table, n *Node) {
 		ob.AddField("policies", "row-level security enabled, no policies applied.")
 	} else {
 		var sb strings.Builder
-		if table != nil {
-			policies := table.Policies()
-			for _, grp := range [][]cat.Policy{policies.Permissive, policies.Restrictive} {
-				for _, policy := range grp {
-					if applied.Policies.Contains(policy.ID) {
-						if sb.Len() > 0 {
-							sb.WriteString(", ")
-						}
-						sb.WriteString(policy.Name.Normalize())
+		policies := table.Policies()
+		for _, grp := range [][]cat.Policy{policies.Permissive, policies.Restrictive} {
+			for _, policy := range grp {
+				if applied.Policies.Contains(policy.ID) {
+					if sb.Len() > 0 {
+						sb.WriteString(", ")
 					}
+					sb.WriteString(policy.Name.Normalize())
 				}
 			}
 		}

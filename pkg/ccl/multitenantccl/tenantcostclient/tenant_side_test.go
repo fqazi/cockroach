@@ -445,7 +445,7 @@ func (ts *testState) advance(t *testing.T, d *datadriven.TestData, args cmdArgs)
 		d.Fatalf(t, "failed to parse input as duration: %v", err)
 	}
 	if log.ExpensiveLogEnabled(ctx, 1) {
-		log.Dev.Infof(ctx, "Advance %v", dur)
+		log.Infof(ctx, "Advance %v", dur)
 	}
 	ts.timeSrc.Advance(dur)
 	if args.wait {
@@ -698,7 +698,7 @@ func (ew *eventWaiter) Event(now time.Time, typ tenantcostclient.TestEventType) 
 	select {
 	case ew.ch <- ev:
 		if testing.Verbose() {
-			log.Dev.Infof(context.Background(), "event %s at %s\n",
+			log.Infof(context.Background(), "event %s at %s\n",
 				eventTypeStr[typ], now.Format(timeFormat))
 		}
 	default:
@@ -1200,6 +1200,8 @@ func TestSQLLivenessExemption(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
+	// This test fails when run with the default test tenant. Disabling and
+	// tracking with #76378.
 	hostServer, hostDB, hostKV := serverutils.StartServer(t,
 		base.TestServerArgs{DefaultTestTenant: base.TestControlsTenantsExplicitly})
 	defer hostServer.Stopper().Stop(context.Background())

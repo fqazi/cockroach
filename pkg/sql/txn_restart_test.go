@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/keys"
+	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
@@ -26,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/tests"
@@ -53,7 +54,7 @@ type failureRecord struct {
 
 type filterVals struct {
 	syncutil.Mutex
-	// key -> number of times an retryable error will be injected when that key
+	// key -> number of times an retriable error will be injected when that key
 	// is written.
 	restartCounts map[string]int
 	// key -> number of times a TransactionAborted error will be injected when
@@ -110,59 +111,45 @@ type injectionApproaches []injectionApproach
 func (ia injectionApproaches) Len() int      { return len(ia) }
 func (ia injectionApproaches) Swap(i, j int) { ia[i], ia[j] = ia[j], ia[i] }
 
-func injectErrors(
-	st *cluster.Settings, req kvpb.Request, hdr kvpb.Header, magicVals *filterVals, verifyTxn bool,
-) error {
+func injectErrors(req kvpb.Request, hdr kvpb.Header, magicVals *filterVals, verifyTxn bool) error {
 	magicVals.Lock()
 	defer magicVals.Unlock()
 
-	var rawBytes []byte
-	switch r := req.(type) {
+	switch req := req.(type) {
 	case *kvpb.ConditionalPutRequest:
-		rawBytes = r.Value.RawBytes
-	case *kvpb.PutRequest:
-		// Buffered writes might decompose our INSERT into a locking Get and a Put.
-		// Note that we can't look _only_ for a Put because some transactions that
-		// result in a single batch aren't buffered.
-		if kvcoord.BufferedWritesEnabled.Get(&st.SV) {
-			rawBytes = r.Value.RawBytes
-		} else {
-			return nil
+		// Create a list of each injection approach and shuffle the order of
+		// injection for some additional randomness.
+		injections := injectionApproaches{
+			{counts: magicVals.restartCounts, errFn: func() error {
+				// Note we use a retry error that cannot be automatically retried
+				// by the transaction coord sender.
+				return kvpb.NewTransactionRetryError(kvpb.RETRY_REASON_UNKNOWN, "injected err")
+			}},
+			{counts: magicVals.abortCounts, errFn: func() error {
+				return kvpb.NewTransactionAbortedError(kvpb.ABORT_REASON_ABORTED_RECORD_FOUND)
+			}},
 		}
-	default:
-		return nil
-	}
+		shuffle.Shuffle(injections)
 
-	// Create a list of each injection approach and shuffle the order of
-	// injection for some additional randomness.
-	injections := injectionApproaches{
-		{counts: magicVals.restartCounts, errFn: func() error {
-			// Note we use a retry error that cannot be automatically retried
-			// by the transaction coord sender.
-			return kvpb.NewTransactionRetryError(kvpb.RETRY_REASON_UNKNOWN, "injected err")
-		}},
-		{counts: magicVals.abortCounts, errFn: func() error {
-			return kvpb.NewTransactionAbortedError(kvpb.ABORT_REASON_ABORTED_RECORD_FOUND)
-		}},
-	}
-	shuffle.Shuffle(injections)
-
-	for _, injection := range injections {
-		for key, count := range injection.counts {
-			if verifyTxn {
-				if err := checkCorrectTxn(string(rawBytes), magicVals, hdr.Txn); err != nil {
+		for _, injection := range injections {
+			for key, count := range injection.counts {
+				if verifyTxn {
+					if err := checkCorrectTxn(string(req.Value.RawBytes), magicVals, hdr.Txn); err != nil {
+						return err
+					}
+				}
+				if count > 0 && bytes.Contains(req.Value.RawBytes, []byte(key)) {
+					injection.counts[key]--
+					err := injection.errFn()
+					magicVals.failedValues[string(req.Value.RawBytes)] = failureRecord{err, hdr.Txn}
 					return err
 				}
 			}
-			if count > 0 && bytes.Contains(rawBytes, []byte(key)) {
-				injection.counts[key]--
-				err := injection.errFn()
-				magicVals.failedValues[string(rawBytes)] = failureRecord{err, hdr.Txn}
-				return err
-			}
 		}
+		return nil
+	default:
+		return nil
 	}
-	return nil
 }
 
 // checkRestart checks that there are no errors left to inject.
@@ -193,7 +180,7 @@ func checkRestarts(t *testing.T, magicVals *filterVals) {
 // The TxnAborter needs to be hooked up to a Server's
 // Knobs.StatementFilter, so that the Aborter sees what statements are being
 // executed. This is done by calling HookupToExecutor(), which returns a
-// suitable ExecutorTestingKnobs.
+// stuitable ExecutorTestingKnobs.
 // A statement can be registered for abortion (meaning, the statement's
 // transaction will be TransactionAborted) with QueueStmtForAbortion(). When the
 // Aborter sees that statement, it will run a higher priority transaction that
@@ -257,7 +244,7 @@ type TxnAborter struct {
 }
 
 type restartInfo struct {
-	// The numeric value being inserted in col 'k'.
+	// The numberic value being inserted in col 'k'.
 	key int
 	// The remaining number of times to abort the txn.
 	abortCount     int
@@ -357,7 +344,7 @@ func (ta *TxnAborter) statementFilter(
 	ctx context.Context, _ *sessiondata.SessionData, stmt string, err error,
 ) {
 	ta.mu.Lock()
-	log.Dev.Infof(ctx, "statement filter running on: %s, with err=%v", stmt, err)
+	log.Infof(ctx, "statement filter running on: %s, with err=%v", stmt, err)
 	ri, ok := ta.mu.stmtsToAbort[stmt]
 	shouldAbort := false
 	if ok {
@@ -367,7 +354,7 @@ func (ta *TxnAborter) statementFilter(
 			ri.satisfied = true
 		}
 		if ri.abortCount > 0 && err == nil {
-			log.Dev.Infof(ctx, "TxnAborter aborting txn for statement %q", stmt)
+			log.Infof(ctx, "TxnAborter aborting txn for statement %q", stmt)
 			ri.abortCount--
 			shouldAbort = true
 		}
@@ -456,27 +443,19 @@ func (ri *restartInfo) Verify() error {
 }
 
 // Test the logic in the sql executor for automatically retrying txns in case of
-// retryable errors.
+// retriable errors.
 func TestTxnAutoRetry(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
 	aborter := NewTxnAborter()
 	defer aborter.Close(t)
-	var cmdFilters tests.CommandFilters
-	params := base.TestServerArgs{}
-	params.Knobs.Store = &kvserver.StoreTestingKnobs{
-		EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
-			TestingEvalFilter: cmdFilters.RunFilters,
-		},
-	}
+	params, cmdFilters := createTestServerParamsAllowTenants()
 	params.Knobs.SQLExecutor = aborter.executorKnobs()
-	srv, sqlDB, _ := serverutils.StartServer(t, params)
-	defer srv.Stopper().Stop(context.Background())
-	s := srv.ApplicationLayer()
-
+	s, sqlDB, _ := serverutils.StartServer(t, params)
+	defer s.Stopper().Stop(context.Background())
 	{
-		pgURL, cleanup := s.PGUrl(t,
+		pgURL, cleanup := s.ApplicationLayer().PGUrl(t,
 			serverutils.CertsDirPrefix("TestTxnAutoRetry"), serverutils.User(username.RootUser))
 		defer cleanup()
 		if err := aborter.Init(pgURL); err != nil {
@@ -513,7 +492,7 @@ func TestTxnAutoRetry(t *testing.T) {
 	}
 	cleanupFilter := cmdFilters.AppendFilter(
 		func(args kvserverbase.FilterArgs) *kvpb.Error {
-			if err := injectErrors(s.ClusterSettings(), args.Req, args.Hdr, magicVals, true /* verifyTxn */); err != nil {
+			if err := injectErrors(args.Req, args.Hdr, magicVals, true /* verifyTxn */); err != nil {
 				return kvpb.NewErrorWithTxn(err, args.Hdr.Txn)
 			}
 			return nil
@@ -555,7 +534,7 @@ func TestTxnAutoRetry(t *testing.T) {
 	// TODO(knz): This test can be made more robust by exposing the
 	// current allocation count in monitor and checking that it has the
 	// same value at the beginning of each retry.
-	query := `
+	rows, err := sqlDB.Query(`
 BEGIN;
 INSERT INTO t.public.test(k, v, t) VALUES (1, 'boulanger', cluster_logical_timestamp()) RETURNING 1;
 END;
@@ -569,19 +548,7 @@ END;
 BEGIN;
 INSERT INTO t.public.test(k, v, t) VALUES (5, 'josephine', cluster_logical_timestamp()) RETURNING 1;
 INSERT INTO t.public.test(k, v, t) VALUES (6, 'laureal', cluster_logical_timestamp()) RETURNING 1;
-`
-	// Buffered writes will not encounter the injected errors until a commit is
-	// issued in the final transaction. For this test we face a small trade-off.
-	// We could, with some work, arrange to inject the error during a locking Get
-	// on the given key at the expense of observing the error at a point where we
-	// typically wouldn't. Here, we issue a DeleteRange to force a mid-txn flush
-	// of the buffer so we are still testing that we get the retry behavior even
-	// if we encounter the error before COMMIT.
-	if kvcoord.BufferedWritesEnabled.Get(&s.ClusterSettings().SV) {
-		query += "\nDELETE FROM t.public.test WHERE k > 100"
-	}
-
-	rows, err := sqlDB.Query(query)
+`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +596,7 @@ INSERT INTO t.public.test(k, v, t) VALUES (6, 'laureal', cluster_logical_timesta
 	}
 	cleanupFilter = cmdFilters.AppendFilter(
 		func(args kvserverbase.FilterArgs) *kvpb.Error {
-			if err := injectErrors(s.ClusterSettings(), args.Req, args.Hdr, magicVals, true /* verifyTxn */); err != nil {
+			if err := injectErrors(args.Req, args.Hdr, magicVals, true /* verifyTxn */); err != nil {
 				return kvpb.NewErrorWithTxn(err, args.Hdr.Txn)
 			}
 			return nil
@@ -650,7 +617,7 @@ BEGIN;
 		t.Fatal(err)
 	}
 
-	// Continue the txn in a new request, which is not retryable.
+	// Continue the txn in a new request, which is not retriable.
 	_, err = sqlDB.Exec("INSERT INTO t.public.test(k, v, t) VALUES (4, 'hooly', cluster_logical_timestamp())")
 	require.Regexp(t, "RETRY_REASON_UNKNOWN - injected err", err)
 }
@@ -663,15 +630,12 @@ func TestAbortedTxnOnlyRetriedOnce(t *testing.T) {
 
 	aborter := NewTxnAborter()
 	defer aborter.Close(t)
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	params.Knobs.SQLExecutor = aborter.executorKnobs()
-	srv, sqlDB, _ := serverutils.StartServer(t, params)
-	defer srv.Stopper().Stop(context.Background())
-	s := srv.ApplicationLayer()
-	kvcoord.BufferedWritesMaxBufferSize.Override(ctx, &s.ClusterSettings().SV, 2<<10 /* 2KiB */)
-
+	s, sqlDB, _ := serverutils.StartServer(t, params)
+	defer s.Stopper().Stop(context.Background())
 	{
-		pgURL, cleanup := s.PGUrl(t,
+		pgURL, cleanup := s.ApplicationLayer().PGUrl(t,
 			serverutils.CertsDirPrefix("TestAbortedTxnOnlyRetriedOnce"), serverutils.User(username.RootUser))
 		defer cleanup()
 		if err := aborter.Init(pgURL); err != nil {
@@ -701,47 +665,8 @@ CREATE TABLE t.test (k INT PRIMARY KEY, v TEXT);
 	if !ok {
 		t.Fatalf("aborter has no state on %q", insertStmt)
 	}
-
-	expectedExecCount := 2
-	if kvcoord.BufferedWritesEnabled.Get(&s.ClusterSettings().SV) {
-		// In some sense, setting expected count to 3 here defeats the purpose of
-		// the test. To justify this, here is an explanation of why we get the extra
-		// retry:
-		//
-		// This test attempts to abort this statement by running a high priority
-		// DELETE:
-		//
-		//      BEGIN;
-		//    	SET TRANSACTION PRIORITY HIGH
-		//      DELETE FROM t.test WHERE k = $1
-		//      COMMIT;
-		//
-		// via a StatementFilter that executes after the INSERT has been evaluated.
-		//
-		// What makes this work in the non-buffered-writes case is that the test
-		// also sets the DisableAutoCommitDuringExec testing knob. As a result, the
-		// INSERT generates an intent write, the DELETE encounters the write and
-		// PushTxn(PUSH_ABORT)s the INSERT transaction. Then, the conn executor
-		// attempts to commit the INSERT and finds the record of the abort.
-		//
-		// But, buffered writes essentially "undoes" the DisableAutoCommitDuringExec
-		// flag by buffering the original write from the INSERT. When the conn
-		// executor finally sends an EndTxn, we first encounter the DELETE's write
-		// and get a WriteTooOld error. This WriteTooOld error results in the first
-		// retry. When the first retry attempts to commit, it encounters the abort
-		// span, generating the second retry.
-		//
-		// One question I'm unclear on is whether re-using the same transaction
-		// after the WriteTooOld error is the best strategy in practice.
-		//
-		// We could disable write buffering when DisableAutoCommitDuringExec is set
-		// or disable this test under buffered writes, but I've opted to keep the
-		// test enabled so we get some signal in case this situation changes.
-		expectedExecCount = 3
-	}
-
-	if execCount != expectedExecCount {
-		t.Fatalf("expected %q to be executed %d times, but got %d", insertStmt, expectedExecCount, execCount)
+	if execCount != 2 {
+		t.Fatalf("expected %q to be executed 2 times, but got %d", insertStmt, execCount)
 	}
 }
 
@@ -796,16 +721,14 @@ func isRetryableErr(err error) bool {
 	return errors.As(err, &pqErr) && pqErr.Code == "40001"
 }
 
-// Returns true on retryable errors.
+// Returns true on retriable errors.
 func runTestTxn(
 	t *testing.T,
-	st *cluster.Settings,
 	magicVals *filterVals,
 	expectedErr string,
 	sqlDB *gosql.DB,
 	tx *gosql.Tx,
 	sentinelInsert string,
-	execCount int,
 ) bool {
 	// Run a bogus statement to disable the automatic server retries of subsequent
 	// statements.
@@ -813,38 +736,19 @@ func runTestTxn(
 		t.Fatal(err)
 	}
 
-	// On the first execution with buffered writes enabled, the arranged retryable
-	// error is not observed until the buffer is flushed. Once the buffer is
-	// flushed, future buffering is disabled so then we expect the following
-	// errors on the initial insert.
-	retryErrorDelayedUntilDelete := kvcoord.BufferedWritesEnabled.Get(&st.SV) && execCount == 1
-
 	retriesNeeded :=
 		(magicVals.restartCounts["boulanger"] + magicVals.abortCounts["boulanger"]) > 0
 	if retriesNeeded {
 		_, err := tx.Exec("INSERT INTO t.public.test(k, v) VALUES (1, 'boulanger')")
-		if retryErrorDelayedUntilDelete {
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		} else {
-			if !testutils.IsError(err, expectedErr) {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			return isRetryableErr(err)
+		if !testutils.IsError(err, expectedErr) {
+			t.Fatalf("unexpected error: %v", err)
 		}
+		return isRetryableErr(err)
 	}
 	// Now the INSERT should succeed.
 	if _, err := tx.Exec(
 		"DELETE FROM t.public.test WHERE true;" + sentinelInsert,
 	); err != nil {
-		if retriesNeeded && retryErrorDelayedUntilDelete {
-			if !testutils.IsError(err, expectedErr) {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			return isRetryableErr(err)
-		}
-
 		t.Fatal(err)
 	}
 
@@ -853,7 +757,7 @@ func runTestTxn(
 }
 
 // TestUserTxnRestart tests user-directed txn restarts.
-// The test will inject and otherwise create retryable errors of various kinds
+// The test will inject and otherwise create retriable errors of various kinds
 // and checks that we still manage to run a txn despite them.
 func TestTxnUserRestart(t *testing.T) {
 	defer leaktest.AfterTest(t)()
@@ -883,21 +787,13 @@ func TestTxnUserRestart(t *testing.T) {
 			t.Run(fmt.Sprintf("err=%s,stgy=%d", tc.expectedErr, rs), func(t *testing.T) {
 				aborter := NewTxnAborter()
 				defer aborter.Close(t)
-				var cmdFilters tests.CommandFilters
-				params := base.TestServerArgs{}
-				params.Knobs.Store = &kvserver.StoreTestingKnobs{
-					EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
-						TestingEvalFilter: cmdFilters.RunFilters,
-					},
-				}
+				params, cmdFilters := createTestServerParamsAllowTenants()
 				params.Knobs.SQLExecutor = aborter.executorKnobs()
-				srv, sqlDB, _ := serverutils.StartServer(t, params)
-				defer srv.Stopper().Stop(context.Background())
-				s := srv.ApplicationLayer()
-				kvcoord.BufferedWritesMaxBufferSize.Override(context.Background(), &s.ClusterSettings().SV, 2<<10 /* 2KiB */)
-
+				s, sqlDB, _ := serverutils.StartServer(t, params)
+				defer s.Stopper().Stop(context.Background())
 				{
-					pgURL, cleanup := s.PGUrl(t,
+
+					pgURL, cleanup := s.ApplicationLayer().PGUrl(t,
 						serverutils.CertsDirPrefix("TestTxnUserRestart"), serverutils.User(username.RootUser))
 					defer cleanup()
 					if err := aborter.Init(pgURL); err != nil {
@@ -913,7 +809,7 @@ CREATE TABLE t.test (k INT PRIMARY KEY, v TEXT);
 				}
 				cleanupFilter := cmdFilters.AppendFilter(
 					func(args kvserverbase.FilterArgs) *kvpb.Error {
-						if err := injectErrors(s.ClusterSettings(), args.Req, args.Hdr, tc.magicVals, true /* verifyTxn */); err != nil {
+						if err := injectErrors(args.Req, args.Hdr, tc.magicVals, true /* verifyTxn */); err != nil {
 							return kvpb.NewErrorWithTxn(err, args.Hdr.Txn)
 						}
 						return nil
@@ -929,10 +825,8 @@ CREATE TABLE t.test (k INT PRIMARY KEY, v TEXT);
 
 				commitCount := s.MustGetSQLCounter(sql.MetaTxnCommitStarted.Name)
 				// This is the magic. Run the txn closure until all the retries are exhausted.
-				var execCount int
 				retryExec(t, sqlDB, rs, func(tx *gosql.Tx) bool {
-					execCount++
-					return runTestTxn(t, s.ClusterSettings(), tc.magicVals, tc.expectedErr, sqlDB, tx, sentinelInsert, execCount)
+					return runTestTxn(t, tc.magicVals, tc.expectedErr, sqlDB, tx, sentinelInsert)
 				})
 				checkRestarts(t, tc.magicVals)
 
@@ -975,7 +869,8 @@ func TestCommitWaitState(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
 	if _, err := sqlDB.Exec(`
 CREATE DATABASE t; CREATE TABLE t.test (k INT PRIMARY KEY, v TEXT);
@@ -1000,7 +895,7 @@ CREATE DATABASE t; CREATE TABLE t.test (k INT PRIMARY KEY, v TEXT);
 	}
 }
 
-// Test that a COMMIT getting an error, retryable or not, leaves the txn
+// Test that a COMMIT getting an error, retriable or not, leaves the txn
 // finalized and not in Aborted/RestartWait (i.e. COMMIT, like ROLLBACK, is
 // always final). As opposed to an error on a COMMIT in an auto-retry
 // txn, where we retry the txn (not tested here).
@@ -1010,7 +905,7 @@ func TestErrorOnCommitFinalizesTxn(t *testing.T) {
 
 	aborter := NewTxnAborter()
 	defer aborter.Close(t)
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	params.Knobs.SQLExecutor = aborter.executorKnobs()
 	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
@@ -1099,7 +994,7 @@ func TestRollbackInRestartWait(t *testing.T) {
 
 	aborter := NewTxnAborter()
 	defer aborter.Close(t)
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	params.Knobs.SQLExecutor = aborter.executorKnobs()
 	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
@@ -1161,7 +1056,8 @@ func TestUnexpectedStatementInRestartWait(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
 
 	tx, err := sqlDB.Begin()
@@ -1211,13 +1107,7 @@ func TestNonRetryableError(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var cmdFilters tests.CommandFilters
-	params := base.TestServerArgs{}
-	params.Knobs.Store = &kvserver.StoreTestingKnobs{
-		EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
-			TestingEvalFilter: cmdFilters.RunFilters,
-		},
-	}
+	params, cmdFilters := createTestServerParamsAllowTenants()
 	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
 
@@ -1226,7 +1116,7 @@ func TestNonRetryableError(t *testing.T) {
 	cleanupFilter := cmdFilters.AppendFilter(
 		func(args kvserverbase.FilterArgs) *kvpb.Error {
 			if req, ok := args.Req.(*kvpb.GetRequest); ok {
-				if bytes.Contains(req.Key, testKey) {
+				if bytes.Contains(req.Key, testKey) && !kv.TestingIsRangeLookupRequest(req) {
 					hitError = true
 					return kvpb.NewErrorWithTxn(fmt.Errorf("testError"), args.Hdr.Txn)
 				}
@@ -1265,42 +1155,39 @@ func TestReacquireLeaseOnRestart(t *testing.T) {
 	clientTestingKnobs := &kvcoord.ClientTestingKnobs{
 		MaxTxnRefreshAttempts: refreshAttempts,
 	}
-	var params base.TestServerArgs
-	params.RaftConfig.SetDefaults()
-	leaseDuration := params.RaftConfig.RangeLeaseDuration
 
 	testKey := []byte("test_key")
-	var s serverutils.ApplicationLayerInterface
-	var nodeID roachpb.NodeID
-	var clockUpdate atomic.Bool
-	var restartDone atomic.Int32
+	var s serverutils.TestServerInterface
+	var clockUpdate, restartDone int32
 	testingResponseFilter := func(
 		ctx context.Context, ba *kvpb.BatchRequest, br *kvpb.BatchResponse,
 	) *kvpb.Error {
 		for _, ru := range ba.Requests {
-			if req := ru.GetGet(); req == nil || !bytes.Contains(req.Key, testKey) {
-				continue
-			}
-			if !clockUpdate.Load() {
-				clockUpdate.Store(true)
-				// Hack to advance the transaction timestamp on a transaction restart.
-				advancement := 2 * leaseDuration
-				now := s.Clock().NowAsClockTimestamp()
-				now.WallTime += advancement.Nanoseconds()
-				s.Clock().Update(now)
-			}
+			if req := ru.GetGet(); req != nil {
+				if bytes.Contains(req.Key, testKey) && !kv.TestingIsRangeLookupRequest(req) {
+					if atomic.LoadInt32(&clockUpdate) == 0 {
+						atomic.AddInt32(&clockUpdate, 1)
+						// Hack to advance the transaction timestamp on a
+						// transaction restart.
+						const advancement = 2 * base.DefaultDescriptorLeaseDuration
+						now := s.Clock().NowAsClockTimestamp()
+						now.WallTime += advancement.Nanoseconds()
+						s.Clock().Update(now)
+					}
 
-			// Allow a set number of restarts so that the auto retry on the first few
-			// uncertainty interval errors also fails.
-			if restartDone.Load() <= refreshAttempts {
-				restartDone.Add(1)
-				// Return ReadWithinUncertaintyIntervalError to update the transaction
-				// timestamp on retry.
-				txn := ba.Txn.Clone()
-				txn.ResetObservedTimestamps()
-				now := s.Clock().NowAsClockTimestamp()
-				txn.UpdateObservedTimestamp(nodeID, now)
-				return kvpb.NewErrorWithTxn(kvpb.NewReadWithinUncertaintyIntervalError(now.ToTimestamp(), now, txn, now.ToTimestamp(), now), txn)
+					// Allow a set number of restarts so that the auto retry on
+					// the first few uncertainty interval errors also fails.
+					if atomic.LoadInt32(&restartDone) <= refreshAttempts {
+						atomic.AddInt32(&restartDone, 1)
+						// Return ReadWithinUncertaintyIntervalError to update
+						// the transaction timestamp on retry.
+						txn := ba.Txn.Clone()
+						txn.ResetObservedTimestamps()
+						now := s.Clock().NowAsClockTimestamp()
+						txn.UpdateObservedTimestamp(s.NodeID(), now)
+						return kvpb.NewErrorWithTxn(kvpb.NewReadWithinUncertaintyIntervalError(now.ToTimestamp(), now, txn, now.ToTimestamp(), now), txn)
+					}
+				}
 			}
 		}
 		return nil
@@ -1312,37 +1199,45 @@ func TestReacquireLeaseOnRestart(t *testing.T) {
 		DisableMaxOffsetCheck: true,
 	}
 
+	params, _ := createTestServerParamsAllowTenants()
 	params.Knobs.Store = storeTestingKnobs
 	params.Knobs.KVClient = clientTestingKnobs
-	srv, sqlDB, _ := serverutils.StartServer(t, params)
-	defer srv.Stopper().Stop(context.Background())
-	s = srv.ApplicationLayer()
-	nodeID = srv.NodeID()
+	var sqlDB *gosql.DB
+	s, sqlDB, _ = serverutils.StartServer(t, params)
+	defer s.Stopper().Stop(context.Background())
 
 	sqlDB.SetMaxOpenConns(1)
-	_, err := sqlDB.Exec(`
+	if _, err := sqlDB.Exec(`
 CREATE DATABASE t;
 CREATE TABLE t.test (k TEXT PRIMARY KEY, v TEXT);
 INSERT INTO t.test (k, v) VALUES ('test_key', 'test_val');
-`)
-	require.NoError(t, err)
+`); err != nil {
+		t.Fatal(err)
+	}
 	// Acquire the lease and enable the auto-retry. The first few read attempts
 	// will trigger ReadWithinUncertaintyIntervalError and advance the
 	// transaction timestamp due to txnSpanRefresher-initiated span refreshes.
 	// The transaction timestamp will exceed the lease expiration time, and the
 	// last read attempt will re-acquire the lease.
-	_, err = sqlDB.Exec(`SELECT * from t.test WHERE k = 'test_key';`)
-	require.NoError(t, err)
+	if _, err := sqlDB.Exec(`
+SELECT * from t.test WHERE k = 'test_key';
+`); err != nil {
+		t.Fatal(err)
+	}
 
-	require.True(t, clockUpdate.Load())
-	require.Equal(t, int32(refreshAttempts)+1, restartDone.Load())
+	if u := atomic.LoadInt32(&clockUpdate); u != 1 {
+		t.Errorf("expected exacltly one clock update, but got %d", u)
+	}
+	if u, e := atomic.LoadInt32(&restartDone), int32(refreshAttempts+1); u != e {
+		t.Errorf("expected exactly %d restarts, but got %d", e, u)
+	}
 }
 
 // Verifies that the uncommitted descriptor cache is flushed on a txn restart.
 //
 // This test triggers the above scenario by triggering a restart by returning
 // ReadWithinUncertaintyIntervalError on the first transaction attempt.
-func TestFlushUncommittedDescriptorCacheOnRestart(t *testing.T) {
+func TestFlushUncommitedDescriptorCacheOnRestart(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
@@ -1354,7 +1249,7 @@ func TestFlushUncommittedDescriptorCacheOnRestart(t *testing.T) {
 		},
 	}
 
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	params.Knobs.Store = testingKnobs
 	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
@@ -1367,7 +1262,7 @@ func TestFlushUncommittedDescriptorCacheOnRestart(t *testing.T) {
 			}
 
 			if req, ok := args.Req.(*kvpb.GetRequest); ok {
-				if bytes.Contains(req.Key, testKey) {
+				if bytes.Contains(req.Key, testKey) && !kv.TestingIsRangeLookupRequest(req) {
 					atomic.AddInt32(&restartDone, 1)
 					// Return ReadWithinUncertaintyIntervalError.
 					txn := args.Hdr.Txn
@@ -1412,7 +1307,39 @@ func TestDistSQLRetryableError(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var targetKey atomic.Value
+	createTable := func(db *gosql.DB) {
+		sqlutils.CreateTable(t, db, "t",
+			"num INT PRIMARY KEY",
+			3, /* numRows */
+			sqlutils.ToRowFn(sqlutils.RowIdxFn))
+	}
+
+	// We can't programmatically get the targetKey since it's used before
+	// the test cluster is created.
+	// targetKey is represents one of the rows in the table.
+	// +2 since the first two available ids are allocated to the database and
+	// public schema.
+	var firstTableID uint32
+	var codec keys.SQLCodec
+	func() {
+		tc := serverutils.StartCluster(t, 3, /* numNodes */
+			base.TestClusterArgs{
+				ReplicationMode: base.ReplicationManual,
+				ServerArgs:      base.TestServerArgs{UseDatabase: "test"},
+			})
+		defer tc.Stopper().Stop(context.Background())
+		db := tc.ServerConn(0)
+		createTable(db)
+		row := db.QueryRow("SELECT 't'::REGCLASS::OID")
+		require.NotNil(t, row)
+		require.NoError(t, row.Scan(&firstTableID))
+		codec = tc.Server(0).Codec()
+	}()
+	indexID := uint32(1)
+	valInTable := uint64(2)
+	indexKey := codec.IndexPrefix(firstTableID, indexID)
+	targetKey := encoding.EncodeUvarintAscending(indexKey, valInTable)
+
 	restarted := true
 
 	tc := serverutils.StartCluster(t, 3, /* numNodes */
@@ -1425,14 +1352,7 @@ func TestDistSQLRetryableError(t *testing.T) {
 						EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
 							TestingEvalFilter: func(fArgs kvserverbase.FilterArgs) *kvpb.Error {
 								_, ok := fArgs.Req.(*kvpb.ScanRequest)
-								if !ok {
-									return nil
-								}
-								key, ok := targetKey.Load().([]byte)
-								if !ok {
-									return nil
-								}
-								if fArgs.Req.Header().Key.Equal(key) && fArgs.Hdr.Txn.Epoch == 0 {
+								if ok && fArgs.Req.Header().Key.Equal(targetKey) && fArgs.Hdr.Txn.Epoch == 0 {
 									restarted = true
 									err := kvpb.NewReadWithinUncertaintyIntervalError(
 										fArgs.Hdr.Timestamp, /* readTS */
@@ -1462,11 +1382,9 @@ func TestDistSQLRetryableError(t *testing.T) {
 	}
 
 	db := tc.ServerConn(0)
-	sqlutils.CreateTable(t, db, "t",
-		"num INT PRIMARY KEY",
-		3, /* numRows */
-		sqlutils.ToRowFn(sqlutils.RowIdxFn))
+	createTable(db)
 
+	// We're going to split one of the tables, but node 4 is unaware of this.
 	_, err := db.Exec(fmt.Sprintf(`
 	ALTER TABLE "t" SPLIT AT VALUES (1), (2), (3);
 	ALTER TABLE "t" EXPERIMENTAL_RELOCATE VALUES (ARRAY[%d], 1), (ARRAY[%d], 2), (ARRAY[%d], 3);
@@ -1477,13 +1395,6 @@ func TestDistSQLRetryableError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	var tableID uint32
-	row := db.QueryRow("SELECT 't'::REGCLASS::OID")
-	require.NotNil(t, row)
-	require.NoError(t, row.Scan(&tableID))
-	indexKey := tc.ApplicationLayer(0).Codec().IndexPrefix(tableID, 1 /* indexID */)
-	targetKey.Store(encoding.EncodeUvarintAscending(indexKey, 2 /* v */))
 
 	db.SetMaxOpenConns(1)
 
@@ -1513,7 +1424,7 @@ func TestDistSQLRetryableError(t *testing.T) {
 	}
 
 	// Let's make sure that DISTSQL will actually be used.
-	row = txn.QueryRow(`SELECT info FROM [EXPLAIN SELECT count(1) FROM t] WHERE info LIKE 'distribution%'`)
+	row := txn.QueryRow(`SELECT info FROM [EXPLAIN SELECT count(1) FROM t] WHERE info LIKE 'distribution%'`)
 	var automatic string
 	if err := row.Scan(&automatic); err != nil {
 		t.Fatal(err)
@@ -1564,7 +1475,8 @@ func TestRollbackToSavepointFromUnusualStates(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
 
 	checkState := func(tx *gosql.Tx, ts time.Time) {
@@ -1626,7 +1538,8 @@ func TestTxnAutoRetriesDisabledAfterResultsHaveBeenSentToClient(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
 	defer sqlDB.Close()
 
@@ -1643,22 +1556,22 @@ func TestTxnAutoRetriesDisabledAfterResultsHaveBeenSentToClient(t *testing.T) {
 		name                              string
 		autoCommit                        bool
 		clientDirectedRetry               bool
-		expectedTxnStateAfterRetryableErr string
+		expectedTxnStateAfterRetriableErr string
 	}{
 		{
 			name:                              "client_directed_retries",
 			clientDirectedRetry:               true,
-			expectedTxnStateAfterRetryableErr: "Aborted",
+			expectedTxnStateAfterRetriableErr: "Aborted",
 		},
 		{
 			name:                              "no_client_directed_retries",
 			clientDirectedRetry:               false,
-			expectedTxnStateAfterRetryableErr: "Aborted",
+			expectedTxnStateAfterRetriableErr: "Aborted",
 		},
 		{
 			name:                              "autocommit",
 			autoCommit:                        true,
-			expectedTxnStateAfterRetryableErr: "NoTxn",
+			expectedTxnStateAfterRetriableErr: "NoTxn",
 		},
 	}
 	for _, tc := range tests {
@@ -1678,7 +1591,7 @@ func TestTxnAutoRetriesDisabledAfterResultsHaveBeenSentToClient(t *testing.T) {
 			}
 
 			// We'll run a statement that produces enough results to overflow the
-			// buffers and start streaming results to the client before the retryable
+			// buffers and start streaming results to the client before the retriable
 			// error is injected. We do this by running a generate series that blows
 			// up at the very end, with a CASE statement.
 			sql := fmt.Sprintf(`
@@ -1693,13 +1606,13 @@ func TestTxnAutoRetriesDisabledAfterResultsHaveBeenSentToClient(t *testing.T) {
 				prefix, suffix)
 			_, err = sqlConn.ExecContext(ctx, sql)
 			if !isRetryableErr(err) {
-				t.Fatalf("expected retryable error, got: %v", err)
+				t.Fatalf("expected retriable error, got: %v", err)
 			}
 			var state string
 			if err := sqlConn.QueryRowContext(ctx, "SHOW TRANSACTION STATUS").Scan(&state); err != nil {
 				t.Fatal(err)
 			}
-			if expStateStr := tc.expectedTxnStateAfterRetryableErr; state != expStateStr {
+			if expStateStr := tc.expectedTxnStateAfterRetriableErr; state != expStateStr {
 				t.Fatalf("expected state %s, got: %s", expStateStr, state)
 			}
 		})
@@ -1714,13 +1627,7 @@ func TestTxnAutoRetryReasonAvailable(t *testing.T) {
 	const numRetries = 3
 	retryCount := 0
 
-	var cmdFilters tests.CommandFilters
-	params := base.TestServerArgs{}
-	params.Knobs.Store = &kvserver.StoreTestingKnobs{
-		EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
-			TestingEvalFilter: cmdFilters.RunFilters,
-		},
-	}
+	params, cmdFilters := createTestServerParamsAllowTenants()
 	params.Knobs.SQLExecutor = &sql.ExecutorTestingKnobs{
 		BeforeRestart: func(ctx context.Context, reason error) {
 			retryCount++

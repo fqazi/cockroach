@@ -42,15 +42,6 @@ func (n NodeListOption) Equals(o NodeListOption) bool {
 	return true
 }
 
-func (n NodeListOption) Contains(node int) bool {
-	for _, n := range n {
-		if n == node {
-			return true
-		}
-	}
-	return false
-}
-
 // Option implements Option.
 func (n NodeListOption) Option() {}
 
@@ -70,24 +61,6 @@ func (n NodeListOption) Merge(o NodeListOption) NodeListOption {
 		}
 	}
 	return r
-}
-
-func (n NodeListOption) Intersect(o NodeListOption) NodeListOption {
-	set := make(map[int]struct{}, len(o))
-	for _, node := range o {
-		set[node] = struct{}{}
-	}
-
-	var result NodeListOption
-	seen := make(map[int]struct{}, len(n))
-	for _, node := range n {
-		if _, ok := set[node]; ok {
-			result = append(result, node)
-			seen[node] = struct{}{}
-		}
-	}
-
-	return result
 }
 
 // RandNode returns a random node from the NodeListOption.

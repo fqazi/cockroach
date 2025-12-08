@@ -81,7 +81,7 @@ func (n *createFunctionNode) startExec(params runParams) error {
 		return err
 	}
 	if scDesc.SchemaKind() == catalog.SchemaTemporary {
-		return unimplemented.NewWithIssue(104687, "cannot create user-defined functions under a temporary schema")
+		return unimplemented.NewWithIssue(104687, "cannot create UDFs under a temporary schema")
 	}
 
 	telemetry.Inc(sqltelemetry.SchemaChangeCreateCounter("function"))
@@ -309,26 +309,20 @@ func (n *createFunctionNode) replaceFunction(
 		return err
 	}
 
-	// We allow two types of "signature changes":
-	// - reordering OUT parameters in respect to input ones, and
-	// - changing the DEFAULT expression.
 	signatureChanged := len(existing.OutParamOrdinals) != len(outParamOrdinals) ||
 		len(existing.DefaultExprs) != len(defaultExprs)
 	for i := 0; !signatureChanged && i < len(outParamOrdinals); i++ {
 		signatureChanged = existing.OutParamOrdinals[i] != outParamOrdinals[i] ||
 			!existing.OutParamTypes.GetAt(i).Equivalent(outParamTypes[i])
 	}
-	// Additionally, we must type-check all DEFAULT expressions since we need to
-	// store the type-checked serialized form in the FunctionSignature proto.
-	// (This is also assumed in ReplaceOverload.)
-	for i := 0; i < len(existing.DefaultExprs); i++ {
-		typ := existing.Types.GetAt(i + existing.Types.Length() - len(existing.DefaultExprs))
+	for i := 0; !signatureChanged && i < len(defaultExprs); i++ {
+		typ := existing.Types.GetAt(i + existing.Types.Length() - len(defaultExprs))
+		// Update the overload to store the type-checked expression since this
+		// is what is stored in the FunctionSignature proto.
 		existing.DefaultExprs[i], err = tree.TypeCheck(params.ctx, existing.DefaultExprs[i], params.p.SemaCtx(), typ)
 		if err != nil {
 			return err
 		}
-	}
-	for i := 0; !signatureChanged && i < len(defaultExprs); i++ {
 		signatureChanged = tree.Serialize(existing.DefaultExprs[i]) != defaultExprs[i]
 	}
 	if signatureChanged {

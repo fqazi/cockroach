@@ -27,7 +27,9 @@ func TestAdminAPIUIData(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	s := serverutils.StartServerOnly(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(81590),
+		// Disable the default test tenant for now as this tests fails
+		// with it enabled. Tracked with #81590.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 	})
 	defer s.Stopper().Stop(context.Background())
 
@@ -136,7 +138,9 @@ func TestAdminAPIUISeparateData(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	s := serverutils.StartServerOnly(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(81590),
+		// Disable the default test tenant for now as this tests fails
+		// with it enabled. Tracked with #81590.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 	})
 	defer s.Stopper().Stop(context.Background())
 

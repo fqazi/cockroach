@@ -11,11 +11,10 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/roachprod"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/agents/fluentbit"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/agents/opentelemetry"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/agents/parca"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
+	"github.com/cockroachdb/cockroach/pkg/roachprod/fluentbit"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
+	"github.com/cockroachdb/cockroach/pkg/roachprod/opentelemetry"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/ssh"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/gce"
@@ -48,13 +47,12 @@ var (
 	listJSON              bool
 	listMine              bool
 	listPattern           string
-	isSecure              install.ComplexSecureOption // Set based on the values passed to --secure and --insecure
-	secure                = true
+	isSecure              bool   // Set based on the values passed to --secure and --insecure
+	secure                = true // DEPRECATED
 	insecure              = envutil.EnvOrDefaultBool("COCKROACH_ROACHPROD_INSECURE", false)
 	virtualClusterName    string
 	sqlInstance           int
 	extraSSHOptions       = ""
-	exportSSHConfig       string
 	nodeEnv               []string
 	tag                   string
 	external              = false
@@ -102,19 +100,12 @@ var (
 
 	sshKeyUser string
 
-	fluentBitConfig     fluentbit.Config
+	fluentBitConfig fluentbit.Config
+
 	opentelemetryConfig opentelemetry.Config
-	parcaAgentConfig    parca.Config
 
 	fetchLogsTimeout time.Duration
 )
-
-// Intended to be called once from drtprod main package to update defaults which differ from roachprod.
-func UpdateFlagDefaults() {
-	// N.B. unlike roachprod, which defaults to "insecure mode", drtprod defaults to "secure mode".
-	secure = true
-	insecure = envutil.EnvOrDefaultBool("COCKROACH_ROACHPROD_INSECURE", false)
-}
 
 func initRootCmdFlags(rootCmd *cobra.Command) {
 	rootCmd.PersistentFlags().BoolVarP(&config.Quiet, "quiet", "q",
@@ -137,8 +128,8 @@ func initCreateCmdFlags(createCmd *cobra.Command) {
 		"lifetime", "l", 12*time.Hour, "Lifetime of the cluster")
 	createCmd.Flags().BoolVar(&createVMOpts.SSDOpts.UseLocalSSD,
 		"local-ssd", true, "Use local SSD")
-	createCmd.Flags().StringVar((*string)(&createVMOpts.SSDOpts.FileSystem),
-		"filesystem", string(vm.Ext4), "The underlying file system(ext4/zfs/xfs/f2fs/btrfs). ext4 is used by default.")
+	createCmd.Flags().StringVar(&createVMOpts.SSDOpts.FileSystem,
+		"filesystem", vm.Ext4, "The underlying file system(ext4/zfs). ext4 is used by default.")
 	createCmd.Flags().BoolVar(&createVMOpts.SSDOpts.NoExt4Barrier,
 		"local-ssd-no-ext4-barrier", true,
 		`Mount the local SSD with the "-o nobarrier" flag. Ignored if --local-ssd=false is specified.`)
@@ -219,8 +210,6 @@ func initListCmdFlags(listCmd *cobra.Command) {
 		"mine", "m", false, "Show only clusters belonging to the current user")
 	listCmd.Flags().StringVar(&listPattern,
 		"pattern", "", "Show only clusters matching the regex pattern. Empty string matches everything.")
-	listCmd.Flags().StringVar(&exportSSHConfig,
-		"export-ssh-config", os.Getenv("ROACHPROD_EXPORT_SSH_CONFIG"), "export the SSH config for listed clusters (only when pattern or mine is specified")
 }
 
 func initAdminurlCmdFlags(adminurlCmd *cobra.Command) {
@@ -275,6 +264,7 @@ func initSyncCmdFlags(syncCmd *cobra.Command) {
 	syncCmd.Flags().BoolVar(&listOpts.IncludeVolumes, "include-volumes", false, "Include volumes when syncing")
 	syncCmd.Flags().StringArrayVarP(&listOpts.IncludeProviders, "clouds", "c",
 		make([]string, 0), "Specify the cloud providers when syncing. Important: Use this flag only if you are certain that you want to sync with a specific cloud. All DNS host entries for other clouds will be erased from the DNS zone.")
+
 }
 
 func initStageCmdFlags(stageCmd *cobra.Command) {
@@ -394,11 +384,6 @@ func initOpentelemetryStartCmdFlags(opentelemetryStartCmd *cobra.Command) {
 		"Datadog tags as a comma-separated list in the format KEY1:VAL1,KEY2:VAL2")
 }
 
-func initParcaAgentStartCmdFlags(parcaAgentStartCmd *cobra.Command) {
-	parcaAgentStartCmd.Flags().StringVar(&parcaAgentConfig.Token, "parca-agent-token", "",
-		"Parca Agent Token")
-}
-
 func initGCCmdFlags(gcCmd *cobra.Command) {
 	gcCmd.Flags().BoolVarP(&dryrun,
 		"dry-run", "n", dryrun, "dry run (don't perform any actions)")
@@ -459,8 +444,6 @@ func initFlagsStartOpsForCmd(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&startOpts.EnableFluentSink,
 		"enable-fluent-sink", startOpts.EnableFluentSink,
 		"whether to enable the fluent-servers attribute in the CockroachDB logging configuration")
-	cmd.Flags().BoolVar(&startOpts.AutoRestart,
-		"auto-restart", startOpts.AutoRestart, "automatically restart cockroach processes that die")
 }
 
 func initFlagInsecureIgnoreHostKeyForCmd(cmd *cobra.Command) {
@@ -483,8 +466,10 @@ func initFlagBinaryForCmd(cmd *cobra.Command) {
 }
 
 func initFlagInsecureForCmd(cmd *cobra.Command) {
+	// TODO(renato): remove --secure once the default of secure
+	// clusters has existed in roachprod long enough.
 	cmd.Flags().BoolVar(&secure,
-		"secure", secure, "use a secure cluster")
+		"secure", secure, "use a secure cluster (DEPRECATED: clusters are secure by default; use --insecure to create insecure clusters.)")
 	cmd.Flags().BoolVar(&insecure,
 		"insecure", insecure, "use an insecure cluster")
 }

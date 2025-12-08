@@ -107,11 +107,6 @@ func (node *ShowBackup) Format(ctx *FmtCtx) {
 	if node.Path == nil {
 		ctx.WriteString("SHOW BACKUPS IN ")
 		ctx.FormatURIs(node.InCollection)
-		if !node.Options.IsDefault() {
-			ctx.WriteString(" WITH OPTIONS (")
-			ctx.FormatNode(&node.Options)
-			ctx.WriteString(")")
-		}
 		return
 	}
 	ctx.WriteString("SHOW BACKUP ")
@@ -149,7 +144,6 @@ type ShowBackupOptions struct {
 	EncryptionPassphrase Expr
 	Privileges           bool
 	SkipSize             bool
-	Index                bool
 
 	// EncryptionInfoDir is a hidden option used when the user wants to run the deprecated
 	//
@@ -176,11 +170,6 @@ func (o *ShowBackupOptions) Format(ctx *FmtCtx) {
 		}
 		addSep = true
 	}
-	// Index is only used in SHOW BACKUPS
-	if o.Index {
-		ctx.WriteString("index")
-	}
-
 	if o.AsJson {
 		ctx.WriteString("as_json")
 		addSep = true
@@ -259,8 +248,7 @@ func (o ShowBackupOptions) IsDefault() bool {
 		o.EncryptionInfoDir == options.EncryptionInfoDir &&
 		o.CheckConnectionTransferSize == options.CheckConnectionTransferSize &&
 		o.CheckConnectionDuration == options.CheckConnectionDuration &&
-		o.CheckConnectionConcurrency == options.CheckConnectionConcurrency &&
-		o.Index == options.Index
+		o.CheckConnectionConcurrency == options.CheckConnectionConcurrency
 }
 
 func combineBools(v1 bool, v2 bool, label string) (bool, error) {
@@ -557,9 +545,6 @@ var _ NodeFormatter = &ShowJobOptions{}
 type ShowChangefeedJobs struct {
 	// If non-nil, a select statement that provides the job ids to be shown.
 	Jobs *Select
-
-	// If true, include full table names in the output.
-	IncludeWatchedTables bool
 }
 
 // Format implements the NodeFormatter interface.
@@ -568,9 +553,6 @@ func (node *ShowChangefeedJobs) Format(ctx *FmtCtx) {
 	if node.Jobs != nil {
 		ctx.WriteString(" ")
 		ctx.FormatNode(node.Jobs)
-	}
-	if node.IncludeWatchedTables {
-		ctx.WriteString(" WITH WATCHED_TABLES")
 	}
 }
 
@@ -877,28 +859,12 @@ func (node *ShowCreateAllTables) Format(ctx *FmtCtx) {
 	ctx.WriteString("SHOW CREATE ALL TABLES")
 }
 
-// ShowCreateAllTriggers represents a SHOW CREATE ALL TRIGGERS statement.
-type ShowCreateAllTriggers struct{}
-
-// Format implements the NodeFormatter interface.
-func (node *ShowCreateAllTriggers) Format(ctx *FmtCtx) {
-	ctx.WriteString("SHOW CREATE ALL TRIGGERS")
-}
-
 // ShowCreateAllTypes represents a SHOW CREATE ALL TYPES statement.
 type ShowCreateAllTypes struct{}
 
 // Format implements the NodeFormatter interface.
 func (node *ShowCreateAllTypes) Format(ctx *FmtCtx) {
 	ctx.WriteString("SHOW CREATE ALL TYPES")
-}
-
-// ShowCreateAllRoutines represents a SHOW CREATE ALL ROUTINES statement.
-type ShowCreateAllRoutines struct{}
-
-// Format implements the NodeFormatter interface.
-func (node *ShowCreateAllRoutines) Format(ctx *FmtCtx) {
-	ctx.WriteString("SHOW CREATE ALL ROUTINES")
 }
 
 // ShowCreateSchedules represents a SHOW CREATE SCHEDULE statement.
@@ -1157,25 +1123,19 @@ func (node *ShowRangeForRow) Format(ctx *FmtCtx) {
 
 // ShowFingerprints represents a SHOW EXPERIMENTAL_FINGERPRINTS statement.
 type ShowFingerprints struct {
-	TenantSpec   *TenantSpec
-	Table        *UnresolvedObjectName
-	Experimental bool
+	TenantSpec *TenantSpec
+	Table      *UnresolvedObjectName
 
 	Options ShowFingerprintOptions
 }
 
 // Format implements the NodeFormatter interface.
 func (node *ShowFingerprints) Format(ctx *FmtCtx) {
-	if node.Experimental {
-		ctx.WriteString("SHOW EXPERIMENTAL_FINGERPRINTS ")
-	} else {
-		ctx.WriteString("SHOW FINGERPRINTS ")
-	}
 	if node.Table != nil {
-		ctx.WriteString("FROM TABLE ")
+		ctx.WriteString("SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE ")
 		ctx.FormatNode(node.Table)
 	} else {
-		ctx.WriteString("FROM VIRTUAL CLUSTER ")
+		ctx.WriteString("SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER ")
 		ctx.FormatNode(node.TenantSpec)
 	}
 
@@ -1664,28 +1624,3 @@ func (node *ShowCreateTrigger) Format(ctx *FmtCtx) {
 }
 
 var _ Statement = &ShowCreateTrigger{}
-
-// ShowInspectErrors represents a SHOW INSPECT ERRORS statement.
-type ShowInspectErrors struct {
-	TableName   *TableName
-	JobID       *int64
-	WithDetails bool
-}
-
-// Format implements the NodeFormatter interface.
-func (node *ShowInspectErrors) Format(ctx *FmtCtx) {
-	ctx.WriteString("SHOW INSPECT ERRORS")
-	if node.TableName != nil {
-		ctx.WriteString(" FOR TABLE ")
-		ctx.FormatNode(node.TableName)
-	}
-	if node.JobID != nil {
-		ctx.WriteString(" FOR JOB ")
-		ctx.WriteString(fmt.Sprintf("%d", *node.JobID))
-	}
-	if node.WithDetails {
-		ctx.WriteString(" WITH DETAILS")
-	}
-}
-
-var _ Statement = &ShowInspectErrors{}

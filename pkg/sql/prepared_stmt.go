@@ -7,30 +7,219 @@ package sql
 
 import (
 	"context"
+	"time"
 	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
 	"github.com/cockroachdb/cockroach/pkg/sql/flowinfra"
+	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgwirebase"
-	"github.com/cockroachdb/cockroach/pkg/sql/prep"
+	"github.com/cockroachdb/cockroach/pkg/sql/querycache"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/fsm"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 )
+
+// PreparedStatementOrigin is an enum representing the source of where
+// the prepare statement was made.
+type PreparedStatementOrigin int
+
+const (
+	// PreparedStatementOriginWire signifies the prepared statement was made
+	// over the wire.
+	PreparedStatementOriginWire PreparedStatementOrigin = iota + 1
+	// PreparedStatementOriginSQL signifies the prepared statement was made
+	// over a parsed SQL query.
+	PreparedStatementOriginSQL
+	// PreparedStatementOriginSessionMigration signifies that the prepared
+	// statement came from a call to crdb_internal.deserialize_session.
+	PreparedStatementOriginSessionMigration
+)
+
+// PreparedStatement is a SQL statement that has been parsed and the types
+// of arguments and results have been determined.
+//
+// Note that PreparedStatements maintain a reference counter internally.
+// References need to be registered with incRef() and de-registered with
+// decRef().
+type PreparedStatement struct {
+	querycache.PrepareMetadata
+
+	// BaseMemo is the memoized data structure constructed by the cost-based
+	// optimizer during prepare of a SQL statement.
+	BaseMemo *memo.Memo
+
+	// GenericMemo, if present, is a fully-optimized memo that can be executed
+	// as-is.
+	GenericMemo *memo.Memo
+
+	// IdealGenericPlan is true if GenericMemo is guaranteed to be optimal
+	// across all executions of the prepared statement. Ideal generic plans are
+	// generated when the statement has no placeholders nor fold-able stable
+	// expressions, or when the placeholder fast-path is utilized.
+	IdealGenericPlan bool
+
+	// Costs tracks the costs of previously optimized custom and generic plans.
+	Costs planCosts
+
+	// refCount keeps track of the number of references to this PreparedStatement.
+	// New references are registered through incRef().
+	// Once refCount hits 0 (through calls to decRef()), the following memAcc is
+	// closed.
+	// Most references are being held by portals created from this prepared
+	// statement.
+	refCount int
+	memAcc   mon.BoundAccount
+
+	// createdAt is the timestamp this prepare statement was made at.
+	// Used for reporting on `pg_prepared_statements`.
+	createdAt time.Time
+	// origin is the protocol in which this prepare statement was created.
+	// Used for reporting on `pg_prepared_statements`.
+	origin PreparedStatementOrigin
+}
+
+// MemoryEstimate returns a rough estimate of the PreparedStatement's memory
+// usage, in bytes.
+func (p *PreparedStatement) MemoryEstimate() int64 {
+	// Account for the memory used by this prepared statement:
+	//   1. Size of the prepare metadata.
+	//   2. Size of the prepared memo, if using the cost-based optimizer.
+	size := p.PrepareMetadata.MemoryEstimate()
+	if p.BaseMemo != nil {
+		size += p.BaseMemo.MemoryEstimate()
+	}
+	if p.GenericMemo != nil {
+		size += p.GenericMemo.MemoryEstimate()
+	}
+	return size
+}
+
+func (p *PreparedStatement) decRef(ctx context.Context) {
+	if p.refCount <= 0 {
+		log.Fatal(ctx, "corrupt PreparedStatement refcount")
+	}
+	p.refCount--
+	if p.refCount == 0 {
+		p.memAcc.Close(ctx)
+	}
+}
+
+func (p *PreparedStatement) incRef(ctx context.Context) {
+	if p.refCount <= 0 {
+		log.Fatal(ctx, "corrupt PreparedStatement refcount")
+	}
+	p.refCount++
+}
+
+const (
+	// CustomPlanThreshold is the maximum number of custom plan costs tracked by
+	// planCosts. It is also the number of custom plans executed when
+	// plan_cache_mode=auto before attempting to generate a generic plan.
+	CustomPlanThreshold = 5
+)
+
+// planCosts tracks costs of generic and custom plans.
+type planCosts struct {
+	generic memo.Cost
+	custom  struct {
+		nextIdx int
+		length  int
+		costs   [CustomPlanThreshold]memo.Cost
+	}
+}
+
+// HasGeneric returns true if the planCosts has a generic plan cost.
+func (p *planCosts) HasGeneric() bool {
+	return p.generic.C != 0
+}
+
+// SetGeneric sets the cost of the generic plan.
+func (p *planCosts) SetGeneric(cost memo.Cost) {
+	p.generic = cost
+}
+
+// AddCustom adds a custom plan cost to the planCosts, evicting the oldest cost
+// if necessary.
+func (p *planCosts) AddCustom(cost memo.Cost) {
+	p.custom.costs[p.custom.nextIdx] = cost
+	p.custom.nextIdx++
+	if p.custom.nextIdx >= CustomPlanThreshold {
+		p.custom.nextIdx = 0
+	}
+	if p.custom.length < CustomPlanThreshold {
+		p.custom.length++
+	}
+}
+
+// NumCustom returns the number of custom plan costs in the planCosts.
+func (p *planCosts) NumCustom() int {
+	return p.custom.length
+}
+
+// IsGenericOptimal returns true if the generic plan is optimal w.r.t. the
+// custom plans. The cost flags, auxiliary cost information, and the cost value
+// are all considered. If any of the custom plan cost flags are less than the
+// generic cost flags, then the generic plan is not optimal. If the generic plan
+// has more full scans than any of the custom plans, then it is not optimal.
+// Otherwise, the generic plan is optimal if its cost value is less than the
+// average cost of the custom plans.
+func (p *planCosts) IsGenericOptimal() bool {
+	// Check cost flags and full scan counts.
+	genFullScans := p.generic.FullScanCount()
+	genUnboundedReads := p.generic.UnboundedReadCount()
+	if genFullScans > 0 || genUnboundedReads > 0 || !p.generic.Flags.Empty() {
+		for i := 0; i < p.custom.length; i++ {
+			custom := &p.custom.costs[i]
+			if custom.Flags.Less(p.generic.Flags) ||
+				genFullScans > custom.FullScanCount() ||
+				genUnboundedReads > custom.UnboundedReadCount() {
+				return false
+			}
+		}
+	}
+
+	// Compare the generic cost to the average custom cost. Clear the cost flags
+	// because they have already been handled above.
+	gen := memo.Cost{C: p.generic.C}
+	return gen.Less(p.avgCustom())
+}
+
+// avgCustom returns the average cost of all the custom plan costs in planCosts.
+// If there are no custom plan costs, it returns 0.
+func (p *planCosts) avgCustom() memo.Cost {
+	if p.custom.length == 0 {
+		return memo.Cost{C: 0}
+	}
+	var sum float64
+	for i := 0; i < p.custom.length; i++ {
+		sum += p.custom.costs[i].C
+	}
+	return memo.Cost{C: sum / float64(p.custom.length)}
+}
+
+// Reset clears any previously set costs.
+func (p *planCosts) Reset() {
+	p.generic = memo.Cost{C: 0}
+	p.custom.nextIdx = 0
+	p.custom.length = 0
+}
 
 // preparedStatementsAccessor gives a planner access to a session's collection
 // of prepared statements.
 type preparedStatementsAccessor interface {
 	// List returns all prepared statements as a map keyed by name.
 	// The map itself is a copy of the prepared statements.
-	List() map[string]*prep.Statement
-	// Get returns the prepared statement with the given name. The returned bool
-	// is false if a statement with the given name doesn't exist.
-	Get(name string) (*prep.Statement, bool)
+	List() map[string]*PreparedStatement
+	// Get returns the prepared statement with the given name. If touchLRU is
+	// true, this counts as an access for LRU bookkeeping. The returned bool is
+	// false if a statement with the given name doesn't exist.
+	Get(name string, touchLRU bool) (*PreparedStatement, bool)
 	// Delete removes the PreparedStatement with the provided name from the
 	// collection. If a portal exists for that statement, it is also removed.
 	// The method returns true if statement with that name was found and removed,
@@ -46,11 +235,11 @@ type emptyPreparedStatements struct{}
 
 var _ preparedStatementsAccessor = emptyPreparedStatements{}
 
-func (e emptyPreparedStatements) List() map[string]*prep.Statement {
+func (e emptyPreparedStatements) List() map[string]*PreparedStatement {
 	return nil
 }
 
-func (e emptyPreparedStatements) Get(string) (*prep.Statement, bool) {
+func (e emptyPreparedStatements) Get(string, bool) (*PreparedStatement, bool) {
 	return nil, false
 }
 
@@ -82,16 +271,12 @@ const (
 // PreparedPortal is a PreparedStatement that has been bound with query
 // arguments.
 type PreparedPortal struct {
-	// Fields below are initialized when creating the PreparedPortal and aren't
-	// modified later.
 	Name  string
-	Stmt  *prep.Statement
+	Stmt  *PreparedStatement
 	Qargs tree.QueryArguments
 
 	// OutFormats contains the requested formats for the output columns.
 	OutFormats []pgwirebase.FormatCode
-
-	// Fields below might be updated throughout the PreparedPortal's lifecycle.
 
 	// exhausted tracks whether this portal has already been fully exhausted,
 	// meaning that any additional attempts to execute it should return no
@@ -113,7 +298,7 @@ type PreparedPortal struct {
 func (ex *connExecutor) makePreparedPortal(
 	ctx context.Context,
 	name string,
-	stmt *prep.Statement,
+	stmt *PreparedStatement,
 	qargs tree.QueryArguments,
 	outFormats []pgwirebase.FormatCode,
 ) (PreparedPortal, error) {
@@ -145,16 +330,6 @@ func (ex *connExecutor) makePreparedPortal(
 	return portal, portal.accountForCopy(ctx, &ex.extraTxnState.prepStmtsNamespaceMemAcc, name)
 }
 
-func (ex *connExecutor) disablePortalPausability(portal *PreparedPortal) {
-	portal.portalPausablity = PortalPausabilityDisabled
-	portal.pauseInfo = nil
-	// Since the PreparedPortal is stored by value in the map, we need to
-	// explicitly update it. (Note that PreparedPortal.pauseInfo is stored by
-	// pointer, so modifications to portalPauseInfo will be reflected in the map
-	// automatically.)
-	ex.extraTxnState.prepStmtsNamespace.portals[portal.Name] = *portal
-}
-
 // accountForCopy updates the state to account for the copy of the
 // PreparedPortal (p is the copy).
 func (p *PreparedPortal) accountForCopy(
@@ -164,7 +339,7 @@ func (p *PreparedPortal) accountForCopy(
 		return err
 	}
 	// Only increment the reference if we're going to keep it.
-	p.Stmt.IncRef(ctx)
+	p.Stmt.incRef(ctx)
 	return nil
 }
 
@@ -173,7 +348,7 @@ func (p *PreparedPortal) close(
 	ctx context.Context, prepStmtsNamespaceMemAcc *mon.BoundAccount, portalName string,
 ) {
 	prepStmtsNamespaceMemAcc.Shrink(ctx, p.size(portalName))
-	p.Stmt.DecRef(ctx)
+	p.Stmt.decRef(ctx)
 	if p.pauseInfo != nil {
 		p.pauseInfo.cleanupAll(ctx)
 		p.pauseInfo = nil
@@ -189,28 +364,23 @@ func (p *PreparedPortal) isPausable() bool {
 	return p != nil && p.pauseInfo != nil
 }
 
-// cleanupFuncQueue stores cleanup functions for a portal. The clean-up
+// cleanupFuncStack stores cleanup functions for a portal. The clean-up
 // functions are added during the first-time execution of a portal. When the
 // first-time execution is finished, we mark isComplete to true.
-//
-// Generally, cleanup functions should be added in a defer (assuming that
-// originally they were deferred as well). The functions will be appended to the
-// end of the queue, which preserves the order of their execution if pausable
-// portals model wasn't used.
-type cleanupFuncQueue struct {
-	queue      []func(context.Context)
+type cleanupFuncStack struct {
+	stack      []func(context.Context)
 	isComplete bool
 }
 
-func (n *cleanupFuncQueue) appendFunc(f func(context.Context)) {
-	n.queue = append(n.queue, f)
+func (n *cleanupFuncStack) appendFunc(f func(context.Context)) {
+	n.stack = append(n.stack, f)
 }
 
-func (n *cleanupFuncQueue) run(ctx context.Context) {
-	for i := 0; i < len(n.queue); i++ {
-		n.queue[i](ctx)
+func (n *cleanupFuncStack) run(ctx context.Context) {
+	for i := 0; i < len(n.stack); i++ {
+		n.stack[i](ctx)
 	}
-	*n = cleanupFuncQueue{}
+	*n = cleanupFuncStack{}
 }
 
 // instrumentationHelperWrapper wraps the instrumentation helper.
@@ -245,23 +415,23 @@ type portalPauseInfo struct {
 	// When closing a portal, we need to follow the reverse order of its execution,
 	// which means running the cleanup functions of the four structs in the
 	// following order:
-	//   - resumableFlow.cleanup
-	//   - dispatchToExecutionEngine.cleanup
-	//   - execStmtInOpenState.cleanup
 	//   - exhaustPortal.cleanup
+	//   - execStmtInOpenState.cleanup
+	//   - dispatchToExecutionEngine.cleanup
+	//   - resumableFlow.cleanup
 	//
 	// If an error occurs in any of these functions, we run the cleanup functions of
 	// this layer and its children layers, and propagate the error to the parent
 	// layer. For example, if an error occurs in execStmtInOpenStateCleanup(), we
 	// run the cleanup functions in the following order:
-	//   - resumableFlow.cleanup
-	//   - dispatchToExecutionEngine.cleanup
 	//   - execStmtInOpenState.cleanup
+	//   - dispatchToExecutionEngine.cleanup
+	//   - resumableFlow.cleanup
 	//
 	// When exiting connExecutor.execStmtInOpenState(), we finally run the
 	// exhaustPortal.cleanup function in connExecutor.execPortal().
 	exhaustPortal struct {
-		cleanup cleanupFuncQueue
+		cleanup cleanupFuncStack
 	}
 
 	// TODO(sql-session): replace certain fields here with planner.
@@ -285,16 +455,7 @@ type portalPauseInfo struct {
 		// retErr is needed for the cleanup steps as we will have to check the latest
 		// encountered error, so this field should be updated for each execution.
 		retErr  error
-		cleanup cleanupFuncQueue
-	}
-
-	dispatchReadCommittedStmtToExecutionEngine struct {
-		// autoRetryStmtReason is the planner.autoRetryStmtReason to restore when
-		// resuming a portal.
-		autoRetryStmtReason error
-		// autoRetryStmtCounter is the planner.autoRetryStmtCounter to restore when
-		// resuming a portal.
-		autoRetryStmtCounter int
+		cleanup cleanupFuncStack
 	}
 
 	// TODO(sql-session): replace certain fields here with planner.
@@ -314,7 +475,7 @@ type portalPauseInfo struct {
 		// queryStats stores statistics on query execution. It is incremented for
 		// each execution of the portal.
 		queryStats *topLevelQueryStats
-		cleanup    cleanupFuncQueue
+		cleanup    cleanupFuncStack
 	}
 
 	resumableFlow struct {
@@ -326,7 +487,7 @@ type portalPauseInfo struct {
 		// We need this as when re-executing the portal, we are reusing the flow
 		// with the new receiver, but not re-generating the physical plan.
 		outputTypes []*types.T
-		cleanup     cleanupFuncQueue
+		cleanup     cleanupFuncStack
 	}
 }
 

@@ -118,8 +118,6 @@ func (dbc *dbAdapter) Scan(
 	if cfg.mon != nil {
 		acc = cfg.mon.MakeConcurrentBoundAccount()
 		defer acc.Close(ctx)
-	} else {
-		acc = mon.NewStandaloneUnlimitedConcurrentAccount()
 	}
 
 	// If we don't have parallelism configured, just scan each span in turn.
@@ -146,7 +144,7 @@ func (dbc *dbAdapter) Scan(
 			maxP := int(maxScanParallelism.Get(&dbc.st.SV))
 			if p > maxP {
 				if highParallelism.ShouldLog() {
-					log.Dev.Warningf(ctx,
+					log.Warningf(ctx,
 						"high scan parallelism %d limited via 'kv.rangefeed.max_scan_parallelism' to %d", p, maxP)
 				}
 				p = maxP

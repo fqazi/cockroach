@@ -105,7 +105,7 @@ func initTPCESpec(ctx context.Context, l *logger.Logger, c cluster.Cluster) (*tp
 }
 
 func (ts *tpceSpec) newCmd(o tpceCmdOptions) *roachtestutil.Command {
-	cmd := roachtestutil.NewCommand(`sudo docker run --ulimit nofile=1048576 us-east1-docker.pkg.dev/crl-ci-images/cockroach/tpc-e:master`)
+	cmd := roachtestutil.NewCommand(`sudo docker run us-east1-docker.pkg.dev/crl-ci-images/cockroach/tpc-e:master`)
 	o.AddCommandOptions(cmd)
 	return cmd
 }
@@ -201,7 +201,7 @@ func runTPCE(ctx context.Context, t test.Test, c cluster.Cluster, opts tpceOptio
 	}
 
 	if opts.setupType == usingTPCEInit && !t.SkipInit() {
-		m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+		m := c.NewMonitor(ctx, c.CRDBNodes())
 		m.Go(func(ctx context.Context) error {
 			estimatedSetupTimeStr := ""
 			if opts.estimatedSetupTime != 0 {
@@ -223,7 +223,7 @@ func runTPCE(ctx context.Context, t test.Test, c cluster.Cluster, opts tpceOptio
 		return
 	}
 
-	m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+	m := c.NewMonitor(ctx, c.CRDBNodes())
 	m.Go(func(ctx context.Context) error {
 		t.Status("running workload")
 		workloadDuration := opts.workloadDuration

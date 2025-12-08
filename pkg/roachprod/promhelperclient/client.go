@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/aws"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/azure"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/gce"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/ibm"
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
 	"github.com/cockroachdb/errors"
 	"gopkg.in/yaml.v2"
@@ -86,9 +85,6 @@ var (
 		azure.ProviderName: {
 			Default: Public,
 		},
-		ibm.ProviderName: {
-			Default: Public,
-		},
 	}
 )
 
@@ -113,8 +109,8 @@ func NewPromClient(options ...Option) (*PromClient, error) {
 		option.apply(c)
 	}
 
-	// If the client is not set and not disabled, create a new client
-	if c.httpClient == nil && !c.disabled {
+	// If the client is not set, create a new client
+	if c.httpClient == nil {
 		iapTokenSource, err := roachprodutil.NewIAPTokenSource(roachprodutil.IAPTokenSourceOptions{
 			OAuthClientID:       OAuthClientID,
 			ServiceAccountEmail: ServiceAccountEmail,

@@ -9,7 +9,6 @@ import (
 	"context"
 	gosql "database/sql"
 	"database/sql/driver"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -479,7 +478,7 @@ func TestPGPreparedQuery(t *testing.T) {
 			baseTest.SetArgs(2, 3).Results(2),
 			baseTest.SetArgs(true, 0).Error(`error in argument for \$1: could not parse "true" as type int: strconv.ParseInt: parsing "true": invalid syntax`),
 		}},
-		{"SELECT ($1::TEXT[])[2] LIKE 'b'", []preparedQueryTest{
+		{"SELECT $1[2] LIKE 'b'", []preparedQueryTest{
 			baseTest.SetArgs(pq.Array([]string{"a", "b", "c"})).Results(true),
 			baseTest.SetArgs(pq.Array([]gosql.NullString{{String: "a", Valid: true}, {Valid: false}, {String: "c", Valid: true}})).Results(gosql.NullBool{Valid: false}),
 		}},
@@ -497,8 +496,7 @@ func TestPGPreparedQuery(t *testing.T) {
 				Results("username", "STRING", false, gosql.NullBool{}, "", "{primary,users_user_id_idx}", false).
 				Results("hashedPassword", "BYTES", true, gosql.NullBool{}, "", "{primary}", false).
 				Results("isRole", "BOOL", false, false, "", "{primary}", false).
-				Results("user_id", "OID", false, gosql.NullBool{}, "", "{primary,users_user_id_idx}", false).
-				Results("estimated_last_login_time", "TIMESTAMPTZ", true, gosql.NullBool{}, "", "{primary}", false),
+				Results("user_id", "OID", false, gosql.NullBool{}, "", "{primary,users_user_id_idx}", false),
 		}},
 		{"SELECT database_name, owner FROM [SHOW DATABASES]", []preparedQueryTest{
 			baseTest.Results("d", username.RootUser).
@@ -521,7 +519,6 @@ func TestPGPreparedQuery(t *testing.T) {
 				Results("users", "primary", false, 2, "hashedPassword", "hashedPassword", "N/A", true, false, true, 1).
 				Results("users", "primary", false, 3, "isRole", "isRole", "N/A", true, false, true, 1).
 				Results("users", "primary", false, 4, "user_id", "user_id", "N/A", true, false, true, 1).
-				Results("users", "primary", false, 5, "estimated_last_login_time", "estimated_last_login_time", "N/A", true, false, true, 1).
 				Results("users", "users_user_id_idx", false, 1, "user_id", "user_id", "ASC", false, false, true, 1).
 				Results("users", "users_user_id_idx", false, 2, "username", "username", "ASC", true, true, true, 1),
 		}},
@@ -545,11 +542,11 @@ func TestPGPreparedQuery(t *testing.T) {
 			baseTest.SetArgs("def"),
 			baseTest.SetArgs("waa"),
 		}},
-		{"SELECT username, options, member_of from [SHOW USERS] ORDER BY username", []preparedQueryTest{
-			baseTest.Results("abc", "{}", "{}").
-				Results("admin", "{}", "{}").
-				Results("root", "{}", "{admin}").
-				Results("woo", "{}", "{}"),
+		{"SHOW USERS", []preparedQueryTest{
+			baseTest.Results("abc", "", "{}").
+				Results("admin", "", "{}").
+				Results("root", "", "{admin}").
+				Results("woo", "", "{}"),
 		}},
 		{"DROP USER abc, woo", []preparedQueryTest{
 			baseTest.SetArgs(),
@@ -773,7 +770,7 @@ func TestPGPreparedQuery(t *testing.T) {
 		{"INSERT INTO d.arr VALUES($1, $2)", []preparedQueryTest{
 			baseTest.SetArgs(pq.Array([]int64{}), pq.Array([]string{})),
 		}},
-		{"INSPECT TABLE system.locations", []preparedQueryTest{
+		{"EXPERIMENTAL SCRUB TABLE system.locations", []preparedQueryTest{
 			baseTest.SetArgs(),
 		}},
 		{"ALTER RANGE default CONFIGURE ZONE = $1", []preparedQueryTest{
@@ -824,7 +821,7 @@ func TestPGPreparedQuery(t *testing.T) {
 		for idx, test := range tests {
 			t.Run(fmt.Sprintf("%d", idx), func(t *testing.T) {
 				if testing.Verbose() || log.V(1) {
-					log.Dev.Infof(context.Background(), "query: %s", query)
+					log.Infof(context.Background(), "query: %s", query)
 				}
 				rows, err := queryFunc(test.qargs...)
 				if err != nil {
@@ -905,13 +902,12 @@ INSERT INTO d.t VALUES (10),(11);
 CREATE TABLE d.ts (a TIMESTAMP, b DATE);
 CREATE TABLE d.two (a INT, b INT);
 CREATE TABLE d.intStr (a INT, s STRING);
-CREATE TABLE d.str (s STRING, b BYTES) WITH (schema_locked=false);
+CREATE TABLE d.str (s STRING, b BYTES);
 CREATE TABLE d.arr (a INT[], b TEXT[]);
 CREATE TABLE d.emptynorows (); -- zero columns, zero rows
 CREATE TABLE d.emptyrows (x INT);
 INSERT INTO d.emptyrows VALUES (1),(2),(3);
 ALTER TABLE d.emptyrows DROP COLUMN x; -- zero columns, 3 rows
-SET enable_inspect_command = true;
 `
 	if _, err := db.Exec(initStmt); err != nil {
 		t.Fatal(err)
@@ -1233,7 +1229,7 @@ func TestPGPreparedExec(t *testing.T) {
 		for idx, test := range tests {
 			t.Run(fmt.Sprintf("%d", idx), func(t *testing.T) {
 				if testing.Verbose() || log.V(1) {
-					log.Dev.Infof(context.Background(), "exec: %s", query)
+					log.Infof(context.Background(), "exec: %s", query)
 				}
 				if result, err := execFunc(test.qargs...); err != nil {
 					if test.error == "" {
@@ -1267,7 +1263,7 @@ func TestPGPreparedExec(t *testing.T) {
 		for _, execTest := range execTests {
 			t.Run(execTest.query, func(t *testing.T) {
 				if testing.Verbose() || log.V(1) {
-					log.Dev.Infof(context.Background(), "prepare: %s", execTest.query)
+					log.Infof(context.Background(), "prepare: %s", execTest.query)
 				}
 				if stmt, err := db.Prepare(execTest.query); err != nil {
 					t.Errorf("%s: prepare error: %s", execTest.query, err)
@@ -1812,7 +1808,7 @@ type pgxTestLogger struct{}
 func (l pgxTestLogger) Log(
 	ctx context.Context, level pgx.LogLevel, msg string, data map[string]interface{},
 ) {
-	log.Dev.Infof(ctx, "pgx log [%s] %s - %s", level, msg, data)
+	log.Infof(ctx, "pgx log [%s] %s - %s", level, msg, data)
 }
 
 // pgxTestLogger implements pgx.Logger.
@@ -1902,154 +1898,6 @@ func TestUnsupportedGSSEnc(t *testing.T) {
 			t.Fatalf("expected 1 cancel request, got %d", count)
 		}
 	})
-}
-
-// TestNegotiateProtocolVersion tests protocol version negotiation behavior.
-// It verifies that:
-// - Version 3.0 without _pq_.* options: no negotiation message is sent
-// - Version 3.0 with _pq_.* options: negotiation message lists unrecognized options
-// - Version 3.2+ (PostgreSQL 18+): negotiation message indicates version 3.0 supported
-// See: https://github.com/cockroachdb/cockroach/issues/153163
-func TestNegotiateProtocolVersion(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	// Test only in insecure mode since the protocol negotiation happens before
-	// SSL/TLS handshake and the behavior is the same regardless of security mode.
-	ctx := context.Background()
-	params := base.TestServerArgs{Insecure: true}
-	srv := serverutils.StartServerOnly(t, params)
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
-
-	const version30 = (3 << 16) + 0
-	const version32 = (3 << 16) + 2
-
-	testCases := []struct {
-		name                        string
-		protocolVersion             uint32
-		parameters                  map[string]string
-		expectNegotiation           bool
-		expectedUnrecognizedOptions []string
-	}{
-		{
-			// Version 3.0 with no special options should proceed directly to
-			// authentication without any negotiation.
-			name:              "v3.0_no_options",
-			protocolVersion:   version30,
-			parameters:        map[string]string{"user": "root"},
-			expectNegotiation: false,
-		},
-		{
-			// Version 3.0 with _pq_.* parameters triggers negotiation to inform the
-			// client which protocol options are not recognized. This is per the
-			// PostgreSQL protocol spec which reserves _pq_.* for protocol extensions.
-			name:                        "v3.0_with_pq_options",
-			protocolVersion:             version30,
-			parameters:                  map[string]string{"user": "root", "_pq_.feature": "value"},
-			expectNegotiation:           true,
-			expectedUnrecognizedOptions: []string{"_pq_.feature"},
-		},
-		{
-			// Version 3.2 (PostgreSQL 18+) with no special options should trigger
-			// negotiation to indicate we only support version 3.0.
-			name:              "v3.2_no_options",
-			protocolVersion:   version32,
-			parameters:        map[string]string{"user": "root"},
-			expectNegotiation: true,
-		},
-		{
-			// Version 3.2 with _pq_.* parameters should trigger negotiation that
-			// includes both the version downgrade and the unrecognized options.
-			name:            "v3.2_with_pq_options",
-			protocolVersion: version32,
-			parameters: map[string]string{
-				"user":                  "root",
-				"_pq_.protocol_feature": "some_value",
-				"_pq_.another_option":   "another_value",
-			},
-			expectNegotiation:           true,
-			expectedUnrecognizedOptions: []string{"_pq_.another_option", "_pq_.protocol_feature"},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			var d net.Dialer
-			conn, err := d.DialContext(ctx, "tcp", s.AdvSQLAddr())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer conn.Close()
-
-			fe := pgproto3.NewFrontend(pgproto3.NewChunkReader(conn), conn)
-			if err := fe.Send(&pgproto3.StartupMessage{
-				ProtocolVersion: tc.protocolVersion,
-				Parameters:      tc.parameters,
-			}); err != nil {
-				t.Fatal(err)
-			}
-
-			if tc.expectNegotiation {
-				// Read the NegotiateProtocolVersion message.
-				// The format is:
-				//   - Byte1('v') - Message type
-				//   - Int32 - Length of message contents (including self)
-				//   - Int32 - Newest protocol version supported
-				//   - Int32 - Number of unrecognized protocol options
-				//   - For each unrecognized option: String - Option name
-				header := make([]byte, 5)
-				if _, err := io.ReadFull(conn, header); err != nil {
-					t.Fatalf("failed to read message header: %v", err)
-				}
-				msgType := header[0]
-				msgLen := binary.BigEndian.Uint32(header[1:5])
-
-				require.Equal(t, byte('v'), msgType, "expected NegotiateProtocolVersion message")
-
-				// Read the rest of the message.
-				body := make([]byte, msgLen-4) // -4 because length includes itself
-				if _, err := io.ReadFull(conn, body); err != nil {
-					t.Fatalf("failed to read message body: %v", err)
-				}
-
-				supportedVersion := binary.BigEndian.Uint32(body[0:4])
-				numUnrecognized := binary.BigEndian.Uint32(body[4:8])
-
-				require.Equal(t, uint32(version30), supportedVersion, "expected server to report protocol version 3.0")
-				require.Equal(t, uint32(len(tc.expectedUnrecognizedOptions)), numUnrecognized, "unexpected number of unrecognized options")
-
-				// Parse the unrecognized options from the message body.
-				var unrecognizedOptions []string
-				offset := 8
-				for i := 0; i < int(numUnrecognized); i++ {
-					// Find the null terminator for this string.
-					end := offset
-					for end < len(body) && body[end] != 0 {
-						end++
-					}
-					if end >= len(body) {
-						t.Fatalf("unterminated string in unrecognized options")
-					}
-					unrecognizedOptions = append(unrecognizedOptions, string(body[offset:end]))
-					offset = end + 1 // Skip the null terminator.
-				}
-
-				require.ElementsMatch(t, tc.expectedUnrecognizedOptions, unrecognizedOptions, "unexpected unrecognized options")
-			}
-
-			// After any negotiation (or immediately for v3.0 without options),
-			// the connection should proceed to authentication.
-			msg, err := fe.Receive()
-			if err != nil {
-				t.Fatalf("failed to receive message: %v", err)
-			}
-
-			// The server should proceed with authentication.
-			_, ok := msg.(*pgproto3.AuthenticationOk)
-			require.True(t, ok, "expected AuthenticationOk message, got %T", msg)
-		})
-	}
 }
 
 func TestFailPrepareFailsTxn(t *testing.T) {

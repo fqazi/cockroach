@@ -74,7 +74,7 @@ func (r *Replica) addToTSCacheChecked(
 	// production logic.
 	if st := r.CurrentLeaseStatus(ctx); st.IsValid() && st.OwnedBy(r.StoreID()) {
 		if exp := st.Expiration(); exp.LessEq(ts) {
-			log.KvExec.Fatalf(ctx, "Unsafe timestamp cache update! Cannot add timestamp %s to timestamp "+
+			log.Fatalf(ctx, "Unsafe timestamp cache update! Cannot add timestamp %s to timestamp "+
 				"cache after evaluating %v (resp=%v; err=%v) with lease expiration %v. The timestamp "+
 				"cache update could be lost on a non-cooperative lease change.", ts, ba, br, pErr, exp)
 		}
@@ -134,7 +134,7 @@ func (r *Replica) updateTimestampCache(
 
 		if ba.WaitPolicy == lock.WaitPolicy_SkipLocked && kvpb.CanSkipLocked(req) && resp != nil {
 			if ba.IndexFetchSpec != nil {
-				log.KvExec.Errorf(ctx, "%v", errors.AssertionFailedf("unexpectedly IndexFetchSpec is set with SKIP LOCKED wait policy"))
+				log.Errorf(ctx, "%v", errors.AssertionFailedf("unexpectedly IndexFetchSpec is set with SKIP LOCKED wait policy"))
 			}
 			// If the request is using a SkipLocked wait policy, it behaves as if run
 			// at a lower isolation level for any keys that it skips over. If the read
@@ -153,7 +153,7 @@ func (r *Replica) updateTimestampCache(
 			if err := kvpb.ResponseKeyIterate(req, resp, func(key roachpb.Key) {
 				addToTSCache(key, nil, ts, txnID)
 			}, false /* includeLockedNonExisting */); err != nil {
-				log.KvExec.Errorf(ctx, "error iterating over response keys while "+
+				log.Errorf(ctx, "error iterating over response keys while "+
 					"updating timestamp cache for ba=%v, br=%v: %v", ba, br, err)
 			}
 			continue
@@ -239,7 +239,7 @@ func (r *Replica) updateTimestampCache(
 				// timestamp was already below the prepared transaction's timestamp.
 				continue
 			default:
-				log.KvExec.Fatalf(ctx, "unexpected transaction status: %v", pushee.Status)
+				log.Fatalf(ctx, "unexpected transaction status: %v", pushee.Status)
 			}
 
 			var key roachpb.Key
@@ -268,6 +268,13 @@ func (r *Replica) updateTimestampCache(
 			// ConditionalPut only updates on ConditionFailedErrors. On other
 			// errors, no information is returned. On successful writes, the
 			// intent already protects against writes underneath the read.
+			if _, ok := pErr.GetDetail().(*kvpb.ConditionFailedError); ok {
+				addToTSCache(start, end, ts, txnID)
+			}
+		case *kvpb.InitPutRequest:
+			// InitPut only updates on ConditionFailedErrors. On other errors,
+			// no information is returned. On successful writes, the intent
+			// already protects against writes underneath the read.
 			if _, ok := pErr.GetDetail().(*kvpb.ConditionFailedError); ok {
 				addToTSCache(start, end, ts, txnID)
 			}
@@ -378,7 +385,8 @@ func init() {
 
 // applyTimestampCache moves the batch timestamp forward depending on
 // the presence of overlapping entries in the timestamp cache. If the
-// batch is transactional the txn timestamp is updated.
+// batch is transactional, the txn timestamp and the txn.WriteTooOld
+// bool are updated.
 //
 // Two important invariants of Cockroach: 1) encountering a more
 // recently written value means transaction restart. 2) values must

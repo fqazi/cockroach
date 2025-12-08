@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -19,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"google.golang.org/grpc"
-	"storj.io/drpc/drpcclient"
 )
 
 // ContextTestingKnobs provides hooks to aid in testing the system. The testing
@@ -33,15 +31,11 @@ type ContextTestingKnobs struct {
 	//
 	// Note that this is not called for streaming RPCs using the
 	// internalClientAdapter - i.e. KV RPCs done against the local server.
-	StreamClientInterceptor func(target string, class rpcbase.ConnectionClass) grpc.StreamClientInterceptor
+	StreamClientInterceptor func(target string, class ConnectionClass) grpc.StreamClientInterceptor
 
 	// UnaryClientInterceptor, if non-nil, will be called when invoking any
 	// unary RPC.
-	UnaryClientInterceptor func(target string, class rpcbase.ConnectionClass) grpc.UnaryClientInterceptor
-
-	UnaryClientInterceptorDRPC func(target string, class rpcbase.ConnectionClass) drpcclient.UnaryClientInterceptor
-
-	StreamClientInterceptorDRPC func(target string, class rpcbase.ConnectionClass) drpcclient.StreamClientInterceptor
+	UnaryClientInterceptor func(target string, class ConnectionClass) grpc.UnaryClientInterceptor
 
 	// InjectedLatencyOracle if non-nil contains a map from target address
 	// (server.RPCServingAddr() of a remote node) to artificial latency in
@@ -56,16 +50,11 @@ type ContextTestingKnobs struct {
 	// this value if non-nil at construction time.
 	StorageClusterID *uuid.UUID
 
-	// NoLoopbackDialer, when true, indicates that a test does not care about the
-	// special loopback dial semantics. In this case, an error results from use of
-	// the loopbackTransport or loopbackDialerFn (which would indicate a
-	// programming error in RPCContext, since NoLoopbackDialer is consulted when
-	// determining whether to use those).
-	//
-	// When false, SetLoopbackDialer() must have been called on the rpc.Context In
-	// productino code, this is done automatically by
-	// server.Server/server.SQLServerWrapper, but some lower-level tests may have
-	// to do it manually.
+	// NoLoopbackDialer, when set, indicates that a test does not care
+	// about the special loopback dial semantics.
+	// If this is left unset, the test is responsible for ensuring
+	// SetLoopbackDialer() has been called on the rpc.Context.
+	// (This is done automatically by server.Server/server.SQLServerWrapper.)
 	NoLoopbackDialer bool
 }
 
@@ -134,16 +123,12 @@ func (d disablingClientStream) RecvMsg(m interface{}) error {
 
 // Partitioner is used to create partial partitions between nodes at the GRPC
 // layer. It uses StreamInterceptors to fail requests to nodes that are not
-// connected. Node addresses need to be registered before enabling the
-// partition, but partitions can be added and removed at any point (before or
-// after starting the cluster or enabling the partition).
-//
-// Usage of it is something like the following:
+// connected. Usage of it is something like the following:
 //
 // var p rpc.Partitioner
 //
 //	for i := 0; i < numServers; i++ {
-//	   p.RegisterTestingKnobs(id, ContextTestingKnobs{})
+//	   p.RegisterTestingKnobs(id, partitions, ContextTestingKnobs{})
 //	}
 //
 // TestCluster.Start()
@@ -152,108 +137,63 @@ func (d disablingClientStream) RecvMsg(m interface{}) error {
 //	    p.RegisterNodeAddr()
 //	}
 //
-// p.AddPartition(from, to)
-//
-// p.EnablePartitions(true)
-//
-// p.{Add,Remove}Partition(from, to)
+// p.EnablePartition(true)
 // ... run operations
-// p.{Add,Remove}Partition(from, to)
+//
+// TODO(baptist): This could be enhanced to allow dynamic partition injection.
 type Partitioner struct {
-	partitionsEnabled atomic.Bool
-	nodeAddrMap       syncutil.Map[string, roachpb.NodeID]
-	mu                struct {
-		syncutil.Mutex
-		// partitions is a map from NodeID to a set of NodeIDs that the node should
-		// not be able to connect to.
-		partitions map[roachpb.NodeID]map[roachpb.NodeID]struct{}
-	}
+	partitionEnabled atomic.Bool
+	nodeAddrMap      syncutil.Map[string, roachpb.NodeID]
 }
 
-// EnablePartitions will enable or disable the partition.
-func (p *Partitioner) EnablePartitions(enable bool) {
-	p.partitionsEnabled.Store(enable)
+// EnablePartition will enable or disable the partition.
+func (p *Partitioner) EnablePartition(enable bool) {
+	p.partitionEnabled.Store(enable)
 }
 
 // RegisterNodeAddr is called after the cluster is started, but before
-// EnablePartitions is called on every node to register the mapping from the
+// EnablePartition is called on every node to register the mapping from the
 // address of the node to the NodeID.
 func (p *Partitioner) RegisterNodeAddr(addr string, id roachpb.NodeID) {
-	if p.partitionsEnabled.Load() {
+	if p.partitionEnabled.Load() {
 		panic("Can not register node addresses with a partition enabled")
 	}
 	p.nodeAddrMap.Store(addr, &id)
 }
 
-func (p *Partitioner) AddPartition(from roachpb.NodeID, to roachpb.NodeID) error {
-	if from == to {
-		return errors.Newf("cannot add partition from node %d to itself", from)
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.mu.partitions == nil {
-		p.mu.partitions = make(map[roachpb.NodeID]map[roachpb.NodeID]struct{})
-	}
-	if p.mu.partitions[from] == nil {
-		p.mu.partitions[from] = make(map[roachpb.NodeID]struct{})
-	}
-	p.mu.partitions[from][to] = struct{}{}
-	return nil
-}
-
-func (p *Partitioner) RemovePartition(from roachpb.NodeID, to roachpb.NodeID) error {
-	err := errors.Newf("cannot remove partition from node %d to %d; it doesn't exist", from, to)
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.mu.partitions == nil {
-		return err
-	}
-	if toNodes, ok := p.mu.partitions[from]; ok {
-		if _, ok = toNodes[to]; ok {
-			delete(toNodes, to)
-			if len(toNodes) == 0 {
-				delete(p.mu.partitions, from)
-			}
-			return nil
-		}
-	}
-	return err
-}
-
-func (p *Partitioner) isPartitioned(from roachpb.NodeID, to roachpb.NodeID) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.mu.partitions == nil {
-		return false
-	}
-	if toPartitions, ok := p.mu.partitions[from]; ok {
-		if _, ok := toPartitions[to]; ok {
-			return true
-		}
-	}
-	return false
-}
-
 // RegisterTestingKnobs creates the testing knobs for this node. It will
 // override both the Unary and Stream Interceptors to return errors once
-// EnablePartitions is called.
-func (p *Partitioner) RegisterTestingKnobs(id roachpb.NodeID, knobs *ContextTestingKnobs) {
+// EnablePartition is called.
+func (p *Partitioner) RegisterTestingKnobs(
+	id roachpb.NodeID, partition [][2]roachpb.NodeID, knobs *ContextTestingKnobs,
+) {
+	// Structure the partition list for indexed lookup. We are partitioned from
+	// the other node if we are found on either side of the pair.
+	partitionedServers := make(map[roachpb.NodeID]bool)
+	for _, p := range partition {
+		if p[0] == id {
+			partitionedServers[p[1]] = true
+		}
+		if p[1] == id {
+			partitionedServers[p[0]] = true
+		}
+	}
 	isPartitioned := func(addr string) error {
-		if !p.partitionsEnabled.Load() {
+		if !p.partitionEnabled.Load() {
 			return nil
 		}
-		toNodePtr, ok := p.nodeAddrMap.Load(addr)
+		idPtr, ok := p.nodeAddrMap.Load(addr)
 		if !ok {
 			panic("address not mapped, call RegisterNodeAddr before enabling the partition" + addr)
 		}
-		toNodeId := *toNodePtr
-		if p.isPartitioned(id, toNodeId) {
+		id := *idPtr
+		if partitionedServers[id] {
 			return errors.Newf("rpc error: partitioned from %s, n%d", addr, id)
 		}
 		return nil
 	}
 	knobs.UnaryClientInterceptor =
-		func(target string, class rpcbase.ConnectionClass) grpc.UnaryClientInterceptor {
+		func(target string, class ConnectionClass) grpc.UnaryClientInterceptor {
 			return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 				if err := isPartitioned(target); err != nil {
 					return err
@@ -262,7 +202,7 @@ func (p *Partitioner) RegisterTestingKnobs(id roachpb.NodeID, knobs *ContextTest
 			}
 		}
 	knobs.StreamClientInterceptor =
-		func(target string, class rpcbase.ConnectionClass) grpc.StreamClientInterceptor {
+		func(target string, class ConnectionClass) grpc.StreamClientInterceptor {
 			return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
 				cs, err := streamer(ctx, desc, cc, method, opts...)
 				if err != nil {

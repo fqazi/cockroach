@@ -23,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/task"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
-	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -118,10 +117,8 @@ func registerDecommission(r registry.Registry) {
 			Name:             "decommission/mixed-versions",
 			Owner:            registry.OwnerKV,
 			Cluster:          r.MakeClusterSpec(numNodes),
-			CompatibleClouds: registry.AllClouds.NoAWS().NoIBM(),
+			CompatibleClouds: registry.AllExceptAWS,
 			Suites:           registry.Suites(registry.MixedVersion, registry.Nightly),
-			Monitor:          true,
-			Randomized:       true,
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 				runDecommissionMixedVersions(ctx, t, c)
 			},
@@ -187,7 +184,7 @@ func runDrainAndDecommission(
 		run(`SET CLUSTER SETTING kv.snapshot_rebalance.max_rate='2GiB'`)
 
 		// Wait for initial up-replication.
-		err := roachtestutil.WaitForReplication(ctx, t.L(), db, defaultReplicationFactor, roachprod.AtLeastReplicationFactor)
+		err := roachtestutil.WaitForReplication(ctx, t.L(), db, defaultReplicationFactor, roachtestutil.AtLeastReplicationFactor)
 		require.NoError(t, err)
 	}
 
@@ -1001,8 +998,7 @@ func runDecommissionDrains(ctx context.Context, t test.Test, c cluster.Cluster, 
 		decommNodeID = numNodes
 		decommNode   = c.Node(decommNodeID)
 	)
-
-	c.Start(ctx, t.L(), withDecommissionVMod(option.DefaultStartOpts()), install.MakeClusterSettings(), c.All())
+	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.All())
 
 	h := newDecommTestHelper(t, c)
 
@@ -1027,7 +1023,7 @@ func runDecommissionDrains(ctx context.Context, t test.Test, c cluster.Cluster, 
 
 	// Decommission node 4 and poll its status during the decommission.
 	var (
-		maxAttempts = 125
+		maxAttempts = 50
 		retryOpts   = retry.Options{
 			InitialBackoff: time.Second,
 			MaxBackoff:     5 * time.Second,
@@ -1137,7 +1133,7 @@ func runDecommissionSlow(ctx context.Context, t test.Test, c cluster.Cluster) {
 		run(db, `SET CLUSTER SETTING kv.snapshot_rebalance.max_rate='2GiB'`)
 
 		// Wait for initial up-replication.
-		err := roachtestutil.WaitForReplication(ctx, t.L(), db, replicationFactor, roachprod.AtLeastReplicationFactor)
+		err := roachtestutil.WaitForReplication(ctx, t.L(), db, replicationFactor, roachtestutil.AtLeastReplicationFactor)
 		require.NoError(t, err)
 	}
 
@@ -1146,7 +1142,7 @@ func runDecommissionSlow(ctx context.Context, t test.Test, c cluster.Cluster) {
 	// since the decommissions will stall.
 	decomCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	m := c.NewDeprecatedMonitor(decomCtx)
+	m := c.NewMonitor(decomCtx)
 	for nodeID := 2; nodeID <= numNodes; nodeID++ {
 		id := nodeID
 		m.Go(func(ctx context.Context) error {
@@ -1197,7 +1193,7 @@ var decommissionFooter = []string{
 
 // Header from the output of `cockroach node status`.
 var statusHeader = []string{
-	"id", "address", "sql_address", "build", "started_at", "updated_at", "locality", "attrs", "is_available", "is_live",
+	"id", "address", "sql_address", "build", "started_at", "updated_at", "locality", "is_available", "is_live",
 }
 
 // Header from the output of `cockroach node status --decommission`.
@@ -1519,8 +1515,7 @@ func execCLIExt(
 // debugging failures.
 const decommissionVModuleStartOpts = `--vmodule=store_rebalancer=5,allocator=5,
   allocator_scorer=5,replicate_queue=5,replicate=6,split_queue=5,
-  replica_command=2,replica_raft=2,replica_proposal=2,replica_application_result=1,
-  replica_range_lease=3,raft=4,replica_raft_quiesce=3`
+  replica_command=2,replica_raft=2,replica_proposal=2,replica_application_result=1`
 
 func withDecommissionVMod(startOpts option.StartOpts) option.StartOpts {
 	startOpts.RoachprodOpts.ExtraArgs = append(

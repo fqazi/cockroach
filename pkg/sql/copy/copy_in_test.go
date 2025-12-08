@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"math/rand"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
@@ -646,51 +648,49 @@ func TestCopyTransaction(t *testing.T) {
 	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
 	defer s.Stopper().Stop(context.Background())
 
-	_, err := db.Exec(`
+	if _, err := db.Exec(`
 		CREATE DATABASE d;
 		SET DATABASE = d;
 		CREATE TABLE t (
 			i INT PRIMARY KEY
 		);
-	`)
-	require.NoError(t, err)
+	`); err != nil {
+		t.Fatal(err)
+	}
 
 	txn, err := db.Begin()
-	require.NoError(t, err)
-
-	// Run COPY twice with the first one being rolled back via savepoints.
-	for val, doSavepoint := range []bool{true, false} {
-		func() {
-			if doSavepoint {
-				_, err = txn.Exec("SAVEPOINT s")
-				require.NoError(t, err)
-				defer func() {
-					_, err = txn.Exec("ROLLBACK TO SAVEPOINT s")
-					require.NoError(t, err)
-				}()
-			}
-			// Note that, at least with lib/pq, this doesn't actually send a
-			// Parse msg (which we wouldn't support, as we don't support Copy-in
-			// in extended protocol mode). lib/pq has magic for recognizing a
-			// Copy.
-			stmt, err := txn.Prepare(pq.CopyIn("t", "i"))
-			require.NoError(t, err)
-
-			_, err = stmt.Exec(val)
-			require.NoError(t, err)
-
-			err = stmt.Close()
-			require.NoError(t, err)
-
-			var i int
-			err = txn.QueryRow("SELECT i FROM d.t").Scan(&i)
-			require.NoError(t, err)
-			if i != val {
-				t.Fatalf("expected %d, got %d", val, i)
-			}
-		}()
+	if err != nil {
+		t.Fatal(err)
 	}
-	require.NoError(t, txn.Commit())
+
+	// Note that, at least with lib/pq, this doesn't actually send a Parse msg
+	// (which we wouldn't support, as we don't support Copy-in in extended
+	// protocol mode). lib/pq has magic for recognizing a Copy.
+	stmt, err := txn.Prepare(pq.CopyIn("t", "i"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const val = 2
+
+	_, err = stmt.Exec(val)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err = stmt.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var i int
+	if err := txn.QueryRow("SELECT i FROM d.t").Scan(&i); err != nil {
+		t.Fatal(err)
+	} else if i != val {
+		t.Fatalf("expected 1, got %d", i)
+	}
+	if err := txn.Commit(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestCopyFromFKCheck verifies that foreign keys are checked during COPY.
@@ -792,9 +792,8 @@ func TestMessageSizeTooBig(t *testing.T) {
 	ctx := context.Background()
 	srv := serverutils.StartServerOnly(t, base.TestServerArgs{})
 	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
 
-	url, cleanup := s.PGUrl(t, serverutils.CertsDirPrefix("copytest"), serverutils.User(username.RootUser))
+	url, cleanup := pgurlutils.PGUrl(t, srv.ApplicationLayer().AdvSQLAddr(), "copytest", url.User(username.RootUser))
 	defer cleanup()
 	var sqlConnCtx clisqlclient.Context
 	conn := sqlConnCtx.MakeSQLConn(io.Discard, io.Discard, url.String())
@@ -842,7 +841,7 @@ func TestCopyExceedsSQLMemory(t *testing.T) {
 
 					s := srv.ApplicationLayer()
 
-					url, cleanup := s.PGUrl(t, serverutils.CertsDirPrefix("copytest"), serverutils.User(username.RootUser))
+					url, cleanup := pgurlutils.PGUrl(t, s.AdvSQLAddr(), "copytest", url.User(username.RootUser))
 					defer cleanup()
 					var sqlConnCtx clisqlclient.Context
 					conn := sqlConnCtx.MakeSQLConn(io.Discard, io.Discard, url.String())

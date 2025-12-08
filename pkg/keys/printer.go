@@ -114,7 +114,6 @@ var (
 			ppFunc: raftLogKeyPrint,
 			psFunc: raftLogKeyParse,
 		},
-		{name: "RaftReplicaID", suffix: LocalRaftReplicaIDSuffix},
 		{name: "RaftTruncatedState", suffix: LocalRaftTruncatedStateSuffix},
 		{name: "RangeLastReplicaGCTimestamp", suffix: LocalRangeLastReplicaGCTimestampSuffix},
 		{name: "RangeLease", suffix: LocalRangeLeaseSuffix},
@@ -146,7 +145,6 @@ var constSubKeyDict = []struct {
 	{"/clusterVersion", localStoreClusterVersionSuffix},
 	{"/nodeTombstone", localStoreNodeTombstoneSuffix},
 	{"/cachedSettings", localStoreCachedSettingsSuffix},
-	{"/wag", localStoreWAGNodeSuffix},
 	{"/lossOfQuorumRecovery/applied", localStoreUnsafeReplicaRecoverySuffix},
 	{"/lossOfQuorumRecovery/status", localStoreLossOfQuorumRecoveryStatusSuffix},
 	{"/lossOfQuorumRecovery/cleanup", localStoreLossOfQuorumRecoveryCleanupActionsSuffix},
@@ -168,19 +166,10 @@ func cachedSettingsKeyPrint(buf *redact.StringBuilder, key roachpb.Key) {
 	buf.Print(settingKey.String())
 }
 
-func wagNodeKeyPrint(buf *redact.StringBuilder, key roachpb.Key) {
-	index, err := DecodeWAGNodeKey(key)
-	if err != nil {
-		buf.Printf("<invalid: %s>", err)
-	}
-	buf.Printf("%d", index)
-}
-
 func localStoreKeyPrint(buf *redact.StringBuilder, _ []encoding.Direction, key roachpb.Key) {
 	for _, v := range constSubKeyDict {
 		if bytes.HasPrefix(key, v.key) {
 			buf.Print(v.name)
-			// TODO(pav-kv): make this switch more efficient with a lookup.
 			if v.key.Equal(localStoreNodeTombstoneSuffix) {
 				buf.SafeRune('/')
 				nodeTombstoneKeyPrint(
@@ -196,9 +185,6 @@ func localStoreKeyPrint(buf *redact.StringBuilder, _ []encoding.Direction, key r
 				lossOfQuorumRecoveryEntryKeyPrint(
 					buf, append(roachpb.Key(nil), append(LocalStorePrefix, key...)...),
 				)
-			} else if v.key.Equal(localStoreWAGNodeSuffix) {
-				buf.SafeRune('/')
-				wagNodeKeyPrint(buf, append(append(roachpb.Key(nil), LocalStorePrefix...), key...))
 			}
 			return
 		}

@@ -105,11 +105,14 @@ type FunctionProperties struct {
 	// considered undocumented.
 	Private bool
 
-	// DistsqlBlocklist is set to true when a function depends on members of the
-	// EvalContext that are not marshaled by DistSQL (e.g. anything inside Planner
-	// other than Mon() which is implemented by DummyEvalPlanner). Currently used
-	// for DistSQL to determine if expressions can be evaluated on a different
-	// node without sending over the EvalContext.
+	// DistsqlBlocklist is set to true when a function depends on
+	// members of the EvalContext that are not marshaled by DistSQL
+	// (e.g. planner). Currently used for DistSQL to determine if
+	// expressions can be evaluated on a different node without sending
+	// over the EvalContext.
+	//
+	// TODO(andrei): Get rid of the planner from the EvalContext and then we can
+	// get rid of this blocklist.
 	DistsqlBlocklist bool
 
 	// Category is used to generate documentation strings.
@@ -599,7 +602,10 @@ func QualifyBuiltinFunctionDefinition(
 func GetBuiltinFuncDefinitionOrFail(
 	fName RoutineName, searchPath SearchPath,
 ) (*ResolvedFunctionDefinition, error) {
-	def := GetBuiltinFuncDefinition(fName, searchPath)
+	def, err := GetBuiltinFuncDefinition(fName, searchPath)
+	if err != nil {
+		return nil, err
+	}
 	if def == nil {
 		forError := fName // prevent fName from escaping
 		return nil, errors.Mark(
@@ -631,23 +637,28 @@ func GetBuiltinFunctionByOIDOrFail(oid oid.Oid) (*ResolvedFunctionDefinition, er
 // in the specific schema are searched. Otherwise, all schemas on the given
 // searchPath are searched. A nil is returned if no function is found. It's
 // caller's choice to error out if function not found.
+//
+// In theory, this function returns an error only when the search path iterator
+// errors which won't happen since the iterating function never errors out. But
+// error is still checked and return from the function signature just in case
+// we change the iterating function in the future.
 func GetBuiltinFuncDefinition(
 	fName RoutineName, searchPath SearchPath,
-) *ResolvedFunctionDefinition {
+) (*ResolvedFunctionDefinition, error) {
 	if fName.ExplicitSchema {
-		return ResolvedBuiltinFuncDefs[fName.Schema()+"."+fName.Object()]
+		return ResolvedBuiltinFuncDefs[fName.Schema()+"."+fName.Object()], nil
 	}
 
 	// First try that if we can get function directly with the function name.
 	// There is a case where the part[0] of the name is a qualified string when
-	// the qualified name is double-quoted as a single name like "schema.fn".
+	// the qualified name is double quoted as a single name like "schema.fn".
 	if def, ok := ResolvedBuiltinFuncDefs[fName.Object()]; ok {
-		return def
+		return def, nil
 	}
 
 	// Then try if it's in pg_catalog.
 	if def, ok := ResolvedBuiltinFuncDefs[catconstants.PgCatalogName+"."+fName.Object()]; ok {
-		return def
+		return def, nil
 	}
 
 	// If not in pg_catalog, go through search path.
@@ -661,5 +672,5 @@ func GetBuiltinFuncDefinition(
 		}
 	}
 
-	return resolvedDef
+	return resolvedDef, nil
 }

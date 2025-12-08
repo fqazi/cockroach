@@ -46,7 +46,7 @@ func getStreamer(
 	reverse bool,
 ) *kvstreamer.Streamer {
 	rootTxn := kv.NewTxn(ctx, s.DB(), s.DistSQLPlanningNodeID())
-	leafInputState, err := rootTxn.GetLeafTxnInputState(ctx, nil /* readsTree */)
+	leafInputState, err := rootTxn.GetLeafTxnInputState(ctx)
 	if err != nil {
 		panic(err)
 	}
@@ -70,7 +70,6 @@ func getStreamer(
 		limitBytes,
 		acc,
 		nil, /* kvPairsRead */
-		nil, /* kvCPUTime */
 		lock.None,
 		lock.Unreplicated,
 		reverse,
@@ -132,7 +131,6 @@ func TestStreamerLimitations(t *testing.T) {
 				math.MaxInt64, /* limitBytes */
 				nil,           /* acc */
 				nil,           /* kvPairsRead */
-				nil,           /* kvCpuTime */
 				lock.None,
 				lock.Unreplicated,
 				false, /* reverse */

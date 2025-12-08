@@ -34,7 +34,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgwirecancel"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlcommenter"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
@@ -151,7 +150,7 @@ func (c *conn) processCommands(
 	ctx context.Context,
 	authOpt authOptions,
 	ac AuthConn,
-	server *Server,
+	sqlServer *sql.Server,
 	reserved *mon.BoundAccount,
 	onDefaultIntSizeChange func(newSize int32),
 	sessionID clusterunique.ID,
@@ -175,7 +174,7 @@ func (c *conn) processCommands(
 		// network read on the connection's goroutine.
 		c.cancelConn()
 
-		pgwireKnobs := server.SQLServer.GetExecutorConfig().PGWireTestingKnobs
+		pgwireKnobs := sqlServer.GetExecutorConfig().PGWireTestingKnobs
 		if pgwireKnobs != nil && pgwireKnobs.CatchPanics {
 			if r := recover(); r != nil {
 				// Catch the panic and return it to the client as an error.
@@ -203,14 +202,14 @@ func (c *conn) processCommands(
 
 	// Authenticate the connection.
 	if connCloseAuthHandler, retErr = c.handleAuthentication(
-		ctx, ac, authOpt, server,
+		ctx, ac, authOpt, sqlServer.GetExecutorConfig(),
 	); retErr != nil {
 		// Auth failed or some other error.
 		return
 	}
 
 	var decrementConnectionCount func()
-	if decrementConnectionCount, retErr = server.SQLServer.IncrementConnectionCount(c.sessionArgs); retErr != nil {
+	if decrementConnectionCount, retErr = sqlServer.IncrementConnectionCount(c.sessionArgs); retErr != nil {
 		// This will return pgcode.TooManyConnections which is used by the sql proxy
 		// to skip failed auth throttle (as in this case the auth was fine but the
 		// error occurred before sending back auth ok msg)
@@ -224,7 +223,7 @@ func (c *conn) processCommands(
 	}
 
 	// Inform the client of the default session settings.
-	connHandler, retErr = c.sendInitialConnData(ctx, server.SQLServer, onDefaultIntSizeChange, sessionID)
+	connHandler, retErr = c.sendInitialConnData(ctx, sqlServer, onDefaultIntSizeChange, sessionID)
 	if retErr != nil {
 		return
 	}
@@ -250,7 +249,7 @@ func (c *conn) processCommands(
 
 	// Now actually process commands.
 	reservedOwned = false // We're about to pass ownership away.
-	retErr = server.SQLServer.ServeConn(
+	retErr = sqlServer.ServeConn(
 		ctx,
 		connHandler,
 		reserved,
@@ -381,7 +380,7 @@ func (c *conn) handleSimpleQuery(
 			},
 		)
 	}
-	stmts, err := c.parser.ParseWithOptions(query, sqlcommenter.MaybeRetainComments(c.sv).WithIntType(unqualifiedIntSize))
+	stmts, err := c.parser.ParseWithInt(query, unqualifiedIntSize)
 	if err != nil {
 		log.SqlExec.Infof(ctx, "could not parse simple query: %s", query)
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
@@ -517,7 +516,7 @@ func (c *conn) handleParse(ctx context.Context, nakedIntSize *types.T) error {
 	}
 
 	startParse := crtime.NowMono()
-	stmts, err := c.parser.ParseWithOptions(query, sqlcommenter.MaybeRetainComments(c.sv).WithIntType(nakedIntSize))
+	stmts, err := c.parser.ParseWithInt(query, nakedIntSize)
 	if err != nil {
 		log.SqlExec.Infof(ctx, "could not parse: %s", query)
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
@@ -1211,7 +1210,7 @@ func (c *conn) writeRowDescription(
 	c.msgBuilder.putInt16(int16(len(columns)))
 	for i, column := range columns {
 		if log.V(2) {
-			log.Dev.Infof(ctx, "pgwire: writing column %s of type: %s", column.Name, column.Typ)
+			log.Infof(ctx, "pgwire: writing column %s of type: %s", column.Name, column.Typ)
 		}
 		c.msgBuilder.writeTerminatedString(column.Name)
 		typ := pgTypeForParserType(column.Typ)

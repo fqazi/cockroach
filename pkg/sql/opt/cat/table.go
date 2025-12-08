@@ -171,13 +171,6 @@ type Table interface {
 	// different name in a `REGIONAL BY ROW AS` DDL clause.
 	HomeRegionColName() (colName string, ok bool)
 
-	// RegionalByRowUsingConstraint returns the foreign-key constraint that is
-	// used to look up the region for each row in a REGIONAL BY ROW table.
-	// This is only set if the infer_rbr_region_col_using_constraint storage param
-	// is set. If the storage param is not set, or if the table is not
-	// REGIONAL BY ROW, RegionalByRowUsingConstraint returns nil.
-	RegionalByRowUsingConstraint() ForeignKeyConstraint
-
 	// GetDatabaseID returns the owning database id of the table, or zero, if the
 	// owning database could not be determined.
 	GetDatabaseID() descpb.ID
@@ -271,8 +264,10 @@ type TableStatistic interface {
 	// inverted index histograms, this will always return types.Bytes.
 	HistogramType() *types.T
 
-	// IsPartial returns true if this statistic was collected with USING EXTREMES
-	// or with a WHERE clause.
+	// IsPartial returns true if this statistic was collected with a where
+	// clause. (If the where clause was something like "WHERE 1 = 1" or "WHERE
+	// true" this could technically be a full statistic rather than a partial
+	// statistic, but this function does not check for this.)
 	IsPartial() bool
 
 	// IsMerged returns true if this statistic was created by merging a partial

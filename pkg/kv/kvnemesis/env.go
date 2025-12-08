@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvtestutils"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 )
@@ -27,19 +26,12 @@ type Logger interface {
 	WriteFile(basename string, contents string) string
 }
 
-type Restarter interface {
-	StopServer(idx int)
-	RestartServer(idx int) error
-}
-
 // Env manipulates the environment (cluster settings, zone configurations) that
 // the Applier operates in.
 type Env struct {
-	SQLDBs      []*gosql.DB
-	Tracker     *SeqTracker
-	L           Logger
-	Partitioner *rpc.Partitioner
-	Restarter   Restarter
+	SQLDBs  []*gosql.DB
+	Tracker *SeqTracker
+	L       Logger
 }
 
 func (e *Env) anyNode() *gosql.DB {

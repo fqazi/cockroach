@@ -93,7 +93,7 @@ func DeleteCluster(l *logger.Logger, name string) error {
 	// Local clusters are expected to specifically use the local DNS provider
 	// implementation, and should clean up any DNS records in the local file
 	// system cache.
-	return p.DeleteSRVRecordsBySubdomain(context.Background(), c.Name)
+	return p.DeleteRecordsBySubdomain(context.Background(), c.Name)
 }
 
 // Clusters returns a list of all known local clusters.
@@ -120,10 +120,6 @@ type Provider struct {
 	vm.DNSProvider
 }
 
-func (p *Provider) DefaultZones(_ string, _ bool) []string {
-	return []string{}
-}
-
 func (p *Provider) ConfigureProviderFlags(*pflag.FlagSet, vm.MultipleProjectsOption) {
 }
 
@@ -138,12 +134,6 @@ func (p *Provider) GetPreemptedSpotVMs(
 }
 
 func (p *Provider) GetHostErrorVMs(
-	l *logger.Logger, vms vm.List, since time.Time,
-) ([]string, error) {
-	return nil, nil
-}
-
-func (p *Provider) GetLiveMigrationVMs(
 	l *logger.Logger, vms vm.List, since time.Time,
 ) ([]string, error) {
 	return nil, nil

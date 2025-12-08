@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing/goexectrace"
 	"github.com/cockroachdb/errors"
 )
 
@@ -38,20 +37,20 @@ var jemallocPurgePeriod = settings.RegisterDurationSettingWithExplicitUnit(
 	"server.jemalloc_purge_period",
 	"minimum amount of time that must pass between two jemalloc dirty page purges (0 disables purging)",
 	2*time.Minute,
+	settings.NonNegativeDuration,
 )
 
 type sampleEnvironmentCfg struct {
-	st                    *cluster.Settings
-	stopper               *stop.Stopper
-	minSampleInterval     time.Duration
-	goroutineDumpDirName  string
-	heapProfileDirName    string
-	cpuProfileDirName     string
-	executionTraceDirName string
-	runtime               *status.RuntimeStatSampler
-	sessionRegistry       *sql.SessionRegistry
-	rootMemMonitor        *mon.BytesMonitor
-	cgoMemTarget          uint64
+	st                   *cluster.Settings
+	stopper              *stop.Stopper
+	minSampleInterval    time.Duration
+	goroutineDumpDirName string
+	heapProfileDirName   string
+	cpuProfileDirName    string
+	runtime              *status.RuntimeStatSampler
+	sessionRegistry      *sql.SessionRegistry
+	rootMemMonitor       *mon.BytesMonitor
+	cgoMemTarget         uint64
 }
 
 // startSampleEnvironment starts a periodic loop that samples the environment and,
@@ -72,17 +71,16 @@ func startSampleEnvironment(
 		metricsSampleInterval = p.EnvironmentSampleInterval
 	}
 	cfg := sampleEnvironmentCfg{
-		st:                    srvCfg.Settings,
-		stopper:               stopper,
-		minSampleInterval:     metricsSampleInterval,
-		goroutineDumpDirName:  srvCfg.GoroutineDumpDirName,
-		heapProfileDirName:    srvCfg.HeapProfileDirName,
-		cpuProfileDirName:     srvCfg.CPUProfileDirName,
-		executionTraceDirName: srvCfg.ExecutionTraceDirName,
-		runtime:               runtimeSampler,
-		sessionRegistry:       sessionRegistry,
-		rootMemMonitor:        rootMemMonitor,
-		cgoMemTarget:          max(uint64(pebbleCacheSize), 128*1024*1024),
+		st:                   srvCfg.Settings,
+		stopper:              stopper,
+		minSampleInterval:    metricsSampleInterval,
+		goroutineDumpDirName: srvCfg.GoroutineDumpDirName,
+		heapProfileDirName:   srvCfg.HeapProfileDirName,
+		cpuProfileDirName:    srvCfg.CPUProfileDirName,
+		runtime:              runtimeSampler,
+		sessionRegistry:      sessionRegistry,
+		rootMemMonitor:       rootMemMonitor,
+		cgoMemTarget:         max(uint64(pebbleCacheSize), 128*1024*1024),
 	}
 	// Immediately record summaries once on server startup.
 
@@ -97,7 +95,7 @@ func startSampleEnvironment(
 			// to the current directory (.). If running the process
 			// from a directory which is not writable, we won't
 			// be able to create a sub-directory here.
-			log.Dev.Warningf(ctx, "cannot create goroutine dump dir -- goroutine dumps will be disabled: %v", err)
+			log.Warningf(ctx, "cannot create goroutine dump dir -- goroutine dumps will be disabled: %v", err)
 			hasValidDumpDir = false
 		}
 		if hasValidDumpDir {
@@ -125,7 +123,7 @@ func startSampleEnvironment(
 			// to the current directory (.). If wrunning the process
 			// from a directory which is not writable, we won't
 			// be able to create a sub-directory here.
-			log.Dev.Warningf(ctx, "cannot create memory dump dir -- memory profile dumps will be disabled: %v", err)
+			log.Warningf(ctx, "cannot create memory dump dir -- memory profile dumps will be disabled: %v", err)
 			hasValidDumpDir = false
 		}
 
@@ -149,22 +147,12 @@ func startSampleEnvironment(
 			}
 			queryProfiler, err = profiler.NewActiveQueryProfiler(ctx, cfg.heapProfileDirName, cfg.st)
 			if err != nil {
-				log.Dev.Warningf(ctx, "failed to start query profiler worker: %v", err)
+				log.Warningf(ctx, "failed to start query profiler worker: %v", err)
 			}
 			cpuProfiler, err = profiler.NewCPUProfiler(ctx, cfg.cpuProfileDirName, cfg.st)
 			if err != nil {
-				log.Dev.Warningf(ctx, "failed to start cpu profiler worker: %v", err)
+				log.Warningf(ctx, "failed to start cpu profiler worker: %v", err)
 			}
-		}
-	}
-
-	simpleFlightRecorder, err := goexectrace.NewFlightRecorder(cfg.st, 10*time.Second, cfg.executionTraceDirName)
-	if err != nil {
-		log.Dev.Warningf(ctx, "failed to initialize flight recorder: %v", err)
-	} else {
-		err = simpleFlightRecorder.Start(ctx, cfg.stopper)
-		if err != nil {
-			log.Dev.Warningf(ctx, "failed to start flight recorder: %v", err)
 		}
 	}
 
@@ -180,6 +168,7 @@ func startSampleEnvironment(
 				case <-cfg.stopper.ShouldQuiesce():
 					return
 				case <-timer.C:
+					timer.Read = true
 					timer.Reset(cfg.minSampleInterval)
 
 					cgoStats := status.GetCGoMemStats(ctx)

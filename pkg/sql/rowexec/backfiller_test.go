@@ -66,7 +66,7 @@ func TestWriteResumeSpan(t *testing.T) {
 
 	ctx := context.Background()
 
-	srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{
+	server, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{
 		Knobs: base.TestingKnobs{
 			// Disable all schema change execution.
 			SQLSchemaChanger: &sql.SchemaChangerTestingKnobs{
@@ -75,13 +75,10 @@ func TestWriteResumeSpan(t *testing.T) {
 				},
 			},
 		},
-		DefaultTestTenant: base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(156127),
 	})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	defer server.Stopper().Stop(ctx)
 
 	sqlRunner := sqlutils.MakeSQLRunner(sqlDB)
-	sqlRunner.Exec(t, `SET create_table_with_schema_locked=false`)
 	sqlRunner.Exec(t, `SET use_declarative_schema_changer='off'`)
 	sqlRunner.Exec(t, `CREATE DATABASE t;`)
 	sqlRunner.Exec(t, `CREATE TABLE t.test (k INT PRIMARY KEY, v INT);`)
@@ -99,13 +96,13 @@ func TestWriteResumeSpan(t *testing.T) {
 		{Key: roachpb.Key("q"), EndKey: roachpb.Key("r")},
 	}
 
-	registry := s.JobRegistry().(*jobs.Registry)
+	registry := server.JobRegistry().(*jobs.Registry)
 	tableDesc := desctestutils.TestingGetMutableExistingTableDescriptor(
-		kvDB, s.Codec(), "t", "test")
+		kvDB, keys.SystemSQLCodec, "t", "test")
 
 	if err := kvDB.Put(
 		ctx,
-		catalogkeys.MakeDescMetadataKey(s.Codec(), tableDesc.ID),
+		catalogkeys.MakeDescMetadataKey(keys.SystemSQLCodec, tableDesc.ID),
 		tableDesc.DescriptorProto(),
 	); err != nil {
 		t.Fatal(err)
@@ -177,11 +174,11 @@ func TestWriteResumeSpan(t *testing.T) {
 		if test.resume.Key != nil {
 			finished.EndKey = test.resume.Key
 		}
-		if err := sqltestutils.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
+		if err := sqltestutils.TestingDescsTxn(ctx, server, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
 			return TestingWriteResumeSpan(
 				ctx,
 				txn,
-				s.Codec(),
+				keys.SystemSQLCodec,
 				col,
 				tableDesc.ID,
 				mutationID,
@@ -217,9 +214,9 @@ func TestWriteResumeSpan(t *testing.T) {
 	}
 
 	var got []roachpb.Span
-	if err := sqltestutils.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
+	if err := sqltestutils.TestingDescsTxn(ctx, server, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
 		got, _, _, err = rowexec.GetResumeSpans(
-			ctx, registry, txn, s.Codec(), col, tableDesc.ID, mutationID, backfill.IndexMutationFilter)
+			ctx, registry, txn, keys.SystemSQLCodec, col, tableDesc.ID, mutationID, backfill.IndexMutationFilter)
 		return err
 	}); err != nil {
 		t.Error(err)

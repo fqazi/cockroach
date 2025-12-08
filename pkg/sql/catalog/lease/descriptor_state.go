@@ -58,9 +58,6 @@ type descriptorState struct {
 		// acquisition finishes but indicate that that new lease is expired are not
 		// ignored.
 		acquisitionsInProgress int
-
-		// acquisitionChannel indicates that a bulk acquisition is in progress.
-		acquisitionChannel chan struct{}
 	}
 }
 
@@ -85,7 +82,7 @@ type descriptorState struct {
 // It returns true if the descriptor returned is the known latest version
 // of the descriptor.
 func (t *descriptorState) findForTimestamp(
-	ctx context.Context, timestamp ReadTimestamp,
+	ctx context.Context, timestamp hlc.Timestamp,
 ) (*descriptorVersionState, bool, error) {
 	expensiveLogEnabled := log.ExpensiveLogEnabled(ctx, 2)
 	t.mu.Lock()
@@ -95,39 +92,16 @@ func (t *descriptorState) findForTimestamp(
 	if len(t.mu.active.data) == 0 {
 		return nil, false, errRenewLease
 	}
-	return t.findForTimestampImpl(ctx, timestamp.GetTimestamp(), timestamp.GetBaseTimestamp(), expensiveLogEnabled)
-}
 
-// findForTimestampImpl searches for a descriptor that is valid for both the lease
-// timestamp and read timestamp. If no such descriptor exists, then this function
-// will return a descriptor satisfying the read timestamp (when using locked leases
-// this means we will allow mixing versions on first reads).
-func (t *descriptorState) findForTimestampImpl(
-	ctx context.Context,
-	leaseTimestamp hlc.Timestamp,
-	readTimestamp hlc.Timestamp,
-	expensiveLogEnabled bool,
-) (*descriptorVersionState, bool, error) {
-	// Normally this is true if an older timestamp is intentionally used for
-	// locked leasing.
-	hasDifferentReadTimeStamp := leaseTimestamp != readTimestamp
 	// Walk back the versions to find one that is valid for the timestamp.
 	for i := len(t.mu.active.data) - 1; i >= 0; i-- {
-		// Check to see if the ModificationTime is valid. If only the initial version
-		// of the descriptor is known, then read it at the base timestamp.
-		if desc := t.mu.active.data[i]; desc.GetModificationTime().LessEq(leaseTimestamp) {
+		// Check to see if the ModificationTime is valid.
+		if desc := t.mu.active.data[i]; desc.GetModificationTime().LessEq(timestamp) {
 			latest := i+1 == len(t.mu.active.data)
-			if !desc.hasExpired(ctx, readTimestamp) {
+			if !desc.hasExpired(ctx, timestamp) {
 				// Existing valid descriptor version.
 				desc.incRefCount(ctx, expensiveLogEnabled)
 				return desc, latest, nil
-			} else if !latest && hasDifferentReadTimeStamp {
-				// The lease timestamp is not compatible with the read timestamp, since
-				// the descriptor returned will be expired. This means we are seeing the
-				// first read of this descriptor, since the prior version was not locked.
-				// In this scenario, we will allow this transaction to mix versions as a
-				// last resort.
-				return t.findForTimestampImpl(ctx, readTimestamp, readTimestamp, expensiveLogEnabled)
 			}
 
 			if latest {
@@ -137,16 +111,6 @@ func (t *descriptorState) findForTimestampImpl(
 			}
 			break
 		}
-	}
-
-	// If we have the initial version of the descriptor, and it satisfies the read
-	// timestamp, then the object was just created. We can confirm it satisfies
-	// the request by executing findForTimestampImpl with the readTimestamp instead.
-	if oldest := t.mu.active.findOldest(); hasDifferentReadTimeStamp &&
-		oldest != nil &&
-		oldest.GetVersion() == 1 &&
-		oldest.GetModificationTime().LessEq(readTimestamp) {
-		return t.findForTimestampImpl(ctx, readTimestamp, readTimestamp, expensiveLogEnabled)
 	}
 
 	return nil, false, errReadOlderVersion
@@ -168,15 +132,9 @@ func (t *descriptorState) upsertLeaseLocked(
 	s := t.mu.active.find(desc.GetVersion())
 	if s == nil {
 		if t.mu.active.findNewest() != nil {
-			log.Dev.Infof(ctx, "new lease: %s", desc)
+			log.Infof(ctx, "new lease: %s", desc)
 		}
 		descState := newDescriptorVersionState(t, desc, hlc.Timestamp{}, session, regionEnumPrefix, true /* isLease */)
-		if err := t.m.boundAccount.Grow(ctx, descState.getByteSize()); err != nil {
-			// If we don't have sufficient memory, then release the lease so
-			// that the system.lease table doesn't have a reference.
-			t.m.storage.release(ctx, t.m.stopper, descState.mu.lease)
-			return wrapMemoryError(err)
-		}
 		t.mu.active.insert(descState)
 		t.m.names.insert(ctx, descState)
 		return nil
@@ -238,7 +196,7 @@ func newDescriptorVersionState(
 
 // removeInactiveVersions removes inactive versions in t.mu.active.data with
 // refcount 0. t.mu must be locked. It returns leases that need to be released.
-func (t *descriptorState) removeInactiveVersions(ctx context.Context) []*storedLease {
+func (t *descriptorState) removeInactiveVersions() []*storedLease {
 	var leases []*storedLease
 	// A copy of t.mu.active.data must be made since t.mu.active.data will be changed
 	// within the loop.
@@ -248,12 +206,10 @@ func (t *descriptorState) removeInactiveVersions(ctx context.Context) []*storedL
 			func() {
 				desc.mu.Lock()
 				defer desc.mu.Unlock()
-				// Ensure we have a lock to allow us to clean up the usage
-				// by the stored lease.
-				t.m.boundAccount.Shrink(ctx, desc.getByteSize())
 				if l := desc.mu.lease; l != nil {
 					desc.mu.lease = nil
 					leases = append(leases, l)
+
 				}
 			}()
 		}
@@ -271,7 +227,7 @@ func (t *descriptorState) release(ctx context.Context, s *descriptorVersionState
 	decRefCount := func(s *descriptorVersionState) (shouldRemove bool) {
 		currCount := s.refcount.Add(-1)
 		if expensiveLoggingEnabled {
-			log.Dev.Infof(ctx, "release: %s", s.redactedString())
+			log.Infof(ctx, "release: %s", s.redactedString())
 		}
 		return currCount == 0
 	}
@@ -316,15 +272,14 @@ func (t *descriptorState) release(ctx context.Context, s *descriptorVersionState
 			leaseReleased := true
 			// For testing, we will synchronously release leases, but that
 			// exposes us to the danger of the context getting cancelled. To
-			// eliminate this risk, we are going to first remove the lease from
-			// storage and then delete it from memory.
+			// eliminate this risk, we are going first remove the lease from
+			// storage and then delete if from mqemory.
 			if t.m.storage.testingKnobs.RemoveOnceDereferenced {
 				leaseReleased = releaseLease(ctx, l, t.m)
 				l = nil
 			}
 			if leaseReleased {
 				t.mu.active.remove(s)
-				s.t.m.boundAccount.Shrink(ctx, s.getByteSize())
 			}
 			return l
 		}

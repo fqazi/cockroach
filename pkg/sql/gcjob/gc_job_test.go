@@ -123,10 +123,14 @@ func TestDropRemovesManualSplits(t *testing.T) {
 	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
 	defer s.Stopper().Stop(ctx)
 
-	if s.DeploymentMode().IsExternal() {
-		require.NoError(t, s.GrantTenantCapabilities(
-			ctx, serverutils.TestTenantID(),
-			map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanAdminUnsplit: "true"}))
+	if s.TenantController().StartedDefaultTestTenant() {
+		tenID := serverutils.TestTenantID()
+		_, err := s.SystemLayer().SQLConn(t).Exec(
+			"ALTER TENANT [$1] GRANT CAPABILITY can_admin_unsplit", tenID.ToUint64())
+		require.NoError(t, err)
+
+		expCaps := map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanAdminUnsplit: "true"}
+		serverutils.WaitForTenantCapabilities(t, s, tenID, expCaps, "admin_unsplit")
 	}
 
 	sqlDB := sqlutils.MakeSQLRunner(db)

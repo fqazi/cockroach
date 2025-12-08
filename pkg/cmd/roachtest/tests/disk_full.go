@@ -50,12 +50,11 @@ func registerDiskFull(r registry.Registry) {
 			_ = db.Close()
 
 			t.Status("running workload")
-			m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+			m := c.NewMonitor(ctx, c.CRDBNodes())
 			m.Go(func(ctx context.Context) error {
 				cmd := fmt.Sprintf(
 					"./cockroach workload run kv --tolerate-errors --init --read-percent=0"+
-						" --min-block-bytes=512 --max-block-bytes=512"+
-						" --concurrency=10 --duration=10m {pgurl:2-%d}",
+						" --concurrency=10 --duration=4m {pgurl:2-%d}",
 					len(c.CRDBNodes()))
 				c.Run(ctx, option.WithNodes(c.WorkloadNode()), cmd)
 				return nil

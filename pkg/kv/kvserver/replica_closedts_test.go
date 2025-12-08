@@ -688,13 +688,12 @@ func TestRejectedLeaseDoesntDictateClosedTimestamp(t *testing.T) {
 // TODO(nvanbenschoten,andrei): Currently, the benchmark indicates that a call
 // takes about 130ns. This exceeds the latency budget we've allocated to the
 // call. However, it looks like there is some low-hanging fruit. 70% of the time
-// is spent in leaseStatusForRequest, within which 24% of the total time
+// is spent in leaseStatusForRequestRLocked, within which 24% of the total time
 // is spent zeroing and copying memory and 30% of the total time is spent in
 // (*NodeLiveness).GetLiveness, grabbing the current node's liveness record. If
 // we eliminate some memory copying and pass the node liveness record in to the
 // function so that we only have to grab it once instead of on each call to
 // BumpSideTransportClosed, we should be able to reach our target latency.
-// TODO(pav-kv): in 2025, this shows about 180-200ns.
 func BenchmarkBumpSideTransportClosed(b *testing.B) {
 	defer leaktest.AfterTest(b)()
 	defer log.Scope(b).Close(b)
@@ -722,22 +721,6 @@ func BenchmarkBumpSideTransportClosed(b *testing.B) {
 	now := s.Clock().NowAsClockTimestamp()
 	targets := map[ctpb.RangeClosedTimestampPolicy]hlc.Timestamp{}
 
-	// Wait for the scratch range's lease upgrade from expiration-based lease. The
-	// closed timestamp bumping requires for there to be no in-flight proposals,
-	// so a racing lease upgrade can cause a test failure like in #151295.
-	//
-	// TODO(pav-kv): share this code with TestCluster.MaybeWaitForLeaseUpgrade().
-	testutils.SucceedsSoon(b, func() error {
-		lease, _, err := s.GetRangeLease(ctx, key, roachpb.QueryLocalNodeOnly)
-		require.NoError(b, err)
-		typ := lease.Current().Type()
-		if typ == roachpb.LeaseExpiration {
-			return errors.Errorf("still on expiration-based lease")
-		}
-		b.Logf("lease is now of type: %s", typ)
-		return nil
-	})
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Advance time and the closed timestamp target.
@@ -747,7 +730,7 @@ func BenchmarkBumpSideTransportClosed(b *testing.B) {
 		// Perform the call.
 		res := r.BumpSideTransportClosed(ctx, now, targets)
 		if !res.OK {
-			b.Fatalf("BumpSideTransportClosed unexpectedly failed: %+v", res)
+			b.Fatal("BumpSideTransportClosed unexpectedly failed")
 		}
 	}
 }
@@ -1055,7 +1038,7 @@ func TestSideTransportLeaseholder(t *testing.T) {
 			case <-time.After(10 * time.Millisecond):
 				pArgs := putArgs(scratchKey, []byte("value"))
 				if _, pErr := kv.SendWrapped(ctx, store.DB().NonTransactionalSender(), pArgs); pErr != nil {
-					log.KvExec.Errorf(ctx, "failed to put value: %s", pErr)
+					log.Errorf(ctx, "failed to put value: %s", pErr)
 				}
 			case <-tc.Stopper().ShouldQuiesce():
 				return
@@ -1112,7 +1095,7 @@ func TestClosedTimestampPolicyRefreshIntervalOnLeaseTransfers(t *testing.T) {
 	})
 
 	// Force repl2 policy to be LAG_BY_CLUSTER_SETTING.
-	repl2.TestingSetCachedClosedTimestampPolicy(ctpb.LAG_BY_CLUSTER_SETTING)
+	repl2.SetCachedClosedTimestampPolicyForTesting(ctpb.LAG_BY_CLUSTER_SETTING)
 	require.Equal(t, roachpb.LAG_BY_CLUSTER_SETTING, repl2.GetRangeInfo(ctx).ClosedTimestampPolicy)
 
 	// Ensure that transferring the lease to repl2 does trigger a lease refresh.
@@ -1227,7 +1210,7 @@ func TestRefreshPolicyWithVariousLatencies(t *testing.T) {
 			repl.RefreshPolicy(tc.latencies)
 
 			// Verify the policy is set correctly.
-			actualPolicy := repl.TestingGetCachedClosedTimestampPolicy()
+			actualPolicy := repl.GetCachedClosedTimestampPolicyForTesting()
 			require.Equal(t, tc.expectedPolicy, actualPolicy, "expected policy %v, got %v", tc.expectedPolicy, actualPolicy)
 		})
 	}

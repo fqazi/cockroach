@@ -47,7 +47,7 @@ func init() {
 			// Don't include FLOAT4 due to known bugs that cause test failures.
 			// See #73743 and #48613.
 		case oidext.T_jsonpath:
-			// TODO(#22513): Temporarily don't include Jsonpath
+			// TODO(normanchenn): Temporarily don't include Jsonpath
 		case oid.T_anyarray, oid.T_oidvector, oid.T_int2vector:
 			// Include these.
 			SeedTypes = append(SeedTypes, typ)
@@ -117,9 +117,6 @@ func RandTypeFromSlice(rng *rand.Rand, typs []*types.T) *types.T {
 	case types.BitFamily:
 		return types.MakeBit(int32(rng.Intn(50)))
 	case types.CollatedStringFamily:
-		if typ.Oid() == oidext.T_citext {
-			return types.CIText
-		}
 		return types.MakeCollatedString(types.String, *RandCollationLocale(rng))
 	case types.ArrayFamily:
 		if typ.ArrayContents().Family() == types.AnyFamily {

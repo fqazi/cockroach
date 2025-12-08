@@ -218,22 +218,13 @@ func (s *CrossRangeTxnWrapperSender) Send(
 	ctx context.Context, ba *kvpb.BatchRequest,
 ) (*kvpb.BatchResponse, *kvpb.Error) {
 	if ba.Txn != nil {
-		log.KvExec.Fatalf(ctx, "CrossRangeTxnWrapperSender can't handle transactional requests")
+		log.Fatalf(ctx, "CrossRangeTxnWrapperSender can't handle transactional requests")
 	}
 
 	br, pErr := s.wrapped.Send(ctx, ba)
 	if _, ok := pErr.GetDetail().(*kvpb.OpRequiresTxnError); !ok {
 		return br, pErr
 	}
-
-	// Before retrying the batch in a transaction, strip the header's timestamp.
-	// It may have been set to try a follower read, but it's not allowed in a txn
-	// (see comment near Header.Timestamp). Currently, this non-transactional API
-	// is used for follower reads only by KVNemesis.
-	//
-	// We can end up here if the batch contains transactional requests and spans
-	// multiple ranges.
-	ba.Header.Timestamp = hlc.Timestamp{}
 
 	err := s.db.Txn(ctx, func(ctx context.Context, txn *Txn) error {
 		txn.SetDebugName("auto-wrap")
@@ -677,14 +668,8 @@ func (db *DB) AdminSplit(
 func (db *DB) AdminScatter(
 	ctx context.Context, key roachpb.Key, maxSize int64,
 ) (*kvpb.AdminScatterResponse, error) {
-	return db.sendAdminScatterRequest(ctx, roachpb.Span{Key: key, EndKey: key.Next()}, maxSize)
-}
-
-func (db *DB) sendAdminScatterRequest(
-	ctx context.Context, span roachpb.Span, maxSize int64,
-) (*kvpb.AdminScatterResponse, error) {
 	scatterReq := &kvpb.AdminScatterRequest{
-		RequestHeader:   kvpb.RequestHeaderFromSpan(span),
+		RequestHeader:   kvpb.RequestHeaderFromSpan(roachpb.Span{Key: key, EndKey: key.Next()}),
 		RandomizeLeases: true,
 		MaxSize:         maxSize,
 	}
@@ -697,13 +682,6 @@ func (db *DB) sendAdminScatterRequest(
 		return nil, errors.Errorf("unexpected response of type %T for AdminScatter", raw)
 	}
 	return resp, nil
-}
-
-// AdminScatterSpan scatters the ranges that overlap the specified span.
-func (db *DB) AdminScatterSpan(
-	ctx context.Context, span roachpb.Span,
-) (*kvpb.AdminScatterResponse, error) {
-	return db.sendAdminScatterRequest(ctx, span, 0 /* maxSize */)
 }
 
 // AdminUnsplit removes the sticky bit of the range specified by splitKey.
@@ -920,23 +898,6 @@ func (db *DB) Barrier(ctx context.Context, begin, end interface{}) (hlc.Timestam
 			b.response.Responses[0].GetInner())
 	}
 	return resp.Timestamp, nil
-}
-
-func (db *DB) FlushLockTable(ctx context.Context, begin, end interface{}) error {
-	b := &Batch{}
-	b.flushLockTable(begin, end)
-	if err := getOneErr(db.Run(ctx, b), b); err != nil {
-		return err
-	}
-	if l := len(b.response.Responses); l != 1 {
-		return errors.Errorf("got %d responses for FlushLockTable", l)
-	}
-	resp := b.response.Responses[0].GetFlushLockTable()
-	if resp == nil {
-		return errors.Errorf("unexpected response %T for FlushLockTable",
-			b.response.Responses[0].GetInner())
-	}
-	return nil
 }
 
 // BarrierWithLAI is like Barrier, but also returns the lease applied index and
@@ -1189,7 +1150,7 @@ func (db *DB) sendUsingSender(
 	br, pErr := sender.Send(ctx, ba)
 	if pErr != nil {
 		if log.V(1) {
-			log.KvExec.Infof(ctx, "failed batch: %s", pErr)
+			log.Infof(ctx, "failed batch: %s", pErr)
 		}
 		return nil, pErr
 	}

@@ -1581,17 +1581,10 @@ func (node *CreateTable) FormatBody(ctx *FmtCtx) {
 			ctx.FormatNode(&node.StorageParams)
 			ctx.WriteByte(')')
 		}
-	}
-	switch node.OnCommit {
-	case CreateTableOnCommitUnset:
-	case CreateTableOnCommitPreserveRows:
-		ctx.WriteString(" ON COMMIT PRESERVE ROWS")
-	default:
-		panic(errors.AssertionFailedf("unexpected CreateTableOnCommitSetting: %d", node.OnCommit))
-	}
-	if node.Locality != nil {
-		ctx.WriteString(" ")
-		ctx.FormatNode(node.Locality)
+		if node.Locality != nil {
+			ctx.WriteString(" ")
+			ctx.FormatNode(node.Locality)
+		}
 	}
 }
 
@@ -1719,7 +1712,7 @@ func (node *SequenceOptions) Format(ctx *FmtCtx) {
 			ctx.WriteString(option.AsIntegerType.SQLString())
 		case SeqOptCycle, SeqOptNoCycle:
 			ctx.WriteString(option.Name)
-		case SeqOptCacheNode, SeqOptCacheSession:
+		case SeqOptCache, SeqOptCacheNode:
 			ctx.WriteString(option.Name)
 			ctx.WriteByte(' ')
 			// TODO(knz): replace all this with ctx.FormatNode if/when
@@ -1747,6 +1740,9 @@ func (node *SequenceOptions) Format(ctx *FmtCtx) {
 		case SeqOptStart:
 			ctx.WriteString(option.Name)
 			ctx.WriteByte(' ')
+			if option.OptionalWord {
+				ctx.WriteString("WITH ")
+			}
 			// TODO(knz): replace all this with ctx.FormatNode if/when
 			// the start option supports expressions.
 			if ctx.flags.HasFlags(FmtHideConstants) {
@@ -1758,6 +1754,9 @@ func (node *SequenceOptions) Format(ctx *FmtCtx) {
 			ctx.WriteString(option.Name)
 			if option.IntVal != nil {
 				ctx.WriteByte(' ')
+				if option.OptionalWord {
+					ctx.WriteString("WITH ")
+				}
 				if ctx.flags.HasFlags(FmtHideConstants) {
 					ctx.WriteByte('0')
 				} else {
@@ -1767,6 +1766,9 @@ func (node *SequenceOptions) Format(ctx *FmtCtx) {
 		case SeqOptIncrement:
 			ctx.WriteString(option.Name)
 			ctx.WriteByte(' ')
+			if option.OptionalWord {
+				ctx.WriteString("BY ")
+			}
 			// TODO(knz): replace all this with ctx.FormatNode if/when
 			// the increment option supports expressions.
 			if ctx.flags.HasFlags(FmtHideConstants) {
@@ -1800,23 +1802,25 @@ type SequenceOption struct {
 
 	IntVal *int64
 
+	OptionalWord bool
+
 	ColumnItemVal *ColumnItem
 }
 
 // Names of options on CREATE SEQUENCE.
 const (
-	SeqOptAs           = "AS"
-	SeqOptCycle        = "CYCLE"
-	SeqOptNoCycle      = "NO CYCLE"
-	SeqOptOwnedBy      = "OWNED BY"
-	SeqOptCacheNode    = "PER NODE CACHE"
-	SeqOptCacheSession = "PER SESSION CACHE"
-	SeqOptIncrement    = "INCREMENT"
-	SeqOptMinValue     = "MINVALUE"
-	SeqOptMaxValue     = "MAXVALUE"
-	SeqOptStart        = "START"
-	SeqOptRestart      = "RESTART"
-	SeqOptVirtual      = "VIRTUAL"
+	SeqOptAs        = "AS"
+	SeqOptCycle     = "CYCLE"
+	SeqOptNoCycle   = "NO CYCLE"
+	SeqOptOwnedBy   = "OWNED BY"
+	SeqOptCache     = "CACHE"
+	SeqOptCacheNode = "PER NODE CACHE"
+	SeqOptIncrement = "INCREMENT"
+	SeqOptMinValue  = "MINVALUE"
+	SeqOptMaxValue  = "MAXVALUE"
+	SeqOptStart     = "START"
+	SeqOptRestart   = "RESTART"
+	SeqOptVirtual   = "VIRTUAL"
 
 	// Avoid unused warning for constants.
 	_ = SeqOptAs
@@ -1949,28 +1953,6 @@ func (node *CreateRole) Format(ctx *FmtCtx) {
 	}
 }
 
-// ViewOptions represents options for CREATE VIEW statements.
-type ViewOptions struct {
-	SecurityInvoker bool
-}
-
-// Format implements the NodeFormatter interface.
-func (node *ViewOptions) Format(ctx *FmtCtx) {
-	if node.SecurityInvoker {
-		ctx.WriteString("security_invoker = true")
-	} else {
-		ctx.WriteString("security_invoker = false")
-	}
-}
-
-func (node *ViewOptions) doc(p *PrettyCfg) pretty.Doc {
-	if node.SecurityInvoker {
-		return pretty.Text("security_invoker = true")
-	} else {
-		return pretty.Text("security_invoker = false")
-	}
-}
-
 // CreateView represents a CREATE VIEW statement.
 type CreateView struct {
 	Name         TableName
@@ -1978,7 +1960,6 @@ type CreateView struct {
 	AsSource     *Select
 	IfNotExists  bool
 	Persistence  Persistence
-	Options      *ViewOptions
 	Replace      bool
 	Materialized bool
 	WithData     bool
@@ -2012,12 +1993,6 @@ func (node *CreateView) Format(ctx *FmtCtx) {
 		ctx.WriteByte('(')
 		ctx.FormatNode(&node.ColumnNames)
 		ctx.WriteByte(')')
-	}
-
-	if node.Options != nil {
-		ctx.WriteString(` WITH ( `)
-		ctx.FormatNode(node.Options)
-		ctx.WriteString(` )`)
 	}
 
 	ctx.WriteString(" AS ")
@@ -2358,9 +2333,9 @@ func (o *TenantReplicationOptions) CombineWith(other *TenantReplicationOptions) 
 	if o.EnableReaderTenant != nil {
 		if other.EnableReaderTenant != nil {
 			return errors.New("READ VIRTUAL CLUSTER option specified multiple times")
+		} else {
+			o.EnableReaderTenant = other.EnableReaderTenant
 		}
-	} else {
-		o.EnableReaderTenant = other.EnableReaderTenant
 	}
 
 	return nil

@@ -84,8 +84,8 @@ table_name NOT IN (
 	'forward_dependencies',
 	'gossip_network',
 	'index_columns',
-	'index_spans',
-	'kv_builtin_function_comments',
+  'index_spans',
+  'kv_builtin_function_comments',
 	'kv_catalog_comments',
 	'kv_catalog_descriptor',
 	'kv_catalog_namespace',
@@ -135,7 +135,6 @@ ORDER BY name ASC`)
 		tables = append(tables, table)
 	}
 	tables = append(tables, "crdb_internal.probe_ranges_1s_read_limit_100")
-	tables = append(tables, "cluster_settings_history")
 	sort.Strings(tables)
 
 	var exp []string
@@ -166,7 +165,7 @@ func TestZip(t *testing.T) {
 	})
 	defer c.Cleanup()
 
-	out, err := c.RunWithCapture("debug zip --concurrency=1 --cpu-profile-duration=1s --validate-zip-file=false " + os.DevNull)
+	out, err := c.RunWithCapture("debug zip --concurrency=1 --cpu-profile-duration=1s " + os.DevNull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +211,7 @@ func TestZipQueryFallback(t *testing.T) {
 	})
 	defer c.Cleanup()
 
-	out, err := c.RunWithCapture("debug zip --concurrency=1 --cpu-profile-duration=1s --validate-zip-file=false " + os.DevNull)
+	out, err := c.RunWithCapture("debug zip --concurrency=1 --cpu-profile-duration=1s " + os.DevNull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +242,7 @@ func TestZipRedacted(t *testing.T) {
 	})
 	defer c.Cleanup()
 
-	out, err := c.RunWithCapture("debug zip --concurrency=1 --cpu-profile-duration=1s --redact --validate-zip-file=false " + os.DevNull)
+	out, err := c.RunWithCapture("debug zip --concurrency=1 --cpu-profile-duration=1s --redact " + os.DevNull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +291,7 @@ func TestZipIncludeGoroutineStacks(t *testing.T) {
 				}},
 			})
 			defer c.Cleanup()
-			cmd := "debug zip --concurrency=1 --cpu-profile-duration=1s --validate-zip-file=false "
+			cmd := "debug zip --concurrency=1 --cpu-profile-duration=1s "
 			if !tc.includeStacks {
 				cmd = cmd + "--include-goroutine-stacks=false "
 			}
@@ -333,7 +332,7 @@ func TestZipIncludeRangeInfo(t *testing.T) {
 	})
 	defer c.Cleanup()
 
-	out, err := c.RunWithCapture("debug zip --concurrency=1 --cpu-profile-duration=1s --include-range-info --validate-zip-file=false " + os.DevNull)
+	out, err := c.RunWithCapture("debug zip --concurrency=1 --cpu-profile-duration=1s --include-range-info " + os.DevNull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +367,7 @@ func TestZipExcludeRangeInfo(t *testing.T) {
 	defer c.Cleanup()
 
 	out, err := c.RunWithCapture(
-		"debug zip --concurrency=1 --cpu-profile-duration=1s --include-range-info=false --validate-zip-file=false " + os.DevNull)
+		"debug zip --concurrency=1 --cpu-profile-duration=1s --include-range-info=false " + os.DevNull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +421,7 @@ func TestConcurrentZip(t *testing.T) {
 	stderr = os.Stdout
 
 	out, err := c.RunWithCapture(fmt.Sprintf(
-		"debug zip --timeout=30s --cpu-profile-duration=0s --validate-zip-file=false --cluster-name=%s %s",
+		"debug zip --timeout=30s --cpu-profile-duration=0s --cluster-name=%s %s",
 		tc.ClusterName(), os.DevNull,
 	))
 	require.NoError(t, err)
@@ -500,6 +499,8 @@ create table defaultdb."../system"(x int);
 func TestUnavailableZip(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+
+	skip.WithIssue(t, 141565)
 
 	skip.UnderShort(t)
 	// Race builds make the servers so slow that they report spurious
@@ -695,12 +696,6 @@ func eraseNonDeterministicZipOutput(out string) string {
 	out = re.ReplaceAllString(out, ``)
 	re = regexp.MustCompile(`(?m)^\[node \d+\] retrieving goroutine_dump.*$` + "\n")
 	out = re.ReplaceAllString(out, ``)
-	re = regexp.MustCompile(`(?m)^\[node \d+\] \d+ execution traces found$`)
-	out = re.ReplaceAllString(out, `[node ?] ? execution traces found`)
-
-	// Remove license-related NOTICE messages that may appear intermittently.
-	re = regexp.MustCompile(`(?m)^NOTICE: No license is installed.*\n?`)
-	out = re.ReplaceAllString(out, ``)
 
 	return out
 }
@@ -748,7 +743,7 @@ func TestPartialZip(t *testing.T) {
 	stderr = os.Stdout
 
 	out, err := c.RunWithCapture(fmt.Sprintf(
-		"debug zip --concurrency=1 --cpu-profile-duration=0s --validate-zip-file=false --cluster-name=%s %s",
+		"debug zip --concurrency=1 --cpu-profile-duration=0s --cluster-name=%s %s",
 		tc.ClusterName(), os.DevNull,
 	))
 	require.NoError(t, err)
@@ -765,7 +760,7 @@ func TestPartialZip(t *testing.T) {
 
 	// Now do it again and exclude the down node explicitly.
 	out, err = c.RunWithCapture(fmt.Sprintf(
-		"debug zip --concurrency=1 --exclude-nodes=2 --cpu-profile-duration=0 --validate-zip-file=false --cluster-name=%s %s",
+		"debug zip --concurrency=1 --exclude-nodes=2 --cpu-profile-duration=0 --cluster-name=%s %s",
 		tc.ClusterName(), os.DevNull,
 	))
 	require.NoError(t, err)
@@ -801,7 +796,7 @@ func TestPartialZip(t *testing.T) {
 		func(t *testing.T, td *datadriven.TestData) string {
 			f := func() string {
 				out, err := c.RunWithCapture(fmt.Sprintf(
-					"debug zip --concurrency=1 --cpu-profile-duration=0 --validate-zip-file=false --cluster-name=%s %s",
+					"debug zip --concurrency=1 --cpu-profile-duration=0 --cluster-name=%s %s",
 					tc.ClusterName(), os.DevNull,
 				))
 				require.NoError(t, err)
@@ -1290,7 +1285,7 @@ func TestCommandFlags(t *testing.T) {
 	}
 
 	for _, f := range r.File {
-		if f.Name == "debug/"+debugZipCommandFlagsFileName {
+		if f.Name == "debug/debug_zip_command_flags.txt" {
 			rc, err := f.Open()
 			if err != nil {
 				t.Fatal(err)
@@ -1307,7 +1302,7 @@ func TestCommandFlags(t *testing.T) {
 			return
 		}
 	}
-	assert.Fail(t, "debug/"+debugZipCommandFlagsFileName+" is not generated")
+	assert.Fail(t, "debug/debug_zip_command_flags.txt is not generated")
 
 	if err = r.Close(); err != nil {
 		t.Fatal(err)

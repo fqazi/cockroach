@@ -32,17 +32,14 @@ import (
 // paces the traffic at the set bandwidth limit.
 func registerDiskBandwidthOverload(r registry.Registry) {
 	r.Add(registry.TestSpec{
-		Name:      "admission-control/disk-bandwidth-limiter",
-		Owner:     registry.OwnerAdmissionControl,
-		Timeout:   3 * time.Hour,
-		Benchmark: true,
-		// Disabled on IBM only because the Azure test suite was used as a base
-		// for IBM tests, and this test was disabled on Azure as of 05/2025.
+		Name:             "admission-control/disk-bandwidth-limiter",
+		Owner:            registry.OwnerAdmissionControl,
+		Timeout:          3 * time.Hour,
+		Benchmark:        true,
 		CompatibleClouds: registry.AllExceptAzure,
 		// TODO(aaditya): change to weekly once the test stabilizes.
-		Suites: registry.Suites(registry.Nightly),
-		// TODO(darryl): Enable FIPS once we can upgrade to Ubuntu 22 and use cgroups v2 for disk stalls.
-		Cluster: r.MakeClusterSpec(2, spec.CPU(8), spec.WorkloadNode(), spec.ReuseNone(), spec.Arch(spec.AllExceptFIPS)),
+		Suites:  registry.Suites(registry.Nightly),
+		Cluster: r.MakeClusterSpec(2, spec.CPU(8), spec.WorkloadNode(), spec.ReuseNone()),
 		Leases:  registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			if c.Spec().NodeCount != 2 {
@@ -73,7 +70,7 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 			const provisionedBandwidth = 128 << 20 // 128 MiB
 			t.Status(fmt.Sprintf("limiting disk bandwidth to %d bytes/s", provisionedBandwidth))
 			staller := roachtestutil.MakeCgroupDiskStaller(t, c,
-				false /* readsToo */, false /* logsToo */, false /* disableStateValidation */)
+				false /* readsToo */, false /* logsToo */)
 			staller.Setup(ctx)
 			staller.Slow(ctx, c.CRDBNodes(), provisionedBandwidth /* bytesPerSecond */)
 
@@ -96,7 +93,7 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 
 			// Run foreground kv workload, QoS="regular".
 			duration := 90 * time.Minute
-			m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
+			m := c.NewMonitor(ctx, c.CRDBNodes())
 			m.Go(func(ctx context.Context) error {
 				t.Status(fmt.Sprintf("starting foreground kv workload thread (<%s)", time.Minute))
 				dur := " --duration=" + duration.String()

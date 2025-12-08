@@ -23,9 +23,9 @@ func wrap(ctx context.Context, cancel context.CancelFunc) (context.Context, cont
 	}
 	return ctx, func() {
 		if log.V(2) {
-			log.Dev.InfofDepth(ctx, 1, "canceling context:\n%s", debugutil.Stack())
+			log.InfofDepth(ctx, 1, "canceling context:\n%s", debugutil.Stack())
 		} else if log.V(1) {
-			log.Dev.InfofDepth(ctx, 1, "canceling context")
+			log.InfofDepth(ctx, 1, "canceling context")
 		}
 		cancel()
 	}

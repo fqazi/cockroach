@@ -42,7 +42,7 @@ func TestStatsWithLowTTL(t *testing.T) {
 	var blockTableReader atomic.Bool
 	blockCh := make(chan struct{})
 
-	srv, db, _ := serverutils.StartServer(t, base.TestServerArgs{
+	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
 		Knobs: base.TestingKnobs{
 			DistSQL: &execinfra.TestingKnobs{
 				// Set the batch size small to avoid having to use a large
@@ -59,11 +59,8 @@ func TestStatsWithLowTTL(t *testing.T) {
 				},
 			},
 		},
-		// ForceTableGC is only available for the system tenant.
-		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
 	})
-	defer srv.Stopper().Stop(context.Background())
-	s := srv.ApplicationLayer()
+	defer s.Stopper().Stop(context.Background())
 
 	r := sqlutils.MakeSQLRunner(db)
 	r.Exec(t, `SET CLUSTER SETTING sql.stats.automatic_collection.enabled = false;`)
@@ -140,7 +137,7 @@ func TestStatsWithLowTTL(t *testing.T) {
 				nextPK++
 			}
 			// Force a table GC of values older than 2 seconds.
-			if err := srv.ForceTableGC(
+			if err := s.ForceTableGC(
 				context.Background(), "defaultdb", "t", s.Clock().Now().Add(-int64(2*time.Second), 0),
 			); err != nil {
 				goroutineErr = err
@@ -306,7 +303,6 @@ func TestAutoPartialStatsJobDescription(t *testing.T) {
 	// Disable automatic statistics collection.
 	sqlRunner.Exec(t, `SET CLUSTER SETTING sql.stats.automatic_collection.enabled = false;`)
 	sqlRunner.Exec(t, `SET CLUSTER SETTING sql.stats.automatic_partial_collection.enabled = false;`)
-	sqlRunner.Exec(t, `SET CLUSTER SETTING sql.stats.automatic_stats_job_auto_cleanup.enabled = false;`)
 
 	// Create a test table.
 	sqlRunner.Exec(t, `CREATE TABLE test (id INT PRIMARY KEY, value INT);`)
