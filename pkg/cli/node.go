@@ -31,8 +31,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const nodeAppName = catconstants.InternalAppNamePrefix + " cockroach node"
-
 var lsNodesColumnHeaders = []string{
 	"id",
 }
@@ -52,7 +50,7 @@ func runLsNodes(cmd *cobra.Command, args []string) (resErr error) {
 	ctx := context.Background()
 	// TODO(ssd): We can potentially make this work against
 	// secondary tenants using sql_instances.
-	conn, err := makeTenantSQLClient(ctx, nodeAppName+" ls", useSystemDb, catconstants.SystemTenantName)
+	conn, err := makeTenantSQLClient(ctx, "cockroach node ls", useSystemDb, catconstants.SystemTenantName)
 	if err != nil {
 		return err
 	}
@@ -212,7 +210,7 @@ SELECT node_id AS id,
 FROM crdb_internal.gossip_liveness LEFT JOIN crdb_internal.gossip_nodes USING (node_id)`
 
 	ctx := context.Background()
-	conn, err := makeTenantSQLClient(ctx, nodeAppName+" status", useSystemDb, catconstants.SystemTenantName)
+	conn, err := makeTenantSQLClient(ctx, "cockroach node status", useSystemDb, catconstants.SystemTenantName)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -338,7 +336,7 @@ func runDecommissionNode(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	if nodeCtx.nodeDecommissionSelf {
-		log.Dev.Warningf(ctx, "--%s for decommission is deprecated.", cliflags.NodeDecommissionSelf.Name)
+		log.Warningf(ctx, "--%s for decommission is deprecated.", cliflags.NodeDecommissionSelf.Name)
 	}
 
 	if !nodeCtx.nodeDecommissionSelf && len(args) == 0 {
@@ -411,7 +409,7 @@ func handleNodeDecommissionSelf(
 			cliflags.NodeDecommissionSelf.Name)
 	}
 
-	log.Dev.Infof(ctx, "%s node %d", redact.Safe(command), localNodeID)
+	log.Infof(ctx, "%s node %d", redact.Safe(command), localNodeID)
 	return []roachpb.NodeID{localNodeID}, nil
 }
 

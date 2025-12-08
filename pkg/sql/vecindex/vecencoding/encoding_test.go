@@ -223,7 +223,7 @@ func TestEncodeKeys(t *testing.T) {
 		Level:    cspann.LeafLevel,
 		Centroid: vector.T{4, 3},
 	}
-	metadata1.StateDetails.MakeMerging()
+	metadata1.StateDetails.MakeDrainingForMerge(10)
 	encoded := vecencoding.EncodeMetadataValue(metadata1)
 	metadata2, err := vecencoding.DecodeMetadataValue(encoded)
 	require.NoError(t, err)
@@ -273,7 +273,7 @@ func TestDecodeVectorKey(t *testing.T) {
 	require.Equal(t, expectedSuffix, indexKey.Suffix)
 }
 
-func TestDecodeKeyWithPrefix(t *testing.T) {
+func TestDecodeKeyPrefixColumns(t *testing.T) {
 	var buf []byte
 
 	// Encode a prefix column.
@@ -301,7 +301,7 @@ func TestDecodeKeyWithPrefix(t *testing.T) {
 	expectedSuffix := []byte("suffixData")
 	buf = append(buf, expectedSuffix...)
 
-	// Extract the key with two prefix columns.
+	// Extract the key with one prefix column.
 	key, err := vecencoding.DecodeVectorKey(buf, 2)
 	require.NoError(t, err)
 
@@ -312,24 +312,4 @@ func TestDecodeKeyWithPrefix(t *testing.T) {
 	require.Equal(t, level, key.Level)
 	// Verify that the remaining bytes form the suffix.
 	require.Equal(t, expectedSuffix, key.Suffix)
-}
-
-func TestDecodeVectorKeyNoPrefix(t *testing.T) {
-	var buf []byte
-	// Encode a partition key.
-	partitionKey := cspann.PartitionKey(789)
-	buf = vecencoding.EncodePartitionKey(buf, partitionKey)
-	// Encode a partition level.
-	level := cspann.Level(3)
-	buf = vecencoding.EncodePartitionLevel(buf, level)
-	// Add some suffix bytes.
-	expectedSuffix := []byte("vectorSuffix")
-	buf = append(buf, expectedSuffix...)
-
-	indexKey, err := vecencoding.DecodeVectorKey(buf, 0)
-	require.NoError(t, err)
-	require.Empty(t, indexKey.Prefix)
-	require.Equal(t, partitionKey, indexKey.PartitionKey)
-	require.Equal(t, level, indexKey.Level)
-	require.Equal(t, expectedSuffix, indexKey.Suffix)
 }

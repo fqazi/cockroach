@@ -626,7 +626,7 @@ func runBackupMVCCRangeTombstones(
 	require.NoError(t, err)
 	_, err = conn.Exec(`USE tpch`)
 	require.NoError(t, err)
-	createStmt, err := readFileFromFixture(
+	createStmt, err := readCreateTableFromFixture(
 		"gs://cockroach-fixtures-us-east1/tpch-csv/schema/orders.sql?AUTH=implicit", conn)
 	require.NoError(t, err)
 	_, err = conn.ExecContext(ctx, createStmt)
@@ -752,7 +752,7 @@ func runBackupMVCCRangeTombstones(
 			`IMPORT INTO orders CSV DATA ('%s') WITH delimiter='|', detached`,
 			strings.Join(files, "', '")),
 		).Scan(&jobID))
-		waitForState(jobID, jobs.StatePaused, "", time.Hour)
+		waitForState(jobID, jobs.StatePaused, "", 30*time.Minute)
 
 		t.Status("canceling import")
 		_, err = conn.ExecContext(ctx, fmt.Sprintf(`CANCEL JOB %s`, jobID))

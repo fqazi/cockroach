@@ -60,7 +60,7 @@ func TestMetricsRelease(t *testing.T) {
 		return metricFields
 	}
 
-	const expectedCount = 13
+	const expectedCount = 11
 	k1 := peerKey{NodeID: 5, TargetAddr: "192.168.0.1:1234", Class: rpcbase.DefaultClass}
 	k2 := peerKey{NodeID: 6, TargetAddr: "192.168.0.1:1234", Class: rpcbase.DefaultClass}
 	l1 := roachpb.Locality{Tiers: []roachpb.Tier{{Key: "region", Value: "us-east"}}}
@@ -134,7 +134,7 @@ func TestServerRequestInstrumentInterceptor(t *testing.T) {
 			if tc.shouldRecord {
 				expectedCount = 1
 			}
-			assertRpcMetrics(t, requestMetrics.Duration.ToPrometheusMetrics(), map[string]uint64{
+			assertGrpcMetrics(t, requestMetrics.Duration.ToPrometheusMetrics(), map[string]uint64{
 				fmt.Sprintf("%s %s", tc.methodName, tc.statusCode): expectedCount,
 			})
 		})
@@ -209,7 +209,7 @@ func TestGatewayRequestRecoveryInterceptor(t *testing.T) {
 	})
 }
 
-func assertRpcMetrics(
+func assertGrpcMetrics(
 	t *testing.T, metrics []*io_prometheus_client.Metric, expected map[string]uint64,
 ) {
 	t.Helper()

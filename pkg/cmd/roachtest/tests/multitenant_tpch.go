@@ -46,10 +46,9 @@ func runMultiTenantTPCH(
 		if _, err := conn.Exec(setting); err != nil {
 			t.Fatal(err)
 		}
-		t.Status("importing TPCH dataset for Scale Factor 1 in ", setupNames[setupIdx])
-		if err := importTPCHDataset(
-			ctx, t, c, virtualClusterName, conn, 1 /* sf */, c.NewDeprecatedMonitor(ctx),
-			c.All(), false /* disableMergeQueue */, true, /* smallRanges */
+		t.Status("restoring TPCH dataset for Scale Factor 1 in ", setupNames[setupIdx])
+		if err := loadTPCHDataset(
+			ctx, t, c, conn, 1 /* sf */, c.NewDeprecatedMonitor(ctx), c.All(), false, /* disableMergeQueue */
 		); err != nil {
 			t.Fatal(err)
 		}

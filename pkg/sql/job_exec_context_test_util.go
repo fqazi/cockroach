@@ -11,7 +11,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/lease"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessionmutator"
 	"github.com/cockroachdb/cockroach/pkg/upgrade"
 )
 
@@ -42,7 +41,7 @@ func (p *FakeJobExecContext) SessionData() *sessiondata.SessionData {
 }
 
 // SessionDataMutatorIterator implements the JobExecContext interface.
-func (p *FakeJobExecContext) SessionDataMutatorIterator() *sessionmutator.SessionDataMutatorIterator {
+func (p *FakeJobExecContext) SessionDataMutatorIterator() *sessionDataMutatorIterator {
 	panic("unimplemented")
 }
 

@@ -34,8 +34,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/clusterunique"
 	"github.com/cockroachdb/cockroach/pkg/sql/evalcatalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/exprutil"
-	"github.com/cockroachdb/cockroach/pkg/sql/hintpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/hints"
 	"github.com/cockroachdb/cockroach/pkg/sql/idxusage"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/prep"
@@ -48,7 +46,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessionmutator"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/persistedsqlstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/sslocal"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
@@ -104,9 +101,9 @@ type extendedEvalContext struct {
 	// jobs refers to jobs in extraTxnState.
 	jobs *txnJobsCollection
 
-	persistedSQLStats *persistedsqlstats.PersistedSQLStats
+	statsProvider *persistedsqlstats.PersistedSQLStats
 
-	localSQLStats *sslocal.SQLStats
+	localStatsProvider *sslocal.SQLStats
 
 	indexUsageStats *idxusage.LocalIndexUsageStats
 
@@ -137,6 +134,7 @@ func (evalCtx *extendedEvalContext) copyFromExecCfg(execCfg *ExecutorConfig) {
 	evalCtx.ClusterName = execCfg.RPCContext.ClusterName()
 	evalCtx.NodeID = execCfg.NodeInfo.NodeID
 	evalCtx.Locality = execCfg.Locality
+	evalCtx.OriginalLocality = execCfg.Locality
 	evalCtx.NodesStatusServer = execCfg.NodesStatusServer
 	evalCtx.TenantStatusServer = execCfg.TenantStatusServer
 	evalCtx.SQLStatusServer = execCfg.SQLStatusServer
@@ -224,15 +222,13 @@ type planner struct {
 
 	instrumentation instrumentationHelper
 
-	statsCollector *sslocal.StatsCollector
-
 	// Contexts for different stages of planning and execution.
 	semaCtx         tree.SemaContext
 	extendedEvalCtx extendedEvalContext
 
 	// sessionDataMutatorIterator is used to mutate the session variables. Read
 	// access to them is provided through evalCtx.
-	sessionDataMutatorIterator *sessionmutator.SessionDataMutatorIterator
+	sessionDataMutatorIterator *sessionDataMutatorIterator
 
 	// execCfg is used to access the server configuration for the Executor.
 	execCfg *ExecutorConfig
@@ -319,14 +315,6 @@ type planner struct {
 	// statement. It's similar to autoRetryCounter / txnState.mu.autoRetryCounter
 	// but for statement retries.
 	autoRetryStmtCounter int
-
-	// skipUnsafeInternalsCheck is used to skip the check that the
-	// planner is not used for unsafe internal statements.
-	skipUnsafeInternalsCheck bool
-
-	// usingHintInjection is true if we're passing the rewritten AST with injected
-	// hints into optbuild. It is only set during planning.
-	usingHintInjection bool
 }
 
 // hasFlowForPausablePortal returns true if the planner is for re-executing a
@@ -414,8 +402,6 @@ func newInternalPlanner(
 	// asking the caller for one is hard to explain. What we need is better and
 	// separate interfaces for planning and running plans, which could take
 	// suitable contexts.
-	// TODO(yuzefovich): this comment is outdated - we no longer store context
-	// within EvalCtx. Re-evaluate the situation.
 	ctx := logtags.AddTag(context.Background(), string(opName), "")
 
 	sd = sd.Clone()
@@ -453,14 +439,17 @@ func newInternalPlanner(
 	p := &planner{execCfg: execCfg, datumAlloc: &tree.DatumAlloc{}}
 	p.resetPlanner(ctx, txn, sd, plannerMon, nil /* sessionMon */)
 
-	smi := sessionmutator.MakeSessionDataMutatorIterator(
-		sds,
-		sessionmutator.SessionDefaults(map[string]string{
-			"application_name": "crdb-internal",
-			"database":         sd.SessionData.Database,
-		}),
-		execCfg.Settings,
-	)
+	smi := &sessionDataMutatorIterator{
+		sds: sds,
+		sessionDataMutatorBase: sessionDataMutatorBase{
+			defaults: SessionDefaults(map[string]string{
+				"application_name": "crdb-internal",
+				"database":         sd.SessionData.Database,
+			}),
+			settings: execCfg.Settings,
+		},
+		sessionDataMutatorCallbacks: sessionDataMutatorCallbacks{},
+	}
 
 	p.extendedEvalCtx = internalExtendedEvalCtx(ctx, sds, params.collection, txn, ts, ts, execCfg)
 	p.extendedEvalCtx.Planner = p
@@ -477,6 +466,7 @@ func newInternalPlanner(
 	p.extendedEvalCtx.ClusterName = execCfg.RPCContext.ClusterName()
 	p.extendedEvalCtx.NodeID = execCfg.NodeInfo.NodeID
 	p.extendedEvalCtx.Locality = execCfg.Locality
+	p.extendedEvalCtx.OriginalLocality = execCfg.Locality
 	p.extendedEvalCtx.DescIDGenerator = execCfg.DescIDGenerator
 	if execCfg.TestingKnobs.UseTransactionalDescIDGenerator && txn != nil {
 		p.extendedEvalCtx.DescIDGenerator = descidgen.NewTransactionalGenerator(execCfg.Settings, execCfg.Codec, txn)
@@ -501,7 +491,6 @@ func newInternalPlanner(
 	p.schemaResolver.authAccessor = p
 	p.evalCatalogBuiltins.Init(execCfg.Codec, p.txn, p.Descriptors())
 	p.extendedEvalCtx.CatalogBuiltins = &p.evalCatalogBuiltins
-	p.statsCollector = &sslocal.StatsCollector{}
 
 	return p, func() {
 		// Note that we capture ctx here. This is only valid as long as we create
@@ -546,7 +535,7 @@ func internalExtendedEvalCtx(
 		if ief.server != nil {
 			indexUsageStats = ief.server.indexUsageStats
 			schemaTelemetryController = ief.server.schemaTelemetryController
-			sqlStatsProvider = ief.server.persistedSQLStats
+			sqlStatsProvider = ief.server.sqlStats
 			localSqlStatsProvider = ief.server.localSqlStats
 		} else {
 			// If the indexUsageStats is nil from the sql.Server, we create a dummy
@@ -576,15 +565,14 @@ func internalExtendedEvalCtx(
 			IndexUsageStatsController:      indexUsageStatsController,
 			ConsistencyChecker:             execCfg.ConsistencyChecker,
 			StmtDiagnosticsRequestInserter: execCfg.StmtDiagnosticsRecorder.InsertRequest,
-			TxnDiagnosticsRequestInserter:  execCfg.TxnDiagnosticsRecorder.InsertTxnRequest,
 			RangeStatsFetcher:              execCfg.RangeStatsFetcher,
 		},
-		Tracing:           &SessionTracing{},
-		Descs:             tables,
-		indexUsageStats:   indexUsageStats,
-		persistedSQLStats: sqlStatsProvider,
-		localSQLStats:     localSqlStatsProvider,
-		jobs:              newTxnJobsCollection(),
+		Tracing:            &SessionTracing{},
+		Descs:              tables,
+		indexUsageStats:    indexUsageStats,
+		statsProvider:      sqlStatsProvider,
+		localStatsProvider: localSqlStatsProvider,
+		jobs:               newTxnJobsCollection(),
 	}
 	ret.copyFromExecCfg(execCfg)
 	return ret
@@ -634,9 +622,9 @@ func (p *planner) ExprEvaluator(op string) exprutil.Evaluator {
 // inside the session data.
 func (p *planner) GetOrInitSequenceCache() sessiondatapb.SequenceCache {
 	if p.SessionData().SequenceCache == nil {
-		p.sessionDataMutatorIterator.ApplyOnEachMutator(
-			func(m sessionmutator.SessionDataMutator) {
-				m.InitSequenceCache()
+		p.sessionDataMutatorIterator.applyOnEachMutator(
+			func(m sessionDataMutator) {
+				m.initSequenceCache()
 			},
 		)
 	}
@@ -681,19 +669,6 @@ func (p *planner) InternalSQLTxn() descs.Txn {
 		p.internalSQLTxn.init(p.txn, ie)
 	}
 	return &p.internalSQLTxn
-}
-
-// DisableUnsafeInternalCheck sets the skipUnsafeInternalsCheck property
-// to true, and returns a function which reverses it to false.
-func (p *planner) DisableUnsafeInternalsCheck() func() {
-	if p.skipUnsafeInternalsCheck {
-		return func() {}
-	}
-
-	p.skipUnsafeInternalsCheck = true
-	return func() {
-		p.skipUnsafeInternalsCheck = false
-	}
 }
 
 func (p *planner) regionsProvider() *regions.Provider {
@@ -831,7 +806,7 @@ func (p *planner) SessionData() *sessiondata.SessionData {
 }
 
 // SessionDataMutatorIterator is part of the PlanHookState interface.
-func (p *planner) SessionDataMutatorIterator() *sessionmutator.SessionDataMutatorIterator {
+func (p *planner) SessionDataMutatorIterator() *sessionDataMutatorIterator {
 	return p.sessionDataMutatorIterator
 }
 
@@ -979,7 +954,6 @@ func (p *planner) resetPlanner(
 	p.txn = txn
 	p.stmt = Statement{}
 	p.instrumentation = instrumentationHelper{}
-	p.curPlan = planTop{}
 	p.monitor = plannerMon
 	p.sessionMonitor = sessionMon
 
@@ -1008,8 +982,6 @@ func (p *planner) resetPlanner(
 	p.autoRetryCounter = 0
 	p.autoRetryStmtReason = nil
 	p.autoRetryStmtCounter = 0
-
-	p.usingHintInjection = false
 }
 
 // GetReplicationStreamManager returns a ReplicationStreamManager.
@@ -1099,20 +1071,6 @@ func (p *planner) ClearTableStatsCache() {
 	}
 }
 
-// ClearStatementHintsCache is part of the eval.Planner interface.
-func (p *planner) ClearStatementHintsCache() {
-	if p.execCfg.StatementHintsCache != nil {
-		p.execCfg.StatementHintsCache.Clear()
-	}
-}
-
-// AwaitStatementHintsCache is part of the eval.Planner interface.
-func (p *planner) AwaitStatementHintsCache(ctx context.Context) {
-	if p.execCfg.StatementHintsCache != nil {
-		p.execCfg.StatementHintsCache.Await(ctx)
-	}
-}
-
 // innerPlansMustUseLeafTxn returns true if inner plans must use a leaf
 // transaction.
 func (p *planner) innerPlansMustUseLeafTxn() bool {
@@ -1132,32 +1090,4 @@ func (p *planner) ExtendHistoryRetention(ctx context.Context, jobID jobspb.JobID
 // RetryCounter is part of the eval.Planner interface.
 func (p *planner) RetryCounter() int {
 	return p.autoRetryCounter + p.autoRetryStmtCounter
-}
-
-// ProcessVectorIndexFixups is part of the eval.Planner interface.
-func (p *planner) ProcessVectorIndexFixups(
-	ctx context.Context, tableID descpb.ID, indexID descpb.IndexID,
-) error {
-	vi, err := p.execCfg.VecIndexManager.Get(ctx, tableID, indexID)
-	if err != nil {
-		return err
-	}
-	return vi.ProcessFixups(ctx)
-}
-
-// InsertStatementHint is part of the eval.Planner interface.
-func (p *planner) InsertStatementHint(
-	ctx context.Context, statementFingerprint string, hint hintpb.StatementHintUnion,
-) (int64, error) {
-	return hints.InsertHintIntoDB(ctx, p.InternalSQLTxn(), statementFingerprint, hint)
-}
-
-// UsingHintInjection is part of the eval.Planner interface.
-func (p *planner) UsingHintInjection() bool {
-	return p.usingHintInjection
-}
-
-// GetHintIDs is part of the eval.Planner interface.
-func (p *planner) GetHintIDs() []int64 {
-	return p.stmt.HintIDs
 }

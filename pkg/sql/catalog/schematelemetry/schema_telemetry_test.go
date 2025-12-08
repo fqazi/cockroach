@@ -97,9 +97,8 @@ func TestSchemaTelemetryJob(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	srv, db, _ := serverutils.StartServer(t, makeTestServerArgs())
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	s, db, _ := serverutils.StartServer(t, makeTestServerArgs())
+	defer s.Stopper().Stop(ctx)
 	tdb := sqlutils.MakeSQLRunner(db)
 	tdb.Exec(t, `SET CLUSTER SETTING server.eventlog.enabled = true`)
 

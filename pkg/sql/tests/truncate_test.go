@@ -429,10 +429,9 @@ SELECT count(*) FROM [SHOW RANGES FROM TABLE a]`)
 
 			// We subtract 1 from the original n ranges because the first range
 			// can't be migrated to the new keyspace, as its prefix doesn't
-			// include an index ID. The declarative schema changer will create
-			// split point count per-index.
-			expRanges := origNRanges + min((testCase.nodes*int(sql.PreservedSplitCountMultiple.Get(
-				&tenantSettings.SV)*2)), origNRanges-1)
+			// include an index ID.
+			expRanges := origNRanges + testCase.nodes*int(sql.PreservedSplitCountMultiple.Get(
+				&tenantSettings.SV))
 
 			testutils.SucceedsSoon(t, func() error {
 				row := conn.QueryRowContext(ctx, `

@@ -108,17 +108,6 @@ var bugfix149481Enabled = settings.RegisterBoolSetting(
 	true,
 	settings.WithVisibility(settings.Reserved))
 
-// ChildMetricsStorageEnabled controls whether to record high-cardinality child metrics
-// into the time series database. This is separate from ChildMetricsEnabled which controls
-// Prometheus exports, allowing independent control of child metrics recording vs export.
-// This setting enables debugging of changefeeds and should not be considered functionality
-// to expand support for.
-var ChildMetricsStorageEnabled = settings.RegisterBoolSetting(
-	settings.ApplicationLevel, "timeseries.child_metrics.enabled",
-	"enables the collection of high-cardinality child metrics into the time series database",
-	false,
-	settings.WithVisibility(settings.Reserved))
-
 // MetricsRecorder is used to periodically record the information in a number of
 // metric registries.
 //
@@ -255,21 +244,6 @@ func (mr *MetricsRecorder) AppRegistry() *metric.Registry {
 	return mr.mu.appRegistry
 }
 
-// NodeRegistry returns the metric registry for node-level metrics.
-func (mr *MetricsRecorder) NodeRegistry() *metric.Registry {
-	mr.mu.Lock()
-	defer mr.mu.Unlock()
-	return mr.mu.logRegistry
-}
-
-// StoreRegistry returns the metric registry for store-level metrics
-// corresponding to the provided store ID.
-func (mr *MetricsRecorder) StoreRegistry(id roachpb.StoreID) *metric.Registry {
-	mr.mu.Lock()
-	defer mr.mu.Unlock()
-	return mr.mu.storeRegistries[id]
-}
-
 // AddNode adds various metric registries an initialized server, along
 // with its descriptor and start time.
 // The registries are:
@@ -351,7 +325,7 @@ func (mr *MetricsRecorder) MarshalJSON() ([]byte, error) {
 		// We haven't yet processed initialization information; return an empty
 		// JSON object.
 		if log.V(1) {
-			log.Dev.Warning(context.TODO(), "MetricsRecorder.MarshalJSON() called before NodeID allocation")
+			log.Warning(context.TODO(), "MetricsRecorder.MarshalJSON() called before NodeID allocation")
 		}
 		return []byte("{}"), nil
 	}
@@ -394,7 +368,7 @@ func (mr *MetricsRecorder) ScrapeIntoPrometheusWithStaticLabels(
 		if mr.mu.nodeRegistry == nil {
 			// We haven't yet processed initialization information; output nothing.
 			if log.V(1) {
-				log.Dev.Warning(context.TODO(), "MetricsRecorder asked to scrape metrics before NodeID allocation")
+				log.Warning(context.TODO(), "MetricsRecorder asked to scrape metrics before NodeID allocation")
 			}
 		}
 		pm.ScrapeRegistry(mr.mu.nodeRegistry, scrapeOptions...)
@@ -439,52 +413,23 @@ func (mr *MetricsRecorder) ExportToGraphite(
 // GetTimeSeriesData serializes registered metrics for consumption by
 // CockroachDB's time series system. GetTimeSeriesData implements the DataSource
 // interface of the ts package.
-func (mr *MetricsRecorder) GetTimeSeriesData(childMetrics bool) []tspb.TimeSeriesData {
+func (mr *MetricsRecorder) GetTimeSeriesData() []tspb.TimeSeriesData {
 	mr.mu.RLock()
 	defer mr.mu.RUnlock()
 
 	if mr.mu.nodeRegistry == nil {
 		// We haven't yet processed initialization information; do nothing.
 		if log.V(1) {
-			log.Dev.Warning(context.TODO(), "MetricsRecorder.GetTimeSeriesData() called before NodeID allocation")
+			log.Warning(context.TODO(), "MetricsRecorder.GetTimeSeriesData() called before NodeID allocation")
 		}
 		return nil
 	}
 
-	now := mr.clock.Now()
 	lastDataCount := atomic.LoadInt64(&mr.lastDataCount)
 	data := make([]tspb.TimeSeriesData, 0, lastDataCount)
 
-	if childMetrics {
-		if !ChildMetricsStorageEnabled.Get(&mr.settings.SV) {
-			return nil
-		}
-
-		// Record child metrics from app registry for system tenant only.
-		recorder := registryRecorder{
-			registry:       mr.mu.appRegistry,
-			format:         nodeTimeSeriesPrefix,
-			source:         mr.mu.desc.NodeID.String(),
-			timestampNanos: now.UnixNano(),
-		}
-		recorder.recordChangefeedChildMetrics(&data)
-
-		// Record child metrics from app-level registries for secondary tenants
-		for tenantID, r := range mr.mu.tenantRegistries {
-			tenantRecorder := registryRecorder{
-				registry:       r,
-				format:         nodeTimeSeriesPrefix,
-				source:         tsutil.MakeTenantSource(mr.mu.desc.NodeID.String(), tenantID.String()),
-				timestampNanos: now.UnixNano(),
-			}
-			tenantRecorder.recordChangefeedChildMetrics(&data)
-		}
-
-		atomic.CompareAndSwapInt64(&mr.lastDataCount, lastDataCount, int64(len(data)))
-		return data
-	}
-
 	// Record time series from node-level registries.
+	now := mr.clock.Now()
 	recorder := registryRecorder{
 		registry:       mr.mu.nodeRegistry,
 		format:         nodeTimeSeriesPrefix,
@@ -560,7 +505,7 @@ func (mr *MetricsRecorder) GetMetricsMetadata(
 	if mr.mu.nodeRegistry == nil {
 		// We haven't yet processed initialization information; do nothing.
 		if log.V(1) {
-			log.Dev.Warning(context.TODO(), "MetricsRecorder.GetMetricsMetadata() called before NodeID allocation")
+			log.Warning(context.TODO(), "MetricsRecorder.GetMetricsMetadata() called before NodeID allocation")
 		}
 		return nil, nil, nil
 	}
@@ -660,7 +605,7 @@ func (mr *MetricsRecorder) GenerateNodeStatus(ctx context.Context) *statuspb.Nod
 	if mr.mu.nodeRegistry == nil {
 		// We haven't yet processed initialization information; do nothing.
 		if log.V(1) {
-			log.Dev.Warning(ctx, "attempt to generate status summary before NodeID allocation.")
+			log.Warning(ctx, "attempt to generate status summary before NodeID allocation.")
 		}
 		return nil
 	}
@@ -673,7 +618,7 @@ func (mr *MetricsRecorder) GenerateNodeStatus(ctx context.Context) *statuspb.Nod
 
 	systemMemory, _, err := GetTotalMemoryWithoutLogging()
 	if err != nil {
-		log.Dev.Errorf(ctx, "could not get total system memory: %v", err)
+		log.Errorf(ctx, "could not get total system memory: %v", err)
 	}
 
 	// Generate a node status with no store data.
@@ -688,7 +633,6 @@ func (mr *MetricsRecorder) GenerateNodeStatus(ctx context.Context) *statuspb.Nod
 		Env:               flattenStrings(envutil.GetEnvVarsUsed()),
 		Activity:          activity,
 		NumCpus:           int32(system.NumCPU()),
-		NumVcpus:          GetVCPUs(ctx),
 		TotalSystemMemory: systemMemory,
 	}
 
@@ -715,7 +659,7 @@ func (mr *MetricsRecorder) GenerateNodeStatus(ctx context.Context) *statuspb.Nod
 		// Gather descriptor from store.
 		descriptor, err := mr.mu.stores[storeID].Descriptor(ctx, false /* useCached */)
 		if err != nil {
-			log.Dev.Errorf(ctx, "could not record status summaries: Store %d could not return descriptor, error: %s", storeID, err)
+			log.Errorf(ctx, "could not record status summaries: Store %d could not return descriptor, error: %s", storeID, err)
 			continue
 		}
 
@@ -785,9 +729,9 @@ func (mr *MetricsRecorder) WriteNodeStatus(
 	if log.V(2) {
 		statusJSON, err := json.Marshal(&nodeStatus)
 		if err != nil {
-			log.Dev.Errorf(ctx, "error marshaling nodeStatus to json: %s", err)
+			log.Errorf(ctx, "error marshaling nodeStatus to json: %s", err)
 		}
-		log.Dev.Infof(ctx, "node %d status: %s", nodeStatus.Desc.NodeID, statusJSON)
+		log.Infof(ctx, "node %d status: %s", nodeStatus.Desc.NodeID, statusJSON)
 	}
 	return nil
 }
@@ -848,7 +792,7 @@ func extractValue(name string, mtr interface{}, fn func(string, float64)) error 
 func eachRecordableValue(reg *metric.Registry, fn func(string, float64)) {
 	reg.Each(func(name string, mtr interface{}) {
 		if err := extractValue(name, mtr, fn); err != nil {
-			log.Dev.Warningf(context.TODO(), "%v", err)
+			log.Warningf(context.TODO(), "%v", err)
 			return
 		}
 	})
@@ -929,71 +873,6 @@ func (rr registryRecorder) recordChild(
 	})
 }
 
-// recordChangefeedChildMetrics iterates through changefeed metrics in the registry and processes child metrics
-// for those that have TsdbRecordLabeled set to true in their metadata.
-// Records up to 1024 child metrics to prevent unbounded memory usage and performance issues.
-//
-// NB: Only available for Counter and Gauge metrics.
-func (rr registryRecorder) recordChangefeedChildMetrics(dest *[]tspb.TimeSeriesData) {
-	maxChildMetricsPerMetric := 1024
-
-	labels := rr.registry.GetLabels()
-	rr.registry.Each(func(name string, v interface{}) {
-		// Check if the metric has child collection enabled in its metadata
-		iterable, ok := v.(metric.Iterable)
-		if !ok {
-			// If we can't get metadata, skip child collection for safety
-			return
-		}
-		metadata := iterable.GetMetadata()
-		if !metadata.GetTsdbRecordLabeled() {
-			return // Skip this metric if child collection is not enabled
-		}
-		if metadata.Category != metric.Metadata_CHANGEFEEDS {
-			return
-		}
-
-		prom, ok := v.(metric.PrometheusExportable)
-		if !ok {
-			return
-		}
-		promIter, ok := v.(metric.PrometheusIterable)
-		if !ok {
-			return
-		}
-		m := prom.ToPrometheusMetric()
-		m.Label = append(labels, prom.GetLabels(false /* useStaticLabels */)...)
-
-		var childMetricsCount int
-		processChildMetric := func(childMetric *prometheusgo.Metric) {
-			if childMetricsCount >= maxChildMetricsPerMetric {
-				return // Stop processing once we hit the limit
-			}
-
-			var value float64
-			if childMetric.Gauge != nil {
-				value = *childMetric.Gauge.Value
-			} else if childMetric.Counter != nil {
-				value = *childMetric.Counter.Value
-			} else {
-				return
-			}
-			*dest = append(*dest, tspb.TimeSeriesData{
-				Name:   fmt.Sprintf(rr.format, prom.GetName(false /* useStaticLabels */)+metric.EncodeLabeledName(childMetric)),
-				Source: rr.source,
-				Datapoints: []tspb.TimeSeriesDatapoint{
-					{
-						TimestampNanos: rr.timestampNanos,
-						Value:          value,
-					},
-				},
-			})
-			childMetricsCount++
-		}
-		promIter.Each(m.Label, processChildMetric)
-	})
-}
-
 // GetTotalMemory returns either the total system memory (in bytes) or if
 // possible the cgroups available memory.
 func GetTotalMemory(ctx context.Context) (int64, error) {
@@ -1002,7 +881,7 @@ func GetTotalMemory(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	if warning != "" {
-		log.Dev.Infof(ctx, "%s", warning)
+		log.Infof(ctx, "%s", warning)
 	}
 	return memory, nil
 }

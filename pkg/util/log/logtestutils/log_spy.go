@@ -86,7 +86,7 @@ func (s *LogSpy) Reset() {
 	s.mu.logs = []logpb.Entry{}
 }
 
-// Read consumes the specified number of logs contained within
+// ReadAll consumes the specified number of logs contained within
 // the spy and returns them as a list. Once the logs are consumed
 // they cannot be read again.
 func (s *LogSpy) Read(n int) []logpb.Entry {
@@ -132,7 +132,7 @@ func MatchesF(pattern string) func(entry logpb.Entry) bool {
 	return func(entry logpb.Entry) bool {
 		exists, err := regexp.MatchString(pattern, entry.Message)
 		if err != nil {
-			log.Dev.Errorf(context.Background(), "failed to match regex %s: %s", pattern, err)
+			log.Errorf(context.Background(), "failed to match regex %s: %s", pattern, err)
 		}
 		return exists
 	}

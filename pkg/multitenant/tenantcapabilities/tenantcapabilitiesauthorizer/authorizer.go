@@ -244,7 +244,6 @@ var reqMethodToCap = map[kvpb.Method]methodCapability{
 	kvpb.Delete:             noCapCheckNeeded,
 	kvpb.DeleteRange:        noCapCheckNeeded,
 	kvpb.Export:             noCapCheckNeeded,
-	kvpb.FlushLockTable:     noCapCheckNeeded,
 	kvpb.Get:                noCapCheckNeeded,
 	kvpb.HeartbeatTxn:       noCapCheckNeeded,
 	kvpb.Increment:          noCapCheckNeeded,
@@ -413,7 +412,7 @@ func (a *Authorizer) getMode(
 		// The server has started but the reader hasn't started/bound
 		// yet. Block requests that would need specific capabilities.
 		if a.logEvery.ShouldLog() {
-			log.Dev.Warningf(ctx, "capability check for tenant %s before capability reader exists, assuming capability is unavailable", tid)
+			log.Warningf(ctx, "capability check for tenant %s before capability reader exists, assuming capability is unavailable", tid)
 		}
 		selectedMode = authorizerModeV222
 	} else {
@@ -423,7 +422,7 @@ func (a *Authorizer) getMode(
 		if !found {
 			// No data from the rangefeed yet. Assume caps are still
 			// unavailable.
-			log.Dev.VInfof(ctx, 2,
+			log.VInfof(ctx, 2,
 				"no capability information for tenant %s; requests that require capabilities may be denied",
 				tid)
 			selectedMode = authorizerModeV222

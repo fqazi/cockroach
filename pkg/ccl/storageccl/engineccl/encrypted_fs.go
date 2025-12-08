@@ -8,7 +8,6 @@ package engineccl
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
@@ -320,7 +319,7 @@ func newEncryptedEnv(
 	dataKeyManager := &DataKeyManager{
 		fs:             storeFS,
 		dbDir:          dbDir,
-		rotationPeriod: int64((options.RotationPeriod + time.Second - 1) / time.Second),
+		rotationPeriod: options.DataKeyRotationPeriod,
 		readOnly:       readOnly,
 	}
 	if err := dataKeyManager.Load(context.TODO()); err != nil {

@@ -9,6 +9,7 @@ import (
 	"context"
 	"math"
 	"net"
+	"runtime/pprof"
 	"sync/atomic"
 	"time"
 
@@ -28,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/pprofutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -347,7 +347,7 @@ func (t *RaftTransport) handleRaftRequest(
 	incomingMessageHandler, ok := t.getIncomingRaftMessageHandler(req.ToReplica.StoreID)
 	if !ok {
 		if isV1 {
-			log.KvExec.Warningf(ctx, "unable to accept Raft message from %+v: no handler registered for %+v",
+			log.Warningf(ctx, "unable to accept Raft message from %+v: no handler registered for %+v",
 				req.FromReplica, req.ToReplica)
 		}
 		// We don't return an error to the client. If this node restarted with fewer
@@ -516,7 +516,7 @@ func (t *RaftTransport) InternalDelegateRaftSnapshot(
 	// Get the handler of the sender store.
 	incomingMessageHandler, ok := t.getIncomingRaftMessageHandler(req.DelegatedSender.StoreID)
 	if !ok {
-		log.KvExec.Warningf(
+		log.Warningf(
 			ctx,
 			"unable to accept Raft message: %+v: no handler registered for"+
 				" the sender store"+" %+v",
@@ -559,7 +559,7 @@ func (t *RaftTransport) raftSnapshot(stream RPCMultiRaft_RaftSnapshotStream) err
 	rmr := req.Header.RaftMessageRequest
 	incomingMessageHandler, ok := t.getIncomingRaftMessageHandler(rmr.ToReplica.StoreID)
 	if !ok {
-		log.KvExec.Warningf(ctx, "unable to accept Raft message from %+v: no handler registered for %+v",
+		log.Warningf(ctx, "unable to accept Raft message from %+v: no handler registered for %+v",
 			rmr.FromReplica, rmr.ToReplica)
 		return kvpb.NewStoreNotFoundError(rmr.ToReplica.StoreID)
 	}
@@ -633,7 +633,7 @@ func (t *RaftTransport) processQueue(
 				t.metrics.ReverseRcvd.Inc(1)
 				incomingMessageHandler, ok := t.getIncomingRaftMessageHandler(resp.ToReplica.StoreID)
 				if !ok {
-					log.KvExec.Warningf(ctx, "no handler found for store %s in response %s",
+					log.Warningf(ctx, "no handler found for store %s in response %s",
 						resp.ToReplica.StoreID, resp)
 					continue
 				}
@@ -857,7 +857,7 @@ func (t *RaftTransport) SendAsync(
 		return true
 	default:
 		if logRaftSendQueueFullEvery.ShouldLog() {
-			log.KvExec.Warningf(t.AnnotateCtx(context.Background()), "raft send queue to n%d is full", toNodeID)
+			log.Warningf(t.AnnotateCtx(context.Background()), "raft send queue to n%d is full", toNodeID)
 		}
 		return false
 	}
@@ -896,7 +896,7 @@ func (t *RaftTransport) startProcessNewQueue(
 	worker := func(ctx context.Context) {
 		q, existingQueue := t.getQueue(toNodeID, class)
 		if !existingQueue {
-			log.KvExec.Fatalf(ctx, "queue for n%d does not exist", toNodeID)
+			log.Fatalf(ctx, "queue for n%d does not exist", toNodeID)
 		}
 		defer func() {
 			if fn := t.knobs.OnWorkerTeardown; fn != nil {
@@ -916,7 +916,7 @@ func (t *RaftTransport) startProcessNewQueue(
 			return
 		}
 		if err := t.processQueue(ctx, q, client, class); err != nil {
-			log.KvExec.Warningf(ctx, "while processing outgoing Raft queue to node %d: %s:", toNodeID, err)
+			log.Warningf(ctx, "while processing outgoing Raft queue to node %d: %s:", toNodeID, err)
 		}
 	}
 	ctx, hdl, err := t.stopper.GetHandle(ctx, stop.TaskOpts{
@@ -931,7 +931,7 @@ func (t *RaftTransport) startProcessNewQueue(
 	}
 	go func(ctx context.Context) {
 		defer hdl.Activate(ctx).Release(ctx)
-		pprofutil.Do(ctx, worker, "remote_node_id", toNodeID.String())
+		pprof.Do(ctx, pprof.Labels("remote_node_id", toNodeID.String()), worker)
 	}(ctx)
 	return true
 }
@@ -1050,7 +1050,7 @@ func (t *RaftTransport) SendSnapshot(
 
 	defer func() {
 		if err := stream.CloseSend(); err != nil {
-			log.KvExec.Warningf(ctx, "failed to close snapshot stream: %+v", err)
+			log.Warningf(ctx, "failed to close snapshot stream: %+v", err)
 		}
 	}()
 	return sendSnapshot(ctx, clusterID, t.st, t.Tracer, stream, storePool, header, snap, newWriteBatch, sent, recordBytesSent)
@@ -1074,7 +1074,7 @@ func (t *RaftTransport) DelegateSnapshot(
 	}
 	defer func() {
 		if err := stream.CloseSend(); err != nil {
-			log.KvExec.Warningf(ctx, "failed to close delegate snapshot stream: %+v", err)
+			log.Warningf(ctx, "failed to close delegate snapshot stream: %+v", err)
 		}
 	}()
 
@@ -1094,7 +1094,7 @@ func (t *RaftTransport) DelegateSnapshot(
 	if len(resp.CollectedSpans) != 0 {
 		span := tracing.SpanFromContext(ctx)
 		if span == nil {
-			log.KvExec.Warningf(ctx, "trying to ingest remote spans but there is no recording span set up")
+			log.Warningf(ctx, "trying to ingest remote spans but there is no recording span set up")
 		} else {
 			span.ImportRemoteRecording(resp.CollectedSpans)
 		}

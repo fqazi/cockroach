@@ -114,9 +114,6 @@ func NewTimes() *Times {
 }
 
 // SetSessionPhaseTime sets the time for a given SessionPhase.
-// TODO(alyshan): Session Phase Times are set throughout the conn executor, it is
-// a tedious process to track when and where these times are set.
-// Found a bug again? Consider refactoring.
 func (t *Times) SetSessionPhaseTime(sp SessionPhase, time crtime.Mono) {
 	t.times[sp] = time
 }

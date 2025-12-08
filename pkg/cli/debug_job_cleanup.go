@@ -13,13 +13,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cli/clierrorplus"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/spf13/cobra"
 )
-
-const debugJobInfoAppName = catconstants.InternalAppNamePrefix + " cockroach debug job-cleanup-job-info"
 
 var debugJobCleanupInfoRows = &cobra.Command{
 	Use:   "job-cleanup-job-info",
@@ -37,7 +34,7 @@ var jobCleanupInfoRowOpts = struct {
 
 func runDebugJobInfoCleanup(_ *cobra.Command, args []string) (resErr error) {
 	ctx := context.Background()
-	sqlConn, err := makeSQLClient(ctx, debugJobInfoAppName, useSystemDb)
+	sqlConn, err := makeSQLClient(ctx, "cockroach debug job-cleanup-job-info", useSystemDb)
 	if err != nil {
 		return errors.Wrap(err, "could not establish connection to cluster")
 	}

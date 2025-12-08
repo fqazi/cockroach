@@ -328,7 +328,7 @@ func TestPlannerMakesPlansCoveringAllRanges(t *testing.T) {
 			"SELECT count(*) FROM crdb_internal.ranges").Scan(&numRanges); err != nil {
 			require.True(t, false)
 		}
-		log.Dev.Infof(ctx, "want numRanges %v", numRanges)
+		log.Infof(ctx, "want numRanges %v", numRanges)
 
 		require.Eventually(t, func() bool {
 			step, err := p.ReadPlannerNext(ctx)
@@ -336,15 +336,9 @@ func TestPlannerMakesPlansCoveringAllRanges(t *testing.T) {
 
 			rangeIDToTimesWouldBeProbed[int64(step.RangeID)]++
 
-			log.Dev.Infof(ctx, "current rangeID to times would be probed map: %v", rangeIDToTimesWouldBeProbed)
+			log.Infof(ctx, "current rangeID to times would be probed map: %v", rangeIDToTimesWouldBeProbed)
 
 			for i := int64(1); i <= numRanges; i++ {
-				// Range 1 (meta1 range) is not probed by the kvprober planner, as it
-				// only scans meta2 records, and range 1's descriptor isn't stored in
-				// meta2.
-				if i == 1 {
-					continue
-				}
 				// Expect all ranges to eventually be returned by Next n or n+1 times.
 				// Can't expect all ranges to be returned by Next exactly n times,
 				// as the order in which the lowest ordinal ranges are returned by

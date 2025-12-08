@@ -149,11 +149,9 @@ func TestReplicaStateMachineChangeReplicas(t *testing.T) {
 		// should there be a command in the raft log (i.e. some errant lease request
 		// or whatnot) this will fire assertions because it will conflict with the
 		// log index that we pulled out of thin air above.
-		r.readOnlyCmdMu.Lock()
-		defer r.readOnlyCmdMu.Unlock()
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		r.shMu.destroyStatus.Set(errors.New("test done"), destroyReasonRemoved)
+		r.mu.destroyStatus.Set(errors.New("test done"), destroyReasonRemoved)
 	})
 }
 
@@ -233,16 +231,14 @@ func TestReplicaStateMachineRaftLogTruncationStronglyCoupled(t *testing.T) {
 		_, err = sm.ApplySideEffects(checkedCmd.Ctx(), checkedCmd)
 		require.NoError(t, err)
 		func() {
+			r.mu.Lock()
+			defer r.mu.Unlock()
 			// Set a destroyStatus to make sure there won't be any raft processing once
 			// we release raftMu. We applied a command but not one from the raft log, so
 			// should there be a command in the raft log (i.e. some errant lease request
 			// or whatnot) this will fire assertions because it will conflict with the
 			// log index that we pulled out of thin air above.
-			r.readOnlyCmdMu.Lock()
-			r.mu.Lock()
-			defer r.mu.Unlock()
-			r.shMu.destroyStatus.Set(errors.New("test done"), destroyReasonRemoved)
-			r.readOnlyCmdMu.Unlock()
+			r.mu.destroyStatus.Set(errors.New("test done"), destroyReasonRemoved)
 
 			require.Equal(t, raftAppliedIndex+1, r.shMu.state.RaftAppliedIndex)
 			require.Equal(t, truncatedIndex+1, ls.shMu.trunc.Index)
@@ -255,7 +251,7 @@ func TestReplicaStateMachineRaftLogTruncationStronglyCoupled(t *testing.T) {
 			require.Equal(t, expectedSize, ls.shMu.size)
 			require.Equal(t, accurate, ls.shMu.sizeTrusted)
 			truncState, err := logstore.NewStateLoader(r.RangeID).LoadRaftTruncatedState(
-				context.Background(), tc.raftEng)
+				context.Background(), tc.engine)
 			require.NoError(t, err)
 			require.Equal(t, ls.shMu.trunc.Index, truncState.Index)
 		}()
@@ -280,7 +276,7 @@ func TestReplicaStateMachineRaftLogTruncationLooselyCoupled(t *testing.T) {
 		looselyCoupledTruncationEnabled.Override(ctx, &st.SV, true)
 		// Remove the flush completed callback since we don't want a
 		// non-deterministic flush to cause the test to fail.
-		tc.store.StateEngine().RegisterFlushCompletedCallback(func() {})
+		tc.store.TODOEngine().RegisterFlushCompletedCallback(func() {})
 		r := tc.repl
 
 		{
@@ -375,7 +371,7 @@ func TestReplicaStateMachineRaftLogTruncationLooselyCoupled(t *testing.T) {
 			require.True(t, trunc.isDeltaTrusted)
 			return raftLogSize, truncatedIndex
 		}()
-		require.NoError(t, tc.store.StateEngine().Flush())
+		require.NoError(t, tc.store.TODOEngine().Flush())
 		// Asynchronous call to advance durability.
 		tc.store.raftTruncator.durabilityAdvancedCallback()
 		expectedSize := raftLogSize - 1
@@ -431,13 +427,7 @@ func TestReplicaStateMachineEphemeralAppBatchRejection(t *testing.T) {
 	defer r.raftMu.Unlock()
 	// Avoid additional raft processing after we're done with this replica because
 	// we've applied entries that aren't in the log.
-	defer func() {
-		r.readOnlyCmdMu.Lock()
-		defer r.readOnlyCmdMu.Unlock()
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		r.shMu.destroyStatus.Set(errors.New("boom"), destroyReasonRemoved)
-	}()
+	defer r.mu.destroyStatus.Set(errors.New("boom"), destroyReasonRemoved)
 
 	sm := r.getStateMachine()
 

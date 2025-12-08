@@ -35,7 +35,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/ipaddr"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
 	jsonpathparser "github.com/cockroachdb/cockroach/pkg/util/jsonpath/parser"
-	"github.com/cockroachdb/cockroach/pkg/util/ltree"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timetz"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil/pgdate"
@@ -500,12 +499,6 @@ func DecodeDatum(
 				return nil, err
 			}
 			return &tree.DPGVector{T: ret}, nil
-		case oidext.T_ltree:
-			ret, err := ltree.ParseLTree(bs)
-			if err != nil {
-				return nil, err
-			}
-			return &tree.DLTree{LTree: ret}, nil
 		}
 		switch typ.Family() {
 		case types.ArrayFamily, types.TupleFamily:
@@ -874,18 +867,6 @@ func DecodeDatum(
 				return nil, err
 			}
 			return da.NewDGeography(tree.DGeography{Geography: v}), nil
-		case oidext.T_ltree:
-			version := b[0]
-			if version != 1 {
-				return nil, pgerror.Newf(pgcode.InvalidParameterValue,
-					"unsupported ltree version %d", version)
-			}
-			// Skip over the version byte when parsing binary LTREE.
-			ret, err := ltree.ParseLTree(bs[1:])
-			if err != nil {
-				return nil, err
-			}
-			return &tree.DLTree{LTree: ret}, nil
 		default:
 			if typ.Family() == types.ArrayFamily {
 				return decodeBinaryArray(ctx, evalCtx, typ.ArrayContents(), b, code, da)
@@ -941,20 +922,14 @@ func DecodeDatum(
 		sv := strings.TrimRight(bs, " ")
 		return da.NewDString(tree.DString(sv)), nil
 	case oid.T_char:
-		var sv string
-		if len(b) == 1 {
-			// Take a single byte as-is, even if it is not a valid UTF-8
-			// character. The null byte represents an empty string.
-			if b[0] != 0 {
+		sv := bs
+		// Always truncate to 1 byte, and handle the null byte specially.
+		if len(b) >= 1 {
+			if b[0] == 0 {
+				sv = ""
+			} else {
 				sv = string(b[:1])
 			}
-		} else if len(b) > 1 {
-			// If there is more than one byte, decode the first UTF-8 character.
-			r, _ := utf8.DecodeRune(b)
-			if r == utf8.RuneError {
-				return nil, invalidUTF8Error
-			}
-			sv = string(r)
 		}
 		return da.NewDString(tree.DString(sv)), nil
 	case oid.T_name:

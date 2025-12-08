@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/config"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
@@ -309,56 +308,6 @@ func (sc *SchemaChanger) refreshMaterializedView(
 
 const schemaChangerBackfillTxnDebugName = "schemaChangerBackfill"
 
-// validateBackfillQueryIntoTable validates that source query matches the contents of
-// a backfilled table, when executing the query at queryTS.
-func (sc *SchemaChanger) validateBackfillQueryIntoTable(
-	ctx context.Context, table catalog.TableDescriptor, entryCountWrittenToPrimaryIdx int64,
-) error {
-	sd := NewInternalSessionData(ctx, sc.execCfg.Settings, "validateBackfillQueryIntoTable")
-	sd.SessionData = *sc.sessionData
-	// Run validation on table that was populated using count queries.
-	// Get rid of the table ID prefix.
-	index := table.GetPrimaryIndex()
-	now := sc.db.KV().Clock().Now()
-	builder := table.NewBuilder()
-	// Make the table public so that we can validate our expected
-	// counts match.
-	mut := builder.BuildExistingMutable().(*tabledesc.Mutable)
-	mut.SetPublic()
-	newTblEntryCount, err := countIndexRowsAndMaybeCheckUniqueness(ctx, mut, index, false,
-		descs.NewHistoricalInternalExecTxnRunner(now, func(ctx context.Context, fn descs.InternalExecFn) error {
-			return sc.execCfg.InternalDB.DescsTxn(ctx, func(
-				ctx context.Context, txn descs.Txn,
-			) error {
-				if err := txn.KV().SetFixedTimestamp(ctx, now); err != nil {
-					return err
-				}
-				return fn(ctx, txn)
-			}, isql.WithPriority(admissionpb.BulkNormalPri))
-		}),
-		sessiondata.NodeUserWithBulkLowPriSessionDataOverride)
-	if err != nil {
-		return err
-	}
-	// Testing knob that allows us to manipulate counts to fail
-	// the validation.
-	if sc.testingKnobs.RunDuringQueryBackfillValidation != nil {
-		newTblEntryCount, err = sc.testingKnobs.RunDuringQueryBackfillValidation(entryCountWrittenToPrimaryIdx, newTblEntryCount)
-		if err != nil {
-			return err
-		}
-	}
-	if entryCountWrittenToPrimaryIdx > 0 {
-		if newTblEntryCount != entryCountWrittenToPrimaryIdx {
-			return errors.AssertionFailedf(
-				"backfill query did not populate index %q with expected number of rows (expected: %d, got: %d)",
-				index.GetName(), entryCountWrittenToPrimaryIdx, newTblEntryCount,
-			)
-		}
-	}
-	return nil
-}
-
 func (sc *SchemaChanger) backfillQueryIntoTable(
 	ctx context.Context,
 	table catalog.TableDescriptor,
@@ -385,11 +334,7 @@ func (sc *SchemaChanger) backfillQueryIntoTable(
 			}
 		}
 	}()
-	bulkSummary := kvpb.BulkOpSummary{}
-
 	err = sc.db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		// Clear out the previous summary if the transaction gets retried.
-		bulkSummary = kvpb.BulkOpSummary{}
 		defer func() {
 			isTxnRetry = true
 		}()
@@ -451,11 +396,8 @@ func (sc *SchemaChanger) backfillQueryIntoTable(
 
 		localPlanner.MaybeReallocateAnnotations(stmt.NumAnnotations)
 		// Construct an optimized logical plan of the AS source stmt.
-		localPlanner.stmt = makeStatement(
-			ctx, stmt, clusterunique.ID{}, /* queryID */
-			tree.FmtFlags(tree.QueryFormattingForFingerprintsMask.Get(&localPlanner.execCfg.Settings.SV)),
-			nil, /* statementHintsCache */
-		)
+		localPlanner.stmt = makeStatement(stmt, clusterunique.ID{}, /* queryID */
+			tree.FmtFlags(queryFormattingForFingerprintsMask.Get(&localPlanner.execCfg.Settings.SV)))
 		localPlanner.optPlanningCtx.init(localPlanner)
 
 		localPlanner.runWithOptions(resolveFlags{skipCache: true}, func() {
@@ -488,12 +430,16 @@ func (sc *SchemaChanger) backfillQueryIntoTable(
 				return err
 			}
 		}
+
+		res := kvpb.BulkOpSummary{}
 		rw := NewCallbackResultWriter(func(ctx context.Context, row tree.Datums) error {
+			// TODO(adityamaru): Use the BulkOpSummary for either telemetry or to
+			// return to user.
 			var counts kvpb.BulkOpSummary
 			if err := protoutil.Unmarshal([]byte(*row[0].(*tree.DBytes)), &counts); err != nil {
 				return err
 			}
-			bulkSummary.Add(counts)
+			res.Add(counts)
 			return nil
 		})
 		recv := MakeDistSQLReceiver(
@@ -543,6 +489,7 @@ func (sc *SchemaChanger) backfillQueryIntoTable(
 				return
 			}
 		})
+
 		return planAndRunErr
 	})
 
@@ -554,29 +501,12 @@ func (sc *SchemaChanger) backfillQueryIntoTable(
 			errors.Wrap(err, "unable to retry backfill since fixed timestamp is before the GC timestamp"),
 		)
 	}
-	if err != nil {
-		return err
-	}
-
-	// Count how many keys were written to the primary index, as reported by the
-	// BulkAdder. We need a version gate since pre-25.4 clusters did not count
-	// correctly.
-	entriesWrittenToPrimaryIdx := int64(0)
-	if sc.execCfg.Settings.Version.IsActive(ctx, clusterversion.V25_4) {
-		key := kvpb.BulkOpSummaryID(uint64(table.GetID()), uint64(table.GetPrimaryIndex().GetID()))
-		entriesWrittenToPrimaryIdx = bulkSummary.EntryCounts[key]
-	}
-
-	// Validation will be skipped if the query is not AOST safe.
-	// (i.e. reading non-KV data via CRDB internal)
-	if err := sc.validateBackfillQueryIntoTable(ctx, table, entriesWrittenToPrimaryIdx); err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 // maybe backfill a created table by executing the AS query. Return nil if
 // successfully backfilled.
+//
 // Note that this does not connect to the tracing settings of the
 // surrounding SQL transaction. This should be OK as (at the time of
 // this writing) this code path is only used for standalone CREATE
@@ -587,7 +517,7 @@ func (sc *SchemaChanger) maybeBackfillCreateTableAs(
 	if !(table.Adding() && table.IsAs()) {
 		return nil
 	}
-	log.Dev.Infof(ctx, "starting backfill for CREATE TABLE AS with query %q", table.GetCreateQuery())
+	log.Infof(ctx, "starting backfill for CREATE TABLE AS with query %q", table.GetCreateQuery())
 	return sc.backfillQueryIntoTable(ctx, table, table.GetCreateQuery(), table.GetCreateAsOfTime(), "ctasBackfill")
 }
 
@@ -601,7 +531,7 @@ func (sc *SchemaChanger) maybeUpdateScheduledJobsForRowLevelTTL(
 		if err := sc.db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 			scheduleID := tableDesc.GetRowLevelTTL().ScheduleID
 			if scheduleID > 0 {
-				log.Dev.Infof(ctx, "dropping TTL schedule %d", scheduleID)
+				log.Infof(ctx, "dropping TTL schedule %d", scheduleID)
 				return DeleteSchedule(ctx, sc.execCfg, txn, scheduleID)
 			}
 			return nil
@@ -623,10 +553,10 @@ func (sc *SchemaChanger) maybeBackfillMaterializedView(
 	// that a materialized view has been created with no data and a REFRESH VIEW operation needs
 	// to be called on it prior to access.
 	if table.IsRefreshViewRequired() {
-		log.Dev.Infof(ctx, "skipping backfill for CREATE MATERIALIZED VIEW %s WITH NO DATA", table.GetName())
+		log.Infof(ctx, "skipping backfill for CREATE MATERIALIZED VIEW %s WITH NO DATA", table.GetName())
 		return nil
 	}
-	log.Dev.Infof(ctx, "starting backfill for CREATE MATERIALIZED VIEW with query %q", table.GetViewQuery())
+	log.Infof(ctx, "starting backfill for CREATE MATERIALIZED VIEW with query %q", table.GetViewQuery())
 
 	return sc.backfillQueryIntoTable(ctx, table, table.GetViewQuery(), table.GetCreateAsOfTime(), "materializedViewBackfill")
 }
@@ -638,7 +568,7 @@ func (sc *SchemaChanger) maybeMakeAddTablePublic(
 	if !table.Adding() {
 		return nil
 	}
-	log.Dev.Info(ctx, "making table public")
+	log.Info(ctx, "making table public")
 
 	return sc.txn(ctx, func(ctx context.Context, txn descs.Txn) error {
 		mut, err := txn.Descriptors().MutableByID(txn.KV()).Table(ctx, table.GetID())
@@ -695,7 +625,7 @@ func (sc *SchemaChanger) ignoreRevertedDropIndex(
 			if !m.IsRollback() || !m.Adding() || m.AsIndex() == nil {
 				continue
 			}
-			log.Dev.Warningf(ctx, "ignoring rollback of index drop; index %q will be dropped", m.AsIndex().GetName())
+			log.Warningf(ctx, "ignoring rollback of index drop; index %q will be dropped", m.AsIndex().GetName())
 			mut.Mutations[m.MutationOrdinal()].Direction = descpb.DescriptorMutation_DROP
 			mutationsModified = true
 		}
@@ -724,25 +654,25 @@ func startGCJob(
 	}); err != nil {
 		return err
 	}
-	log.Dev.Infof(ctx, "created GC job %d", jobID)
+	log.Infof(ctx, "created GC job %d", jobID)
 	jobRegistry.NotifyToResume(ctx, jobID)
 	return nil
 }
 
 func (sc *SchemaChanger) execLogTags() *logtags.Buffer {
-	buf := logtags.BuildBuffer()
-	buf.Add("scExec", nil)
+	buf := &logtags.Buffer{}
+	buf = buf.Add("scExec", nil)
 
-	buf.Add("id", sc.descID)
+	buf = buf.Add("id", sc.descID)
 	if sc.mutationID != descpb.InvalidMutationID {
-		buf.Add("mutation", sc.mutationID)
+		buf = buf.Add("mutation", sc.mutationID)
 	}
 	if sc.droppedDatabaseID != descpb.InvalidID {
-		buf.Add("db", sc.droppedDatabaseID)
+		buf = buf.Add("db", sc.droppedDatabaseID)
 	} else if !sc.droppedSchemaIDs.Empty() {
-		buf.Add("schema", sc.droppedSchemaIDs)
+		buf = buf.Add("schema", sc.droppedSchemaIDs)
 	}
-	return buf.Finish()
+	return buf
 }
 
 // notFirstInLine checks if that this schema changer is at the front of the line
@@ -771,7 +701,7 @@ func (sc *SchemaChanger) notFirstInLine(ctx context.Context, desc catalog.Descri
 					for jobID := range blockingJobIDsAsSet {
 						blockingJobIDs = append(blockingJobIDs, jobID)
 					}
-					log.Dev.Infof(ctx,
+					log.Infof(ctx,
 						"schema change on %q (v%d): another %v schema change job(s) %v is still in progress "+
 							"and it is blocking this job from proceeding",
 						desc.GetName(), desc.GetVersion(), len(blockingJobIDs), blockingJobIDs,
@@ -885,13 +815,13 @@ func (sc *SchemaChanger) exec(ctx context.Context) (retErr error) {
 	}
 	// Check that the DSC is not active for this descriptor.
 	if catalog.HasConcurrentDeclarativeSchemaChange(desc) {
-		log.Dev.Infof(ctx,
+		log.Infof(ctx,
 			"aborting legacy schema change job execution because DSC was already active for %q (%d)",
 			desc.GetName(), desc.GetID())
 		return scerrors.ConcurrentSchemaChangeError(desc)
 	}
 
-	log.Dev.Infof(ctx,
+	log.Infof(ctx,
 		"schema change on %q (v%d) starting execution...",
 		desc.GetName(), desc.GetVersion(),
 	)
@@ -909,7 +839,7 @@ func (sc *SchemaChanger) exec(ctx context.Context) (retErr error) {
 			if errors.Is(err, catalog.ErrDescriptorNotFound) {
 				return err
 			}
-			log.Dev.Warningf(ctx, "waiting to update leases: %+v", err)
+			log.Warningf(ctx, "waiting to update leases: %+v", err)
 			// As we are dismissing the error, go through the recording motions.
 			// This ensures that any important error gets reported to Sentry, etc.
 			sqltelemetry.RecordError(ctx, err, &sc.settings.SV)
@@ -917,7 +847,7 @@ func (sc *SchemaChanger) exec(ctx context.Context) (retErr error) {
 		// We wait to trigger a stats refresh until we know the leases have been
 		// updated.
 		if refreshStats {
-			sc.refreshStats(ctx, latestDesc)
+			sc.refreshStats(latestDesc)
 		}
 		return nil
 	}
@@ -1026,7 +956,7 @@ func (sc *SchemaChanger) exec(ctx context.Context) (retErr error) {
 
 	if err := sc.initJobRunningStatus(ctx); err != nil {
 		if log.V(2) {
-			log.Dev.Infof(ctx, "failed to update job status: %+v", err)
+			log.Infof(ctx, "failed to update job status: %+v", err)
 		}
 		// Go through the recording motions. See comment above.
 		sqltelemetry.RecordError(ctx, err, &sc.settings.SV)
@@ -1046,7 +976,7 @@ func (sc *SchemaChanger) exec(ctx context.Context) (retErr error) {
 			// We only expect ErrDescriptorNotFound to be returned. This happens
 			// when the table descriptor was deleted. We can ignore this error.
 
-			log.Dev.Warningf(ctx, "unexpected error while waiting for leases to update: %+v", err)
+			log.Warningf(ctx, "unexpected error while waiting for leases to update: %+v", err)
 			// As we are dismissing the error, go through the recording motions.
 			// This ensures that any important error gets reported to Sentry, etc.
 			sqltelemetry.RecordError(ctx, err, &sc.settings.SV)
@@ -1072,7 +1002,7 @@ func (sc *SchemaChanger) handlePermanentSchemaChangeError(
 	// Clean up any protected timestamps as a last resort, in case the job
 	// execution never did itself.
 	if err := sc.execCfg.ProtectedTimestampManager.Unprotect(ctx, sc.job); err != nil {
-		log.Dev.Warningf(ctx, "unexpected error cleaning up protected timestamp %v", err)
+		log.Warningf(ctx, "unexpected error cleaning up protected timestamp %v", err)
 	}
 	// Ensure that this is a table descriptor and that the mutation is first in
 	// line prior to reverting.
@@ -1117,7 +1047,7 @@ func (sc *SchemaChanger) handlePermanentSchemaChangeError(
 			if errors.Is(err, catalog.ErrDescriptorNotFound) {
 				return err
 			}
-			log.Dev.Warningf(ctx, "waiting to update leases: %+v", err)
+			log.Warningf(ctx, "waiting to update leases: %+v", err)
 			// As we are dismissing the error, go through the recording motions.
 			// This ensures that any important error gets reported to Sentry, etc.
 			sqltelemetry.RecordError(ctx, err, &sc.settings.SV)
@@ -1125,7 +1055,7 @@ func (sc *SchemaChanger) handlePermanentSchemaChangeError(
 		// We wait to trigger a stats refresh until we know the leases have been
 		// updated.
 		if refreshStats {
-			sc.refreshStats(ctx, desc)
+			sc.refreshStats(desc)
 		}
 		return nil
 	}
@@ -1135,7 +1065,7 @@ func (sc *SchemaChanger) handlePermanentSchemaChangeError(
 			// We only expect ErrDescriptorNotFound to be returned. This happens
 			// when the table descriptor was deleted. We can ignore this error.
 
-			log.Dev.Warningf(ctx, "unexpected error while waiting for leases to update: %+v", err)
+			log.Warningf(ctx, "unexpected error while waiting for leases to update: %+v", err)
 			// As we are dismissing the error, go through the recording motions.
 			// This ensures that any important error gets reported to Sentry, etc.
 			sqltelemetry.RecordError(ctx, err, &sc.settings.SV)
@@ -1190,7 +1120,7 @@ func (sc *SchemaChanger) dropViewDeps(
 	for _, depID := range dependedOn {
 		dependencyDesc, err := descsCol.MutableByID(txn).Table(ctx, depID)
 		if err != nil {
-			log.Dev.Warningf(ctx, "error resolving dependency relation ID %d", depID)
+			log.Warningf(ctx, "error resolving dependency relation ID %d", depID)
 			continue
 		}
 		// The dependency is also being deleted, so we don't have to remove the
@@ -1200,7 +1130,7 @@ func (sc *SchemaChanger) dropViewDeps(
 		}
 		dependencyDesc.DependedOnBy = removeMatchingReferences(dependencyDesc.DependedOnBy, viewDesc.ID)
 		if err := descsCol.WriteDescToBatch(ctx, false /* kvTrace*/, dependencyDesc, b); err != nil {
-			log.Dev.Warningf(ctx, "error removing dependency from releation ID %d", depID)
+			log.Warningf(ctx, "error removing dependency from releation ID %d", depID)
 			return err
 		}
 	}
@@ -1210,7 +1140,7 @@ func (sc *SchemaChanger) dropViewDeps(
 	for _, depRef := range DependedOnBy {
 		dependencyDesc, err := descsCol.MutableByID(txn).Table(ctx, depRef.ID)
 		if err != nil {
-			log.Dev.Warningf(ctx, "error resolving dependency relation ID %d", depRef.ID)
+			log.Warningf(ctx, "error resolving dependency relation ID %d", depRef.ID)
 			continue
 		}
 		if dependencyDesc.Dropped() {
@@ -1227,12 +1157,12 @@ func (sc *SchemaChanger) dropViewDeps(
 		for _, id := range typeClosure.Ordered() {
 			typeDesc, err := descsCol.MutableByID(txn).Type(ctx, id)
 			if err != nil {
-				log.Dev.Warningf(ctx, "error resolving type dependency %d", id)
+				log.Warningf(ctx, "error resolving type dependency %d", id)
 				continue
 			}
 			if typeDesc.RemoveReferencingDescriptorID(viewDesc.GetID()) {
 				if err := descsCol.WriteDescToBatch(ctx, false /* kvTrace*/, typeDesc, b); err != nil {
-					log.Dev.Warningf(ctx, "error removing dependency from type ID %d", id)
+					log.Warningf(ctx, "error removing dependency from type ID %d", id)
 					return err
 				}
 			}
@@ -1241,7 +1171,7 @@ func (sc *SchemaChanger) dropViewDeps(
 			id := col.GetUsesSequenceID(i)
 			seqDesc, err := descsCol.MutableByID(txn).Table(ctx, id)
 			if err != nil {
-				log.Dev.Warningf(ctx, "error resolving sequence dependency %d", id)
+				log.Warningf(ctx, "error resolving sequence dependency %d", id)
 				continue
 			}
 			if seqDesc.Dropped() {
@@ -1255,7 +1185,7 @@ func (sc *SchemaChanger) dropViewDeps(
 				}
 			}
 			if err := descsCol.WriteDescToBatch(ctx, false /* kvTrace*/, seqDesc, b); err != nil {
-				log.Dev.Warningf(ctx, "error removing dependency from sequence ID %d", id)
+				log.Warningf(ctx, "error removing dependency from sequence ID %d", id)
 				return err
 			}
 		}
@@ -1264,7 +1194,7 @@ func (sc *SchemaChanger) dropViewDeps(
 }
 
 func (sc *SchemaChanger) rollbackSchemaChange(ctx context.Context, err error) error {
-	log.Dev.Warningf(ctx, "reversing schema change %d due to irrecoverable error: %s", sc.job.ID(), err)
+	log.Warningf(ctx, "reversing schema change %d due to irrecoverable error: %s", sc.job.ID(), err)
 	if errReverse := sc.maybeReverseMutations(ctx, err); errReverse != nil {
 		return errReverse
 	}
@@ -1331,7 +1261,7 @@ func (sc *SchemaChanger) rollbackSchemaChange(ctx context.Context, err error) er
 	}); err != nil {
 		return err
 	}
-	log.Dev.Infof(ctx, "starting GC job %d", gcJobID)
+	log.Infof(ctx, "starting GC job %d", gcJobID)
 	sc.jobRegistry.NotifyToResume(ctx, gcJobID)
 	return nil
 }
@@ -1340,7 +1270,7 @@ func (sc *SchemaChanger) rollbackSchemaChange(ctx context.Context, err error) er
 // and wait to ensure that all nodes are seeing the latest version
 // of the table.
 func (sc *SchemaChanger) RunStateMachineBeforeBackfill(ctx context.Context) error {
-	log.Dev.Info(ctx, "stepping through state machine")
+	log.Info(ctx, "stepping through state machine")
 
 	var runStatus jobs.StatusMessage
 	if err := sc.txn(ctx, func(
@@ -1415,7 +1345,7 @@ func (sc *SchemaChanger) RunStateMachineBeforeBackfill(ctx context.Context) erro
 		return err
 	}
 
-	log.Dev.Info(ctx, "finished stepping through state machine")
+	log.Info(ctx, "finished stepping through state machine")
 	return nil
 }
 
@@ -1429,19 +1359,19 @@ func (sc *SchemaChanger) RunStateMachineAfterIndexBackfill(ctx context.Context) 
 	// Step through the state machine twice:
 	//  - BACKFILLING -> DELETE
 	//  - DELETE -> MERGING
-	log.Dev.Info(ctx, "stepping through state machine after index backfill")
+	log.Info(ctx, "stepping through state machine after index backfill")
 	if err := sc.stepStateMachineAfterIndexBackfill(ctx); err != nil {
 		return err
 	}
 	if err := sc.stepStateMachineAfterIndexBackfill(ctx); err != nil {
 		return err
 	}
-	log.Dev.Info(ctx, "finished stepping through state machine")
+	log.Info(ctx, "finished stepping through state machine")
 	return nil
 }
 
 func (sc *SchemaChanger) stepStateMachineAfterIndexBackfill(ctx context.Context) error {
-	log.Dev.Info(ctx, "stepping through state machine")
+	log.Info(ctx, "stepping through state machine")
 
 	var runStatus jobs.StatusMessage
 	if err := sc.txn(ctx, func(
@@ -1528,7 +1458,7 @@ func (sc *SchemaChanger) createIndexGCJobWithDropTime(
 	if _, err := sc.jobRegistry.CreateJobWithTxn(ctx, gcJobRecord, jobID, txn); err != nil {
 		return err
 	}
-	log.Dev.Infof(ctx, "created index GC job %d", jobID)
+	log.Infof(ctx, "created index GC job %d", jobID)
 	sc.jobRegistry.NotifyToResume(ctx, jobID)
 	return nil
 }
@@ -1549,12 +1479,12 @@ func WaitToUpdateLeases(
 		Multiplier:     1.5,
 	}
 	start := timeutil.Now()
-	log.Dev.Infof(ctx, "waiting for a single version...")
+	log.Infof(ctx, "waiting for a single version...")
 	desc, err := leaseMgr.WaitForOneVersion(ctx, descID, regions, retryOpts)
 	if err != nil {
 		return nil, err
 	}
-	log.Dev.Infof(ctx, "waiting for a single version... done (at v %d), took %v", desc.GetVersion(), timeutil.Since(start))
+	log.Infof(ctx, "waiting for a single version... done (at v %d), took %v", desc.GetVersion(), timeutil.Since(start))
 	return desc, err
 }
 
@@ -2259,7 +2189,7 @@ func maybeUpdateZoneConfigsForPKChange(
 
 	// Write the zone back. This call regenerates the index spans that apply
 	// to each partition in the index.
-	err = writeZoneConfig(
+	_, err = writeZoneConfig(
 		ctx, txn, table.ID, table,
 		zoneWithRaw.ZoneConfigProto(), zoneWithRaw.GetRawBytesInStorage(),
 		execCfg, false, kvTrace,
@@ -2293,16 +2223,16 @@ func (sc *SchemaChanger) runStateMachineAndBackfill(ctx context.Context) error {
 	}
 
 	// Mark the mutations as completed.
-	log.Dev.Info(ctx, "marking schema change as complete")
+	log.Info(ctx, "marking schema change as complete")
 	return sc.done(ctx)
 }
 
-func (sc *SchemaChanger) refreshStats(ctx context.Context, desc catalog.Descriptor) {
+func (sc *SchemaChanger) refreshStats(desc catalog.Descriptor) {
 	// Initiate an asynchronous run of CREATE STATISTICS. We use a large number
 	// for rowsAffected because we want to make sure that stats always get
 	// created/refreshed here.
 	if tableDesc, ok := desc.(catalog.TableDescriptor); ok {
-		sc.execCfg.StatsRefresher.NotifyMutation(ctx, tableDesc, math.MaxInt32 /* rowsAffected */)
+		sc.execCfg.StatsRefresher.NotifyMutation(tableDesc, math.MaxInt32 /* rowsAffected */)
 	}
 }
 
@@ -2385,14 +2315,14 @@ func (sc *SchemaChanger) maybeReverseMutations(ctx context.Context, causingError
 				scTable.Mutations[m.MutationOrdinal()].State = descpb.DescriptorMutation_DELETE_ONLY
 				scTable.Mutations[m.MutationOrdinal()].Direction = descpb.DescriptorMutation_DROP
 			} else {
-				log.Dev.Warningf(ctx, "reverse schema change mutation: %+v", scTable.Mutations[m.MutationOrdinal()])
+				log.Warningf(ctx, "reverse schema change mutation: %+v", scTable.Mutations[m.MutationOrdinal()])
 				scTable.Mutations[m.MutationOrdinal()], columns = sc.reverseMutation(scTable.Mutations[m.MutationOrdinal()], false /*notStarted*/, columns)
 			}
 
 			// If the mutation is for validating a constraint that is being added,
 			// drop the constraint because validation has failed.
 			if constraint := m.AsConstraintWithoutIndex(); constraint != nil && constraint.Adding() {
-				log.Dev.Warningf(ctx, "dropping constraint %s", constraint)
+				log.Warningf(ctx, "dropping constraint %s", constraint)
 				if err := sc.maybeDropValidatingConstraint(ctx, scTable, constraint); err != nil {
 					return err
 				}
@@ -2406,7 +2336,7 @@ func (sc *SchemaChanger) maybeReverseMutations(ctx context.Context, causingError
 						// The function being called will return an assertion error if the
 						// backreference was not found, but it may not have been installed
 						// during the incomplete schema change, so we swallow the error.
-						log.Dev.Infof(ctx,
+						log.Infof(ctx,
 							"error attempting to remove backreference %s during rollback: %s", constraint.GetName(), err)
 					}
 					if err := txn.Descriptors().WriteDescToBatch(ctx, kvTrace, backrefTable, b); err != nil {
@@ -2496,12 +2426,11 @@ func (sc *SchemaChanger) updateJobForRollback(
 	u := sc.job.WithTxn(txn)
 	if err := u.SetDetails(
 		ctx, jobspb.SchemaChangeDetails{
-			DescID:               sc.descID,
-			TableMutationID:      sc.mutationID,
-			ResumeSpanList:       spanList,
-			FormatVersion:        oldDetails.FormatVersion,
-			SessionData:          sc.sessionData,
-			DistributedMergeMode: oldDetails.DistributedMergeMode,
+			DescID:          sc.descID,
+			TableMutationID: sc.mutationID,
+			ResumeSpanList:  spanList,
+			FormatVersion:   oldDetails.FormatVersion,
+			SessionData:     sc.sessionData,
 		},
 	); err != nil {
 		return err
@@ -2526,7 +2455,7 @@ func (sc *SchemaChanger) maybeDropValidatingConstraint(
 				return nil
 			}
 		}
-		log.Dev.Infof(
+		log.Infof(
 			ctx,
 			"attempted to drop constraint %s, but it hadn't been added to the table descriptor yet",
 			constraint.GetName(),
@@ -2543,7 +2472,7 @@ func (sc *SchemaChanger) maybeDropValidatingConstraint(
 				return nil
 			}
 		}
-		log.Dev.Infof(
+		log.Infof(
 			ctx,
 			"attempted to drop constraint %s, but it hadn't been added to the table descriptor yet",
 			constraint.GetName(),
@@ -2560,7 +2489,7 @@ func (sc *SchemaChanger) maybeDropValidatingConstraint(
 				return nil
 			}
 		}
-		log.Dev.Infof(
+		log.Infof(
 			ctx,
 			"attempted to drop constraint %s, but it hadn't been added to the table descriptor yet",
 			constraint.GetName(),
@@ -2602,7 +2531,7 @@ func (sc *SchemaChanger) deleteIndexMutationsWithReversedColumns(
 								mutation.State != sc.startingStateForAddIndexMutations() {
 								panic(errors.AssertionFailedf("mutation in bad state: %+v", mutation))
 							}
-							log.Dev.Warningf(ctx, "drop schema change mutation: %+v", mutation)
+							log.Warningf(ctx, "drop schema change mutation: %+v", mutation)
 							dropMutations[mutation.MutationID] = struct{}{}
 							break
 						}
@@ -2844,10 +2773,6 @@ type SchemaChangerTestingKnobs struct {
 
 	// RunBeforeModifyRowLevelTTL is called just before the modify row level TTL is committed.
 	RunBeforeModifyRowLevelTTL func() error
-
-	// RunAfterQueryBackfillValidation is called right after validation is executed
-	// for a query backfill.
-	RunDuringQueryBackfillValidation func(expectedCount int64, currentCount int64) (newCurrentCount int64, err error)
 }
 
 // ModuleTestingKnobs is part of the base.ModuleTestingKnobs interface.
@@ -2905,6 +2830,7 @@ func createSchemaChangeEvalCtx(
 			NodeID:               execCfg.NodeInfo.NodeID,
 			Codec:                execCfg.Codec,
 			Locality:             execCfg.Locality,
+			OriginalLocality:     execCfg.Locality,
 			Tracer:               execCfg.AmbientCtx.Tracer,
 		},
 	}
@@ -2966,7 +2892,7 @@ func (r schemaChangeResumer) Resume(ctx context.Context, execCtx interface{}) er
 		}
 
 		// The schema change may have to be retried if it is not first in line or
-		// for other retryable reasons so we run it in an exponential backoff retry
+		// for other retriable reasons so we run it in an exponential backoff retry
 		// loop. The loop terminates only if the context is canceled.
 		var scErr error
 		for r := retry.StartWithCtx(ctx, opts); r.Next(); {
@@ -2983,7 +2909,7 @@ func (r schemaChangeResumer) Resume(ctx context.Context, execCtx interface{}) er
 				// If the table descriptor for the ID can't be found, we assume that
 				// another job to drop the table got to it first, and consider this job
 				// finished.
-				log.Dev.Infof(
+				log.Infof(
 					ctx,
 					"descriptor %d not found for schema change processing mutation %d;"+
 						"assuming it was dropped, and exiting",
@@ -2993,7 +2919,7 @@ func (r schemaChangeResumer) Resume(ctx context.Context, execCtx interface{}) er
 			case !IsPermanentSchemaChangeError(scErr):
 				// Check if the error is on a allowlist of errors we should retry on,
 				// including the schema change not having the first mutation in line.
-				log.Dev.Warningf(ctx, "error while running schema change, retrying: %v", scErr)
+				log.Warningf(ctx, "error while running schema change, retrying: %v", scErr)
 				if IsConstraintError(scErr) {
 					telemetry.Inc(sc.metrics.ConstraintErrors)
 				} else {
@@ -3183,7 +3109,7 @@ func (r schemaChangeResumer) OnFailOrCancel(
 			// If the table descriptor for the ID can't be found, we assume that
 			// another job to drop the table got to it first, and consider this job
 			// finished.
-			log.Dev.Infof(
+			log.Infof(
 				ctx,
 				"descriptor %d not found for rollback of schema change processing mutation %d;"+
 					"assuming it was dropped, and exiting",
@@ -3287,7 +3213,7 @@ func (sc *SchemaChanger) queueCleanupJob(
 		if _, err := sc.jobRegistry.CreateJobWithTxn(ctx, jobRecord, jobID, txn); err != nil {
 			return 0, err
 		}
-		log.Dev.Infof(ctx, "created job %d to drop previous columns and indexes", jobID)
+		log.Infof(ctx, "created job %d to drop previous columns and indexes", jobID)
 		scDesc.MutationJobs = append(scDesc.MutationJobs, descpb.TableDescriptor_MutationJob{
 			MutationID: mutationID,
 			JobID:      jobID,
@@ -3397,7 +3323,7 @@ func (sc *SchemaChanger) applyZoneConfigChangeForMutation(
 func DeleteTableDescAndZoneConfig(
 	ctx context.Context, execCfg *ExecutorConfig, tableDesc catalog.TableDescriptor,
 ) error {
-	log.Dev.Infof(ctx, "removing table descriptor and zone config for table %d (has active dsc=%t)",
+	log.Infof(ctx, "removing table descriptor and zone config for table %d (has active dsc=%t)",
 		tableDesc.GetID(), catalog.HasConcurrentDeclarativeSchemaChange(tableDesc))
 	const kvTrace = false
 	return DescsTxn(ctx, execCfg, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
@@ -3582,4 +3508,21 @@ func (p *planner) CanCreateCrossDBSequenceRef() error {
 		)
 	}
 	return nil
+}
+
+// UpdateDescriptorCount updates our sql.schema_changer.object_count gauge with
+// a fresh count of objects in the system.descriptor table.
+func UpdateDescriptorCount(
+	ctx context.Context, execCfg *ExecutorConfig, metric *SchemaChangerMetrics,
+) error {
+	return DescsTxn(ctx, execCfg, func(ctx context.Context, txn isql.Txn, col *descs.Collection) error {
+		row, err := txn.QueryRow(ctx, "sql-schema-changer-object-count", txn.KV(),
+			`SELECT count(*) FROM system.descriptor`)
+		if err != nil {
+			return err
+		}
+		count := *row[0].(*tree.DInt)
+		metric.ObjectCount.Update(int64(count))
+		return nil
+	})
 }

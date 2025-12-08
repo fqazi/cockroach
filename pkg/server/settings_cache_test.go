@@ -87,7 +87,7 @@ func TestCachedSettingsServerRestart(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		settings, err := loadCachedSettingsKVs(context.Background(), store.LogEngine())
+		settings, err := loadCachedSettingsKVs(context.Background(), store.TODOEngine())
 		if err != nil {
 			return err
 		}
@@ -115,11 +115,10 @@ func TestCachedSettingsServerRestart(t *testing.T) {
 
 	var initServer *initServer
 	{
-		getGRPCDialOpts := s.RPCContext().GRPCDialOptions
-		getDRPCDialOpts := s.RPCContext().DRPCDialOptions
+		getDialOpts := s.RPCContext().GRPCDialOptions
 
 		cfg := s.SystemLayer().(*testServer).topLevelServer.cfg
-		initConfig := newInitServerConfig(ctx, cfg, getGRPCDialOpts, getDRPCDialOpts)
+		initConfig := newInitServerConfig(ctx, cfg, getDialOpts)
 		inspectState, err := inspectEngines(
 			context.Background(),
 			s.Engines(),
@@ -201,7 +200,7 @@ func TestCachedSettingDeletionIsPersisted(t *testing.T) {
 	testutils.SucceedsSoon(t, func() error {
 		store, err := ts.GetStores().(*kvserver.Stores).GetStore(1)
 		require.NoError(t, err)
-		settings, err := loadCachedSettingsKVs(context.Background(), store.LogEngine())
+		settings, err := loadCachedSettingsKVs(context.Background(), store.TODOEngine())
 		require.NoError(t, err)
 		if !hasKey(settings, `ui.display_timezone`) {
 			return errors.New("cached setting not found")
@@ -215,7 +214,7 @@ func TestCachedSettingDeletionIsPersisted(t *testing.T) {
 	testutils.SucceedsSoon(t, func() error {
 		store, err := ts.GetStores().(*kvserver.Stores).GetStore(1)
 		require.NoError(t, err)
-		settings, err := loadCachedSettingsKVs(context.Background(), store.LogEngine())
+		settings, err := loadCachedSettingsKVs(context.Background(), store.TODOEngine())
 		require.NoError(t, err)
 		if hasKey(settings, `ui.display_timezone`) {
 			return errors.New("cached setting was still found")

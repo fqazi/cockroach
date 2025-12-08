@@ -49,7 +49,7 @@ var (
 		Help:        "Mean clock offset with other nodes",
 		Measurement: "Clock Offset",
 		Unit:        metric.Unit_NANOSECONDS,
-		Visibility:  metric.Metadata_ESSENTIAL,
+		Essential:   true,
 		Category:    metric.Metadata_NETWORKING,
 		HowToUse:    "This metric gives the node's clock skew. In a well-configured environment, the actual clock skew would be in the sub-millisecond range. A skew exceeding 5 ms is likely due to a NTP service mis-configuration. Reducing the actual clock skew reduces the probability of uncertainty related conflicts and corresponding retires which has a positive impact on workload performance. Conversely, a larger actual clock skew increases the probability of retries due to uncertainty conflicts, with potentially measurable adverse effects on workload performance.",
 	}
@@ -93,7 +93,6 @@ rare or short-lived degradations.
 `,
 		Measurement: "Round-trip time",
 		Unit:        metric.Unit_NANOSECONDS,
-		Visibility:  metric.Metadata_SUPPORT,
 	}
 
 	metaDefaultConnectionRoundTripLatency = metric.Metadata{
@@ -520,15 +519,10 @@ func updateClockOffsetTracking(
 	var offset RemoteOffset
 	if pingDuration <= maximumPingDurationMult*toleratedOffset {
 		// Offset and error are measured using the remote clock reading
-		// technique described in section 3.1 of
-		//
-		// F. Cristian and C. Fetzer, "Probabilistic internal clock
-		// synchronization," in Proceedings of IEEE 13th Symposium on Reliable
-		// Distributed Systems, Dana Point, CA, USA, 1994
-		//
-		// However, we assume that drift and min message delay are 0, for now and,
-		// as a result, the transmission delay from the remote node to our node is
-		// half the ping duration.
+		// technique described in
+		// http://se.inf.tu-dresden.de/pubs/papers/SRDS1994.pdf, page 6.
+		// However, we assume that drift and min message delay are 0, for
+		// now.
 		offset.MeasuredAt = receiveTime.UnixNano()
 		offset.Uncertainty = (pingDuration / 2).Nanoseconds()
 		remoteTimeNow := serverTime.Add(pingDuration / 2)

@@ -8,6 +8,7 @@
 package util
 
 import (
+	"cmp"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -29,13 +30,8 @@ type TestSuites struct {
 type testSuite struct {
 	XMLName   xml.Name    `xml:"testsuite"`
 	TestCases []*testCase `xml:"testcase"`
-	Errors    int         `xml:"errors,attr"`
-	Failures  int         `xml:"failures,attr"`
-	Skipped   int         `xml:"skipped,attr"`
-	Tests     int         `xml:"tests,attr"`
-	Time      float64     `xml:"time,attr"`
+	Attrs     []xml.Attr  `xml:",any,attr"`
 	Name      string      `xml:"name,attr"`
-	Timestamp string      `xml:"timestamp,attr"`
 }
 
 type testCase struct {
@@ -45,12 +41,11 @@ type testCase struct {
 	// this isn't Java so there isn't a classname) and excluding it causes
 	// the TeamCity UI to display the same data in a slightly more coherent
 	// and usable way.
-	Classname string      `xml:"classname,attr"`
-	Name      string      `xml:"name,attr"`
-	Time      string      `xml:"time,attr"`
-	Failure   *XMLMessage `xml:"failure,omitempty"`
-	Error     *XMLMessage `xml:"error,omitempty"`
-	Skipped   *XMLMessage `xml:"skipped,omitempty"`
+	Name    string      `xml:"name,attr"`
+	Time    string      `xml:"time,attr"`
+	Failure *XMLMessage `xml:"failure,omitempty"`
+	Error   *XMLMessage `xml:"error,omitempty"`
+	Skipped *XMLMessage `xml:"skipped,omitempty"`
 }
 
 // XMLMessage is a catch-all structure containing details about a test
@@ -139,6 +134,7 @@ func OutputsOfGenrule(target, xmlQueryOutput string) ([]string, error) {
 // it to the output file. TeamCity kind of knows how to interpret the schema,
 // but the schema isn't *exactly* what it's expecting. By munging the XML's
 // here we ensure that the TC test view is as useful as possible.
+// Helper function meant to be used with maybeStageArtifact.
 func MungeTestXML(srcContent []byte, outFile io.Writer) error {
 	// Parse the XML into a TestSuites struct.
 	suites := TestSuites{}
@@ -151,102 +147,54 @@ func MungeTestXML(srcContent []byte, outFile io.Writer) error {
 	if err != nil {
 		return err
 	}
-	var res testSuite
-	for _, suite := range suites.Suites {
-		res.XMLName = suite.XMLName
-		res.TestCases = append(res.TestCases, suite.TestCases...)
-		if res.Name == "" {
-			i := strings.LastIndexByte(suite.Name, '.')
-			if i < 0 {
-				i = len(suite.Name)
-			}
-			res.Name = suite.Name[0:i]
-		}
-		res.Errors += suite.Errors
-		res.Failures += suite.Failures
-		res.Skipped += suite.Skipped
-		res.Tests += suite.Tests
-		res.Time += suite.Time
-		if res.Timestamp == "" {
-			res.Timestamp = suite.Timestamp
-		} else {
-			res.Timestamp = min(res.Timestamp, suite.Timestamp)
-		}
-	}
-	return writeToFile(res, outFile)
+	// We only want the first test suite in the list of suites.
+	return writeToFile(&suites.Suites[0], outFile)
 }
 
-// MergeTestXMLs merges the given list of test suites into a single object,
-// then writes the serialized XML to the given outFile.
+// MergeTestXMLs merges the given list of test suites into a single test suite,
+// then writes the serialized XML to the given outFile. The prefix is passed
+// to xml.Unmarshal. Note that this function might modify the passed-in
+// TestSuites in-place.
 func MergeTestXMLs(suitesToMerge []TestSuites, outFile io.Writer) error {
 	if len(suitesToMerge) == 0 {
 		return fmt.Errorf("expected at least one test suite")
 	}
-	type suiteAndCaseMap struct {
-		suite testSuite
-		cases map[string]*testCase
-	}
-	suitesMap := make(map[string]*suiteAndCaseMap)
+	var resultSuites TestSuites
+	resultSuites.Suites = append(resultSuites.Suites, testSuite{})
+	resultSuite := &resultSuites.Suites[0]
+	resultSuite.Name = suitesToMerge[0].Suites[0].Name
+	resultSuite.Attrs = suitesToMerge[0].Suites[0].Attrs
+	cases := make(map[string]*testCase)
 	for _, suites := range suitesToMerge {
-		for _, suite := range suites.Suites {
-			oldSuite, ok := suitesMap[suite.Name]
+		for _, testCase := range suites.Suites[0].TestCases {
+			oldCase, ok := cases[testCase.Name]
 			if !ok {
-				cases := make(map[string]*testCase)
-				for _, testCase := range suite.TestCases {
-					cases[testCase.Name] = testCase
-				}
-				suitesMap[suite.Name] = &suiteAndCaseMap{
-					suite: suite,
-					cases: cases,
-				}
+				cases[testCase.Name] = testCase
 				continue
 			}
-			for _, testCase := range suite.TestCases {
-				oldCase, ok := oldSuite.cases[testCase.Name]
-				if !ok {
-					oldSuite.cases[testCase.Name] = testCase
-					continue
+			if testCase.Failure != nil {
+				if oldCase.Failure == nil {
+					oldCase.Failure = testCase.Failure
+				} else {
+					oldCase.Failure.Contents = oldCase.Failure.Contents + "\n" + testCase.Failure.Contents
 				}
-				if testCase.Failure != nil {
-					if oldCase.Failure == nil {
-						oldCase.Failure = testCase.Failure
-						oldSuite.suite.Failures += 1
-					} else {
-						oldCase.Failure.Contents = oldCase.Failure.Contents + "\n" + testCase.Failure.Contents
-					}
-				}
-				if testCase.Error != nil {
-					if oldCase.Error == nil {
-						oldCase.Error = testCase.Error
-						oldSuite.suite.Errors += 1
-					} else {
-						oldCase.Error.Contents = oldCase.Error.Contents + "\n" + testCase.Error.Contents
-					}
+			}
+			if testCase.Error != nil {
+				if oldCase.Error == nil {
+					oldCase.Error = testCase.Error
+				} else {
+					oldCase.Error.Contents = oldCase.Error.Contents + "\n" + testCase.Error.Contents
 				}
 			}
 		}
 	}
-	suitesSlice := make([]string, 0, len(suitesMap))
-	for suiteName := range suitesMap {
-		suitesSlice = append(suitesSlice, suiteName)
+	for _, testCase := range cases {
+		resultSuite.TestCases = append(resultSuite.TestCases, testCase)
 	}
-	slices.Sort(suitesSlice)
-	var res TestSuites
-	for _, suiteName := range suitesSlice {
-		suiteAndCases := suitesMap[suiteName]
-		suite := suiteAndCases.suite
-		suite.TestCases = []*testCase{}
-		casesSlice := make([]string, 0, len(suiteAndCases.cases))
-		for caseName := range suiteAndCases.cases {
-			casesSlice = append(casesSlice, caseName)
-		}
-		slices.Sort(casesSlice)
-		for _, caseName := range casesSlice {
-			suite.TestCases = append(suite.TestCases, suiteAndCases.cases[caseName])
-		}
-		res.Suites = append(res.Suites, suite)
-	}
-	return writeToFile(&res, outFile)
+	slices.SortFunc(resultSuite.TestCases, func(a, b *testCase) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+	return writeToFile(&resultSuites, outFile)
 }
 
 func writeToFile(suite interface{}, outFile io.Writer) error {

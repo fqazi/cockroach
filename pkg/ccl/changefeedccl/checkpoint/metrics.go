@@ -17,7 +17,6 @@ var (
 		Help:        "Time it takes to create a changefeed checkpoint",
 		Unit:        metric.Unit_NANOSECONDS,
 		Measurement: "Nanoseconds",
-		Category:    metric.Metadata_CHANGEFEEDS,
 	}
 
 	metaTotalBytes = metric.Metadata{
@@ -25,7 +24,6 @@ var (
 		Help:        "Total size of a changefeed checkpoint",
 		Unit:        metric.Unit_BYTES,
 		Measurement: "Bytes",
-		Category:    metric.Metadata_CHANGEFEEDS,
 	}
 
 	metaTimestampCount = metric.Metadata{
@@ -33,7 +31,6 @@ var (
 		Help:        "Number of unique timestamps in a changefeed checkpoint",
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Timestamps",
-		Category:    metric.Metadata_CHANGEFEEDS,
 	}
 
 	metaSpanCount = metric.Metadata{
@@ -41,7 +38,6 @@ var (
 		Help:        "Number of spans in a changefeed checkpoint",
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Spans",
-		Category:    metric.Metadata_CHANGEFEEDS,
 	}
 )
 

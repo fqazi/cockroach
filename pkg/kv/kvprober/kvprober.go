@@ -368,7 +368,6 @@ func (p *Prober) readProbeImpl(ctx context.Context, ops proberOpsI, txns proberT
 	var probeCtx = ctx
 
 	isTracingEnabled := tracingEnabled.Get(&p.settings.SV)
-	logTracingOnPlanFailureEnabled := isTracingEnabled && logTracingOnPlanFailureEnabled.Get(&p.settings.SV)
 	if isTracingEnabled {
 		probeCtx, finishAndGetRecording = tracing.ContextWithRecordingSpan(ctx, p.tracer, "read probe")
 	}
@@ -381,11 +380,7 @@ func (p *Prober) readProbeImpl(ctx context.Context, ops proberOpsI, txns proberT
 		if errorIsExpectedDuringNormalOperation(err) {
 			log.Health.Warningf(ctx, "making a plan failed with expected error: %v", err)
 		} else {
-			if logTracingOnPlanFailureEnabled {
-				log.Health.Errorf(ctx, "can't make a plan: %v, recorded trace: %s", err, finishAndGetRecording())
-			} else {
-				log.Health.Errorf(ctx, "can't make a plan: %v", err)
-			}
+			log.Health.Errorf(ctx, "can't make a plan: %v", err)
 			p.metrics.ProbePlanFailures.Inc(1)
 		}
 		return
@@ -458,7 +453,6 @@ func (p *Prober) writeProbeImpl(ctx context.Context, ops proberOpsI, txns prober
 	var probeCtx = ctx
 
 	isTracingEnabled := tracingEnabled.Get(&p.settings.SV)
-	logTracingOnPlanFailureEnabled := isTracingEnabled && logTracingOnPlanFailureEnabled.Get(&p.settings.SV)
 	if isTracingEnabled {
 		probeCtx, finishAndGetRecording = tracing.ContextWithRecordingSpan(ctx, p.tracer, "write probe")
 	}
@@ -473,11 +467,7 @@ func (p *Prober) writeProbeImpl(ctx context.Context, ops proberOpsI, txns prober
 		if errorIsExpectedDuringNormalOperation(err) {
 			log.Health.Warningf(ctx, "making a plan failed with expected error: %v", err)
 		} else {
-			if logTracingOnPlanFailureEnabled {
-				log.Health.Errorf(ctx, "can't make a plan: %v, recorded trace: %s", err, finishAndGetRecording())
-			} else {
-				log.Health.Errorf(ctx, "can't make a plan: %v", err)
-			}
+			log.Health.Errorf(ctx, "can't make a plan: %v", err)
 			p.metrics.ProbePlanFailures.Inc(1)
 		}
 		return

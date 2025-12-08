@@ -891,6 +891,7 @@ fetched: /tu/tu_pkey/1:cf=0 -> <undecoded>
 fetched: /tu/tu_pkey/1:cf=1 -> <undecoded>
 fetched: /tu/tu_pkey/1/c/d:cf=2 -> /3/4
 Put (locking) /Table/115/1/1/2/1 -> /TUPLE/3:3:Int/4/1:4:Int/4
+fast path completed
 rows affected: 1
 
 statement ok
@@ -906,6 +907,7 @@ fetched: /tu/tu_pkey/1/b:cf=1 -> 2
 fetched: /tu/tu_pkey/1/c/d:cf=2 -> /4/4
 Del (locking) /Table/115/1/1/1/1
 Del (locking) /Table/115/1/1/2/1
+fast path completed
 rows affected: 1
 
 # ------------------------------------------------------------------------------
@@ -1023,20 +1025,28 @@ quality of service: regular
 │
 └── • render
     │
-    └── • scan
-          sql nodes: <hidden>
-          kv nodes: <hidden>
-          regions: <hidden>
-          actual row count: 0
-          KV time: 0µs
-          KV rows decoded: 0
-          KV bytes read: 0 B
-          KV gRPC calls: 0
-          estimated max memory allocated: 0 B
-          missing stats
-          table: t137352@t137352_pkey
-          spans: [/1 - /1]
-          locking strength: for update
+    └── • lookup join
+        │ sql nodes: <hidden>
+        │ kv nodes: <hidden>
+        │ regions: <hidden>
+        │ actual row count: 0
+        │ KV time: 0µs
+        │ KV rows decoded: 0
+        │ KV bytes read: 0 B
+        │ KV gRPC calls: 0
+        │ execution time: 0µs
+        │ estimated max memory allocated: 0 B
+        │ table: t137352@t137352_pkey
+        │ equality: ($1) = (k)
+        │ equality cols are key
+        │ locking strength: for update
+        │
+        └── • values
+              sql nodes: <hidden>
+              regions: <hidden>
+              actual row count: 1
+              execution time: 0µs
+              size: 1 column, 1 row
 
 statement ok
 INSERT INTO t137352 VALUES (1, 2, 3);
@@ -1287,20 +1297,29 @@ quality of service: regular
                 │ equality: (k) = (a)
                 │ pred: a = 1
                 │
-                └── • scan
-                      sql nodes: <hidden>
-                      kv nodes: <hidden>
-                      regions: <hidden>
-                      actual row count: 1
-                      KV time: 0µs
-                      KV rows decoded: 1
-                      KV pairs read: 2
-                      KV bytes read: 8 B
-                      KV gRPC calls: 1
-                      estimated max memory allocated: 0 B
-                      estimated row count: 1
-                      table: t137352@t137352_pkey
-                      spans: [/1 - /1]
+                └── • lookup join
+                    │ sql nodes: <hidden>
+                    │ kv nodes: <hidden>
+                    │ regions: <hidden>
+                    │ actual row count: 1
+                    │ KV time: 0µs
+                    │ KV rows decoded: 1
+                    │ KV pairs read: 2
+                    │ KV bytes read: 8 B
+                    │ KV gRPC calls: 1
+                    │ execution time: 0µs
+                    │ estimated max memory allocated: 0 B
+                    │ estimated row count: 1
+                    │ table: t137352@t137352_pkey
+                    │ equality: ($1) = (k)
+                    │ equality cols are key
+                    │
+                    └── • values
+                          sql nodes: <hidden>
+                          regions: <hidden>
+                          actual row count: 1
+                          execution time: 0µs
+                          size: 1 column, 1 row
 
 statement ok
 DELETE FROM t137352 WHERE true;

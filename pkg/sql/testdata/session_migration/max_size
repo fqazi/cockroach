@@ -1,4 +1,5 @@
-change_session_size 2.0KiB
+exec
+SET CLUSTER SETTING sql.session_transfer.max_session_size = '2KB'
 ----
 
 let $large_string

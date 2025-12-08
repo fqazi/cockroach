@@ -40,7 +40,6 @@ go_library(
         "//pkg/sql/catalog",
         "//pkg/sql/catalog/descpb",
         "//pkg/sql/execinfrapb",
-        "//pkg/sql/sem/eval",
         "//pkg/storage",
         "//pkg/testutils/pgurlutils",
         "//pkg/testutils/skip",
@@ -56,7 +55,6 @@ go_library(
         "//pkg/util/tracing",
         "//pkg/util/uuid",
         "@com_github_cockroachdb_errors//:errors",
-        "@io_storj_drpc//:drpc",
         "@org_golang_google_grpc//:grpc",
     ],
 )

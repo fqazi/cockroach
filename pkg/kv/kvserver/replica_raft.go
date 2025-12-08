@@ -96,8 +96,6 @@ var ReplicaLeaderlessUnavailableThreshold = settings.RegisterDurationSettingWith
 //     terminate execution, although it is given no guarantee that the proposal
 //     won't still go on to commit and apply at some later time.
 //   - the proposal's ID.
-//   - the bytes that will be written by the replica during the application of
-//     the Raft command.
 //   - any error obtained during the creation or proposal of the command, in
 //     which case the other returned values are zero.
 func (r *Replica) evalAndPropose(
@@ -262,7 +260,7 @@ func (r *Replica) evalAndPropose(
 		// Perform a sanity check that the lease is owned by this replica. This must
 		// have been ascertained by the callers in
 		// checkExecutionCanProceedBeforeStorageSnapshot.
-		log.KvExec.Fatalf(ctx, "cannot propose %s on follower with remotely owned lease %s", ba, st.Lease)
+		log.Fatalf(ctx, "cannot propose %s on follower with remotely owned lease %s", ba, st.Lease)
 	} else {
 		proposal.command.ProposerLeaseSequence = st.Lease.Sequence
 	}
@@ -415,7 +413,7 @@ func (r *Replica) propose(
 
 	if crt := p.command.ReplicatedEvalResult.ChangeReplicas; crt != nil {
 		if err := checkReplicationChangeAllowed(p.command, r.Desc(), r.StoreID()); err != nil {
-			log.KvExec.Errorf(ctx, "%v", err)
+			log.Errorf(ctx, "%v", err)
 			return kvpb.NewError(err)
 		}
 		log.KvDistribution.Infof(p.Context(), "proposing %s", crt)
@@ -423,7 +421,7 @@ func (r *Replica) propose(
 		log.VEvent(p.Context(), 4, "sideloadable proposal detected")
 		r.store.metrics.AddSSTableProposals.Inc(1)
 	} else if log.V(4) {
-		log.KvExec.Infof(p.Context(), "proposing command %x: %s", p.idKey, p.Request.Summary())
+		log.Infof(p.Context(), "proposing command %x: %s", p.idKey, p.Request.Summary())
 	}
 
 	raftAdmissionMeta := p.raftAdmissionMeta
@@ -450,7 +448,7 @@ func (r *Replica) propose(
 	// Too verbose even for verbose logging, so manually enable if you want to
 	// debug proposal sizes.
 	if false {
-		log.KvExec.Infof(p.Context(), `%s: proposal: %d
+		log.Infof(p.Context(), `%s: proposal: %d
   RaftCommand.ReplicatedEvalResult:          %d
   RaftCommand.ReplicatedEvalResult.Delta:    %d
   RaftCommand.WriteBatch:                    %d
@@ -699,7 +697,7 @@ func (r *Replica) stepRaftGroupRaftMuLocked(req *kvserverpb.RaftMessageRequest) 
 			// Update the lastUpdateTimes map, unless configured not to by a testing
 			// knob.
 			disableUpdateLastUpdateTimesMapOnRaftGroupStep := false
-			if r.store.TestingKnobs() != nil &&
+			if r.store.TestingKnobs() == nil &&
 				r.store.TestingKnobs().DisableUpdateLastUpdateTimesMapOnRaftGroupStep != nil {
 				disableUpdateLastUpdateTimesMapOnRaftGroupStep = r.store.TestingKnobs().DisableUpdateLastUpdateTimesMapOnRaftGroupStep(r)
 			}
@@ -822,9 +820,6 @@ func (s handleRaftReadyStats) SafeFormat(p redact.SafePrinter, _ rune) {
 		if c := s.apply.numAddSSTCopies; c > 0 {
 			p.Printf(" (copies=%d)", c)
 		}
-	}
-	if b := s.apply.numWriteAndIngestedBytes; b > 0 {
-		p.Printf(", apply-write-bytes=%s", humanizeutil.IBytes(b))
 	}
 	p.SafeString("]")
 
@@ -1112,7 +1107,7 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 			// indicating a newly elected leader or a conf change. Replay protection
 			// prevents any corruption, so the waste is only a performance issue.
 			if log.V(3) {
-				log.KvExec.Infof(ctx, "raft leader changed: %d -> %d", leaderID, hs.Lead)
+				log.Infof(ctx, "raft leader changed: %d -> %d", leaderID, hs.Lead)
 			}
 			if !r.store.TestingKnobs().DisableRefreshReasonNewLeader {
 				refreshReason = reasonNewLeader
@@ -1137,15 +1132,15 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 				return stats, errors.Wrap(err, "invalid snapshot id")
 			}
 			if inSnap.SnapUUID == (uuid.UUID{}) {
-				log.KvExec.Fatalf(ctx, "programming error: a snapshot application was attempted outside of the streaming snapshot codepath")
+				log.Fatalf(ctx, "programming error: a snapshot application was attempted outside of the streaming snapshot codepath")
 			}
 			if snapUUID != inSnap.SnapUUID {
-				log.KvExec.Fatalf(ctx, "incoming snapshot id doesn't match raft snapshot id: %s != %s", snapUUID, inSnap.SnapUUID)
+				log.Fatalf(ctx, "incoming snapshot id doesn't match raft snapshot id: %s != %s", snapUUID, inSnap.SnapUUID)
 			}
 
 			snap := *app.Snapshot
 			if len(app.Entries) != 0 {
-				log.KvExec.Fatalf(ctx, "found Entries in MsgStorageAppend with non-empty Snapshot")
+				log.Fatalf(ctx, "found Entries in MsgStorageAppend with non-empty Snapshot")
 			}
 
 			// Applying this snapshot may require us to subsume one or more of our right
@@ -1196,7 +1191,7 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 		} else {
 			// TODO(pavelkalinnikov): find a way to move it to storeEntries.
 			if app.Commit != 0 && !r.IsInitialized() {
-				log.KvExec.Fatalf(ctx, "setting non-zero HardState.Commit on uninitialized replica %s", r)
+				log.Fatalf(ctx, "setting non-zero HardState.Commit on uninitialized replica %s", r)
 			}
 			// TODO(pav-kv): make this branch unconditional.
 			if r.IsInitialized() && r.store.cfg.KVAdmissionController != nil {
@@ -1283,8 +1278,9 @@ func (r *Replica) handleRaftReadyRaftMuLocked(
 
 	if shouldAssert {
 		sm.r.mu.RLock()
-		sm.r.assertStateRaftMuLockedReplicaMuRLocked(
-			ctx, sm.r.store.StateEngine(), sm.r.store.LogEngine())
+		// TODO(sep-raft-log): either check only statemachine invariants or
+		// pass both engines in.
+		sm.r.assertStateRaftMuLockedReplicaMuRLocked(ctx, sm.r.store.TODOEngine())
 		sm.r.mu.RUnlock()
 	}
 
@@ -1366,7 +1362,7 @@ func maybeFatalOnRaftReadyErr(ctx context.Context, err error) (removed bool) {
 	case errors.Is(err, apply.ErrRemoved):
 		return true
 	default:
-		log.KvExec.FatalfDepth(ctx, 1, "%+v", err)
+		log.FatalfDepth(ctx, 1, "%+v", err)
 		panic("unreachable")
 	}
 }
@@ -1585,7 +1581,7 @@ func (r *Replica) refreshProposalsLocked(
 	ctx context.Context, refreshAtDelta int64, reason refreshRaftReason,
 ) {
 	if refreshAtDelta != 0 && reason != reasonTicks {
-		log.KvExec.Fatalf(ctx, "refreshAtDelta specified for reason %s != reasonTicks", reason)
+		log.Fatalf(ctx, "refreshAtDelta specified for reason %s != reasonTicks", reason)
 	}
 
 	var maxSlowProposalDurationRequest *kvpb.BatchRequest
@@ -1647,7 +1643,7 @@ func (r *Replica) refreshProposalsLocked(
 	}
 
 	r.mu.slowProposalCount = slowProposalCount
-	destroyed := r.shMu.destroyStatus.Removed()
+	destroyed := r.mu.destroyStatus.Removed()
 
 	// If the breaker isn't tripped yet but we've detected commands that have
 	// taken too long to replicate, and the replica is not destroyed, trip the
@@ -1667,7 +1663,7 @@ func (r *Replica) refreshProposalsLocked(
 	if maxSlowProposalDuration > 0 && r.breaker.Signal().Err() == nil && !destroyed {
 		err := errors.Errorf("have been waiting %.2fs for slow proposal %s",
 			maxSlowProposalDuration.Seconds(), maxSlowProposalDurationRequest)
-		log.KvExec.Warningf(ctx, "%s", err)
+		log.Warningf(ctx, "%s", err)
 		// NB: this is async because we're holding lots of locks here, and we want
 		// to avoid having to pass all the information about the replica into the
 		// breaker (since the breaker needs access to this information at will to
@@ -1680,7 +1676,7 @@ func (r *Replica) refreshProposalsLocked(
 		return
 	}
 
-	log.KvExec.VInfof(ctx, 2,
+	log.VInfof(ctx, 2,
 		"pending commands: reproposing %d (at applied index %d, lease applied index %d) %s",
 		len(reproposals), r.shMu.state.RaftAppliedIndex,
 		r.shMu.state.LeaseAppliedIndex, reason)
@@ -1753,7 +1749,7 @@ func (r *Replica) maybeCoalesceHeartbeat(
 		LaggingFollowersOnQuiesceAccurate: quiesce,
 	}
 	if log.V(4) {
-		log.KvExec.Infof(ctx, "coalescing beat: %+v", beat)
+		log.Infof(ctx, "coalescing beat: %+v", beat)
 	}
 	toStore := roachpb.StoreIdent{
 		StoreID: toReplica.StoreID,
@@ -1785,7 +1781,7 @@ func (r *replicaSyncCallback) OnLogSync(
 
 	r.store.metrics.RaftLogCommitLatency.RecordValue(stats.CommitDur.Nanoseconds())
 	if stats.TotalDuration > defaultReplicaRaftMuWarnThreshold {
-		log.KvExec.Infof(repl.raftCtx, "slow non-blocking raft commit: %s", stats.BatchCommitStats)
+		log.Infof(repl.raftCtx, "slow non-blocking raft commit: %s", stats.BatchCommitStats)
 	}
 }
 
@@ -1838,14 +1834,14 @@ func (r *Replica) sendRaftMessages(
 					logstore.AssertSideloadedRaftCommandInlined(ctx, ent)
 
 					if prevIndex+1 != ent.Index {
-						log.KvExec.Fatalf(ctx,
+						log.Fatalf(ctx,
 							"index gap in outgoing MsgApp: idx %d followed by %d",
 							prevIndex, ent.Index,
 						)
 					}
 					prevIndex = ent.Index
 					if prevTerm > ent.Term {
-						log.KvExec.Fatalf(ctx,
+						log.Fatalf(ctx,
 							"term regression in outgoing MsgApp: idx %d at term=%d "+
 								"appended with logterm=%d",
 							ent.Index, ent.Term, message.LogTerm,
@@ -1977,12 +1973,12 @@ func (r *Replica) sendRaftMessage(
 	r.mu.RUnlock()
 
 	if fromErr != nil {
-		log.KvExec.Warningf(ctx, "failed to look up sender replica %d in r%d while sending %s: %s",
+		log.Warningf(ctx, "failed to look up sender replica %d in r%d while sending %s: %s",
 			msg.From, r.RangeID, msg.Type, fromErr)
 		return
 	}
 	if toErr != nil {
-		log.KvExec.Warningf(ctx, "failed to look up recipient replica %d in r%d while sending %s: %s",
+		log.Warningf(ctx, "failed to look up recipient replica %d in r%d while sending %s: %s",
 			msg.To, r.RangeID, msg.Type, toErr)
 		return
 	}
@@ -2049,7 +2045,7 @@ func (r *Replica) sendRaftMessageRequest(
 	ctx context.Context, req *kvserverpb.RaftMessageRequest,
 ) bool {
 	if log.V(4) {
-		log.KvExec.Infof(ctx, "sending raft request %+v", req)
+		log.Infof(ctx, "sending raft request %+v", req)
 	}
 	return r.store.cfg.Transport.SendAsync(req, r.connectionClass.get())
 }
@@ -2077,7 +2073,7 @@ func (r *Replica) reportSnapshotStatus(ctx context.Context, to roachpb.ReplicaID
 		raftGroup.ReportSnapshot(raftpb.PeerID(to), snapStatus)
 		return true, nil
 	}); err != nil && !errors.Is(err, errRemoved) {
-		log.KvExec.Fatalf(ctx, "%v", err)
+		log.Fatalf(ctx, "%v", err)
 	}
 }
 
@@ -2118,7 +2114,7 @@ func (r *Replica) addSnapshotLogTruncationConstraint(
 		// fed into this method twice) or a UUID collision. We discard the update
 		// (which is benign) but log it loudly. If the index is the same, it's
 		// likely the former, otherwise the latter.
-		log.KvExec.Warningf(ctx, "UUID collision at %s for %+v (index %d)", snapUUID, item, appliedIndex)
+		log.Warningf(ctx, "UUID collision at %s for %+v (index %d)", snapUUID, item, appliedIndex)
 		return appliedIndex, func() {}
 	}
 
@@ -2221,7 +2217,7 @@ func (s pendingCmdSlice) Less(i, j int) bool {
 func (r *Replica) withRaftGroupLocked(
 	f func(r *raft.RawNode) (unquiesceAndWakeLeader bool, _ error),
 ) error {
-	if r.shMu.destroyStatus.Removed() {
+	if r.mu.destroyStatus.Removed() {
 		// Callers know to detect errRemoved as non-fatal.
 		return errRemoved
 	}
@@ -2786,7 +2782,7 @@ func (r *Replica) maybeAcquireSnapshotMergeLock(
 	for endKey.Less(inSnap.Desc.EndKey) {
 		sRepl := r.store.LookupReplica(endKey)
 		if sRepl == nil || !endKey.Equal(sRepl.Desc().StartKey) {
-			log.KvExec.Fatalf(ctx, "snapshot widens existing replica, but no replica exists for subsumed key %s", endKey)
+			log.Fatalf(ctx, "snapshot widens existing replica, but no replica exists for subsumed key %s", endKey)
 		}
 		sRepl.raftMu.Lock()
 		subsumedRepls = append(subsumedRepls, sRepl)
@@ -2821,10 +2817,9 @@ func (r *Replica) acquireSplitLock(
 	ctx context.Context, split *roachpb.SplitTrigger,
 ) (func(), error) {
 	rightReplDesc, _ := split.RightDesc.GetReplicaDescriptor(r.StoreID())
-	rightRepl, _, err := r.store.getOrCreateReplica(ctx, roachpb.FullReplicaID{
-		RangeID:   split.RightDesc.RangeID,
-		ReplicaID: rightReplDesc.ReplicaID,
-	}, nil /* creatingReplica */)
+	rightRepl, _, err := r.store.getOrCreateReplica(
+		ctx, split.RightDesc.RangeID, rightReplDesc.ReplicaID, nil, /* creatingReplica */
+	)
 	// If getOrCreateReplica returns RaftGroupDeletedError we know that the RHS
 	// has already been removed. This case is handled properly in splitPostApply.
 	if errors.HasType(err, (*kvpb.RaftGroupDeletedError)(nil)) {
@@ -2857,10 +2852,9 @@ func (r *Replica) acquireMergeLock(
 	// complete, after which the replica will realize it has been destroyed and
 	// reject the snapshot.
 	rightReplDesc, _ := merge.RightDesc.GetReplicaDescriptor(r.StoreID())
-	rightRepl, _, err := r.store.getOrCreateReplica(ctx, roachpb.FullReplicaID{
-		RangeID:   merge.RightDesc.RangeID,
-		ReplicaID: rightReplDesc.ReplicaID,
-	}, nil /* creatingReplica */)
+	rightRepl, _, err := r.store.getOrCreateReplica(
+		ctx, merge.RightDesc.RangeID, rightReplDesc.ReplicaID, nil, /* creatingReplica */
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -138,7 +138,7 @@ func (t *serviceRegistryTest) makeVM(clusterName string, i int) vm.VM {
 }
 
 func (t *serviceRegistryTest) newCluster(nodeCount int) *SyncedCluster {
-	clusterName := fmt.Sprintf("cluster-%s", randutil.RandString(t.rng, 10, randutil.PrintableKeyAlphabet))
+	clusterName := fmt.Sprintf("cluster-%d", t.rng.Uint32())
 	c := &SyncedCluster{
 		Cluster: cloud.Cluster{
 			Name: clusterName,
@@ -334,7 +334,7 @@ func TestMultipleRegistrations(t *testing.T) {
 	verify := func(c *SyncedCluster, servicesToRegister [][]ServiceDesc) bool {
 		for _, services := range servicesToRegister {
 			if len(services) == 0 {
-				err := testDNS.DeleteSRVRecordsBySubdomain(ctx, c.Name)
+				err := testDNS.DeleteRecordsBySubdomain(ctx, c.Name)
 				require.NoError(t, err)
 				continue
 			}

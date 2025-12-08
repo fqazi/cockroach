@@ -20,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/insights"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/uint128"
-	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 )
 
 // Here we benchmark the entire insights stack, so that we can include in our
@@ -52,7 +51,7 @@ func BenchmarkInsights(b *testing.B) {
 			var sessions sync.WaitGroup
 			sessions.Add(numSessions)
 			statements := make([]sqlstats.RecordedStmtStats, b.N)
-			transactions := make([]sqlstats.RecordedTxnStats, numSessions)
+			transactions := make([]sqlstats.RecordedTxnStats, b.N)
 			for i := 0; i < numSessions; i++ {
 				sessionID := clusterunique.ID{Uint128: uint128.FromInts(rand.Uint64(), uint64(i))}
 				for j := 0; j < numTransactionsPerSession; j++ {
@@ -67,8 +66,7 @@ func BenchmarkInsights(b *testing.B) {
 					}
 				}
 				transactions[i] = sqlstats.RecordedTxnStats{
-					SessionID:     sessionID,
-					TransactionID: uuid.MakeV4(),
+					SessionID: sessionID,
 				}
 			}
 
@@ -78,7 +76,7 @@ func BenchmarkInsights(b *testing.B) {
 					defer sessions.Done()
 					for j := 0; j < numTransactionsPerSession; j++ {
 						idx := numTransactionsPerSession*i + j
-						provider.ObserveTransaction(ctx, &transactions[i],
+						provider.ObserveTransaction(ctx, &transactions[idx],
 							[]*sqlstats.RecordedStmtStats{&statements[idx]})
 					}
 				}(i)

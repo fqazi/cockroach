@@ -22,6 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/securityassets"
 	"github.com/cockroachdb/cockroach/pkg/security/securitytest"
 	"github.com/cockroachdb/cockroach/pkg/server"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils/regionlatency"
@@ -140,10 +141,6 @@ func TestTestServerArgsForTransientCluster(t *testing.T) {
 			actual.StoreSpecs = nil
 			actual.Knobs.JobsTestingKnobs = nil
 
-			// Copy the SQLEvalContext from actual to expected since it's set by SetUnsafeOverride
-			// and contains function pointers that we can't predict
-			tc.expected.Knobs.SQLEvalContext = actual.Knobs.SQLEvalContext
-
 			assert.Equal(t, tc.expected, actual)
 		})
 	}
@@ -182,8 +179,8 @@ func TestTransientClusterSimulateLatencies(t *testing.T) {
 		stopper:           stop.NewStopper(),
 		demoDir:           certsDir,
 		stickyVFSRegistry: fs.NewStickyRegistry(),
-		infoLog:           log.Dev.Infof,
-		warnLog:           log.Dev.Warningf,
+		infoLog:           log.Infof,
+		warnLog:           log.Warningf,
 		shoutLog:          log.Ops.Shoutf,
 	}
 
@@ -294,8 +291,8 @@ func TestTransientClusterMultitenant(t *testing.T) {
 		stopper:           stop.NewStopper(),
 		demoDir:           certsDir,
 		stickyVFSRegistry: fs.NewStickyRegistry(),
-		infoLog:           log.Dev.Infof,
-		warnLog:           log.Dev.Warningf,
+		infoLog:           log.Infof,
+		warnLog:           log.Warningf,
 		shoutLog:          log.Ops.Shoutf,
 	}
 	// Stop the cluster when the test exits, including when it fails.
@@ -312,6 +309,9 @@ func TestTransientClusterMultitenant(t *testing.T) {
 	ctx, cancel = c.stopper.WithCancelOnQuiesce(ctx)
 	defer cancel()
 
+	// Ensure CREATE TABLE below works properly.
+	sqlclustersettings.RestrictAccessToSystemInterface.Override(ctx, &c.firstServer.SystemLayer().ClusterSettings().SV, false)
+
 	testutils.RunTrueAndFalse(t, "forSecondaryTenant", func(t *testing.T, forSecondaryTenant bool) {
 		url, err := c.getNetworkURLForServer(ctx, 0,
 			true /* includeAppName */, serverSelection(forSecondaryTenant))
@@ -325,7 +325,7 @@ func TestTransientClusterMultitenant(t *testing.T) {
 		// Create a table on each tenant to make sure that the tenants are separate.
 		require.NoError(t, conn.Exec(ctx, "CREATE TABLE a (a int PRIMARY KEY)"))
 
-		log.Dev.Infof(ctx, "test succeeded")
+		log.Infof(ctx, "test succeeded")
 		t.Log("test succeeded")
 	})
 }
@@ -355,8 +355,8 @@ func TestTenantCapabilities(t *testing.T) {
 		stopper:           stop.NewStopper(),
 		demoDir:           certsDir,
 		stickyVFSRegistry: fs.NewStickyRegistry(),
-		infoLog:           log.Dev.Infof,
-		warnLog:           log.Dev.Warningf,
+		infoLog:           log.Infof,
+		warnLog:           log.Warningf,
 		shoutLog:          log.Ops.Shoutf,
 	}
 	// Stop the cluster when the test exits, including when it fails.

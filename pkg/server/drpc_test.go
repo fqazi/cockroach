@@ -43,7 +43,7 @@ func TestDRPCBatchServer(t *testing.T) {
 		args.ServerArgs.Insecure = insecure
 		args.ReplicationMode = base.ReplicationManual
 		args.ServerArgs.Settings = cluster.MakeClusterSettings()
-		rpcbase.ExperimentalDRPCEnabled.Override(ctx, &args.ServerArgs.Settings.SV, true)
+		rpc.ExperimentalDRPCEnabled.Override(ctx, &args.ServerArgs.Settings.SV, true)
 		c := testcluster.StartTestCluster(t, numNodes, args)
 		defer c.Stopper().Stop(ctx)
 
@@ -99,7 +99,7 @@ func TestStreamContextCancel(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	rpcbase.ExperimentalDRPCEnabled.Override(ctx, &args.ServerArgs.Settings.SV, true)
+	rpc.ExperimentalDRPCEnabled.Override(ctx, &args.ServerArgs.Settings.SV, true)
 	c := testcluster.StartTestCluster(t, numNodes, args)
 	defer c.Stopper().Stop(ctx)
 
@@ -220,14 +220,16 @@ func TestDialDRPC_InterceptorsAreSet(t *testing.T) {
 	args := base.TestClusterArgs{
 		ReplicationMode: base.ReplicationManual,
 		ServerArgs: base.TestServerArgs{
-			Settings:          cluster.MakeClusterSettings(),
-			DefaultDRPCOption: base.TestDRPCEnabled,
+			Settings: cluster.MakeClusterSettings(),
+			Insecure: true,
 		},
 	}
 
-	rpcbase.ExperimentalDRPCEnabled.Override(ctx, &args.ServerArgs.Settings.SV, true)
+	rpc.ExperimentalDRPCEnabled.Override(ctx, &args.ServerArgs.Settings.SV, true)
 	c := testcluster.StartTestCluster(t, numNodes, args)
 	defer c.Stopper().Stop(ctx)
+	require.True(t, c.Server(0).RPCContext().Insecure)
+
 	rpcAddr := c.Server(0).RPCAddr()
 
 	// Client setup
@@ -236,10 +238,9 @@ func TestDialDRPC_InterceptorsAreSet(t *testing.T) {
 	rpcContextOptions.Stopper = c.Stopper()
 	rpcContextOptions.Settings = c.Server(0).ClusterSettings()
 	rpcCtx := rpc.NewContext(ctx, rpcContextOptions)
-
+	rpcCtx.ContextOptions = rpc.ContextOptions{Insecure: true}
 	// Adding test interceptors
 	rpcCtx.Knobs = rpc.ContextTestingKnobs{
-		NoLoopbackDialer: true,
 		UnaryClientInterceptorDRPC: func(target string, class rpcbase.ConnectionClass) drpcclient.UnaryClientInterceptor {
 			return mockUnaryInterceptor
 		},

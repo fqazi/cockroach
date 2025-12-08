@@ -14,7 +14,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/idalloc"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	// Import to set ZoneConfigHook.
@@ -233,9 +232,9 @@ func TestAllocateWithStopper(t *testing.T) {
 	s, idAlloc := newTestAllocator(t)
 	s.Stop() // not deferred.
 
-	_, err := idAlloc.Allocate(context.Background())
-	require.Error(t, err)
-	require.ErrorIs(t, err, &kvpb.NodeUnavailableError{})
+	if _, err := idAlloc.Allocate(context.Background()); !testutils.IsError(err, "system is draining") {
+		t.Errorf("unexpected error: %+v", err)
+	}
 }
 
 // TestLostWriteAssertion makes sure that the Allocator performs a best-effort

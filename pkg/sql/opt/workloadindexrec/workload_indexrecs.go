@@ -9,7 +9,7 @@ import (
 	"context"
 	"regexp"
 
-	"github.com/cockroachdb/cockroach/pkg/sql/parserutils"
+	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -72,6 +72,7 @@ func collectIndexRecs(
 		return nil, nil, err
 	}
 
+	var p parser.Parser
 	var cis []createIndex
 	var dis []dropIndex
 	var ok bool
@@ -117,7 +118,7 @@ func collectIndexRecs(
 				continue
 			}
 
-			stmts, err := parserutils.Parse(indexStrArr[2])
+			stmts, err := p.Parse(indexStrArr[2])
 			if err != nil {
 				err = errors.CombineErrors(errors.Newf("%s is not a valid index operation!", indexStrArr[2]), indexRecs.Close())
 				indexRecs = nil

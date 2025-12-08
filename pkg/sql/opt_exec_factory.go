@@ -153,7 +153,6 @@ func (ef *execFactory) ConstructScan(
 	}
 	scan.reqOrdering = ReqOrdering(reqOrdering)
 	scan.estimatedRowCount = params.EstimatedRowCount
-	scan.statsCreatedAt = params.StatsCreatedAt
 	scan.lockingStrength = descpb.ToScanLockingStrength(params.Locking.Strength)
 	scan.lockingWaitPolicy = descpb.ToScanLockingWaitPolicy(params.Locking.WaitPolicy)
 	scan.lockingDurability = descpb.ToScanLockingDurability(params.Locking.Durability)
@@ -211,6 +210,13 @@ func (ef *execFactory) ConstructFilter(
 	}
 	f.filter = filter
 	f.reqOrdering = ReqOrdering(reqOrdering)
+
+	// If there's a spool, pull it up.
+	if spool, ok := f.input.(*spoolNode); ok {
+		f.input = spool.input
+		spool.input = f
+		return spool, nil
+	}
 	return f, nil
 }
 
@@ -363,6 +369,11 @@ func (ef *execFactory) ConstructSerializingProject(
 	switch r := res.(type) {
 	case *renderNode:
 		r.serialize = true
+	case *spoolNode:
+		// If we pulled up a spoolNode, we don't need to materialize the
+		// ordering (because all mutations are currently not distributed).
+		// TODO(yuzefovich): evaluate whether we still need to push renderings
+		// through the spoolNode.
 	default:
 		return nil, errors.AssertionFailedf("unexpected planNode type %T in ConstructSerializingProject", res)
 	}
@@ -423,7 +434,6 @@ func (ef *execFactory) ConstructApplyJoin(
 	rightColumns colinfo.ResultColumns,
 	onCond tree.TypedExpr,
 	planRightSideFn exec.ApplyJoinPlanRightSideFn,
-	rightSideForExplainFn exec.ApplyJoinRightSideForExplainFn,
 ) (exec.Node, error) {
 	l := left.(planNode)
 	leftCols := planColumns(l)
@@ -797,7 +807,7 @@ func constructVirtualTableLookupJoin(
 	onCond tree.TypedExpr,
 ) (planNode, error) {
 	tn := &table.(*optVirtualTable).name
-	virtual, err := p.getVirtualTabler().getVirtualTableEntry(tn)
+	virtual, err := p.getVirtualTabler().getVirtualTableEntry(tn, p)
 	if err != nil {
 		return nil, err
 	}
@@ -1067,6 +1077,12 @@ func (ef *execFactory) ConstructLimit(
 		l.countExpr = limit
 		return l, nil
 	}
+	// If the input plan is a spoolNode, then propagate any constant limit to it.
+	if spool, ok := plan.(*spoolNode); ok {
+		if val, ok := limit.(*tree.DInt); ok {
+			spool.hardLimit = int64(*val)
+		}
+	}
 	return &limitNode{
 		singleInputPlanNode: singleInputPlanNode{input.(planNode)},
 		countExpr:           limit,
@@ -1202,6 +1218,10 @@ func (ef *execFactory) ConstructPlan(
 	rootRowCount int64,
 	flags exec.PlanFlags,
 ) (exec.Plan, error) {
+	// No need to spool at the root.
+	if spool, ok := root.(*spoolNode); ok {
+		root = spool.input
+	}
 	return constructPlan(root, subqueries, cascades, triggers, checks, rootRowCount, flags)
 }
 
@@ -1379,25 +1399,6 @@ func ordinalsToIndexes(table cat.Table, ords cat.IndexOrdinals) []catalog.Index 
 	return retval
 }
 
-func ordinalsToIndexes2(
-	table cat.Table, a, b cat.IndexOrdinals,
-) ([]catalog.Index, []catalog.Index) {
-	lenA, lenB := len(a), len(b)
-	if lenA+lenB == 0 {
-		return nil, nil
-	}
-
-	indexes := make([]catalog.Index, lenA+lenB)
-	indexesA, indexesB := indexes[:lenA:lenA], indexes[lenA:]
-	for i, idx := range a {
-		indexesA[i] = table.Index(idx).(*optIndex).idx
-	}
-	for i, idx := range b {
-		indexesB[i] = table.Index(idx).(*optIndex).idx
-	}
-	return indexesA, indexesB
-}
-
 func (ef *execFactory) ConstructInsert(
 	input exec.Node,
 	table cat.Table,
@@ -1457,7 +1458,19 @@ func (ef *execFactory) ConstructInsert(
 	if autoCommit {
 		ins.enableAutoCommit()
 	}
-	return ins, nil
+
+	// serialize the data-modifying plan to ensure that no data is
+	// observed that hasn't been validated first. See the comments
+	// on BatchedNext() in plan_batch.go.
+	if rowsNeeded {
+		return &spoolNode{
+			singleInputPlanNode: singleInputPlanNode{&serializeNode{source: ins}},
+		}, nil
+	}
+
+	// We could use serializeNode here, but using rowCountNode is an
+	// optimization that saves on calls to Next() by the caller.
+	return &rowCountNode{source: ins}, nil
 }
 
 func (ef *execFactory) ConstructInsertFastPath(
@@ -1537,7 +1550,19 @@ func (ef *execFactory) ConstructInsertFastPath(
 	if autoCommit {
 		ins.enableAutoCommit()
 	}
-	return ins, nil
+
+	// serialize the data-modifying plan to ensure that no data is
+	// observed that hasn't been validated first. See the comments
+	// on BatchedNext() in plan_batch.go.
+	if rowsNeeded {
+		return &spoolNode{
+			singleInputPlanNode: singleInputPlanNode{&serializeNode{source: ins}},
+		}, nil
+	}
+
+	// We could use serializeNode here, but using rowCountNode is an
+	// optimization that saves on calls to Next() by the caller.
+	return &rowCountNode{source: ins}, nil
 }
 
 func (ef *execFactory) ConstructUpdate(
@@ -1569,8 +1594,6 @@ func (ef *execFactory) ConstructUpdate(
 	}
 
 	// If rows are not needed, no columns are returned.
-	// TODO(mgartner): Combine returnCols allocations with allocations for
-	// fetchCols and updateCols in constructUpdateRun.
 	var returnCols []catalog.Column
 	if rowsNeeded {
 		returnCols = makeColList(table, returnColOrdSet)
@@ -1590,7 +1613,19 @@ func (ef *execFactory) ConstructUpdate(
 	if autoCommit {
 		upd.enableAutoCommit()
 	}
-	return upd, nil
+
+	// Serialize the data-modifying plan to ensure that no data is observed that
+	// hasn't been validated first. See the comments on BatchedNext() in
+	// plan_batch.go.
+	if rowsNeeded {
+		return &spoolNode{
+			singleInputPlanNode: singleInputPlanNode{&serializeNode{source: upd}},
+		}, nil
+	}
+
+	// We could use serializeNode here, but using rowCountNode is an
+	// optimization that saves on calls to Next() by the caller.
+	return &rowCountNode{source: upd}, nil
 }
 
 func (ef *execFactory) ConstructUpdateSwap(
@@ -1653,7 +1688,19 @@ func (ef *execFactory) ConstructUpdateSwap(
 	if autoCommit {
 		upd.enableAutoCommit()
 	}
-	return upd, nil
+
+	// Serialize the data-modifying plan to ensure that no data is observed that
+	// hasn't been validated first. See the comments on BatchedNext() in
+	// plan_batch.go.
+	if rowsNeeded {
+		return &spoolNode{
+			singleInputPlanNode: singleInputPlanNode{&serializeNode{source: upd}},
+		}, nil
+	}
+
+	// We could use serializeNode here, but using rowCountNode is an
+	// optimization that saves on calls to Next() by the caller.
+	return &rowCountNode{source: upd}, nil
 }
 
 func (ef *execFactory) constructUpdateRun(
@@ -1670,15 +1717,15 @@ func (ef *execFactory) constructUpdateRun(
 	lockedIndexes cat.IndexOrdinals,
 ) error {
 	tabDesc := table.(*optTable).desc
-	fetchCols, updateCols := makeColList2(table, fetchColOrdSet, updateColOrdSet)
+	fetchCols := makeColList(table, fetchColOrdSet)
+	updateCols := makeColList(table, updateColOrdSet)
 
 	// Create the table updater.
-	tombstoneIdxs, lockIdxs := ordinalsToIndexes2(table, uniqueWithTombstoneIndexes, lockedIndexes)
 	ru, err := row.MakeUpdater(
 		ef.planner.ExecCfg().Codec,
 		tabDesc,
-		tombstoneIdxs,
-		lockIdxs,
+		ordinalsToIndexes(table, uniqueWithTombstoneIndexes),
+		ordinalsToIndexes(table, lockedIndexes),
 		updateCols,
 		fetchCols,
 		row.UpdaterDefault,
@@ -1749,12 +1796,11 @@ func (ef *execFactory) ConstructUpsert(
 	}
 
 	// Create the table updater, which does the bulk of the update-related work.
-	tombstoneIdxs, lockIdxs := ordinalsToIndexes2(table, uniqueWithTombstoneIndexes, lockedIndexes)
 	ru, err := row.MakeUpdater(
 		ef.planner.ExecCfg().Codec,
 		tabDesc,
-		tombstoneIdxs,
-		lockIdxs,
+		ordinalsToIndexes(table, uniqueWithTombstoneIndexes),
+		ordinalsToIndexes(table, lockedIndexes),
 		updateCols,
 		fetchCols,
 		row.UpdaterDefault,
@@ -1799,7 +1845,19 @@ func (ef *execFactory) ConstructUpsert(
 	if autoCommit {
 		ups.enableAutoCommit()
 	}
-	return ups, nil
+
+	// Serialize the data-modifying plan to ensure that no data is observed that
+	// hasn't been validated first. See the comments on BatchedNext() in
+	// plan_batch.go.
+	if rowsNeeded {
+		return &spoolNode{
+			singleInputPlanNode: singleInputPlanNode{&serializeNode{source: ups}},
+		}, nil
+	}
+
+	// We could use serializeNode here, but using rowCountNode is an
+	// optimization that saves on calls to Next() by the caller.
+	return &rowCountNode{source: ups}, nil
 }
 
 func (ef *execFactory) ConstructDelete(
@@ -1839,7 +1897,19 @@ func (ef *execFactory) ConstructDelete(
 	if autoCommit {
 		del.enableAutoCommit()
 	}
-	return del, nil
+
+	// Serialize the data-modifying plan to ensure that no data is observed that
+	// hasn't been validated first. See the comments on BatchedNext() in
+	// plan_batch.go.
+	if rowsNeeded {
+		return &spoolNode{
+			singleInputPlanNode: singleInputPlanNode{&serializeNode{source: del}},
+		}, nil
+	}
+
+	// We could use serializeNode here, but using rowCountNode is an
+	// optimization that saves on calls to Next() by the caller.
+	return &rowCountNode{source: del}, nil
 }
 
 func (ef *execFactory) ConstructDeleteSwap(
@@ -1892,7 +1962,19 @@ func (ef *execFactory) ConstructDeleteSwap(
 	if autoCommit {
 		del.enableAutoCommit()
 	}
-	return del, nil
+
+	// Serialize the data-modifying plan to ensure that no data is observed that
+	// hasn't been validated first. See the comments on BatchedNext() in
+	// plan_batch.go.
+	if rowsNeeded {
+		return &spoolNode{
+			singleInputPlanNode: singleInputPlanNode{&serializeNode{source: del}},
+		}, nil
+	}
+
+	// We could use serializeNode here, but using rowCountNode is an
+	// optimization that saves on calls to Next() by the caller.
+	return &rowCountNode{source: del}, nil
 }
 
 func (ef *execFactory) constructDeleteRun(
@@ -2368,10 +2450,8 @@ func (ef *execFactory) ConstructCancelSessions(input exec.Node, ifExists bool) (
 	}, nil
 }
 
-// ConstructCreateStatistics is part of the exec.Factory interface
-func (ef *execFactory) ConstructCreateStatistics(
-	cs *tree.CreateStats, table cat.Table, index cat.Index, whereConstraint *constraint.Constraint,
-) (exec.Node, error) {
+// ConstructCreateStatistics is part of the exec.Factory interface.
+func (ef *execFactory) ConstructCreateStatistics(cs *tree.CreateStats) (exec.Node, error) {
 	if err := featureflag.CheckEnabled(
 		ef.ctx,
 		ef.planner.ExecCfg(),
@@ -2380,36 +2460,14 @@ func (ef *execFactory) ConstructCreateStatistics(
 	); err != nil {
 		return nil, err
 	}
-
-	var whereSpans roachpb.Spans
-	var whereIndexID descpb.IndexID
-	if whereConstraint != nil {
-		tabDesc := table.(*optTable).desc
-		idx := index.(*optIndex).idx
-		whereIndexID = idx.GetID()
-
-		var sb span.Builder
-		sb.InitAllowingExternalRowData(
-			ef.planner.EvalContext(), ef.planner.ExecCfg().Codec, tabDesc, idx,
-		)
-		spans, err := sb.SpansFromConstraint(whereConstraint, span.NoopSplitter())
-		if err != nil {
-			return nil, err
-		}
-
-		whereSpans = spans
-	}
-
 	// Don't run as a job if we are inside an EXPLAIN / EXPLAIN ANALYZE. That will
 	// allow us to get insight into the actual execution.
 	runAsJob := !ef.isExplain && ef.planner.instrumentation.ShouldUseJobForCreateStats()
 
 	return &createStatsNode{
-		CreateStats:  *cs,
-		p:            ef.planner,
-		runAsJob:     runAsJob,
-		whereSpans:   whereSpans,
-		whereIndexID: whereIndexID,
+		CreateStats: *cs,
+		p:           ef.planner,
+		runAsJob:    runAsJob,
 	}, nil
 }
 
@@ -2476,7 +2534,15 @@ func (rb *renderBuilder) init(n exec.Node, reqOrdering exec.OutputOrdering) {
 		columns:             planColumns(p),
 	}
 	rb.r.reqOrdering = ReqOrdering(reqOrdering)
-	rb.res = rb.r
+
+	// If there's a spool, pull it up.
+	if spool, ok := rb.r.input.(*spoolNode); ok {
+		rb.r.input = spool.input
+		spool.input = rb.r
+		rb.res = spool
+	} else {
+		rb.res = rb.r
+	}
 }
 
 // setOutput sets the output of the renderNode. exprs is the list of render
@@ -2499,27 +2565,6 @@ func makeColList(table cat.Table, cols exec.TableColumnOrdinalSet) []catalog.Col
 		ret = append(ret, tab.getCol(i))
 	}
 	return ret
-}
-
-// makeColList2 is similar to makeColList, but it takes two sets of ordinals and
-// allocates a single slice which is split into two.
-func makeColList2(
-	table cat.Table, a, b exec.TableColumnOrdinalSet,
-) ([]catalog.Column, []catalog.Column) {
-	tab := table.(optCatalogTableInterface)
-	lenA, lenB := a.Len(), b.Len()
-	cols := make([]catalog.Column, 0, lenA+lenB)
-	listA, listB := cols[:0:lenA], cols[lenA:lenA]
-	for i, n := 0, table.ColumnCount(); i < n; i++ {
-		col := tab.getCol(i)
-		if a.Contains(i) {
-			listA = append(listA, col)
-		}
-		if b.Contains(i) {
-			listB = append(listB, col)
-		}
-	}
-	return listA, listB
 }
 
 // makePublicToReturnColumnIndexMapping returns a map from the ordinals

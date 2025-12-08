@@ -293,7 +293,7 @@ func (p *planner) accumulateOwnedSequences(
 				// exist.
 				if errors.Is(err, catalog.ErrDescriptorDropped) ||
 					pgerror.GetPGCode(err) == pgcode.UndefinedTable {
-					log.Dev.Infof(ctx,
+					log.Infof(ctx,
 						"swallowing error for owned sequence that was not found %s", err.Error())
 					continue
 				}

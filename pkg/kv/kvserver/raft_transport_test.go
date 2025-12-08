@@ -82,7 +82,7 @@ func (s channelServer) HandleRaftResponse(
 			return err
 		}
 	}
-	log.KvExec.Fatalf(ctx, "unexpected raft response: %s", resp)
+	log.Fatalf(ctx, "unexpected raft response: %s", resp)
 	return nil
 }
 

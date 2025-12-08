@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
-	"github.com/cockroachdb/redact/interfaces"
 )
 
 // NodeID is a custom type for a cockroach node ID. (not a raft node ID)
@@ -105,25 +104,6 @@ func (r ReplicaID) String() string {
 
 // SafeValue implements the redact.SafeValue interface.
 func (r ReplicaID) SafeValue() {}
-
-// FullReplicaID is a fully-qualified replica ID.
-type FullReplicaID struct {
-	// RangeID is the id of the range.
-	RangeID RangeID
-	// ReplicaID is the id of the replica.
-	ReplicaID ReplicaID
-}
-
-// SafeFormat implements redact.SafeFormatter. It prints as
-// r<rangeID>/<replicaID>.
-func (id FullReplicaID) SafeFormat(s interfaces.SafePrinter, _ rune) {
-	s.Printf("r%d/%d", id.RangeID, id.ReplicaID)
-}
-
-// String implements the fmt.Stringer interface.
-func (id FullReplicaID) String() string {
-	return redact.StringWithoutMarkers(id)
-}
 
 // Equals returns whether the Attributes lists are equivalent. Attributes lists
 // are treated as sets, meaning that ordering and duplicates are ignored.
@@ -802,10 +782,6 @@ const MaxDiversityScore = 1.0
 // There is also a need to consider the cases where the localities have
 // different lengths. For these cases, we treat the missing key on one side as
 // different.
-//
-// Note that the diversity score calculation in MMA takes the pessimistic
-// approach of treating missing keys as identical, resulting in lower diversity
-// scores when the localities have different lengths.
 func (l Locality) DiversityScore(other Locality) float64 {
 	length := len(l.Tiers)
 	if len(other.Tiers) < length {
@@ -841,6 +817,19 @@ func (l *Locality) Set(value string) error {
 	}
 	l.Tiers = tiers
 	return nil
+}
+
+// CopyReplaceKeyValue makes a copy of this locality, replacing any tier in the
+// copy having the specified `key` with the new specified `value`.
+func (l *Locality) CopyReplaceKeyValue(key, value string) Locality {
+	tiers := make([]Tier, len(l.Tiers))
+	for i := range l.Tiers {
+		tiers[i] = l.Tiers[i]
+		if tiers[i].Key == key {
+			tiers[i].Value = value
+		}
+	}
+	return Locality{Tiers: tiers}
 }
 
 // Find searches the locality's tiers for the input key, returning its value if

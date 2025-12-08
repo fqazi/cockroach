@@ -448,7 +448,7 @@ func TestGossipMostDistant(t *testing.T) {
 
 			// Connect the network in a loop. This will cut the distance to the most
 			// distant node in half.
-			log.Dev.Infof(context.Background(), "connecting from n%d to n%d", c.from, c.to)
+			log.Infof(context.Background(), "connecting from n%d to n%d", c.from, c.to)
 			connect(nodes[c.from], nodes[c.to], nodesCtx[c.from])
 
 			// Wait for n1 to determine that n6 is now the most distant hops from 9
@@ -1139,71 +1139,4 @@ func TestGossipBatching(t *testing.T) {
 	upperBoundMessages := int64(500)
 	require.LessOrEqual(t, serverMessagesSentCount, upperBoundMessages)
 	require.LessOrEqual(t, clientMessagesSentCount, upperBoundMessages)
-}
-
-// TestCallbacksPendingMetricGoesToZeroOnStop verifies that the CallbacksPending
-// metric is correctly decremented when a callback is unregistered with pending work
-// or when the stopper is stopped.
-func TestCallbacksPendingMetricGoesToZeroOnStop(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	testCases := []struct {
-		name    string
-		cleanup func(g *Gossip, unregister func(), stopper *stop.Stopper, ctx context.Context)
-	}{
-		{
-			name: "unregister callback",
-			cleanup: func(g *Gossip, unregister func(), stopper *stop.Stopper, ctx context.Context) {
-				unregister()
-			},
-		},
-		{
-			name: "stopper shutdown",
-			cleanup: func(g *Gossip, unregister func(), stopper *stop.Stopper, ctx context.Context) {
-				stopper.Stop(ctx)
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			stopper := stop.NewStopper()
-			defer stopper.Stop(ctx)
-			g := NewTest(1, stopper, metric.NewRegistry())
-
-			unregister := g.RegisterCallback("test.*", func(key string, val roachpb.Value, _ int64) {
-				// Do nothing.
-			})
-
-			// Add 100 infos to the gossip that will be processed by the callback.
-			for i := 0; i < 100; i++ {
-				slice := []byte("b1")
-				require.NoError(t, g.AddInfo(fmt.Sprintf("test.key%d", i), slice, time.Hour))
-			}
-
-			// Execute the cleanup action (either unregister or stopper.Stop)
-			// We do this in a goroutine to help cause interesting potential race conditions.
-			go func() {
-				tc.cleanup(g, unregister, stopper, ctx)
-			}()
-
-			// Add another 100 infos to the gossip that will be processed by the callback.
-			// We do this in a goroutine to help cause interesting potential race conditions.
-			go func() {
-				for i := 0; i < 100; i++ {
-					slice := []byte("b2")
-					require.NoError(t, g.AddInfo(fmt.Sprintf("test.key%d", i), slice, time.Hour))
-				}
-			}()
-
-			// Wait for the pending callbacks metric to go to 0.
-			testutils.SucceedsSoon(t, func() error {
-				if g.mu.is.metrics.CallbacksPending.Value() != 0 {
-					return fmt.Errorf("CallbacksPending should be 0, got %d", g.mu.is.metrics.CallbacksPending.Value())
-				}
-				return nil
-			})
-		})
-	}
 }

@@ -244,7 +244,6 @@ func testBatchHandlerExhaustive(t *testing.T, factory batchHandlerFactory) {
 	}
 
 	handler, desc := factory(t, s, "test_table")
-	defer handler.Close(ctx)
 	defer handler.ReleaseLeases(ctx)
 
 	// TODO(jeffswenson): test the other handler types.

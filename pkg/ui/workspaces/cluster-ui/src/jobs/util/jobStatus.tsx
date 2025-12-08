@@ -10,7 +10,7 @@ import React from "react";
 import styles from "../jobs.module.scss";
 
 import { Duration } from "./duration";
-import { JOB_STATUS_FAILED, JobStatusVisual, jobToVisual } from "./jobOptions";
+import { JobStatusVisual, jobToVisual } from "./jobOptions";
 import {
   JobStatusBadge,
   ProgressBar,
@@ -35,14 +35,10 @@ export const JobStatus: React.FC<JobStatusProps> = ({
   hideDuration = false,
 }) => {
   const visualType = jobToVisual(job);
+
   switch (visualType) {
     case JobStatusVisual.BadgeOnly:
-      return (
-        <JobStatusBadge
-          jobStatus={job.status}
-          advisory={job.error || job.running_status}
-        />
-      );
+      return <JobStatusBadge jobStatus={job.status} />;
     case JobStatusVisual.BadgeWithDuration:
       return (
         <div>
@@ -72,10 +68,7 @@ export const JobStatus: React.FC<JobStatusProps> = ({
     case JobStatusVisual.BadgeWithMessage:
       return (
         <div>
-          <JobStatusBadge
-            jobStatus={job.status}
-            advisory={job.error || job.running_status}
-          />
+          <JobStatusBadge jobStatus={job.status} />
           <span className={cx("jobs-table__running-status")}>
             {job.running_status}
           </span>
@@ -84,14 +77,11 @@ export const JobStatus: React.FC<JobStatusProps> = ({
     case JobStatusVisual.BadgeWithErrorMessage:
       return (
         <div>
-          <JobStatusBadge
-            jobStatus={job.status}
-            advisory={job.error || job.running_status}
-          />
+          <JobStatusBadge jobStatus={job.status} />
           {!compact && (
             <InlineAlert
-              title={job.error || job.running_status}
-              intent={job.status === JOB_STATUS_FAILED ? "danger" : "warning"}
+              title={job.error}
+              intent="danger"
               className={cx("inline-message")}
             />
           )}

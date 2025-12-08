@@ -292,7 +292,7 @@ func forecastColumnStatistics(
 	forecast = &TableStatistic{
 		TableStatisticProto: TableStatisticProto{
 			TableID:       tableID,
-			StatisticID:   0, // TODO(#86358): add support for SHOW HISTOGRAM.
+			StatisticID:   0, // TODO(michae2): Add support for SHOW HISTOGRAM.
 			Name:          jobspb.ForecastStatsName,
 			ColumnIDs:     columnIDs,
 			CreatedAt:     at,
@@ -341,7 +341,7 @@ func forecastColumnStatistics(
 					93892, "forecasted histogram for table %v had first bucket with non-zero NumRange or "+
 						"DistinctRange", tableID,
 				)
-				log.Dev.Warningf(ctx, "%v", err)
+				log.Warningf(ctx, "%v", err)
 				return nil, err
 			}
 			if bucket.UpperBound != tree.DNull {

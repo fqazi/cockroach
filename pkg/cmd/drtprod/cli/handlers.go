@@ -29,7 +29,6 @@ func init() {
 	setEnvIfNotExists("ROACHPROD_GCE_DNS_DOMAIN", "drt.crdb.io")
 	setEnvIfNotExists("ROACHPROD_GCE_DNS_ZONE", "drt")
 	setEnvIfNotExists("ROACHPROD_GCE_DEFAULT_PROJECT", "cockroach-drt")
-	setEnvIfNotExists("ROACHPROD_GCE_DEFAULT_SERVICE_ACCOUNT", "622274581499-compute@developer.gserviceaccount.com")
 
 	if _, exists := os.LookupEnv("DD_API_KEY"); !exists {
 		// set the DD_API_KEY if we are able to fetch it from the secrets.
@@ -46,8 +45,6 @@ func init() {
 
 // Initialize sets up the environment and initializes the command-line interface.
 func Initialize(ctx context.Context) {
-	// Apply our flag defaults.
-	cli.UpdateFlagDefaults()
 	// Disable command sorting in Cobra (command-line parser).
 	cobra.EnableCommandSorting = false
 

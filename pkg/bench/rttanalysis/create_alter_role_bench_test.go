@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 )
 
 func BenchmarkCreateRole(b *testing.B) { reg.Run(b) }
@@ -65,10 +63,7 @@ func init() {
 
 // BenchmarkUseManyRoles is useful for testing the performance of the
 // role membership cache.
-func BenchmarkUseManyRoles(b *testing.B) {
-	skip.UnderShort(b, "skipping long benchmark")
-	reg.Run(b)
-}
+func BenchmarkUseManyRoles(b *testing.B) { reg.Run(b) }
 func init() {
 
 	createFunc := `
@@ -106,19 +101,19 @@ $$ LANGUAGE plpgsql;`
 			},
 		},
 		{
-			Name: "use 25 roles",
+			Name: "use 50 roles",
 			SetupEx: []string{
 				"CREATE ROLE parent_role",
-				createNRoles(25),
-				grantRoleToNRoles("parent_role", 25),
+				createNRoles(50),
+				grantRoleToNRoles("parent_role", 50),
 				"CREATE TABLE tab (a INT)",
 				"GRANT SELECT ON tab TO parent_role",
 				"INSERT INTO tab VALUES (1)",
 				createFunc,
 			},
-			Stmt: "SELECT query_table_with_roles(25)",
+			Stmt: "SELECT query_table_with_roles(50)",
 			ResetEx: []string{
-				dropNRoles(25),
+				dropNRoles(50),
 				"DROP ROLE parent_role",
 			},
 		},

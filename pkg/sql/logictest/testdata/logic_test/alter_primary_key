@@ -1,4 +1,3 @@
-# LogicTest: !local-prepared
 # We've seen this test hit a timeout in fakedist configs under race.
 skip under race
 
@@ -708,7 +707,7 @@ ALTER TABLE t ADD PRIMARY KEY (x)
 statement ok
 DROP TABLE IF EXISTS t;
 
-statement disable-cf-mutator ok
+statement ok
 CREATE TABLE t (x INT NOT NULL)
 
 statement ok
@@ -737,7 +736,7 @@ t  CREATE TABLE public.t (
 statement ok
 DROP TABLE IF EXISTS t;
 
-statement disable-cf-mutator ok
+statement ok
 CREATE TABLE t (x INT NOT NULL);
 
 statement ok
@@ -767,7 +766,7 @@ t  CREATE TABLE public.t (
 statement ok
 DROP TABLE IF EXISTS t;
 
-statement disable-cf-mutator ok
+statement ok
 CREATE TABLE t (x INT NOT NULL);
 
 statement ok

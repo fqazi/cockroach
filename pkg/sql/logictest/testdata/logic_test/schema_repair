@@ -1,5 +1,6 @@
-# LogicTest: !local-prepared
-# knob-opt: allow-unsafe
+# TODO(#144279): remove this.
+statement ok
+SET kv_transaction_buffered_writes_enabled = false;
 
 subtest lost_table_data
 
@@ -342,7 +343,7 @@ FROM
 WHERE
 	name = 'kv'
 
-statement error pgcode XX000 internal error:.* relation "kv" \(\d+\): column "k" invalid ID \(1\) >= next column ID \(1\)
+statement error pgcode XX000 internal error: relation "kv" \(\d+\): column "k" invalid ID \(1\) >= next column ID \(1\)
 ALTER TABLE kv RENAME TO kv
 
 statement ok

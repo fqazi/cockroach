@@ -167,8 +167,6 @@ var BinaryOpReverseMap = map[Operator]treebin.BinaryOperatorSymbol{
 	VectorDistanceOp:        treebin.Distance,
 	VectorCosDistanceOp:     treebin.CosDistance,
 	VectorNegInnerProductOp: treebin.NegInnerProduct,
-	FirstContainsOp:         treebin.FirstContains,
-	FirstContainedByOp:      treebin.FirstContainedBy,
 }
 
 // UnaryOpReverseMap maps from an optimizer operator type to a semantic tree

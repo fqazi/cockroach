@@ -14,8 +14,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/multiqueue"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -273,10 +273,8 @@ func (s *Store) throttleSnapshot(
 			if err := ctx.Err(); err != nil {
 				return nil, errors.Wrap(err, "acquiring snapshot reservation")
 			}
-			return nil, errors.Wrapf(
-				queueCtx.Err(),
-				"giving up during snapshot reservation due to cluster setting %q",
-				snapshotReservationQueueTimeoutFraction.Name(),
+			return nil, kvpb.NewSnapshotReservationTimeoutError(
+				queueCtx.Err(), string(snapshotReservationQueueTimeoutFraction.Name()),
 			)
 		case <-s.stopper.ShouldQuiesce():
 			return nil, errors.Errorf("stopped")
@@ -296,7 +294,7 @@ func (s *Store) throttleSnapshot(
 	// NB: this log message is skipped in test builds as many tests do not mock
 	// all of the objects being logged.
 	if elapsed > snapshotReservationWaitWarnThreshold && !buildutil.CrdbTestBuild {
-		log.KvDistribution.Infof(
+		log.Infof(
 			ctx,
 			"waited for %.1fs to acquire snapshot reservation to r%d",
 			elapsed.Seconds(),
@@ -349,7 +347,7 @@ func (s *Store) canAcceptSnapshotLocked(
 	existingRepl.mu.RLock()
 	existingDesc := existingRepl.shMu.state.Desc
 	existingIsInitialized := existingDesc.IsInitialized()
-	existingDestroyStatus := existingRepl.shMu.destroyStatus
+	existingDestroyStatus := existingRepl.mu.destroyStatus
 	existingRepl.mu.RUnlock()
 
 	if existingIsInitialized {
@@ -410,7 +408,7 @@ func (s *Store) checkSnapshotOverlapLocked(
 		exReplica, err := s.GetReplica(it.Desc().RangeID)
 		msg := IntersectingSnapshotMsg
 		if err != nil {
-			log.KvDistribution.Warningf(ctx, "unable to look up overlapping replica on %s: %v", exReplica, err)
+			log.Warningf(ctx, "unable to look up overlapping replica on %s: %v", exReplica, err)
 		} else {
 			inactive := func(r *Replica) bool {
 				if r.RaftStatus() == nil {
@@ -531,7 +529,7 @@ func (s *Store) receiveSnapshot(
 			}
 			return nil
 		}); pErr != nil {
-		log.KvDistribution.Infof(ctx, "cannot accept snapshot: %s", pErr)
+		log.Infof(ctx, "cannot accept snapshot: %s", pErr)
 		return sendSnapshotError(ctx, s, stream, pErr.GoError())
 	}
 
@@ -540,7 +538,7 @@ func (s *Store) receiveSnapshot(
 			// Remove the placeholder, if it's still there. Most of the time it will
 			// have been filled and this is a no-op.
 			if _, err := s.removePlaceholder(ctx, placeholder, removePlaceholderFailed); err != nil {
-				log.KvDistribution.Fatalf(ctx, "unable to remove placeholder: %s", err)
+				log.Fatalf(ctx, "unable to remove placeholder: %s", err)
 			}
 		}
 	}()
@@ -552,7 +550,7 @@ func (s *Store) receiveSnapshot(
 	}
 
 	ss := &kvBatchSnapshotStrategy{
-		scratch:      s.sstSnapshotStorage.NewScratchSpace(header.State.Desc.RangeID, snapUUID, s.ClusterSettings()),
+		scratch:      s.sstSnapshotStorage.NewScratchSpace(header.State.Desc.RangeID, snapUUID),
 		sstChunkSize: snapshotSSTWriteSyncRate.Get(&s.cfg.Settings.SV),
 		st:           s.ClusterSettings(),
 		clusterID:    s.ClusterID(),
@@ -563,7 +561,7 @@ func (s *Store) receiveSnapshot(
 		return err
 	}
 	if log.V(2) {
-		log.KvDistribution.Infof(ctx, "accepted snapshot reservation for r%d", header.State.Desc.RangeID)
+		log.Infof(ctx, "accepted snapshot reservation for r%d", header.State.Desc.RangeID)
 	}
 
 	comparisonResult := s.getLocalityComparison(header.RaftMessageRequest.FromReplica.NodeID,
@@ -693,7 +691,7 @@ func SendEmptySnapshot(
 		return err
 	}
 
-	ms, err = kvstorage.WriteInitialReplicaState(
+	ms, err = stateloader.WriteInitialReplicaState(
 		ctx,
 		eng,
 		ms,
@@ -708,7 +706,7 @@ func SendEmptySnapshot(
 	}
 
 	// Use stateloader to load state out of memory from the previously created engine.
-	sl := kvstorage.MakeStateLoader(desc.RangeID)
+	sl := stateloader.Make(desc.RangeID)
 	state, err := sl.Load(ctx, eng, &desc)
 	if err != nil {
 		return err
@@ -775,7 +773,7 @@ func SendEmptySnapshot(
 
 	defer func() {
 		if err := stream.CloseSend(); err != nil {
-			log.KvDistribution.Warningf(ctx, "failed to close snapshot stream: %+v", err)
+			log.Warningf(ctx, "failed to close snapshot stream: %+v", err)
 		}
 	}()
 

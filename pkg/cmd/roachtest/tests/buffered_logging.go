@@ -75,7 +75,7 @@ func registerBufferedLogging(r registry.Registry) {
 			install.CockroachNodeCertsDir, /* certsDir */
 			roachprod.PGURLOptions{
 				External: false,
-				Secure:   install.SimpleSecureOption(true),
+				Secure:   true,
 			})
 		require.NoError(t, err)
 		workloadPGURLs := make([]string, len(secureUrls))

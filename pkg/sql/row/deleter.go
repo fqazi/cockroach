@@ -20,28 +20,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/errors"
 )
-
-// TODO(yuzefovich): we can probably increase this value.
-const defaultDeleteRangeChunkSize = 600
-
-var deleteRangeChunkSize = metamorphic.ConstantWithTestRange(
-	"row-delete-range-chunk-size",
-	defaultDeleteRangeChunkSize,
-	1,
-	32,
-)
-
-// DeleteRangeChunkSize returns the maximum number of keys deleted per chunk via
-// deleteRange fast-path operator.
-func DeleteRangeChunkSize(forceProductionValues bool) int {
-	if forceProductionValues {
-		return defaultDeleteRangeChunkSize
-	}
-	return deleteRangeChunkSize
-}
 
 // Deleter abstracts the key/value operations for deleting table rows.
 type Deleter struct {
@@ -199,10 +179,10 @@ func (rd *Deleter) DeleteRow(
 			if oth.IsSet() {
 				oth.DelWithCPut(ctx, b, &rd.key, expValue, traceKV)
 			} else {
-				delWithCPutFn(ctx, b, &rd.key, expValue, traceKV, &rd.Helper, primaryIndexDirs)
+				delWithCPutFn(ctx, b, &rd.key, expValue, traceKV, rd.Helper.primIndexValDirs)
 			}
 		} else {
-			delFn(ctx, b, &rd.key, !rd.primaryLocked /* needsLock */, traceKV, &rd.Helper, primaryIndexDirs)
+			delFn(ctx, b, &rd.key, !rd.primaryLocked /* needsLock */, traceKV, rd.Helper.primIndexValDirs)
 		}
 
 		rd.key = nil
@@ -238,7 +218,7 @@ func (rd *Deleter) DeleteRow(
 		for _, e := range entries {
 			if err = rd.Helper.deleteIndexEntry(
 				ctx, b, index, &e.Key, alreadyLocked, rd.Helper.sd.BufferedWritesUseLockingOnNonUniqueIndexes,
-				traceKV, secondaryIndexDirs(i),
+				traceKV, rd.Helper.secIndexValDirs[i],
 			); err != nil {
 				return err
 			}

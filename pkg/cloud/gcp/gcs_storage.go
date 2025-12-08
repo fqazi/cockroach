@@ -187,10 +187,9 @@ func makeGCSStorage(
 
 	clientName := args.ExternalStorageOptions().ClientName
 	baseTransport, err := cloud.MakeTransport(args.Settings, args.MetricsRecorder, cloud.HTTPClientConfig{
-		Bucket:         conf.Bucket,
-		Client:         clientName,
-		Cloud:          "gcs",
-		HttpMiddleware: args.HttpMiddleware,
+		Bucket: conf.Bucket,
+		Client: clientName,
+		Cloud:  "gcs",
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create http transport")

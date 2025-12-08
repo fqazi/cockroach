@@ -33,7 +33,7 @@ func TestGC(t *testing.T) {
 		t.Fatal("no file sink")
 	}
 
-	testLogGC(t, fs, Dev.Info)
+	testLogGC(t, fs, Info)
 }
 
 func TestSecondaryGC(t *testing.T) {
@@ -189,7 +189,7 @@ func succeedsSoon(t *testing.T, fn func() error) {
 			wait = time.Second
 		}
 		if timeutil.Since(tBegin) > 3*time.Second {
-			Dev.InfofDepth(context.Background(), 2, "SucceedsSoon: %+v", lastErr)
+			InfofDepth(context.Background(), 2, "SucceedsSoon: %+v", lastErr)
 		}
 		time.Sleep(wait)
 	}

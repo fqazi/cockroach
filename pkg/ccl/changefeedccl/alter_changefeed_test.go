@@ -57,7 +57,7 @@ func TestAlterChangefeedAddTargetPrivileges(t *testing.T) {
 	ctx := context.Background()
 
 	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142799),
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 		Knobs: base.TestingKnobs{
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			DistSQL: &execinfra.TestingKnobs{
@@ -221,9 +221,7 @@ func TestAlterChangefeedAddTarget(t *testing.T) {
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
 		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo`, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo`)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
@@ -263,9 +261,7 @@ func TestAlterChangefeedAddTargetAfterInitialScan(t *testing.T) {
 			sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
 			sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b INT)`)
 
-			testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo`, optOutOfMetamorphicDBLevelChangefeed{
-				reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-			})
+			testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo`)
 			defer closeFeed(t, testFeed)
 
 			feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
@@ -340,7 +336,7 @@ func TestAlterChangefeedAddTargetFamily(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "helpers_test=1")
+	require.NoError(t, log.SetVModule("helpers_test=1"))
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
@@ -398,7 +394,7 @@ func TestAlterChangefeedSwitchFamily(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "helpers_test=1")
+	require.NoError(t, log.SetVModule("helpers_test=1"))
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
@@ -462,9 +458,7 @@ func TestAlterChangefeedDropTarget(t *testing.T) {
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
 		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar`, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar`)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
@@ -499,11 +493,7 @@ func TestAlterChangefeedDropTargetAfterTableDrop(t *testing.T) {
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
 		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar WITH on_error='pause'`,
-			optOutOfMetamorphicDBLevelChangefeed{
-				reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-			},
-		)
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar WITH on_error='pause'`)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
@@ -524,7 +514,7 @@ func TestAlterChangefeedDropTargetAfterTableDrop(t *testing.T) {
 		})
 	}
 
-	cdcTest(t, testFn, feedTestEnterpriseSinks, feedTestNoExternalConnection, withAllowChangefeedErr("error is expected when dropping"))
+	cdcTest(t, testFn, feedTestEnterpriseSinks, feedTestNoExternalConnection)
 }
 
 func TestAlterChangefeedDropTargetFamily(t *testing.T) {
@@ -775,9 +765,7 @@ func TestAlterChangefeedDropAllTargetsError(t *testing.T) {
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
 		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar`, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar`)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
@@ -811,9 +799,7 @@ func TestAlterChangefeedTelemetry(t *testing.T) {
 		// Reset the counts.
 		_ = telemetry.GetFeatureCounts(telemetry.Raw, telemetry.ResetCounts)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar WITH diff`, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar WITH diff`)
 		defer closeFeed(t, testFeed)
 		feed := testFeed.(cdctest.EnterpriseTestFeed)
 
@@ -1008,10 +994,7 @@ func TestAlterChangefeedAddTargetErrors(t *testing.T) {
 			return true, nil
 		}
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '100ms'`,
-			optOutOfMetamorphicDBLevelChangefeed{
-				reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-			})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '100ms'`)
 
 		// Kafka feeds are not buffered, so we have to consume messages.
 		g := ctxgroup.WithContext(context.Background())
@@ -1136,11 +1119,7 @@ func TestAlterChangefeedDatabaseScope(t *testing.T) {
 			`INSERT INTO new_movr.drivers VALUES (1, 'Bob')`,
 		)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR movr.drivers WITH diff`,
-			optOutOfMetamorphicDBLevelChangefeed{
-				reason: "changefeed watches tables not in the default database",
-			},
-		)
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR movr.drivers WITH diff`)
 		defer closeFeed(t, testFeed)
 
 		assertPayloads(t, testFeed, []string{
@@ -1183,10 +1162,7 @@ func TestAlterChangefeedDatabaseScopeUnqualifiedName(t *testing.T) {
 		)
 
 		sqlDB.Exec(t, `USE movr`)
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR drivers WITH diff, resolved = '100ms'`,
-			optOutOfMetamorphicDBLevelChangefeed{
-				reason: "changefeed watches tables not in the default database",
-			})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR drivers WITH diff, resolved = '100ms'`)
 		defer closeFeed(t, testFeed)
 
 		assertPayloads(t, testFeed, []string{
@@ -1235,9 +1211,6 @@ func TestAlterChangefeedColumnFamilyDatabaseScope(t *testing.T) {
 		if _, ok := f.(*webhookFeedFactory); ok {
 			args = append(args, optOutOfMetamorphicEnrichedEnvelope{reason: "metamorphic enriched envelope does not support column families for webhook sinks"})
 		}
-		args = append(args, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "changefeed watches tables not in the default database",
-		})
 		testFeed := feed(t, f, `CREATE CHANGEFEED FOR movr.drivers WITH diff, split_column_families`, args...)
 		defer closeFeed(t, testFeed)
 
@@ -1290,9 +1263,6 @@ func TestAlterChangefeedAlterTableName(t *testing.T) {
 		if _, ok := f.(*webhookFeedFactory); ok {
 			args = append(args, optOutOfMetamorphicEnrichedEnvelope{reason: "see comment"})
 		}
-		args = append(args, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "changefeed watches tables not in the default database",
-		})
 
 		testFeed := feed(t, f, `CREATE CHANGEFEED FOR movr.users WITH diff, resolved = '100ms'`, args...)
 		defer closeFeed(t, testFeed)
@@ -1303,8 +1273,7 @@ func TestAlterChangefeedAlterTableName(t *testing.T) {
 
 		expectResolvedTimestamp(t, testFeed)
 
-		sqlDB.Exec(t, `ALTER TABLE movr.users RENAME TO movr.riders`)
-		sqlDB.CheckQueryResultsRetry(t, "SELECT count(*) FROM [SHOW TABLES FROM movr] WHERE table_name = 'riders'", [][]string{{"1"}})
+		waitForSchemaChange(t, sqlDB, `ALTER TABLE movr.users RENAME TO movr.riders`)
 
 		var tsLogical string
 		sqlDB.QueryRow(t, `SELECT cluster_logical_timestamp()`).Scan(&tsLogical)
@@ -1346,7 +1315,7 @@ func TestAlterChangefeedAddTargetsDuringSchemaChangeError(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	// Set verbose log to confirm whether or not we hit the same nil row issue as in #140669
-	testutils.SetVModule(t, "kv_feed=2,changefeed_processors=2")
+	require.NoError(t, log.SetVModule("kv_feed=2,changefeed_processors=2"))
 
 	rnd, seed := randutil.NewPseudoRand()
 	t.Logf("random seed: %d", seed)
@@ -1379,11 +1348,7 @@ func TestAlterChangefeedAddTargetsDuringSchemaChangeError(t *testing.T) {
 			return nil
 		}
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo
-WITH resolved = '1s', no_initial_scan, min_checkpoint_frequency='1ns'`,
-			optOutOfMetamorphicDBLevelChangefeed{
-				reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-			})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '1s', no_initial_scan`)
 		jobFeed := testFeed.(cdctest.EnterpriseTestFeed)
 		jobRegistry := s.Server.JobRegistry().(*jobs.Registry)
 
@@ -1553,27 +1518,25 @@ func TestAlterChangefeedAddTargetsDuringBackfill(t *testing.T) {
 
 		// Emit resolved events for the majority of spans. Be extra paranoid and ensure that
 		// we have at least 1 span for which we don't emit resolvedFoo timestamp (to force checkpointing).
-		// We however also need to ensure there's at least one span that isn't filtered out.
-		var allowedOne, haveGaps bool
-		knobs.FilterSpanWithMutation = func(r *jobspb.ResolvedSpan) (filter bool, _ error) {
+		haveGaps := false
+		knobs.FilterSpanWithMutation = func(r *jobspb.ResolvedSpan) (bool, error) {
 			rndMu.Lock()
 			defer rndMu.Unlock()
-			defer func() {
-				t.Logf("resolved span: %s@%s, filter: %t", r.Span, r.Timestamp, filter)
-			}()
 
 			if r.Span.Equal(fooTableSpan) {
-				return true, nil
-			}
-			if !allowedOne {
-				allowedOne = true
+				// Do not emit resolved events for the entire table span.
+				// We "simulate" large table by splitting single table span into many parts, so
+				// we want to resolve those sub-spans instead of the entire table span.
+				// However, we have to emit something -- otherwise the entire changefeed
+				// machine would not work.
+				r.Span.EndKey = fooTableSpan.Key.Next()
 				return false, nil
 			}
-			if !haveGaps {
-				haveGaps = true
-				return true, nil
+			if haveGaps {
+				return rndMu.rnd.Intn(10) > 7, nil
 			}
-			return rndMu.rnd.Intn(10) > 7, nil
+			haveGaps = true
+			return true, nil
 		}
 
 		// Checkpoint progress frequently, and set the checkpoint size limit.
@@ -1583,8 +1546,7 @@ func TestAlterChangefeedAddTargetsDuringBackfill(t *testing.T) {
 			context.Background(), &s.Server.ClusterSettings().SV, maxCheckpointSize)
 
 		registry := s.Server.JobRegistry().(*jobs.Registry)
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo
-WITH resolved = '100ms', min_checkpoint_frequency='1ns'`)
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '100ms'`)
 
 		g := ctxgroup.WithContext(context.Background())
 		g.Go(func() error {
@@ -1623,10 +1585,8 @@ WITH resolved = '100ms', min_checkpoint_frequency='1ns'`)
 
 		// Collect spans we attempt to resolve after when we resume.
 		var resolvedFoo []roachpb.Span
-		knobs.FilterSpanWithMutation = func(r *jobspb.ResolvedSpan) (filter bool, _ error) {
-			defer func() {
-				t.Logf("resolved span: %s@%s, filter: %t", r.Span, r.Timestamp, filter)
-			}()
+		knobs.FilterSpanWithMutation = func(r *jobspb.ResolvedSpan) (bool, error) {
+			t.Logf("resolved span: %#v", r)
 			if !r.Span.Equal(fooTableSpan) {
 				resolvedFoo = append(resolvedFoo, r.Span)
 			}
@@ -1724,10 +1684,7 @@ func TestAlterChangefeedDropTargetDuringInitialScan(t *testing.T) {
 		if rnd.Intn(2) == 0 {
 			targets = "bar, foo"
 		}
-		testFeed := feed(t, f, fmt.Sprintf(`CREATE CHANGEFEED for %s`, targets),
-			optOutOfMetamorphicDBLevelChangefeed{
-				reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-			})
+		testFeed := feed(t, f, fmt.Sprintf(`CREATE CHANGEFEED for %s`, targets))
 		defer closeFeed(t, testFeed)
 
 		// Wait for all spans to have been resolved.
@@ -1778,10 +1735,7 @@ func TestAlterChangefeedInitialScan(t *testing.T) {
 			sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 			sqlDB.Exec(t, `INSERT INTO bar VALUES (1), (2), (3)`)
 
-			testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '1s', no_initial_scan`,
-				optOutOfMetamorphicDBLevelChangefeed{
-					reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-				})
+			testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '1s', no_initial_scan`)
 			defer closeFeed(t, testFeed)
 
 			expectResolvedTimestamp(t, testFeed)
@@ -1900,9 +1854,7 @@ func TestAlterChangefeedAccessControl(t *testing.T) {
 		rootDB := sqlutils.MakeSQLRunner(s.DB)
 
 		createFeed := func(stmt string) (cdctest.EnterpriseTestFeed, func()) {
-			successfulFeed := feed(t, f, stmt, optOutOfMetamorphicDBLevelChangefeed{
-				reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-			})
+			successfulFeed := feed(t, f, stmt)
 			closeCf := func() {
 				closeFeed(t, successfulFeed)
 			}
@@ -1930,7 +1882,7 @@ func TestAlterChangefeedAccessControl(t *testing.T) {
 		})
 		// jobController can access the job, but will hit an error re-creating the changefeed.
 		asUser(t, f, `jobController`, func(userDB *sqlutils.SQLRunner) {
-			userDB.ExpectErr(t, `pq: user "jobcontroller" requires the CHANGEFEED privilege on all target tables to be able to run an enterprise changefeed`, fmt.Sprintf(`ALTER CHANGEFEED %d DROP table_b`, currentFeed.JobID()))
+			userDB.ExpectErr(t, "pq: user jobcontroller requires the CHANGEFEED privilege on all target tables to be able to run an enterprise changefeed", fmt.Sprintf(`ALTER CHANGEFEED %d DROP table_b`, currentFeed.JobID()))
 		})
 		asUser(t, f, `userWithSomeGrants`, func(userDB *sqlutils.SQLRunner) {
 			userDB.ExpectErr(t, "does not have privileges for job", fmt.Sprintf(`ALTER CHANGEFEED %d ADD table_b`, currentFeed.JobID()))
@@ -1974,9 +1926,7 @@ func TestAlterChangefeedAddDropSameTarget(t *testing.T) {
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
 		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo`, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo`)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
@@ -2027,7 +1977,7 @@ func TestAlterChangefeedRandomizedTargetChanges(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "helpers_test=1")
+	require.NoError(t, log.SetVModule("helpers_test=1"))
 
 	rnd, _ := randutil.NewPseudoRand()
 
@@ -2093,9 +2043,7 @@ func TestAlterChangefeedRandomizedTargetChanges(t *testing.T) {
 		createStmt := fmt.Sprintf(
 			`CREATE CHANGEFEED FOR %s WITH updated`, strings.Join(initialTables, ", "))
 		t.Log(createStmt)
-		testFeed := feed(t, f, createStmt, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, createStmt)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)

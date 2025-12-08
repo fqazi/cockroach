@@ -13,7 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/crlib/crtime"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 )
 
@@ -27,7 +27,7 @@ func Make(
 	maxBytes int64,
 	metrics *Metrics,
 ) *jobspb.TimestampSpansMap {
-	start := crtime.NowMono()
+	start := timeutil.Now()
 
 	spanGroupMap := make(map[hlc.Timestamp]*roachpb.SpanGroup)
 	for s, ts := range spans {
@@ -60,7 +60,7 @@ func Make(
 	}
 
 	if metrics != nil {
-		metrics.CreateNanos.RecordValue(start.Elapsed().Nanoseconds())
+		metrics.CreateNanos.RecordValue(int64(timeutil.Since(start)))
 		metrics.TotalBytes.RecordValue(int64(cp.Size()))
 		metrics.TimestampCount.RecordValue(int64(cp.TimestampCount()))
 		metrics.SpanCount.RecordValue(int64(cp.SpanCount()))
@@ -87,4 +87,60 @@ func Restore(sf SpanForwarder, checkpoint *jobspb.TimestampSpansMap) error {
 		}
 	}
 	return nil
+}
+
+// ConvertFromLegacyCheckpoint converts a checkpoint from the legacy format
+// into the current format.
+func ConvertFromLegacyCheckpoint(
+	//lint:ignore SA1019 deprecated usage
+	checkpoint *jobspb.ChangefeedProgress_Checkpoint,
+	statementTime hlc.Timestamp,
+	initialHighWater hlc.Timestamp,
+) *jobspb.TimestampSpansMap {
+	if checkpoint.IsEmpty() {
+		return nil
+	}
+
+	checkpointTS := checkpoint.Timestamp
+
+	// Checkpoint records from 21.2 were used only for backfills and did not store
+	// the timestamp, since in a backfill it must either be the StatementTime for
+	// an initial backfill, or right after the high-water for schema backfills.
+	if checkpointTS.IsEmpty() {
+		if initialHighWater.IsEmpty() {
+			checkpointTS = statementTime
+		} else {
+			checkpointTS = initialHighWater.Next()
+		}
+	}
+
+	return jobspb.NewTimestampSpansMap(map[hlc.Timestamp]roachpb.Spans{
+		checkpointTS: checkpoint.Spans,
+	})
+}
+
+// ConvertToLegacyCheckpoint converts a checkpoint from the current format
+// into the legacy format.
+func ConvertToLegacyCheckpoint(
+	checkpoint *jobspb.TimestampSpansMap,
+) *jobspb. //lint:ignore SA1019 deprecated usage
+		ChangefeedProgress_Checkpoint {
+	if checkpoint.IsEmpty() {
+		return nil
+	}
+
+	// Collect leading spans into a SpanGroup to merge adjacent spans.
+	var checkpointSpanGroup roachpb.SpanGroup
+	for _, spans := range checkpoint.All() {
+		checkpointSpanGroup.Add(spans...)
+	}
+	if checkpointSpanGroup.Len() == 0 {
+		return nil
+	}
+
+	//lint:ignore SA1019 deprecated usage
+	return &jobspb.ChangefeedProgress_Checkpoint{
+		Spans:     checkpointSpanGroup.Slice(),
+		Timestamp: checkpoint.MinTimestamp(),
+	}
 }

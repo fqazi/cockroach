@@ -19,6 +19,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/gossip"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangecache"
@@ -277,10 +278,6 @@ func TestDistSQLRangeCachesIntegrationTest(t *testing.T) {
 			ReplicationMode: base.ReplicationManual,
 			ServerArgs: base.TestServerArgs{
 				UseDatabase: "test",
-				// Probably this test could work in shared-process mode, but
-				// it's occasionally flaking there and doesn't seem worth
-				// investigating since we're touching the ranges directly.
-				DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
 			},
 		})
 	defer tc.Stopper().Stop(context.Background())
@@ -301,7 +298,7 @@ func TestDistSQLRangeCachesIntegrationTest(t *testing.T) {
 	//
 	// TODO(andrei): This is super hacky. What this test really wants to do is to
 	// precisely control the contents of the range cache on node 4.
-	tc.ApplicationLayer(3).DistSenderI().(*kvcoord.DistSender).DisableFirstRangeUpdates()
+	tc.Server(3).DistSenderI().(*kvcoord.DistSender).DisableFirstRangeUpdates()
 	db3 := tc.ServerConn(3)
 	// Force the DistSQL on this connection.
 	_, err := db3.Exec(`SET CLUSTER SETTING sql.defaults.distsql = always;`)
@@ -1375,16 +1372,15 @@ func TestPartitionSpans(t *testing.T) {
 	// We need a mock Gossip to contain addresses for the nodes. Otherwise the
 	// DistSQLPlanner will not plan flows on them.
 	ctx := context.Background()
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{
+	s := serverutils.StartServerOnly(t, base.TestServerArgs{
 		Knobs: base.TestingKnobs{
 			DistSQL: &execinfra.TestingKnobs{
 				MinimumNumberOfGatewayPartitions: 1,
 			},
 		},
 	})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
-	mockGossip := gossip.NewTest(roachpb.NodeID(1), srv.Stopper(), metric.NewRegistry())
+	defer s.Stopper().Stop(ctx)
+	mockGossip := gossip.NewTest(roachpb.NodeID(1), s.Stopper(), metric.NewRegistry())
 	var nodeDescs []*roachpb.NodeDescriptor
 	mockInstances := make(mockAddressResolver)
 	for i := 1; i <= 10; i++ {
@@ -1463,7 +1459,7 @@ func TestPartitionSpans(t *testing.T) {
 						TestingKnobs: execinfra.TestingKnobs{MinimumNumberOfGatewayPartitions: 1},
 					},
 				},
-				codec:     s.Codec(),
+				codec:     keys.SystemSQLCodec,
 				nodeDescs: mockGossip,
 			}
 
@@ -1472,7 +1468,7 @@ func TestPartitionSpans(t *testing.T) {
 				require.NoError(t, locFilter.Set(tc.locFilter))
 			}
 			evalCtx := &eval.Context{
-				Codec: s.Codec(),
+				Codec: keys.SystemSQLCodec,
 				SessionDataStack: sessiondata.NewStack(&sessiondata.SessionData{
 					SessionData: sessiondatapb.SessionData{
 						DistsqlPlanGatewayBias: 2,
@@ -1747,6 +1743,111 @@ func TestShouldPickGatewayNode(t *testing.T) {
 			shouldPick := mockDsp.shouldPickGateway(mockPlanCtx, tc.instances)
 			require.Equal(t, tc.shouldPick, shouldPick)
 		})
+	}
+}
+
+// Test that a node whose descriptor info is not accessible through gossip is
+// not used. This is to simulate nodes that have been decomisioned and also
+// nodes that have been "replaced" by another node at the same address (which, I
+// guess, is also a type of decomissioning).
+func TestPartitionSpansSkipsNodesNotInGossip(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	// The spans that we're going to plan for.
+	span := roachpb.Span{Key: roachpb.Key("A"), EndKey: roachpb.Key("Z")}
+	gatewayNode := roachpb.NodeID(2)
+	ranges := []testSpanResolverRange{{"A", 1}, {"B", 2}, {"C", 1}}
+
+	stopper := stop.NewStopper()
+	defer stopper.Stop(context.Background())
+
+	mockGossip := gossip.NewTest(roachpb.NodeID(1), stopper, metric.NewRegistry())
+	var nodeDescs []*roachpb.NodeDescriptor
+	for i := 1; i <= 2; i++ {
+		sqlInstanceID := base.SQLInstanceID(i)
+		desc := &roachpb.NodeDescriptor{
+			NodeID:  roachpb.NodeID(sqlInstanceID),
+			Address: util.UnresolvedAddr{AddressField: fmt.Sprintf("addr%d", i)},
+		}
+		if i == 2 {
+			if err := mockGossip.SetNodeDescriptor(desc); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// All the nodes advertise that they are not draining. This is to
+		// simulate the "node overridden by another node at the same address"
+		// case mentioned in the test comment - for such a node, the descriptor
+		// would be taken out of the gossip data, but other datums it advertised
+		// are left in place.
+		if err := mockGossip.AddInfoProto(
+			gossip.MakeDistSQLDrainingKey(sqlInstanceID),
+			&execinfrapb.DistSQLDrainingInfo{
+				Draining: false,
+			},
+			0, // ttl - no expiration
+		); err != nil {
+			t.Fatal(err)
+		}
+
+		nodeDescs = append(nodeDescs, desc)
+	}
+	tsp := &testSpanResolver{
+		nodes:  nodeDescs,
+		ranges: ranges,
+	}
+
+	st := cluster.MakeTestingClusterSettings()
+	gw := gossip.MakeOptionalGossip(mockGossip)
+	dsp := DistSQLPlanner{
+		st:                   st,
+		gatewaySQLInstanceID: base.SQLInstanceID(tsp.nodes[gatewayNode-1].NodeID),
+		stopper:              stopper,
+		spanResolver:         tsp,
+		gossip:               gw,
+		nodeHealth: distSQLNodeHealth{
+			gossip: gw,
+			connHealthSystem: func(node roachpb.NodeID, _ rpcbase.ConnectionClass) error {
+				_, _, err := mockGossip.GetNodeIDAddress(node)
+				return err
+			},
+			isAvailable: func(base.SQLInstanceID) bool {
+				return true
+			},
+		},
+		codec: keys.SystemSQLCodec,
+	}
+
+	ctx := context.Background()
+	// This test is specific to gossip-based planning.
+	useGossipPlanning.Override(ctx, &st.SV, true)
+	planCtx := dsp.NewPlanningCtx(
+		ctx, &extendedEvalContext{Context: eval.Context{Codec: keys.SystemSQLCodec, Settings: st}},
+		nil /* planner */, nil /* txn */, FullDistribution,
+	)
+	partitions, err := dsp.PartitionSpans(ctx, planCtx, roachpb.Spans{span}, PartitionSpansBoundDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resMap := make(map[base.SQLInstanceID][][2]string)
+	for _, p := range partitions {
+		if _, ok := resMap[p.SQLInstanceID]; ok {
+			t.Fatalf("node %d shows up in multiple partitions", p.SQLInstanceID)
+		}
+		var spans [][2]string
+		for _, s := range p.Spans {
+			spans = append(spans, [2]string{string(s.Key), string(s.EndKey)})
+		}
+		resMap[p.SQLInstanceID] = spans
+	}
+
+	expectedPartitions :=
+		map[base.SQLInstanceID][][2]string{
+			2: {{"A", "Z"}},
+		}
+	if !reflect.DeepEqual(resMap, expectedPartitions) {
+		t.Errorf("expected partitions:\n  %v\ngot:\n  %v", expectedPartitions, resMap)
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -82,7 +81,6 @@ type TestState struct {
 
 	catalogChanges     catalogChanges
 	refProviderFactory scbuild.ReferenceProviderFactory
-	clusterSettings    *cluster.Settings
 }
 
 type catalogChanges struct {

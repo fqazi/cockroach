@@ -18,7 +18,6 @@ go_library(
         "//pkg/util/retry",
         "//pkg/util/syncutil",
         "//pkg/util/timeutil",
-        "@com_github_cockroachdb_crlib//crtime",
         "@com_github_cockroachdb_errors//:errors",
     ],
 )

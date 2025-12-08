@@ -10,6 +10,7 @@ import (
 	gosql "database/sql"
 	"fmt"
 	"math"
+	"net/url"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -22,6 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltestutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/pgurlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
@@ -292,7 +294,8 @@ func TestShowCreateView(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
 
 	if _, err := sqlDB.Exec(`
@@ -388,7 +391,8 @@ func TestShowCreateSequence(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
 
 	if _, err := sqlDB.Exec(`
@@ -655,14 +659,14 @@ func TestShowQueriesDelegatesInternal(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	s := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
 
-	pgURL, cleanup := s.PGUrl(
+	pgURL, cleanup := pgurlutils.PGUrl(
 		t,
-		serverutils.CertsDirPrefix("TestShowQueriesDelegatesInternal"),
-		serverutils.User(username.RootUser),
+		s.AdvSQLAddr(),
+		"TestShowQueriesDelegatesInternal",
+		url.User(username.RootUser),
 	)
 	defer cleanup()
 
@@ -967,13 +971,11 @@ func TestShowSessionPrivileges(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	params.Insecure = true
-	srv, rawSQLDBroot, _ := serverutils.StartServer(t, params)
-	defer srv.Stopper().Stop(context.Background())
-	s := srv.ApplicationLayer()
-
+	s, rawSQLDBroot, _ := serverutils.StartServer(t, params)
 	sqlDBroot := sqlutils.MakeSQLRunner(rawSQLDBroot)
+	defer s.Stopper().Stop(context.Background())
 
 	// Create four users: one with no special permissions, one with the
 	// VIEWACTIVITY role option, one with VIEWACTIVITYREDACTED option,
@@ -999,7 +1001,17 @@ func TestShowSessionPrivileges(t *testing.T) {
 		{"adminuser", true, nil},
 	}
 	for i, tc := range users {
-		db := s.SQLConn(t, serverutils.User(tc.username), serverutils.ClientCerts(false))
+		pgURL := url.URL{
+			Scheme:   "postgres",
+			User:     url.User(tc.username),
+			Host:     s.AdvSQLAddr(),
+			RawQuery: "sslmode=disable",
+		}
+		db, err := gosql.Open("postgres", pgURL.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
 		users[i].sqlRunner = sqlutils.MakeSQLRunner(db)
 
 		// Ensure the session is open.
@@ -1042,14 +1054,12 @@ func TestShowRedactedActiveStatements(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	params.Insecure = true
 	ctx, cancel := context.WithCancel(context.Background())
-	srv, rawSQLDBroot, _ := serverutils.StartServer(t, params)
-	defer srv.Stopper().Stop(context.Background())
-	s := srv.ApplicationLayer()
-
+	s, rawSQLDBroot, _ := serverutils.StartServer(t, params)
 	sqlDBroot := sqlutils.MakeSQLRunner(rawSQLDBroot)
+	defer s.Stopper().Stop(context.Background())
 
 	// Create four users: one with no special permissions, one with the
 	// VIEWACTIVITY role option, one with VIEWACTIVITYREDACTED option,
@@ -1083,7 +1093,17 @@ func TestShowRedactedActiveStatements(t *testing.T) {
 		{"bothperms", true, true, nil},
 	}
 	for i, tc := range users {
-		db := s.SQLConn(t, serverutils.User(tc.username), serverutils.ClientCerts(false))
+		pgURL := url.URL{
+			Scheme:   "postgres",
+			User:     url.User(tc.username),
+			Host:     s.AdvSQLAddr(),
+			RawQuery: "sslmode=disable",
+		}
+		db, err := gosql.Open("postgres", pgURL.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
 		users[i].sqlRunner = sqlutils.MakeSQLRunner(db)
 
 		// Ensure the session is open.
@@ -1195,14 +1215,12 @@ func TestShowRedactedSessions(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	params.Insecure = true
 	ctx, cancel := context.WithCancel(context.Background())
-	srv, rawSQLDBroot, _ := serverutils.StartServer(t, params)
-	defer srv.Stopper().Stop(context.Background())
-	s := srv.ApplicationLayer()
-
+	s, rawSQLDBroot, _ := serverutils.StartServer(t, params)
 	sqlDBroot := sqlutils.MakeSQLRunner(rawSQLDBroot)
+	defer s.Stopper().Stop(context.Background())
 
 	// Create four users: one with no special permissions, one with the
 	// VIEWACTIVITY role option, one with VIEWACTIVITYREDACTED option,
@@ -1236,7 +1254,17 @@ func TestShowRedactedSessions(t *testing.T) {
 		{"bothperms", true, true, nil},
 	}
 	for i, tc := range users {
-		db := s.SQLConn(t, serverutils.User(tc.username), serverutils.ClientCerts(false))
+		pgURL := url.URL{
+			Scheme:   "postgres",
+			User:     url.User(tc.username),
+			Host:     s.AdvSQLAddr(),
+			RawQuery: "sslmode=disable",
+		}
+		db, err := gosql.Open("postgres", pgURL.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
 		users[i].sqlRunner = sqlutils.MakeSQLRunner(db)
 
 		// Ensure the session is open.

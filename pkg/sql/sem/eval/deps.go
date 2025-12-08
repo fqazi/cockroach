@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/hintpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
@@ -168,10 +167,6 @@ type HasPrivilegeSpecifier struct {
 	// This needs to be a user-defined function OID. Builtin function OIDs won't
 	// work since they're not descriptors based.
 	FunctionOID *oid.Oid
-
-	// Global privilege
-	// When true, this specifier is for checking global/system privileges.
-	IsGlobalPrivilege bool
 }
 
 // TypeResolver is an interface for resolving types and type OIDs.
@@ -457,33 +452,8 @@ type Planner interface {
 	// ClearTableStatsCache removes all entries from the node's table stats cache.
 	ClearTableStatsCache()
 
-	// ClearStatementHintsCache removes all entries from the node's statement
-	// hints cache.
-	ClearStatementHintsCache()
-
-	// AwaitStatementHintsCache waits for the node's statement hints cache to
-	// catch up with recent hint injections.
-	AwaitStatementHintsCache(ctx context.Context)
-
 	// RetryCounter is the number of times this statement has been retried.
 	RetryCounter() int
-
-	// ProcessVectorIndexFixups waits until all outstanding fixups for the vector
-	// index with the given ID have been processed.
-	ProcessVectorIndexFixups(ctx context.Context, tableID descpb.ID, indexID descpb.IndexID) error
-
-	// InsertStatementHint adds a new hint for the given statement fingerprint to
-	// the system.statement_hints table. It returns the hint ID of the newly
-	// created hint.
-	InsertStatementHint(ctx context.Context, statementFingerprint string, hint hintpb.StatementHintUnion) (int64, error)
-
-	// UsingHintInjection returns whether we are planning with externally-injected
-	// hints.
-	UsingHintInjection() bool
-
-	// GetHintIDs returns the external statement hints we're using for this
-	// statement.
-	GetHintIDs() []int64
 }
 
 // InternalRows is an iterator interface that's exposed by the internal
@@ -701,7 +671,7 @@ type ChangefeedState interface {
 	SetHighwater(frontier hlc.Timestamp)
 
 	// SetCheckpoint sets the checkpoint for the changefeed.
-	SetCheckpoint(checkpoint *jobspb.TimestampSpansMap)
+	SetCheckpoint(checkpoint *jobspb.TimestampSpansMap) error
 }
 
 // TenantOperator is capable of interacting with tenant state, allowing SQL
@@ -786,20 +756,6 @@ type StmtDiagnosticsRequestInsertFunc func(
 	redacted bool,
 	username string,
 ) error
-
-// TxnDiagnosticsRequestInsertFunc is an interface embedded in EvalCtx that can
-// be used by the builtins to insert a transaction diagnostics request. This
-// interface is introduced to avoid circular dependency.
-type TxnDiagnosticsRequestInsertFunc func(
-	ctx context.Context,
-	txnFingerprintId uint64,
-	stmtFingerprintIds []uint64,
-	username string,
-	samplingProbability float64,
-	minExecutionLatency time.Duration,
-	expiresAfter time.Duration,
-	redacted bool,
-) (int, error)
 
 // AsOfSystemTime represents the result from the evaluation of AS OF SYSTEM TIME
 // clause.

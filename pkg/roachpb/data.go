@@ -1198,7 +1198,7 @@ func (t Transaction) Clone() *Transaction {
 // AssertInitialized crashes if the transaction is not initialized.
 func (t *Transaction) AssertInitialized(ctx context.Context) {
 	if t.ID == (uuid.UUID{}) || t.WriteTimestamp.IsEmpty() {
-		log.Dev.Fatalf(ctx, "uninitialized txn: %s", *t)
+		log.Fatalf(ctx, "uninitialized txn: %s", *t)
 	}
 }
 
@@ -1391,7 +1391,7 @@ func (t *Transaction) Update(o *Transaction) {
 		*t = *o
 		return
 	} else if t.ID != o.ID {
-		log.Dev.Fatalf(ctx, "updating txn %s with different txn %s", t.String(), o.String())
+		log.Fatalf(ctx, "updating txn %s with different txn %s", t.String(), o.String())
 		return
 	}
 	if len(t.Key) == 0 {
@@ -1406,7 +1406,7 @@ func (t *Transaction) Update(o *Transaction) {
 		if !t.Status.IsFinalized() {
 			t.Status = o.Status
 		} else if t.Status == COMMITTED {
-			log.Dev.Warningf(ctx, "updating COMMITTED txn %s with txn at later epoch %s", t.String(), o.String())
+			log.Warningf(ctx, "updating COMMITTED txn %s with txn at later epoch %s", t.String(), o.String())
 		}
 		// Replace all epoch-scoped state.
 		t.Epoch = o.Epoch
@@ -1430,12 +1430,12 @@ func (t *Transaction) Update(o *Transaction) {
 			}
 		case ABORTED:
 			if o.Status == COMMITTED {
-				log.Dev.Warningf(ctx, "updating ABORTED txn %s with COMMITTED txn %s", t.String(), o.String())
+				log.Warningf(ctx, "updating ABORTED txn %s with COMMITTED txn %s", t.String(), o.String())
 			}
 		case COMMITTED:
 			// Nothing to do.
 		default:
-			log.Dev.Fatalf(ctx, "unexpected txn status: %s", t.Status)
+			log.Fatalf(ctx, "unexpected txn status: %s", t.Status)
 		}
 
 		if t.ReadTimestamp == o.ReadTimestamp {
@@ -1466,7 +1466,7 @@ func (t *Transaction) Update(o *Transaction) {
 			// aborted.
 			t.Status = ABORTED
 		case PREPARED, COMMITTED:
-			log.Dev.Warningf(ctx, "updating txn %s with %s txn at earlier epoch %s", t.String(), o.Status, o.String())
+			log.Warningf(ctx, "updating txn %s with %s txn at earlier epoch %s", t.String(), o.Status, o.String())
 		}
 	}
 
@@ -1949,7 +1949,7 @@ func (l Lease) SafeFormat(w redact.SafePrinter, _ rune) {
 		w.SafeString("<empty>")
 		return
 	}
-	w.Printf("repl=%s seq=%d start=%s type=%s", l.Replica, l.Sequence, l.Start, l.Type())
+	w.Printf("repl=%s seq=%d start=%s", l.Replica, l.Sequence, l.Start)
 	switch l.Type() {
 	case LeaseExpiration:
 		w.Printf(" exp=%s", l.Expiration)
@@ -1991,10 +1991,6 @@ const (
 	// to be the range's raft leader.
 	LeaseLeader
 )
-
-func (t LeaseType) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Printf("%s", redact.SafeString(t.String()))
-}
 
 // TestingAllLeaseTypes returns a list of all lease types to test against.
 func TestingAllLeaseTypes() []LeaseType {
