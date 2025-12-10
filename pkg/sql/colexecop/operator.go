@@ -76,12 +76,6 @@ type KVReader interface {
 	// GetContentionTime returns the amount of time KV reads spent
 	// contending. It must be safe for concurrent use.
 	GetContentionTime() time.Duration
-	// GetLockWaitTime returns the amount of time KV reads spent
-	// waiting in the lock table. It must be safe for concurrent use.
-	GetLockWaitTime() time.Duration
-	// GetLatchWaitTime returns the amount of time KV reads spent
-	// waiting to acquire a latch. It must be safe for concurrent use.
-	GetLatchWaitTime() time.Duration
 	// GetScanStats returns statistics about the scan that happened during the
 	// KV reads. It must be safe for concurrent use.
 	GetScanStats() execstats.ScanStats
@@ -92,9 +86,6 @@ type KVReader interface {
 	// KV requests. It must be safe for concurrent use. It is used to calculate
 	// the SQL CPU time.
 	GetKVCPUTime() time.Duration
-	// GetKVResponseCPUTime returns the CPU time as reported by KV BatchResponses
-	// processed by the KVReader throughout its lifetime so far.
-	GetKVResponseCPUTime() int64
 	// UsedStreamer returns whether the Streamer API was used by the KVReader.
 	UsedStreamer() bool
 }

@@ -8,11 +8,13 @@ package tests
 import (
 	"context"
 	gosql "database/sql"
+	"net/url"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/stretchr/testify/require"
@@ -22,13 +24,12 @@ func TestSearchPathEndToEnd(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	s := serverutils.StartServerOnly(t, base.TestServerArgs{})
 	ctx := context.Background()
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	defer s.Stopper().Stop(ctx)
 
-	pgURL, cleanupFunc := s.PGUrl(
-		t, serverutils.CertsDirPrefix(t.Name()), serverutils.User(username.RootUser),
+	pgURL, cleanupFunc := sqlutils.PGUrl(
+		t, s.ApplicationLayer().AdvSQLAddr(), t.Name(), url.User(username.RootUser),
 	)
 	defer cleanupFunc()
 

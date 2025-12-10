@@ -25,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
 	"github.com/cockroachdb/cockroach/pkg/util/rangedesc"
-	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
@@ -85,19 +84,19 @@ func (t *decommissioningNodeMap) makeOnNodeDecommissioningCallback(
 						// NB: The only case where we would expect to see a processErr when
 						// enqueuing a replica async is if it does not have the lease. We
 						// are checking that above, but that check is inherently racy.
-						log.Dev.Warningf(
+						log.Warningf(
 							ctx, "unexpected processing error when enqueuing replica asynchronously: %v", processErr,
 						)
 					}
 					if enqueueErr != nil && logLimiter.ShouldLog() {
-						log.Dev.Warningf(ctx, "unable to enqueue replica: %s", enqueueErr)
+						log.Warningf(ctx, "unable to enqueue replica: %s", enqueueErr)
 					}
 					return true /* wantMore */
 				})
 			return nil
 		}); err != nil {
 			// We're swallowing any errors above, so this shouldn't ever happen.
-			log.Dev.Fatalf(
+			log.Fatalf(
 				ctx, "error while nudging replicas for decommissioning node n%d", decommissioningNodeID,
 			)
 		}
@@ -238,22 +237,7 @@ func (s *topLevelServer) DecommissionPreCheck(
 				continue
 			}
 
-			// Retry for transient errors such as stores throttling. Throttled stores
-			// typically lasts FailedReservationsTimeout (5 seconds by default).
-			var action allocatorimpl.AllocatorAction
-			var recording tracingpb.Recording
-			var rErr error
-			retryOpts := retry.Options{
-				InitialBackoff: 2 * time.Second,
-				MaxBackoff:     5 * time.Second,
-				MaxRetries:     5,
-			}
-			for r := retry.StartWithCtx(ctx, retryOpts); r.Next(); {
-				action, _, recording, rErr = evalStore.AllocatorCheckRange(ctx, &desc, collectTraces, overrideStorePool)
-				if rErr == nil {
-					break
-				}
-			}
+			action, _, recording, rErr := evalStore.AllocatorCheckRange(ctx, &desc, collectTraces, overrideStorePool)
 			rangesChecked += 1
 			actionCounts[action.String()] += 1
 
@@ -368,7 +352,7 @@ func (s *topLevelServer) Decommission(
 			if errors.Is(err, liveness.ErrMissingRecord) {
 				return grpcstatus.Error(codes.NotFound, liveness.ErrMissingRecord.Error())
 			}
-			log.Dev.Errorf(ctx, "%+s", err)
+			log.Errorf(ctx, "%+s", err)
 			return grpcstatus.Error(codes.Internal, err.Error())
 		}
 		if statusChanged {
@@ -399,7 +383,7 @@ func (s *topLevelServer) Decommission(
 		// decommissioning the node again.
 		if targetStatus.Decommissioned() {
 			if err := s.db.PutInline(ctx, keys.NodeStatusKey(nodeID), nil); err != nil {
-				log.Dev.Errorf(ctx, "unable to clean up node status data for node %d: %s", nodeID, err)
+				log.Errorf(ctx, "unable to clean up node status data for node %d: %s", nodeID, err)
 			}
 		}
 	}

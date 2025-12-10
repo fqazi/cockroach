@@ -14,15 +14,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/storage/pebbleiter"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/cockroachkvs"
-	"github.com/cockroachdb/pebble/objstorage"
+	"github.com/cockroachdb/pebble/sstable"
 )
 
 // pebbleIterator is a wrapper around a pebble.Iterator that implements the
@@ -40,7 +38,7 @@ type pebbleIterator struct {
 	upperBoundBuf      []byte
 	rangeKeyMaskingBuf []byte
 	// Filter to use if masking is enabled.
-	maskFilter cockroachkvs.MVCCWallTimeIntervalRangeKeyMask
+	maskFilter mvccWallTimeIntervalRangeKeyMask
 	// [minTimestamp,maxTimestamp] contain the encoded timestamp bounds of the
 	// iterator, if any. This iterator will not return keys outside these
 	// timestamps. These are encoded because lexicographic comparison on encoded
@@ -66,6 +64,12 @@ type pebbleIterator struct {
 	// iterator, but simply marks it as not inuse. Used by pebbleReadOnly.
 	reusable bool
 	inuse    bool
+	// Set to true if the underlying Pebble Iterator was created through
+	// pebble.NewExternalIter, and so the iterator is iterating over files
+	// external to the storage engine. This is used to avoid panicking on
+	// corruption errors that should be non-fatal if encountered from external
+	// sources of sstables.
+	external bool
 	// mvccDirIsReverse and mvccDone are used only for the methods implementing
 	// MVCCIterator. They are used to prevent the iterator from iterating into
 	// the lock table key space.
@@ -127,7 +131,7 @@ func newPebbleIteratorByCloning(
 
 // newPebbleSSTIterator creates a new Pebble iterator for the given SSTs.
 func newPebbleSSTIterator(
-	files [][]objstorage.ReadableFile, opts IterOptions,
+	files [][]sstable.ReadableFile, opts IterOptions,
 ) (*pebbleIterator, error) {
 	p := pebbleIterPool.Get().(*pebbleIterator)
 	p.reusable = false // defensive
@@ -139,6 +143,7 @@ func newPebbleSSTIterator(
 		return nil, err
 	}
 	p.iter = pebbleiter.MaybeWrap(iter)
+	p.external = true
 	return p, nil
 }
 
@@ -187,6 +192,7 @@ func (p *pebbleIterator) initReuseOrCreate(
 
 	p.init(ctx, nil, opts, durability, statsReporter)
 	if iter == nil {
+		// TODO(sumeer): fix after bumping to latest Pebble.
 		innerIter, err := handle.NewIterWithContext(ctx, &p.options)
 		if err != nil {
 			return err
@@ -212,19 +218,22 @@ func (p *pebbleIterator) setOptions(
 	ctx context.Context, opts IterOptions, durability DurabilityRequirement,
 ) {
 	if !opts.Prefix && len(opts.UpperBound) == 0 && len(opts.LowerBound) == 0 {
-		panic(errors.AssertionFailedf("iterator must set prefix or upper bound or lower bound"))
+		panic("iterator must set prefix or upper bound or lower bound")
 	}
 	if opts.MinTimestamp.IsSet() && opts.MaxTimestamp.IsEmpty() {
-		panic(errors.AssertionFailedf("min timestamp hint set without max timestamp hint"))
+		panic("min timestamp hint set without max timestamp hint")
 	}
 	if opts.Prefix && opts.RangeKeyMaskingBelow.IsSet() {
-		panic(errors.AssertionFailedf("can't use range key masking with prefix iterators")) // very high overhead
+		panic("can't use range key masking with prefix iterators") // very high overhead
 	}
 
 	// Generate new Pebble iterator options.
-	p.options = makeIterOptions(opts.ReadCategory, durability)
-	p.options.KeyTypes = opts.KeyTypes
-	p.options.UseL6Filters = opts.useL6Filters
+	p.options = pebble.IterOptions{
+		OnlyReadGuaranteedDurable: durability == GuaranteedDurability,
+		KeyTypes:                  opts.KeyTypes,
+		UseL6Filters:              opts.useL6Filters,
+		CategoryAndQoS:            fs.GetCategoryAndQoS(opts.ReadCategory),
+	}
 	p.prefix = opts.Prefix
 
 	if opts.LowerBound != nil {
@@ -245,10 +254,10 @@ func (p *pebbleIterator) setOptions(
 		p.options.UpperBound = p.upperBoundBuf
 	}
 	if opts.RangeKeyMaskingBelow.IsSet() {
-		p.rangeKeyMaskingBuf = mvccencoding.EncodeMVCCTimestampSuffixToBuf(
+		p.rangeKeyMaskingBuf = encodeMVCCTimestampSuffixToBuf(
 			p.rangeKeyMaskingBuf, opts.RangeKeyMaskingBelow)
 		p.options.RangeKeyMasking.Suffix = p.rangeKeyMaskingBuf
-		p.maskFilter.BlockIntervalFilter.Init(mvccWallTimeIntervalCollector, 0, math.MaxUint64, cockroachkvs.MVCCBlockIntervalSuffixReplacer{})
+		p.maskFilter.BlockIntervalFilter.Init(mvccWallTimeIntervalCollector, 0, math.MaxUint64, MVCCBlockIntervalSuffixReplacer{})
 		p.options.RangeKeyMasking.Filter = p.getBlockPropertyFilterMask
 	}
 
@@ -282,9 +291,10 @@ func (p *pebbleIterator) setOptions(
 		// of the slice should be at least one more than the length, for a
 		// Pebble-internal performance optimization.
 		pkf := [2]pebble.BlockPropertyFilter{
-			cockroachkvs.NewMVCCTimeIntervalFilter(
+			sstable.NewBlockIntervalFilter(mvccWallTimeIntervalCollector,
 				uint64(opts.MinTimestamp.WallTime),
 				uint64(opts.MaxTimestamp.WallTime)+1,
+				MVCCBlockIntervalSuffixReplacer{},
 			),
 		}
 		p.options.PointKeyFilters = pkf[:1:2]
@@ -311,7 +321,7 @@ func (p *pebbleIterator) setOptions(
 // Close implements the MVCCIterator interface.
 func (p *pebbleIterator) Close() {
 	if !p.inuse {
-		panic(errors.AssertionFailedf("closing idle iterator"))
+		panic("closing idle iterator")
 	}
 	p.inuse = false
 
@@ -366,7 +376,7 @@ func (p *pebbleIterator) SeekEngineKeyGEWithLimit(
 	p.keyBuf = key.EncodeToBuf(p.keyBuf[:0])
 	if limit != nil {
 		if p.prefix {
-			panic(errors.AssertionFailedf("prefix iteration does not permit a limit"))
+			panic("prefix iteration does not permit a limit")
 		}
 		// Append the sentinel byte to make an EngineKey that has an empty
 		// version.
@@ -542,7 +552,7 @@ func (p *pebbleIterator) MVCCValueLenAndIsTombstone() (int, bool, error) {
 		valLen = lv.Len()
 	} else {
 		// Must be an in-place value, since it did not have a short attribute.
-		val := lv.ValueOrHandle
+		val := lv.InPlaceValue()
 		var err error
 		isTombstone, err = EncodedMVCCValueIsTombstone(val)
 		if err != nil {
@@ -723,7 +733,7 @@ func (p *pebbleIterator) RangeKeys() MVCCRangeKeyStack {
 	}
 
 	for _, rangeKey := range rangeKeys {
-		timestamp, err := mvccencoding.DecodeMVCCTimestampSuffix(rangeKey.Suffix)
+		timestamp, err := DecodeMVCCTimestampSuffix(rangeKey.Suffix)
 		if err != nil {
 			// TODO(erikgrinaker): We should surface this error somehow, but for now
 			// we follow UnsafeKey()'s example and silently skip them.
@@ -976,7 +986,7 @@ func (p *pebbleIterator) skipPointIfOutsideTimeBounds(key []byte) (skip bool) {
 
 func (p *pebbleIterator) destroy() {
 	if p.inuse {
-		panic(errors.AssertionFailedf("iterator still in use"))
+		panic("iterator still in use")
 	}
 	if p.iter != nil {
 		// If an error is encountered during iteration, it'll already have been
@@ -987,10 +997,26 @@ func (p *pebbleIterator) destroy() {
 		// potentially through a defer) and so we don't want to re-surface the
 		// error.
 		//
-		// Note that any corruption errors (including those encountered during the
-		// act of closing the iterator) are reported out-of-band via the
-		// EventListener.
-		_ = p.iter.Close()
+		// TODO(jackson): In addition to errors accumulated during iteration, Close
+		// also returns errors encountered during the act of closing the iterator.
+		// Currently, most of these errors are swallowed. The error returned by
+		// iter.Close() may be an ephemeral error, or it may a misuse of the
+		// Iterator or corruption. Only swallow ephemeral errors (eg,
+		// DeadlineExceeded, etc), panic-ing on Close errors that are not known to
+		// be ephemeral/retriable. While these ephemeral error types are enumerated,
+		// we panic on the error types we know to be NOT ephemeral.
+		//
+		// See cockroachdb/pebble#1811.
+		//
+		// NB: The panic is omitted if the error is encountered on an external
+		// iterator which is iterating over uncommitted sstables.
+
+		if err := p.iter.Close(); !p.external && errors.Is(err, pebble.ErrCorruption) {
+			if p.parent != nil {
+				p.parent.writePreventStartupFile(context.Background(), err)
+			}
+			panic(err)
+		}
 		p.iter = nil
 	}
 	// Reset all fields except for the key and option buffers. Holding onto their
@@ -1039,21 +1065,4 @@ func (p *pebbleIterator) assertMVCCInvariants() error {
 	}
 
 	return nil
-}
-
-// We avoid tracking iterators with read categories that indicate very hot
-// paths.
-const exemptFromTracking = (uint32(1) << fs.BatchEvalReadCategory) |
-	(uint32(1) << fs.ScanRegularBatchEvalReadCategory) |
-	(uint32(1) << fs.IntentResolutionReadCategory) |
-	(uint32(1) << fs.AbortSpanReadCategory)
-
-func makeIterOptions(
-	readCategory fs.ReadCategory, durability DurabilityRequirement,
-) pebble.IterOptions {
-	return pebble.IterOptions{
-		OnlyReadGuaranteedDurable: durability == GuaranteedDurability,
-		Category:                  readCategory.PebbleCategory(),
-		ExemptFromTracking:        (exemptFromTracking>>readCategory)&1 == 1,
-	}
 }

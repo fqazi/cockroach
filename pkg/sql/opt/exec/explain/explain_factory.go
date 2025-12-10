@@ -64,9 +64,6 @@ func (n *Node) Child(idx int) *Node {
 
 // Columns returns the ResultColumns for this node.
 func (n *Node) Columns() colinfo.ResultColumns {
-	if n == nil {
-		return nil
-	}
 	return n.columns
 }
 

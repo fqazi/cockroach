@@ -90,17 +90,6 @@ type TestClusterConfig struct {
 	// restart/upgrade nodes. This always bootstraps with the predecessor version
 	// of the current commit, and upgrades to the current commit.
 	UseCockroachGoTestserver bool
-	// DisableSchemaLockedByDefault prevents tables from being created
-	// with schema_locked by default.
-	DisableSchemaLockedByDefault bool
-	// PrepareQueries executes queries and statements with Prepare and Execute.
-	PrepareQueries bool
-	// EnableLeasedDescriptorSupport enables leased descriptors for pg_catalog /
-	// crdb_internal and locked leasing behavior.
-	EnableLeasedDescriptorSupport bool
-	// UseDistributedMergeIndexBackfill enables the use of distributed
-	// merge when index backfills are preformed.
-	UseDistributedMergeIndexBackfill bool
 }
 
 // TenantMode is the type of the UseSecondaryTenant field in TestClusterConfig.
@@ -290,7 +279,7 @@ var LogicTestConfigs = []TestClusterConfig{
 		// local is the configuration where we run all tests which have bad
 		// interactions with the default test tenant.
 		//
-		// TODO(#156124): We should review this choice. Why can't we use "Random"
+		// TODO(#76378): We should review this choice. Why can't we use "Random"
 		// here? If there are specific tests that are incompatible, we can
 		// flag them to run only in a separate config.
 		UseSecondaryTenant:          Never,
@@ -301,7 +290,6 @@ var LogicTestConfigs = []TestClusterConfig{
 		NumNodes:                        1,
 		OverrideDistSQLMode:             "off",
 		DisableDeclarativeSchemaChanger: true,
-		DisableSchemaLockedByDefault:    true,
 	},
 	{
 		Name:                "local-vec-off",
@@ -322,12 +310,6 @@ var LogicTestConfigs = []TestClusterConfig{
 		OverrideDistSQLMode:         "off",
 		IsCCLConfig:                 true,
 		EnableDefaultIsolationLevel: tree.RepeatableReadIsolation,
-	},
-	{
-		Name:                "local-prepared",
-		NumNodes:            1,
-		OverrideDistSQLMode: "off",
-		PrepareQueries:      true,
 	},
 	{
 		Name:                "fakedist",
@@ -359,7 +341,7 @@ var LogicTestConfigs = []TestClusterConfig{
 		// restrictive in the way we allow zone configs to be modified by
 		// secondary tenants. See #100787 for more info.
 		//
-		// TODO(#156124): We should review this choice. Zone configs have
+		// TODO(#76378): We should review this choice. Zone configs have
 		// been supported for secondary tenants since v22.2.
 		// Should this config use "Random" instead?
 		UseSecondaryTenant: Never,
@@ -471,7 +453,7 @@ var LogicTestConfigs = []TestClusterConfig{
 		// locality optimized search working in multi-tenant configurations.
 		// Tracked with #80678.
 		//
-		// TODO(#156124): We've fixed that issue. Review this choice. Can
+		// TODO(#76378): We've fixed that issue. Review this choice. Can
 		// it be "Random" instead? Then we can merge it with the next
 		// config below.
 		UseSecondaryTenant:          Never,
@@ -502,70 +484,51 @@ var LogicTestConfigs = []TestClusterConfig{
 		Localities: multiregion15node5region3azsLocalities,
 	},
 	{
-		// This config runs tests using 25.4 cluster version, simulating a node that
+		// This config runs tests using 24.1 cluster version, simulating a node that
 		// is operating in a mixed-version cluster.
-		Name:                        "local-mixed-25.4",
+		Name:                        "local-mixed-24.1",
 		NumNodes:                    1,
 		OverrideDistSQLMode:         "off",
-		BootstrapVersion:            clusterversion.V25_4,
+		BootstrapVersion:            clusterversion.V24_1,
 		DisableUpgrade:              true,
 		DeclarativeCorpusCollection: true,
 	},
 	{
-		Name:                "local-leased-descriptors",
-		NumNodes:            1,
-		OverrideDistSQLMode: "off",
-		// local is the configuration where we run all tests which have bad
-		// interactions with the default test tenant.
-		//
-		// TODO(#156124): We should review this choice. Why can't we use "Random"
-		// here? If there are specific tests that are incompatible, we can
-		// flag them to run only in a separate config.
-		UseSecondaryTenant:            Never,
-		EnableLeasedDescriptorSupport: true,
+		// This config runs tests using 24.2 cluster version, simulating a node that
+		// is operating in a mixed-version cluster.
+		Name:                        "local-mixed-24.2",
+		NumNodes:                    1,
+		OverrideDistSQLMode:         "off",
+		BootstrapVersion:            clusterversion.V24_2,
+		DisableUpgrade:              true,
+		DeclarativeCorpusCollection: true,
 	},
 	{
 		// This config runs a cluster with 3 nodes, with a separate process per
-		// node. The nodes initially start on v25.4.
-		Name:                     "cockroach-go-testserver-25.4",
+		// node. The nodes initially start on v24.1.
+		Name:                     "cockroach-go-testserver-24.1",
 		UseCockroachGoTestserver: true,
-		BootstrapVersion:         clusterversion.V25_4,
+		BootstrapVersion:         clusterversion.V24_1,
 		NumNodes:                 3,
 	},
 	{
-		Name:                             "local-dist-merge-backfill-declarative-schema-changer",
-		NumNodes:                         1,
-		OverrideDistSQLMode:              "on",
-		UseDistributedMergeIndexBackfill: true,
-	},
-	{
-		Name:                             "local-dist-merge-backfill-legacy-schema-changer",
-		NumNodes:                         1,
-		OverrideDistSQLMode:              "on",
-		UseDistributedMergeIndexBackfill: true,
-		DisableDeclarativeSchemaChanger:  true,
-		DisableSchemaLockedByDefault:     true,
+		// This config runs a cluster with 3 nodes, with a separate process per
+		// node. The nodes initially start on v24.2.
+		Name:                     "cockroach-go-testserver-24.2",
+		UseCockroachGoTestserver: true,
+		BootstrapVersion:         clusterversion.V24_2,
+		NumNodes:                 3,
 	},
 }
 
 // ConfigIdx is an index in the above slice.
 type ConfigIdx int
 
-func (idx ConfigIdx) Name() string {
-	return LogicTestConfigs[idx].Name
-}
-
 // ConfigSet is a collection of configurations.
 type ConfigSet []ConfigIdx
 
-// ConfigNames returns the configuration names in the set.
-func (cs ConfigSet) ConfigNames() []string {
-	res := make([]string, len(cs))
-	for i, idx := range cs {
-		res[i] = idx.Name()
-	}
-	return res
-}
+// ConfigIdxToName is a map of ConfigIdx to the corresponding configuration name.
+var ConfigIdxToName = make(map[ConfigIdx]string)
 
 // LineScanner handles reading from input test files.
 type LineScanner struct {
@@ -612,73 +575,66 @@ func (l *LineScanner) Text() string {
 	return l.Scanner.Text()
 }
 
-// DefaultConfigSet is an alias for the set of default configs.
-const DefaultConfigSet = "default-configs"
-
-// DefaultConfigSets are sets of configs that have an alias which can be used
-// instead of specific config names.
-//
-// Config sets allow referring to multiple configs more conveniently, and allow
-// updating some of these lists without changing the test files.
-var DefaultConfigSets = map[string]ConfigSet{
-	// Default configs which are used when a logictest file doesn't specify any
-	// specific configs.
-	DefaultConfigSet: makeConfigSet(
+var (
+	// DefaultConfigName is a special alias for the default configs.
+	DefaultConfigName = "default-configs"
+	// DefaultConfigNames is the list of default configs captured by the DefaultConfigName.
+	DefaultConfigNames = []string{
 		"local",
 		"local-legacy-schema-changer",
 		"local-vec-off",
 		"local-read-committed",
 		"local-repeatable-read",
-		"local-prepared",
 		"fakedist",
 		"fakedist-vec-off",
 		"fakedist-disk",
-		"local-mixed-25.4",
-	),
-
-	// Special alias for all 5 node configs.
-	"5node-default-configs": makeConfigSet(
+		"local-mixed-24.1",
+		"local-mixed-24.2",
+	}
+	// FiveNodeDefaultConfigName is a special alias for all 5 node configs.
+	FiveNodeDefaultConfigName = "5node-default-configs"
+	// FiveNodeDefaultConfigNames is the list of 5 node configs.
+	FiveNodeDefaultConfigNames = []string{
 		"5node",
 		"5node-disk",
-	),
-
-	// Special alias for all 3-node tenant configs.
-	"3node-tenant-default-configs": makeConfigSet(
+	}
+	// ThreeNodeTenantDefaultConfigName is a special alias for all 3-node tenant
+	// configs.
+	ThreeNodeTenantDefaultConfigName = "3node-tenant-default-configs"
+	// ThreeNodeTenantDefaultConfigNames is the list of 3 node tenant configs.
+	ThreeNodeTenantDefaultConfigNames = []string{
 		"3node-tenant",
 		"3node-tenant-multiregion",
-	),
-
-	// Special alias for all enterprise configs.
-	"enterprise-configs": makeConfigSet(
+	}
+	// EnterpriseConfigName is a special alias for all enterprise configs.
+	EnterpriseConfigName = "enterprise-configs"
+	// EnterpriseConfigNames is the list of all enterprise configs.
+	EnterpriseConfigNames = []string{
 		"3node-tenant",
 		"3node-tenant-multiregion",
 		"local-read-committed",
 		"local-repeatable-read",
-	),
-
-	// Special alias for all configs which default to a weak transaction isolation
-	// level.
-	"weak-iso-level-configs": makeConfigSet(
+	}
+	// WeakIsoLevelConfigName is a special alias for all configs which default to
+	// a weak transaction isolation level.
+	WeakIsoLevelConfigName = "weak-iso-level-configs"
+	// WeakIsoLevelConfigNames is the list of all weak transaction isolation level
+	// configs.
+	WeakIsoLevelConfigNames = []string{
 		"local-read-committed",
 		"local-repeatable-read",
-	),
-
-	// Special alias for all testserver configs (for mixed-version testing).
-	"cockroach-go-testserver-configs": makeConfigSet(
-		"cockroach-go-testserver-25.4",
-	),
-
-	// Special alias for configs where schema locked is disabled.
-	"schema-locked-disabled": makeConfigSet(
-		"local-legacy-schema-changer",
-	),
-
-	// Alias for configs that uses distributed merge pipeline for index backfills.
-	"dist-merge-index-backfill": makeConfigSet(
-		"local-dist-merge-backfill-declarative-schema-changer",
-		"local-dist-merge-backfill-legacy-schema-changer",
-	),
-}
+	}
+	// DefaultConfig is the default test configuration.
+	DefaultConfig = parseTestConfig(DefaultConfigNames)
+	// FiveNodeDefaultConfig is the five-node default test configuration.
+	FiveNodeDefaultConfig = parseTestConfig(FiveNodeDefaultConfigNames)
+	// ThreeNodeTenantDefaultConfig is the three-node tenant default test configuration.
+	ThreeNodeTenantDefaultConfig = parseTestConfig(ThreeNodeTenantDefaultConfigNames)
+	// EnterpriseConfig is the enterprise test configuration.
+	EnterpriseConfig = parseTestConfig(EnterpriseConfigNames)
+	// WeakIsoLevelConfig is the weak transaction isolation level test configuration.
+	WeakIsoLevelConfig = parseTestConfig(WeakIsoLevelConfigNames)
+)
 
 // logger is an interface implemented by testing.TB as well as stdlogger below.
 type logger interface {
@@ -831,9 +787,6 @@ func processConfigs(
 		// config list.
 		names := getDefaultConfigListNames(blockedConfig)
 		if len(names) == 0 {
-			if !ConfigExists(blockedConfig) && blockedConfig != "metamorphic-batch-sizes" {
-				panic(fmt.Sprintf("attempted to block logic test config that doesn't exist: %s", blockedConfig))
-			}
 			blocklist[blockedConfig] = issueNo
 		} else {
 			for _, name := range names {
@@ -861,11 +814,20 @@ func processConfigs(
 
 		idx, ok := findLogicTestConfig(configName)
 		if !ok {
-			configSet, ok := DefaultConfigSets[configName]
-			if !ok {
+			switch configName {
+			case DefaultConfigName:
+				configs = append(configs, applyBlocklistToConfigs(defaults, blocklist)...)
+			case FiveNodeDefaultConfigName:
+				configs = append(configs, applyBlocklistToConfigs(FiveNodeDefaultConfig, blocklist)...)
+			case ThreeNodeTenantDefaultConfigName:
+				configs = append(configs, applyBlocklistToConfigs(ThreeNodeTenantDefaultConfig, blocklist)...)
+			case EnterpriseConfigName:
+				configs = append(configs, applyBlocklistToConfigs(EnterpriseConfig, blocklist)...)
+			case WeakIsoLevelConfigName:
+				configs = append(configs, applyBlocklistToConfigs(WeakIsoLevelConfig, blocklist)...)
+			default:
 				t.Fatalf("%s: unknown config name %s", path, configName)
 			}
-			configs = append(configs, applyBlocklistToConfigs(configSet, blocklist)...)
 		} else {
 			configs = append(configs, idx)
 		}
@@ -882,7 +844,7 @@ func applyBlocklistToConfigs(configs ConfigSet, blocklist map[string]int) Config
 	}
 	var newConfigs ConfigSet
 	for _, idx := range configs {
-		if _, ok := blocklist[idx.Name()]; ok {
+		if _, ok := blocklist[ConfigIdxToName[idx]]; ok {
 			continue
 		}
 		newConfigs = append(newConfigs, idx)
@@ -890,7 +852,7 @@ func applyBlocklistToConfigs(configs ConfigSet, blocklist map[string]int) Config
 	return newConfigs
 }
 
-func makeConfigSet(names ...string) ConfigSet {
+func parseTestConfig(names []string) ConfigSet {
 	ret := make(ConfigSet, len(names))
 	for i, name := range names {
 		idx, ok := findLogicTestConfig(name)
@@ -911,6 +873,12 @@ func findLogicTestConfig(name string) (ConfigIdx, bool) {
 	return -1, false
 }
 
+func init() {
+	for i, cfg := range LogicTestConfigs {
+		ConfigIdxToName[ConfigIdx(i)] = cfg.Name
+	}
+}
+
 // ConfigIsInDefaultList returns true if defaultName is one of the default
 // config lists and configName is a config included in that list.
 func ConfigIsInDefaultList(configName, defaultName string) bool {
@@ -923,23 +891,19 @@ func ConfigIsInDefaultList(configName, defaultName string) bool {
 }
 
 func getDefaultConfigListNames(name string) []string {
-	return DefaultConfigSets[name].ConfigNames()
-}
-
-var allConfigNames = make(map[string]struct{}, len(LogicTestConfigs))
-
-func init() {
-	for _, cfg := range LogicTestConfigs {
-		allConfigNames[cfg.Name] = struct{}{}
+	switch name {
+	case DefaultConfigName:
+		return DefaultConfigNames
+	case FiveNodeDefaultConfigName:
+		return FiveNodeDefaultConfigNames
+	case ThreeNodeTenantDefaultConfigName:
+		return ThreeNodeTenantDefaultConfigNames
+	case EnterpriseConfigName:
+		return EnterpriseConfigNames
+	case WeakIsoLevelConfigName:
+		return WeakIsoLevelConfigNames
 	}
-}
-
-// ConfigExists returns whether the given name matches either a config or an
-// alias.
-func ConfigExists(name string) bool {
-	_, config := allConfigNames[name]
-	_, alias := DefaultConfigSets[name]
-	return config || alias
+	return []string{}
 }
 
 // ConfigCalculator is used to enumerate a map of configuration -> file.
@@ -967,16 +931,17 @@ func (c ConfigCalculator) Enumerate(globs ...string) ([][]string, error) {
 	// of paths per config.
 	configPaths := make([][]string, len(LogicTestConfigs))
 	var configFilter map[string]struct{}
-	configDefaults := DefaultConfigSets[DefaultConfigSet]
+	configDefaults := DefaultConfig
 	if len(c.ConfigOverrides) > 0 {
 		// If a config override is provided, we use it to replace the default
 		// config set. This ensures that the overrides are used for files where:
-		// 1. no config directive is present, or
-		// 2. a config directive containing only a blocklist is present.
+		// 1. no config directive is present
+		// 2. a config directive containing only a blocklist is present
+		// 3. a config directive containing "default-configs" is present
 		//
 		// We also create a filter to restrict configs to only those in the
 		// override list.
-		configDefaults = makeConfigSet(c.ConfigOverrides...)
+		configDefaults = parseTestConfig(c.ConfigOverrides)
 		configFilter = make(map[string]struct{})
 		for _, name := range c.ConfigOverrides {
 			configFilter[name] = struct{}{}

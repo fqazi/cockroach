@@ -66,12 +66,14 @@ func DefaultFormatter(ctx context.Context, f Failure) (issues.IssueFormatter, is
 	repro := fmt.Sprintf("./dev test ./pkg/%s --race --stress -f %s",
 		trimPkg(f.packageName), f.testName)
 
+	var projColID int
 	var mentions []string
 	var labels []string
 	if os.Getenv("SKIP_LABEL_TEST_FAILURE") == "" {
 		labels = append(labels, issues.DefaultLabels...)
 	}
 	if len(teams) > 0 {
+		projColID = teams[0].TriageColumnID
 		for _, tm := range teams {
 			if !tm.SilenceMentions {
 				var hasAliases bool
@@ -85,7 +87,9 @@ func DefaultFormatter(ctx context.Context, f Failure) (issues.IssueFormatter, is
 					mentions = append(mentions, "@"+string(tm.Name()))
 				}
 			}
-			labels = append(labels, tm.Labels()...)
+			if tm.Label != "" {
+				labels = append(labels, tm.Label)
+			}
 		}
 	}
 	return issues.UnitTestFormatter, issues.PostRequest{
@@ -95,6 +99,7 @@ func DefaultFormatter(ctx context.Context, f Failure) (issues.IssueFormatter, is
 		Artifacts:       "/", // best we can do for unit tests
 		HelpCommand:     issues.UnitTestHelpCommand(repro),
 		MentionOnCreate: mentions,
+		ProjectColumnID: projColID,
 		Labels:          labels,
 	}
 }
@@ -117,22 +122,13 @@ func DefaultIssueFilerFromFormatter(
 
 }
 
-func getFailurePosterFromFormatterName(formatterName string, extraLabels []string) FailurePoster {
+func getFailurePosterFromFormatterName(formatterName string) FailurePoster {
 	var reqFromFailure Formatter
 	switch formatterName {
 	case "pebble-metamorphic":
 		reqFromFailure = formatPebbleMetamorphicIssue
 	default:
 		reqFromFailure = DefaultFormatter
-	}
-	if len(extraLabels) > 0 {
-		reqFromFailure = func(formatter Formatter) Formatter {
-			return func(ctx context.Context, f Failure) (issues.IssueFormatter, issues.PostRequest) {
-				i, r := formatter(ctx, f)
-				r.Labels = append(r.Labels, extraLabels...)
-				return i, r
-			}
-		}(reqFromFailure)
 	}
 	return DefaultIssueFilerFromFormatter(reqFromFailure)
 }
@@ -144,7 +140,7 @@ func getFailurePosterFromFormatterName(formatterName string, extraLabels []strin
 // GitHub.
 func PostFromJSON(formatterName string, in io.Reader) {
 	ctx := context.Background()
-	fileIssue := getFailurePosterFromFormatterName(formatterName, []string{})
+	fileIssue := getFailurePosterFromFormatterName(formatterName)
 	if err := listFailuresFromJSON(ctx, in, fileIssue); err != nil {
 		log.Println(err) // keep going
 	}
@@ -153,13 +149,10 @@ func PostFromJSON(formatterName string, in io.Reader) {
 // PostFromTestXMLWithFormatterName consumes a Bazel-style `test.xml` stream
 // and posts issues for any failed tests to GitHub. If there are no failed
 // tests, it does nothing. Unlike PostFromTestXMLWithFailurePoster, it takes a
-// formatter name. extraLabels is a list of extra labels to apply to the
-// created GitHub issue.
-func PostFromTestXMLWithFormatterName(
-	formatterName string, testXml buildutil.TestSuites, extraLabels []string,
-) error {
+// formatter name.
+func PostFromTestXMLWithFormatterName(formatterName string, testXml buildutil.TestSuites) error {
 	ctx := context.Background()
-	fileIssue := getFailurePosterFromFormatterName(formatterName, extraLabels)
+	fileIssue := getFailurePosterFromFormatterName(formatterName)
 	return PostFromTestXMLWithFailurePoster(ctx, fileIssue, testXml)
 }
 
@@ -412,7 +405,7 @@ func listFailuresFromJSON(
 		}
 	} else {
 		// If we haven't received a final event for the last test, then a
-		// panic/log.Dev.Fatal must have happened. Consider it failed.
+		// panic/log.Fatal must have happened. Consider it failed.
 		// Note that because of https://github.com/golang/go/issues/27582 there
 		// might be other outstanding tests; we ignore those.
 		if _, ok := outstandingOutput[last]; ok {
@@ -523,10 +516,6 @@ func listFailuresFromTestXML(
 	failures := make(map[scopedTest][]testEvent)
 	for _, suite := range suites.Suites {
 		pkg := suite.Name
-		dotIdx := strings.LastIndexByte(pkg, '.')
-		if dotIdx > 0 {
-			pkg = pkg[:dotIdx]
-		}
 		for _, testCase := range suite.TestCases {
 			var result *buildutil.XMLMessage
 			if testCase.Failure != nil {
@@ -672,7 +661,7 @@ func formatPebbleMetamorphicIssue(
 // insight into what caused the build failure and can't properly assign owners,
 // so a general issue is filed against test-eng in this case.
 func PostGeneralFailure(formatterName, logs string) {
-	fileIssue := getFailurePosterFromFormatterName(formatterName, []string{})
+	fileIssue := getFailurePosterFromFormatterName(formatterName)
 	postGeneralFailureImpl(logs, fileIssue)
 }
 
@@ -686,13 +675,4 @@ func postGeneralFailureImpl(logs string, fileIssue func(context.Context, Failure
 		log.Println(err) // keep going
 	}
 
-}
-
-// MicrobenchmarkFailure creates a Failure struct for a microbenchmark failure.
-func MicrobenchmarkFailure(packageName string, benchmarkName string, logs string) Failure {
-	return Failure{
-		packageName: packageName,
-		testName:    benchmarkName,
-		testMessage: logs,
-	}
 }

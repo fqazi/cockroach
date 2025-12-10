@@ -47,8 +47,6 @@ var (
 	}()
 	flags             = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	binary            = flags.String("binary", "./cockroach", "path to cockroach binary")
-	httpPort          = flags.Int("http-port", 8080, "first port number for HTTP servers in demo")
-	sqlPort           = flags.Int("sql-port", 26257, "first port number for SQL servers in demo")
 	file              = flags.String("file", "", "the path to a file containing SQL queries to reduce; required")
 	outFlag           = flags.String("out", "", "if set, the path to a new file where reduced result will be written to")
 	verbose           = flags.Bool("v", false, "print progress to standard output and the original test case output if it is not interesting")
@@ -119,8 +117,8 @@ func main() {
 	}
 	reducesql.LogUnknown = *unknown
 	out, err := reduceSQL(
-		*binary, *httpPort, *sqlPort, *contains, file, *workers, *verbose,
-		*chunkReductions, *multiRegion, *tlp, *costfuzz, *unoptimizedOracle,
+		*binary, *contains, file, *workers, *verbose, *chunkReductions, *multiRegion,
+		*tlp, *costfuzz, *unoptimizedOracle,
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -138,16 +136,14 @@ func main() {
 }
 
 func reduceSQL(
-	binary string,
-	httpPort, sqlPort int,
-	contains string,
+	binary, contains string,
 	file *string,
 	workers int,
 	verbose bool,
 	chunkReductions int,
 	multiRegion bool,
 	tlp, costfuzz, unoptimizedOracle bool,
-) (out string, retErr error) {
+) (string, error) {
 	var settings string
 	if devLicense, ok := envutil.EnvString("COCKROACH_DEV_LICENSE", 0); ok {
 		settings += "SET CLUSTER SETTING cluster.organization = 'Cockroach Labs - Production Testing';\n"
@@ -173,20 +169,6 @@ func reduceSQL(
 
 	inputString := string(input)
 	var queryComparisonCheck string
-	// removedLines, if set, indicates the lines from the end of input that were
-	// removed from the input string (and were incorporated into
-	// queryComparisonCheck).
-	var removedLines []string
-	defer func() {
-		if retErr == nil && len(removedLines) > 0 {
-			inputTail, err := reducesql.Pretty(strings.Join(removedLines, "\n"))
-			if err != nil {
-				retErr = errors.Wrapf(err, "when pretty-printing tail")
-			} else {
-				out = out + "\n" + inputTail
-			}
-		}
-	}()
 
 	// If TLP check is requested, then we remove the last two queries from the
 	// input (each query is expected to be delimited by empty lines) which we
@@ -201,7 +183,6 @@ func reduceSQL(
 		lineIdx := len(lines) - 1
 		partitioned, lineIdx := findPreviousQuery(lines, lineIdx)
 		unpartitioned, lineIdx := findPreviousQuery(lines, lineIdx)
-		removedLines = lines[lineIdx:]
 		inputString = strings.Join(lines[:lineIdx], "\n")
 		// We make queryComparisonCheck a query that will result in an error with
 		// tlpFailureError error message when unpartitioned and partitioned queries
@@ -228,7 +209,6 @@ SELECT CASE
 		setting2, lineIdx := findPreviousQuery(lines, lineIdx)
 		setting1, lineIdx := findPreviousQuery(lines, lineIdx)
 		control, lineIdx := findPreviousQuery(lines, lineIdx)
-		removedLines = lines[lineIdx:]
 		inputString = strings.Join(lines[:lineIdx], "\n")
 		// We make queryComparisonCheck the original control / settings / perturbed
 		// statements, surrounded by sentinel statements.
@@ -263,7 +243,6 @@ SELECT '%[1]s';
 		settings2, lineIdx := findPreviousSetStatements(lines, lineIdx)
 		unoptimized, lineIdx := findPreviousQuery(lines, lineIdx)
 		settings1, lineIdx := findPreviousSetStatements(lines, lineIdx)
-		removedLines = lines[lineIdx:]
 		inputString = strings.Join(lines[:lineIdx], "\n")
 		// We make queryComparisonCheck the original unoptimized / settings /
 		// optimized statements, surrounded by sentinel statements.
@@ -313,22 +292,28 @@ SELECT '%[1]s';
 	}
 
 	isInteresting := func(ctx context.Context, sql string) (interesting bool, logOriginalHint func()) {
-		args := []string{
-			"demo",
-			"--insecure",
-			"--empty",
-			// Do not exit on errors so the entirety of the input SQL is
-			// processed.
-			"--set=errexit=false",
-			"--format=tsv",
-			fmt.Sprintf("--http-port=%d", httpPort),
-			fmt.Sprintf("--sql-port=%d", sqlPort),
-		}
+		// If not multi-region, disable license generation. Do not exit on errors so
+		// the entirety of the input SQL is processed.
+		var cmd *exec.Cmd
 		if multiRegion {
-			args = append(args, "--nodes=9")
-			args = append(args, "--multitenant=false")
+			cmd = exec.CommandContext(ctx, binary,
+				"demo",
+				"--insecure",
+				"--empty",
+				"--nodes=9",
+				"--multitenant=false",
+				"--set=errexit=false",
+				"--format=tsv",
+			)
+		} else {
+			cmd = exec.CommandContext(ctx, binary,
+				"demo",
+				"--insecure",
+				"--empty",
+				"--set=errexit=false",
+				"--format=tsv",
+			)
 		}
-		cmd := exec.CommandContext(ctx, binary, args...)
 		// Disable telemetry.
 		cmd.Env = []string{"COCKROACH_SKIP_ENABLING_DIAGNOSTIC_REPORTING", "true"}
 		sql = settings + sql
@@ -389,7 +374,7 @@ SELECT '%[1]s';
 		return containsRE.Match(out), logOriginalHint
 	}
 
-	return reduce.Reduce(
+	out, err := reduce.Reduce(
 		logger,
 		inputSQL,
 		isInteresting,
@@ -398,6 +383,7 @@ SELECT '%[1]s';
 		chunkReducer,
 		reducesql.SQLPasses...,
 	)
+	return out, err
 }
 
 // findPreviousQuery return the query preceding lineIdx without a semicolon.

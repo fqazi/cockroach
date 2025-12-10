@@ -13,6 +13,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
+	"github.com/cockroachdb/cockroach/pkg/cloud/cloudpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/errors"
@@ -42,11 +43,7 @@ func TestNullSinkReadAndWrite(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Test that URI round-trips through Conf().
-	returnedConf := s.Conf()
-	require.Equal(t, dest, returnedConf.URI, "URI should round-trip through Conf()")
-
-	// Nullsink-specific behavior: writes are no-ops, reads return EOF, size is 0.
+	require.Equal(t, cloudpb.ExternalStorage{Provider: cloudpb.ExternalStorageProvider_null}, s.Conf())
 	require.NoError(t, cloud.WriteFile(ctx, s, "", bytes.NewReader([]byte("abc"))))
 	sz, err := s.Size(ctx, "")
 	require.NoError(t, err)

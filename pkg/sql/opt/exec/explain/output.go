@@ -303,7 +303,7 @@ func (ob *OutputBuilder) AddVectorized(value bool) {
 	ob.AddFlakyTopLevelField(DeflakeVectorized, "vectorized", fmt.Sprintf("%t", value))
 }
 
-// AddPlanType adds a top-level generic field, if value is true. Cannot be called
+// AddGeneric adds a top-level generic field, if value is true. Cannot be called
 // while inside a node.
 func (ob *OutputBuilder) AddPlanType(generic, optimized bool) {
 	switch {
@@ -314,15 +314,6 @@ func (ob *OutputBuilder) AddPlanType(generic, optimized bool) {
 	default:
 		ob.AddTopLevelField("plan type", "custom")
 	}
-}
-
-// AddStmtHintCount adds a top-level field displaying the number of statement
-// hints applied to the query. Cannot be called while inside a node.
-func (ob *OutputBuilder) AddStmtHintCount(hintCount uint64) {
-	if hintCount == 0 {
-		return
-	}
-	ob.AddTopLevelField("statement hints count", string(humanizeutil.Count(hintCount)))
 }
 
 // AddPlanningTime adds a top-level planning time field. Cannot be called
@@ -384,48 +375,18 @@ func (ob *OutputBuilder) AddContentionTime(contentionTime time.Duration) {
 
 // AddRetryCount adds a top-level retry-count field. Cannot be called while
 // inside a node.
-func (ob *OutputBuilder) AddRetryCount(retryScope string, count uint64) {
+func (ob *OutputBuilder) AddRetryCount(count uint64) {
 	if !ob.flags.Deflake.HasAny(DeflakeVolatile) && count > 0 {
-		ob.AddTopLevelField("number of "+retryScope+" retries", string(humanizeutil.Count(count)))
+		ob.AddTopLevelField("number of transaction retries", string(humanizeutil.Count(count)))
 	}
 }
 
 // AddRetryTime adds a top-level statement retry time field. Cannot be called
 // while inside a node.
-func (ob *OutputBuilder) AddRetryTime(retryScope string, delta time.Duration) {
+func (ob *OutputBuilder) AddRetryTime(delta time.Duration) {
 	if !ob.flags.Deflake.HasAny(DeflakeVolatile) && delta > 0 {
-		ob.AddTopLevelField("time spent retrying the "+retryScope, string(humanizeutil.Duration(delta)))
+		ob.AddTopLevelField("time spent retrying the transaction", string(humanizeutil.Duration(delta)))
 	}
-}
-
-// AddLockWaitTime adds a top-level field for the cumulative time spent waiting
-// in the lock table.
-func (ob *OutputBuilder) AddLockWaitTime(lockWaitTime time.Duration) {
-	ob.AddFlakyTopLevelField(
-		DeflakeVolatile,
-		"cumulative time spent in the lock table",
-		string(humanizeutil.Duration(lockWaitTime)),
-	)
-}
-
-// AddLatchWaitTime adds a top-level field for the cumulative time spent waiting
-// to acquire latches.
-func (ob *OutputBuilder) AddLatchWaitTime(latchWaitTime time.Duration) {
-	ob.AddFlakyTopLevelField(
-		DeflakeVolatile,
-		"cumulative time spent waiting to acquire latches",
-		string(humanizeutil.Duration(latchWaitTime)),
-	)
-}
-
-// AddAdmissionWaitTime adds a top-level field for the cumulative time spent waiting
-// in admission control.
-func (ob *OutputBuilder) AddAdmissionWaitTime(admissionWaitTime time.Duration) {
-	ob.AddFlakyTopLevelField(
-		DeflakeVolatile,
-		"cumulative time spent waiting in admission control",
-		string(humanizeutil.Duration(admissionWaitTime)),
-	)
 }
 
 // AddMaxMemUsage adds a top-level field for the memory used by the query.
@@ -435,11 +396,11 @@ func (ob *OutputBuilder) AddMaxMemUsage(bytes int64) {
 	)
 }
 
-// AddDistSQLNetworkStats adds a top-level field for DistSQL network statistics.
-func (ob *OutputBuilder) AddDistSQLNetworkStats(messages, bytes int64) {
+// AddNetworkStats adds a top-level field for network statistics.
+func (ob *OutputBuilder) AddNetworkStats(messages, bytes int64) {
 	ob.AddFlakyTopLevelField(
 		DeflakeVolatile,
-		"DistSQL network usage",
+		"network usage",
 		fmt.Sprintf("%s (%s messages)", humanizeutil.IBytes(bytes), humanizeutil.Count(uint64(messages))),
 	)
 }
@@ -457,20 +418,13 @@ func (ob *OutputBuilder) AddMaxDiskUsage(bytes int64) {
 	}
 }
 
-// AddSQLCPUTime adds a top-level field for the cumulative cpu time spent by SQL
+// AddCPUTime adds a top-level field for the cumulative cpu time spent by SQL
 // execution. If we're redacting, we leave this out to keep test outputs
 // independent of platform because the grunning library isn't currently
 // supported on all platforms.
-func (ob *OutputBuilder) AddSQLCPUTime(cpuTime time.Duration) {
+func (ob *OutputBuilder) AddCPUTime(cpuTime time.Duration) {
 	if !ob.flags.Deflake.HasAny(DeflakeVolatile) {
 		ob.AddTopLevelField("sql cpu time", string(humanizeutil.Duration(cpuTime)))
-	}
-}
-
-// AddKVCPUTime adds a top-level field for the cumulative CPU time spent in KV.
-func (ob *OutputBuilder) AddKVCPUTime(kvCPUTime time.Duration) {
-	if !ob.flags.Deflake.HasAny(DeflakeVolatile) {
-		ob.AddTopLevelField("kv cpu time", string(humanizeutil.Duration(kvCPUTime)))
 	}
 }
 

@@ -72,13 +72,9 @@ func (r *RegionConfig) WithPrimaryRegion(primaryRegion catpb.RegionName) RegionC
 	return cpy
 }
 
-// IsMemberOfSuperRegion returns true if the region is either:
-// - an explicit member of a super region; or
-// - the survival goal is SURVIVE_REGION_FAILURE and we have 3 regions configured.
-//
-// The reason for this is to make sure that when using SURVIVE_REGION_FAILURE
-// replicas are not placed outside of the known regions.
-func (r *RegionConfig) IsMemberOfSuperRegion(region catpb.RegionName) bool {
+// IsMemberOfExplicitSuperRegion returns whether t the region is an explicit
+// member of a super region.
+func (r *RegionConfig) IsMemberOfExplicitSuperRegion(region catpb.RegionName) bool {
 	for _, superRegion := range r.SuperRegions() {
 		for _, regionOfSuperRegion := range superRegion.Regions {
 			if region == regionOfSuperRegion {
@@ -86,18 +82,13 @@ func (r *RegionConfig) IsMemberOfSuperRegion(region catpb.RegionName) bool {
 			}
 		}
 	}
-
-	if len(r.regions) == 3 && r.survivalGoal == descpb.SurvivalGoal_REGION_FAILURE {
-		return true
-	}
-
 	return false
 }
 
 // GetSuperRegionRegionsForRegion returns the members of the super region the
-// specified region is part of. Note that if SURVIVE_REGION_FAILURE is being used
-// then we compute an implicit super region. If the region is not a member of any
-// explicit or implicit super regions, the function returns false.
+// specified region is part of.
+// If the region is not a member of any super regions, the function returns an
+// error.
 func (r *RegionConfig) GetSuperRegionRegionsForRegion(
 	region catpb.RegionName,
 ) (catpb.RegionNames, bool) {
@@ -108,12 +99,6 @@ func (r *RegionConfig) GetSuperRegionRegionsForRegion(
 			}
 		}
 	}
-
-	// Compute implicit super region if SURVIVE REGION FAILURE is set and we have 3 regions.
-	if len(r.regions) == 3 && r.survivalGoal == descpb.SurvivalGoal_REGION_FAILURE {
-		return r.regions, true
-	}
-
 	return nil, false
 }
 
@@ -183,9 +168,12 @@ func (r *RegionConfig) ZoneConfigExtensions() descpb.ZoneConfigExtensions {
 // extensions to the provided zone configuration, returning the updated config.
 func (r *RegionConfig) ExtendZoneConfigWithGlobal(zc zonepb.ZoneConfig) (zonepb.ZoneConfig, error) {
 	if ext := r.zoneCfgExtensions.Global; ext != nil {
-		var numVoters int32
+		var numVoters, numReplicas int32
 		if zc.NumVoters != nil {
 			numVoters = *zc.NumVoters
+		}
+		if zc.NumReplicas != nil {
+			numReplicas = *zc.NumReplicas
 		}
 		zc = extendZoneCfg(zc, *ext)
 		// TODO(janexing): to ensure that the zone config extension won't break the
@@ -193,14 +181,14 @@ func (r *RegionConfig) ExtendZoneConfigWithGlobal(zc zonepb.ZoneConfig) (zonepb.
 		// replicas. We may want to consider adding constraint to their distribution
 		// across zones/regions as well.
 		if zc.NumVoters != nil && *zc.NumVoters < numVoters {
-			return zonepb.ZoneConfig{}, errors.Newf(
-				"cannot set num_voters below %v (num_voters required for survival goal %v), got %v",
-				numVoters, r.SurvivalGoal(), *zc.NumVoters)
+			return zonepb.ZoneConfig{}, errors.Newf("zone config extension "+
+				"cannot set num_voters %v that is lower than the one required for the "+
+				"survival goal: %v with goal %v\n", *zc.NumVoters, numVoters, r.SurvivalGoal())
 		}
-		if zc.NumReplicas != nil && *zc.NumReplicas < numVoters {
-			return zonepb.ZoneConfig{}, errors.Newf(
-				"cannot set num_replicas below %v (num_voters required for survival goal %v), got %v",
-				numVoters, r.SurvivalGoal(), *zc.NumReplicas)
+		if zc.NumReplicas != nil && *zc.NumReplicas < numReplicas {
+			return zonepb.ZoneConfig{}, errors.Newf("zone config extension "+
+				"cannot set num_replicas %v that is lower than the one required for the "+
+				"survival goal: %v with goal %v\n", *zc.NumReplicas, numReplicas, r.SurvivalGoal())
 		}
 	}
 	return zc, nil
@@ -212,9 +200,12 @@ func (r *RegionConfig) ExtendZoneConfigWithGlobal(zc zonepb.ZoneConfig) (zonepb.
 func (r *RegionConfig) ExtendZoneConfigWithRegionalIn(
 	zc zonepb.ZoneConfig, region catpb.RegionName,
 ) (zonepb.ZoneConfig, error) {
-	var numVoters int32
+	var numVoters, numReplicas int32
 	if zc.NumVoters != nil {
 		numVoters = *zc.NumVoters
+	}
+	if zc.NumReplicas != nil {
+		numReplicas = *zc.NumReplicas
 	}
 
 	if ext := r.zoneCfgExtensions.Regional; ext != nil {
@@ -236,14 +227,14 @@ func (r *RegionConfig) ExtendZoneConfigWithRegionalIn(
 	// replicas. We may want to consider adding constraint to their distribution
 	// across zones/regions as well.
 	if zc.NumVoters != nil && *zc.NumVoters < numVoters {
-		return zonepb.ZoneConfig{}, errors.Newf(
-			"cannot set num_voters below %v (num_voters required for survival goal %v), got %v",
-			numVoters, r.SurvivalGoal(), *zc.NumVoters)
+		return zonepb.ZoneConfig{}, errors.Newf("zone config extension "+
+			"cannot set num_voters %v that is lower than the one required for the "+
+			"survival goal: %v with goal %v\n", *zc.NumVoters, numVoters, r.SurvivalGoal())
 	}
-	if zc.NumReplicas != nil && *zc.NumReplicas < numVoters {
-		return zonepb.ZoneConfig{}, errors.Newf(
-			"cannot set num_replicas below %v (num_voters required for survival goal %v), got %v",
-			numVoters, r.SurvivalGoal(), *zc.NumReplicas)
+	if zc.NumReplicas != nil && *zc.NumReplicas < numReplicas {
+		return zonepb.ZoneConfig{}, errors.Newf("zone config extension "+
+			"cannot set num_replica %v that is lower than the one required for the "+
+			"survival goal: %v with goal %v\n", *zc.NumReplicas, numReplicas, r.SurvivalGoal())
 	}
 	return zc, nil
 }

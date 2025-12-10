@@ -76,7 +76,6 @@ func parseLocalFileURI(
 	}
 
 	conf.Provider = cloudpb.ExternalStorageProvider_nodelocal
-	conf.URI = uri.String()
 	var err error
 	conf.LocalFileConfig, err = makeLocalFileConfig(uri)
 	return conf, err
@@ -88,7 +87,6 @@ type localFileStorage struct {
 	base       string                                  // relative filepath prefixed with externalIODir, for I/O ops on this node.
 	blobClient blobs.BlobClient                        // inter-node file sharing service
 	settings   *cluster.Settings                       // cluster settings for the ExternalStorage
-	uri        string                                  // original URI used to construct this storage
 }
 
 var _ cloud.ExternalStorage = &localFileStorage{}
@@ -112,25 +110,21 @@ func makeLocalFileStorage(
 		return nil, errors.New("nodelocal storage is not available")
 	}
 	cfg := dest.LocalFileConfig
+	if cfg.Path == "" {
+		return nil, errors.Errorf("local storage requested but path not provided")
+	}
 	client, err := args.BlobClientFactory(ctx, cfg.NodeID)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create blob client")
 	}
-	return &localFileStorage{
-		base:       cfg.Path,
-		cfg:        cfg,
-		ioConf:     args.IOConf,
-		blobClient: client,
-		settings:   args.Settings,
-		uri:        dest.URI,
-	}, nil
+	return &localFileStorage{base: cfg.Path, cfg: cfg, ioConf: args.IOConf, blobClient: client,
+		settings: args.Settings}, nil
 }
 
 func (l *localFileStorage) Conf() cloudpb.ExternalStorage {
 	return cloudpb.ExternalStorage{
 		Provider:        cloudpb.ExternalStorageProvider_nodelocal,
 		LocalFileConfig: l.cfg,
-		URI:             l.uri,
 	}
 }
 
@@ -152,12 +146,6 @@ func joinRelativePath(filePath string, file string) string {
 	return path.Join(".", filePath, file)
 }
 
-// isNotFoundErr checks if the error indicates a file not found condition,
-// handling both local and remote nodelocal store cases.
-func isNotFoundErr(err error) bool {
-	return oserror.IsNotExist(err) || status.Code(err) == codes.NotFound
-}
-
 func (l *localFileStorage) Writer(ctx context.Context, basename string) (io.WriteCloser, error) {
 	return l.blobClient.Writer(ctx, joinRelativePath(l.base, basename))
 }
@@ -166,10 +154,19 @@ func (l *localFileStorage) ReadFile(
 	ctx context.Context, basename string, opts cloud.ReadOptions,
 ) (ioctx.ReadCloserCtx, int64, error) {
 	reader, size, err := l.blobClient.ReadFile(ctx, joinRelativePath(l.base, basename), opts.Offset)
-	if err != nil && isNotFoundErr(err) {
-		return nil, 0, cloud.WrapErrFileDoesNotExist(err, "nodelocal storage file does not exist")
-	}
 	if err != nil {
+		// The format of the error returned by the above ReadFile call differs based
+		// on whether we are reading from a local or remote nodelocal store.
+		// The local store returns a golang native ErrNotFound, whereas the remote
+		// store returns a gRPC native NotFound error.
+		if oserror.IsNotExist(err) || status.Code(err) == codes.NotFound {
+			// nolint:errwrap
+			return nil, 0, errors.WithMessagef(
+				errors.Wrap(cloud.ErrFileDoesNotExist, "nodelocal storage file does not exist"),
+				"%s",
+				err.Error(),
+			)
+		}
 		return nil, 0, err
 	}
 	return reader, size, nil
@@ -207,11 +204,7 @@ func (l *localFileStorage) List(
 }
 
 func (l *localFileStorage) Delete(ctx context.Context, basename string) error {
-	err := l.blobClient.Delete(ctx, joinRelativePath(l.base, basename))
-	if isNotFoundErr(err) {
-		return nil
-	}
-	return err
+	return l.blobClient.Delete(ctx, joinRelativePath(l.base, basename))
 }
 
 func (l *localFileStorage) Size(ctx context.Context, basename string) (int64, error) {

@@ -36,7 +36,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"github.com/kr/pretty"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -117,7 +116,7 @@ func TestMVCCGCQueueMakeGCScoreInvariantQuick(t *testing.T) {
 		wouldHaveToDeleteSomething := gcBytes*int64(ttlSec) < ms.GCByteAge(now.WallTime)
 		result := !r.ShouldQueue || wouldHaveToDeleteSomething
 		if !result {
-			log.KvExec.Warningf(ctx, "failing on ttl=%d, timePassed=%s, gcBytes=%d, gcByteAge=%d:\n%s",
+			log.Warningf(ctx, "failing on ttl=%d, timePassed=%s, gcBytes=%d, gcByteAge=%d:\n%s",
 				ttlSec, timePassed, gcBytes, gcByteAge, r)
 		}
 		return result
@@ -660,7 +659,7 @@ func TestGCScoreWithHint(t *testing.T) {
 	}
 }
 
-func testMVCCGCQueueProcessImpl(t *testing.T, snapshotBounds bool) {
+func testMVCCGCQueueProcessImpl(t *testing.T, useEfos bool) {
 	defer log.Scope(t).Close(t)
 	storage.DisableMetamorphicSimpleValueEncoding(t)
 	ctx := context.Background()
@@ -862,11 +861,10 @@ func testMVCCGCQueueProcessImpl(t *testing.T, snapshotBounds bool) {
 	gcInfo, err := func() (gc.Info, error) {
 		var snap storage.Reader
 		desc := tc.repl.Desc()
-		if snapshotBounds {
-			snap = tc.repl.store.StateEngine().NewSnapshot(rditer.MakeReplicatedKeySpans(desc)...)
+		if useEfos {
+			snap = tc.repl.store.TODOEngine().NewEventuallyFileOnlySnapshot(rditer.MakeReplicatedKeySpans(desc))
 		} else {
-			// Use implicit engine-wide bounds.
-			snap = tc.repl.store.StateEngine().NewSnapshot()
+			snap = tc.repl.store.TODOEngine().NewSnapshot()
 		}
 		defer snap.Close()
 
@@ -909,9 +907,12 @@ func testMVCCGCQueueProcessImpl(t *testing.T, snapshotBounds bool) {
 			gcInfo.AffectedVersionsRangeValBytes)
 	}
 
+	settings := tc.repl.ClusterSettings()
+	storage.UseEFOS.Override(ctx, &settings.SV, useEfos)
+
 	// Process through a scan queue.
 	mgcq := newMVCCGCQueue(tc.store)
-	processed, err := mgcq.process(ctx, tc.repl, cfg, -1 /* priorityAtEnqueue */)
+	processed, err := mgcq.process(ctx, tc.repl, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -949,7 +950,7 @@ func testMVCCGCQueueProcessImpl(t *testing.T, snapshotBounds bool) {
 	// However, because the GC processing pushes transactions and
 	// resolves intents asynchronously, we use a SucceedsSoon loop.
 	testutils.SucceedsSoon(t, func() error {
-		kvs, err := storage.Scan(context.Background(), tc.store.StateEngine(), key1, keys.MaxKey, 0)
+		kvs, err := storage.Scan(context.Background(), tc.store.TODOEngine(), key1, keys.MaxKey, 0)
 		if err != nil {
 			return err
 		}
@@ -977,9 +978,9 @@ func testMVCCGCQueueProcessImpl(t *testing.T, snapshotBounds bool) {
 // scales and verifies that scan queue process properly GCs test data.
 func TestMVCCGCQueueProcess(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	for _, snapshotBounds := range []bool{false, true} {
-		t.Run(fmt.Sprintf("snapshot_bounds=%v", snapshotBounds), func(t *testing.T) {
-			testMVCCGCQueueProcessImpl(t, snapshotBounds)
+	for _, useEfos := range []bool{false, true} {
+		t.Run(fmt.Sprintf("use_efos=%v", useEfos), func(t *testing.T) {
+			testMVCCGCQueueProcessImpl(t, useEfos)
 		})
 	}
 }
@@ -1145,12 +1146,14 @@ func TestMVCCGCQueueTransactionTable(t *testing.T) {
 		txns[strKey] = *txn
 		for _, addrKey := range []roachpb.Key{baseKey, outsideKey} {
 			key := keys.TransactionKey(addrKey, txn.ID)
-			require.NoError(t, storage.MVCCPutProto(
-				ctx, tc.stateEng, key, hlc.Timestamp{}, txn, storage.MVCCWriteOptions{},
-			))
+			if err := storage.MVCCPutProto(ctx, tc.engine, key, hlc.Timestamp{}, txn, storage.MVCCWriteOptions{}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		entry := roachpb.AbortSpanEntry{Key: txn.Key, Timestamp: txn.LastActive()}
-		require.NoError(t, tc.repl.abortSpan.Put(ctx, tc.stateEng, nil, txn.ID, &entry))
+		if err := tc.repl.abortSpan.Put(ctx, tc.engine, nil, txn.ID, &entry); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// Run GC.
@@ -1160,7 +1163,7 @@ func TestMVCCGCQueueTransactionTable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	processed, err := mgcq.process(ctx, tc.repl, cfg, -1 /* priorityAtEnqueue */)
+	processed, err := mgcq.process(ctx, tc.repl, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1172,12 +1175,12 @@ func TestMVCCGCQueueTransactionTable(t *testing.T) {
 			txnKey := keys.TransactionKey(roachpb.Key(strKey), txns[strKey].ID)
 			txnTombstoneTSCacheKey := transactionTombstoneMarker(
 				roachpb.Key(strKey), txns[strKey].ID)
-			ok, err := storage.MVCCGetProto(ctx, tc.stateEng, txnKey, hlc.Timestamp{}, txn,
+			ok, err := storage.MVCCGetProto(ctx, tc.engine, txnKey, hlc.Timestamp{}, txn,
 				storage.MVCCGetOptions{})
 			if err != nil {
 				return err
 			}
-			if expGC := (sp.newStatus == -1 /* priorityAtEnqueue */); expGC {
+			if expGC := (sp.newStatus == -1); expGC {
 				if expGC != !ok {
 					return fmt.Errorf("%s: expected gc: %t, but found %s\n%s", strKey, expGC, txn, roachpb.Key(strKey))
 				}
@@ -1210,7 +1213,7 @@ func TestMVCCGCQueueTransactionTable(t *testing.T) {
 				return fmt.Errorf("%s: unexpected intent resolutions:\nexpected: %s\nobserved: %s", strKey, expIntents, spans)
 			}
 			entry := &roachpb.AbortSpanEntry{}
-			abortExists, err := tc.repl.abortSpan.Get(ctx, tc.store.StateEngine(), txns[strKey].ID, entry)
+			abortExists, err := tc.repl.abortSpan.Get(ctx, tc.store.TODOEngine(), txns[strKey].ID, entry)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1224,7 +1227,7 @@ func TestMVCCGCQueueTransactionTable(t *testing.T) {
 	outsideTxnPrefix := keys.TransactionKey(outsideKey, uuid.UUID{})
 	outsideTxnPrefixEnd := keys.TransactionKey(outsideKey.Next(), uuid.UUID{})
 	var count int
-	if _, err := storage.MVCCIterate(ctx, tc.store.StateEngine(), outsideTxnPrefix, outsideTxnPrefixEnd, hlc.Timestamp{},
+	if _, err := storage.MVCCIterate(ctx, tc.store.TODOEngine(), outsideTxnPrefix, outsideTxnPrefixEnd, hlc.Timestamp{},
 		storage.MVCCScanOptions{}, func(roachpb.KeyValue) error {
 			count++
 			return nil
@@ -1236,9 +1239,11 @@ func TestMVCCGCQueueTransactionTable(t *testing.T) {
 			"but only %d are left", exp, count)
 	}
 
+	batch := tc.engine.NewSnapshot()
+	defer batch.Close()
 	tc.repl.raftMu.Lock()
 	tc.repl.mu.RLock()
-	tc.repl.assertStateRaftMuLockedReplicaMuRLocked(ctx, tc.stateEng, tc.raftEng) // check that in-mem and on-disk state were updated
+	tc.repl.assertStateRaftMuLockedReplicaMuRLocked(ctx, batch) // check that in-mem and on-disk state were updated
 	tc.repl.mu.RUnlock()
 	tc.repl.raftMu.Unlock()
 }
@@ -1292,7 +1297,7 @@ func TestMVCCGCQueueIntentResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgcq := newMVCCGCQueue(tc.store)
-	processed, err := mgcq.process(ctx, tc.repl, confReader, -1 /* priorityAtEnqueue */)
+	processed, err := mgcq.process(ctx, tc.repl, confReader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1305,7 +1310,7 @@ func TestMVCCGCQueueIntentResolution(t *testing.T) {
 		meta := &enginepb.MVCCMetadata{}
 		// The range is specified using only global keys, since the implementation
 		// may use an intentInterleavingIter.
-		return tc.store.StateEngine().MVCCIterate(context.Background(), keys.LocalMax, roachpb.KeyMax,
+		return tc.store.TODOEngine().MVCCIterate(context.Background(), keys.LocalMax, roachpb.KeyMax,
 			storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypePointsOnly,
 			fs.UnknownReadCategory, func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
 				if !kv.Key.IsValue() {
@@ -1345,9 +1350,9 @@ func TestMVCCGCQueueLastProcessedTimestamps(t *testing.T) {
 
 	ts := tc.Clock().Now()
 	for _, lpv := range lastProcessedVals {
-		require.NoError(t, storage.MVCCPutProto(
-			ctx, tc.stateEng, lpv.key, hlc.Timestamp{}, &ts, storage.MVCCWriteOptions{},
-		))
+		if err := storage.MVCCPutProto(ctx, tc.engine, lpv.key, hlc.Timestamp{}, &ts, storage.MVCCWriteOptions{}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	confReader, err := tc.store.GetConfReader(ctx)
@@ -1357,7 +1362,7 @@ func TestMVCCGCQueueLastProcessedTimestamps(t *testing.T) {
 
 	// Process through a scan queue.
 	mgcq := newMVCCGCQueue(tc.store)
-	processed, err := mgcq.process(ctx, tc.repl, confReader, -1 /* priorityAtEnqueue */)
+	processed, err := mgcq.process(ctx, tc.repl, confReader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1366,7 +1371,7 @@ func TestMVCCGCQueueLastProcessedTimestamps(t *testing.T) {
 	// Verify GC.
 	testutils.SucceedsSoon(t, func() error {
 		for _, lpv := range lastProcessedVals {
-			ok, err := storage.MVCCGetProto(ctx, tc.stateEng, lpv.key, hlc.Timestamp{}, &ts,
+			ok, err := storage.MVCCGetProto(ctx, tc.engine, lpv.key, hlc.Timestamp{}, &ts,
 				storage.MVCCGetOptions{})
 			if err != nil {
 				return err
@@ -1394,9 +1399,6 @@ func TestMVCCGCQueueChunkRequests(t *testing.T) {
 		func(filterArgs kvserverbase.FilterArgs) *kvpb.Error {
 			if _, ok := filterArgs.Req.(*kvpb.GCRequest); ok {
 				atomic.AddInt32(&gcRequests, 1)
-				// Verify that all MVCC GC requests have their admission control header
-				// populated.
-				assert.NotZero(t, filterArgs.AdmissionHdr.CreateTime)
 				return nil
 			}
 			return nil
@@ -1468,7 +1470,7 @@ func TestMVCCGCQueueChunkRequests(t *testing.T) {
 	}
 	tc.manualClock.Advance(conf.TTL() + 1)
 	mgcq := newMVCCGCQueue(tc.store)
-	processed, err := mgcq.process(ctx, tc.repl, confReader, -1 /* priorityAtEnqueue */)
+	processed, err := mgcq.process(ctx, tc.repl, confReader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1507,7 +1509,7 @@ func TestMVCCGCQueueGroupsRangeDeletions(t *testing.T) {
 	store := createTestStoreWithConfig(ctx, t, stopper, testStoreOpts{createSystemRanges: false}, &cfg)
 	r, err := store.GetReplica(roachpb.RangeID(1))
 	require.NoError(t, err)
-	require.NoError(t, store.RemoveReplica(ctx, r, r.Desc().NextReplicaID, redact.SafeString(t.Name())))
+	require.NoError(t, store.RemoveReplica(ctx, r, r.Desc().NextReplicaID, RemoveOptions{DestroyData: true}))
 	// Add replica without hint.
 	r1 := createReplica(store, roachpb.RangeID(100), key("a"), key("b"))
 	require.NoError(t, store.AddReplica(r1))

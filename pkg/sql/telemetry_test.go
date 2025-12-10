@@ -8,15 +8,16 @@ package sql_test
 import (
 	"context"
 	gosql "database/sql"
+	"net/url"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl"
-	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltestutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
+	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/stretchr/testify/require"
@@ -42,14 +43,18 @@ func TestTelemetry(t *testing.T) {
 func TestTelemetryRecordCockroachShell(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	srv := serverutils.StartServerOnly(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(context.Background())
-	s := srv.ApplicationLayer()
-
-	pgUrl, cleanupFn := s.PGUrl(
+	cluster := serverutils.StartCluster(
 		t,
-		serverutils.CertsDirPrefix("TestTelemetryRecordCockroachShell"),
-		serverutils.User(username.RootUser),
+		1,
+		base.TestClusterArgs{},
+	)
+	defer cluster.Stopper().Stop(context.Background())
+
+	pgUrl, cleanupFn := sqlutils.PGUrl(
+		t,
+		cluster.Server(0).AdvSQLAddr(),
+		"TestTelemetryRecordCockroachShell",
+		url.User("root"),
 	)
 	defer cleanupFn()
 	q := pgUrl.Query()

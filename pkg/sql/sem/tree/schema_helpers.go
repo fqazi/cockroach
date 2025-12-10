@@ -7,40 +7,32 @@ package tree
 
 import "slices"
 
-// IsSetOrResetSchemaLocked returns true if `n` contains only commands to
-// set/reset storage parameters including "schema_locked", with no other
-// schema-changing commands. This prevents bypassing schema_locked protection
-// by combining SET (schema_locked=false) with other operations like DROP
-// COLUMN in the same ALTER TABLE statement.
+// IsSetOrResetSchemaLocked returns true if `n` contains a command to
+// set/reset "schema_locked" storage parameter.
 func IsSetOrResetSchemaLocked(n Statement) bool {
 	alterStmt, ok := n.(*AlterTable)
 	if !ok {
 		return false
 	}
-	hasSchemaLockedChange := false
 	for _, cmd := range alterStmt.Cmds {
 		switch cmd := cmd.(type) {
 		case *AlterTableSetStorageParams:
 			if cmd.StorageParams.GetVal("schema_locked") != nil {
-				hasSchemaLockedChange = true
+				return true
 			}
 		case *AlterTableResetStorageParams:
 			if slices.Contains(cmd.Params, "schema_locked") {
-				hasSchemaLockedChange = true
+				return true
 			}
-		default:
-			// Any other command type means this is not a pure storage parameter
-			// change, so we should not allow bypassing schema_locked checks.
-			return false
 		}
 	}
-	return hasSchemaLockedChange
+	return false
 }
 
 // IsAllowedLDRSchemaChange returns true if the schema change statement is
 // allowed to occur while the table is being referenced by a logical data
 // replication job as a destination table.
-func IsAllowedLDRSchemaChange(n Statement, virtualColNames []string, kvWriterEnabled bool) bool {
+func IsAllowedLDRSchemaChange(n Statement, virtualColNames []string) bool {
 	switch s := n.(type) {
 	case *CreateIndex:
 		// Don't allow creating an index on a virtual column.
@@ -48,10 +40,6 @@ func IsAllowedLDRSchemaChange(n Statement, virtualColNames []string, kvWriterEna
 			if slices.Contains(virtualColNames, string(col.Column)) {
 				return false
 			}
-		}
-		if s.Predicate != nil && !kvWriterEnabled {
-			// The sql writer supports partial indexes.
-			return true
 		}
 		// Disallow unique, partial, or hash-sharded indexes. Having these indexes
 		// on a destination table could cause inserts to fail.
@@ -61,20 +49,12 @@ func IsAllowedLDRSchemaChange(n Statement, virtualColNames []string, kvWriterEna
 		return !s.Unique && s.Predicate == nil && s.Sharded == nil
 	case *DropIndex:
 		return true
-	case *AlterIndexVisible:
-		return true
-	case *RenameIndex:
-		return true
 	case *SetZoneConfig:
 		return true
 	case *AlterTable:
 		onlySafeStorageParams := true
 		for _, cmd := range s.Cmds {
 			switch c := cmd.(type) {
-			case *AlterTableSetVisible:
-				return true
-			case *AlterTableSetDefault:
-				return true
 			// Allow safe storage parameter changes.
 			case *AlterTableSetStorageParams:
 				// ttl_expire_after is not safe since it creates a new column and

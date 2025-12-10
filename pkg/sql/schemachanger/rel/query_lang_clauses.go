@@ -7,7 +7,7 @@ package rel
 
 import (
 	"github.com/cockroachdb/errors"
-	"go.yaml.in/yaml/v4"
+	"gopkg.in/yaml.v3"
 )
 
 // Clauses exists to handle flattening of a slice of clauses before marshaling.

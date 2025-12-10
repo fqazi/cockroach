@@ -22,10 +22,18 @@ import (
 // input exec.Nodes.
 func getResultColumns(
 	op execOperator, args interface{}, inputs ...colinfo.ResultColumns,
-) (out colinfo.ResultColumns, retErr error) {
-	// If we have a bug in the code below, it's easily possible to hit panic
-	// (like out-of-bounds). Catch these here and return as an error.
-	defer errorutil.MaybeCatchPanic(&retErr, nil /* errCallback */)
+) (out colinfo.ResultColumns, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			// If we have a bug in the code below, it's easily possible to hit panic
+			// (like out-of-bounds). Catch these here and return as an error.
+			if ok, e := errorutil.ShouldCatch(r); ok {
+				err = e
+			} else {
+				panic(r)
+			}
+		}
+	}()
 
 	switch op {
 	case filterOp, invertedFilterOp, limitOp, max1RowOp, sortOp, topKOp, bufferOp, hashSetOpOp,
@@ -154,21 +162,6 @@ func getResultColumns(
 		}
 		return a.Ref.Columns(), nil
 
-	case vectorSearchOp:
-		a := args.(*vectorSearchArgs)
-		return tableColumns(a.Table, a.OutCols), nil
-
-	case vectorMutationSearchOp:
-		if len(inputs) == 0 {
-			return nil, nil
-		}
-		a := args.(*vectorMutationSearchArgs)
-		cols := appendColumns(inputs[0], colinfo.ResultColumn{Name: "partition-key", Typ: types.Int})
-		if a.IsIndexPut {
-			cols = append(cols, colinfo.ResultColumn{Name: "quantized-vector", Typ: types.Bytes})
-		}
-		return cols, nil
-
 	case insertOp:
 		a := args.(*insertArgs)
 		return tableColumns(a.Table, a.ReturnCols), nil
@@ -184,26 +177,12 @@ func getResultColumns(
 			a.Passthrough...,
 		), nil
 
-	case updateSwapOp:
-		a := args.(*updateSwapArgs)
-		return appendColumns(
-			tableColumns(a.Table, a.ReturnCols),
-			a.Passthrough...,
-		), nil
-
 	case upsertOp:
 		a := args.(*upsertArgs)
 		return tableColumns(a.Table, a.ReturnCols), nil
 
 	case deleteOp:
 		a := args.(*deleteArgs)
-		return appendColumns(
-			tableColumns(a.Table, a.ReturnCols),
-			a.Passthrough...,
-		), nil
-
-	case deleteSwapOp:
-		a := args.(*deleteSwapArgs)
 		return appendColumns(
 			tableColumns(a.Table, a.ReturnCols),
 			a.Passthrough...,

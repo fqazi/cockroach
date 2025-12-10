@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangefeed"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
@@ -46,7 +45,7 @@ func TestDeleteOldStatsForColumns(t *testing.T) {
 		db,
 		s.AppStopper(),
 	)
-	require.NoError(t, cache.Start(ctx, s.Codec(), s.RangeFeedFactory().(*rangefeed.Factory), s.SystemTableIDResolver().(catalog.SystemTableIDResolver)))
+	require.NoError(t, cache.Start(ctx, s.Codec(), s.RangeFeedFactory().(*rangefeed.Factory)))
 
 	// The test data must be ordered by CreatedAt DESC so the calculated set of
 	// expected deleted stats is correct.
@@ -347,7 +346,7 @@ func TestDeleteOldStatsForOtherColumns(t *testing.T) {
 		s.InternalDB().(descs.DB),
 		s.AppStopper(),
 	)
-	require.NoError(t, cache.Start(ctx, s.Codec(), s.RangeFeedFactory().(*rangefeed.Factory), s.SystemTableIDResolver().(catalog.SystemTableIDResolver)))
+	require.NoError(t, cache.Start(ctx, s.Codec(), s.RangeFeedFactory().(*rangefeed.Factory)))
 	testData := []TableStatisticProto{
 		{
 			TableID:       descpb.ID(100),
@@ -683,6 +682,7 @@ func TestStatsAreDeletedForDroppedTables(t *testing.T) {
 
 	var params base.TestServerArgs
 	params.ScanMaxIdleTime = time.Millisecond // speed up MVCC GC queue scans
+	params.DefaultTestTenant = base.TestIsForStuffThatShouldWorkWithSecondaryTenantsButDoesntYet(109380)
 	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
 	runner := sqlutils.MakeSQLRunner(sqlDB)

@@ -7,9 +7,7 @@
 package memo
 
 import (
-	"bytes"
 	"context"
-	"reflect"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt"
@@ -133,7 +131,7 @@ type Memo struct {
 	// rootExpr is the root expression of the memo expression forest. It is set
 	// via a call to SetRoot. After optimization, it is set to be the root of the
 	// lowest cost tree in the forest.
-	rootExpr RelExpr
+	rootExpr opt.Expr
 
 	// rootProps are the physical properties required of the root memo expression.
 	// It is set via a call to SetRoot.
@@ -144,6 +142,8 @@ type Memo struct {
 
 	// The following are selected fields from SessionData which can affect
 	// planning. We need to cross-check these before reusing a cached memo.
+	// NOTE: If you add new fields here, be sure to add them to the relevant
+	//       fields in explain_bundle.go.
 	reorderJoinsLimit                          int
 	zigzagJoinEnabled                          bool
 	useForecasts                               bool
@@ -159,7 +159,6 @@ type Memo struct {
 	intervalStyle                              duration.IntervalStyle
 	propagateInputOrdering                     bool
 	disallowFullTableScans                     bool
-	avoidFullTableScansInMutations             bool
 	largeFullScanRows                          float64
 	txnRowsReadErr                             int64
 	nullOrderedLast                            bool
@@ -168,7 +167,6 @@ type Memo struct {
 	testingOptimizerRandomSeed                 int64
 	testingOptimizerCostPerturbation           float64
 	testingOptimizerDisableRuleProbability     float64
-	disableOptimizerRules                      []string
 	enforceHomeRegion                          bool
 	variableInequalityLookupJoinEnabled        bool
 	allowOrdinalColumnReferences               bool
@@ -204,21 +202,7 @@ type Memo struct {
 	preferBoundedCardinality                   bool
 	minRowCount                                float64
 	checkInputMinRowCount                      float64
-	planLookupJoinsWithReverseScans            bool
-	useInsertFastPath                          bool
-	internal                                   bool
-	usePre_25_2VariadicBuiltins                bool
 	useExistsFilterHoistRule                   bool
-	disableSlowCascadeFastPathForRBRTables     bool
-	useImprovedHoistJoinProject                bool
-	rowSecurity                                bool
-	clampLowHistogramSelectivity               bool
-	clampInequalitySelectivity                 bool
-	useMaxFrequencySelectivity                 bool
-	usingHintInjection                         bool
-	useSwapMutations                           bool
-	preventUpdateSetColumnDrop                 bool
-	useImprovedRoutineDepsTriggersComputedCols bool
 
 	// txnIsoLevel is the isolation level under which the plan was created. This
 	// affects the planning of some locking operations, so it must be included in
@@ -231,10 +215,6 @@ type Memo struct {
 	// curWithID is the highest currently in-use WITH ID.
 	curWithID opt.WithID
 
-	// curRoutineResultBufferID is the highest currently in-use routine result
-	// buffer ID. See the RoutineResultBufferID comment for more details.
-	curRoutineResultBufferID RoutineResultBufferID
-
 	newGroupFn func(opt.Expr)
 
 	// disableCheckExpr disables expression validation performed by CheckExpr,
@@ -243,10 +223,6 @@ type Memo struct {
 	// set to true for the optsteps test command to prevent CheckExpr from
 	// erring with partially normalized expressions.
 	disableCheckExpr bool
-
-	// optimizationStats tracks decisions made during optimization, for example,
-	// to clamp selectivity estimates to a lower bound.
-	optimizationStats OptimizationStats
 
 	// WARNING: if you add more members, add initialization code in Init (if
 	// reusing allocated data structures is desired).
@@ -259,9 +235,8 @@ type Memo struct {
 // IsStale method for more details).
 func (m *Memo) Init(ctx context.Context, evalCtx *eval.Context) {
 	// This initialization pattern ensures that fields are not unwittingly
-	// reused. Field reuse must be explicitpkg/sql/opt/memo/memo.go.
+	// reused. Field reuse must be explicit.
 	*m = Memo{
-		//nolint metadata is being reused.
 		metadata:                                   m.metadata,
 		reorderJoinsLimit:                          int(evalCtx.SessionData().ReorderJoinsLimit),
 		zigzagJoinEnabled:                          evalCtx.SessionData().ZigzagJoinEnabled,
@@ -278,7 +253,6 @@ func (m *Memo) Init(ctx context.Context, evalCtx *eval.Context) {
 		intervalStyle:                              evalCtx.SessionData().GetIntervalStyle(),
 		propagateInputOrdering:                     evalCtx.SessionData().PropagateInputOrdering,
 		disallowFullTableScans:                     evalCtx.SessionData().DisallowFullTableScans,
-		avoidFullTableScansInMutations:             evalCtx.SessionData().AvoidFullTableScansInMutations,
 		largeFullScanRows:                          evalCtx.SessionData().LargeFullScanRows,
 		txnRowsReadErr:                             evalCtx.SessionData().TxnRowsReadErr,
 		nullOrderedLast:                            evalCtx.SessionData().NullOrderedLast,
@@ -287,7 +261,6 @@ func (m *Memo) Init(ctx context.Context, evalCtx *eval.Context) {
 		testingOptimizerRandomSeed:                 evalCtx.SessionData().TestingOptimizerRandomSeed,
 		testingOptimizerCostPerturbation:           evalCtx.SessionData().TestingOptimizerCostPerturbation,
 		testingOptimizerDisableRuleProbability:     evalCtx.SessionData().TestingOptimizerDisableRuleProbability,
-		disableOptimizerRules:                      evalCtx.SessionData().DisableOptimizerRules,
 		enforceHomeRegion:                          evalCtx.SessionData().EnforceHomeRegion,
 		variableInequalityLookupJoinEnabled:        evalCtx.SessionData().VariableInequalityLookupJoinEnabled,
 		allowOrdinalColumnReferences:               evalCtx.SessionData().AllowOrdinalColumnReferences,
@@ -323,21 +296,7 @@ func (m *Memo) Init(ctx context.Context, evalCtx *eval.Context) {
 		preferBoundedCardinality:                   evalCtx.SessionData().OptimizerPreferBoundedCardinality,
 		minRowCount:                                evalCtx.SessionData().OptimizerMinRowCount,
 		checkInputMinRowCount:                      evalCtx.SessionData().OptimizerCheckInputMinRowCount,
-		planLookupJoinsWithReverseScans:            evalCtx.SessionData().OptimizerPlanLookupJoinsWithReverseScans,
-		useInsertFastPath:                          evalCtx.SessionData().InsertFastPath,
-		internal:                                   evalCtx.SessionData().Internal,
-		usePre_25_2VariadicBuiltins:                evalCtx.SessionData().UsePre_25_2VariadicBuiltins,
 		useExistsFilterHoistRule:                   evalCtx.SessionData().OptimizerUseExistsFilterHoistRule,
-		disableSlowCascadeFastPathForRBRTables:     evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables,
-		useImprovedHoistJoinProject:                evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject,
-		rowSecurity:                                evalCtx.SessionData().RowSecurity,
-		clampLowHistogramSelectivity:               evalCtx.SessionData().OptimizerClampLowHistogramSelectivity,
-		clampInequalitySelectivity:                 evalCtx.SessionData().OptimizerClampInequalitySelectivity,
-		useMaxFrequencySelectivity:                 evalCtx.SessionData().OptimizerUseMaxFrequencySelectivity,
-		usingHintInjection:                         evalCtx.Planner != nil && evalCtx.Planner.UsingHintInjection(),
-		useSwapMutations:                           evalCtx.SessionData().UseSwapMutations,
-		preventUpdateSetColumnDrop:                 evalCtx.SessionData().PreventUpdateSetColumnDrop,
-		useImprovedRoutineDepsTriggersComputedCols: evalCtx.SessionData().UseImprovedRoutineDepsTriggersAndComputedCols,
 		txnIsoLevel:                                evalCtx.TxnIsoLevel,
 	}
 	m.metadata.Init()
@@ -391,7 +350,7 @@ func (m *Memo) Metadata() *opt.Metadata {
 
 // RootExpr returns the root memo expression previously set via a call to
 // SetRoot.
-func (m *Memo) RootExpr() RelExpr {
+func (m *Memo) RootExpr() opt.Expr {
 	return m.rootExpr
 }
 
@@ -420,7 +379,12 @@ func (m *Memo) SetRoot(e RelExpr, phys *physical.Required) {
 // HasPlaceholders returns true if the memo contains at least one placeholder
 // operator.
 func (m *Memo) HasPlaceholders() bool {
-	return m.rootExpr.Relational().HasPlaceholder
+	rel, ok := m.rootExpr.(RelExpr)
+	if !ok {
+		panic(errors.AssertionFailedf("placeholders only supported when memo root is relational"))
+	}
+
+	return rel.Relational().HasPlaceholder
 }
 
 // IsStale returns true if the memo has been invalidated by changes to any of
@@ -461,7 +425,6 @@ func (m *Memo) IsStale(
 		m.intervalStyle != evalCtx.SessionData().GetIntervalStyle() ||
 		m.propagateInputOrdering != evalCtx.SessionData().PropagateInputOrdering ||
 		m.disallowFullTableScans != evalCtx.SessionData().DisallowFullTableScans ||
-		m.avoidFullTableScansInMutations != evalCtx.SessionData().AvoidFullTableScansInMutations ||
 		m.largeFullScanRows != evalCtx.SessionData().LargeFullScanRows ||
 		m.txnRowsReadErr != evalCtx.SessionData().TxnRowsReadErr ||
 		m.nullOrderedLast != evalCtx.SessionData().NullOrderedLast ||
@@ -470,7 +433,6 @@ func (m *Memo) IsStale(
 		m.testingOptimizerRandomSeed != evalCtx.SessionData().TestingOptimizerRandomSeed ||
 		m.testingOptimizerCostPerturbation != evalCtx.SessionData().TestingOptimizerCostPerturbation ||
 		m.testingOptimizerDisableRuleProbability != evalCtx.SessionData().TestingOptimizerDisableRuleProbability ||
-		!reflect.DeepEqual(m.disableOptimizerRules, evalCtx.SessionData().DisableOptimizerRules) ||
 		m.enforceHomeRegion != evalCtx.SessionData().EnforceHomeRegion ||
 		m.variableInequalityLookupJoinEnabled != evalCtx.SessionData().VariableInequalityLookupJoinEnabled ||
 		m.allowOrdinalColumnReferences != evalCtx.SessionData().AllowOrdinalColumnReferences ||
@@ -506,21 +468,7 @@ func (m *Memo) IsStale(
 		m.preferBoundedCardinality != evalCtx.SessionData().OptimizerPreferBoundedCardinality ||
 		m.minRowCount != evalCtx.SessionData().OptimizerMinRowCount ||
 		m.checkInputMinRowCount != evalCtx.SessionData().OptimizerCheckInputMinRowCount ||
-		m.planLookupJoinsWithReverseScans != evalCtx.SessionData().OptimizerPlanLookupJoinsWithReverseScans ||
-		m.useInsertFastPath != evalCtx.SessionData().InsertFastPath ||
-		m.internal != evalCtx.SessionData().Internal ||
-		m.usePre_25_2VariadicBuiltins != evalCtx.SessionData().UsePre_25_2VariadicBuiltins ||
 		m.useExistsFilterHoistRule != evalCtx.SessionData().OptimizerUseExistsFilterHoistRule ||
-		m.disableSlowCascadeFastPathForRBRTables != evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables ||
-		m.useImprovedHoistJoinProject != evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject ||
-		m.rowSecurity != evalCtx.SessionData().RowSecurity ||
-		m.clampLowHistogramSelectivity != evalCtx.SessionData().OptimizerClampLowHistogramSelectivity ||
-		m.clampInequalitySelectivity != evalCtx.SessionData().OptimizerClampInequalitySelectivity ||
-		m.useMaxFrequencySelectivity != evalCtx.SessionData().OptimizerUseMaxFrequencySelectivity ||
-		m.usingHintInjection != (evalCtx.Planner != nil && evalCtx.Planner.UsingHintInjection()) ||
-		m.useSwapMutations != evalCtx.SessionData().UseSwapMutations ||
-		m.preventUpdateSetColumnDrop != evalCtx.SessionData().PreventUpdateSetColumnDrop ||
-		m.useImprovedRoutineDepsTriggersComputedCols != evalCtx.SessionData().UseImprovedRoutineDepsTriggersAndComputedCols ||
 		m.txnIsoLevel != evalCtx.TxnIsoLevel {
 		return true, nil
 	}
@@ -528,8 +476,10 @@ func (m *Memo) IsStale(
 	// Memo is stale if the fingerprint of any object in the memo's metadata has
 	// changed, or if the current user no longer has sufficient privilege to
 	// access the object.
-	if depsUpToDate, err := m.Metadata().CheckDependencies(ctx, evalCtx, catalog); err != nil || !depsUpToDate {
+	if depsUpToDate, err := m.Metadata().CheckDependencies(ctx, evalCtx, catalog); err != nil {
 		return true, err
+	} else if !depsUpToDate {
+		return true, nil
 	}
 	return false, nil
 }
@@ -585,7 +535,8 @@ func (m *Memo) ResetCost(e RelExpr, cost Cost) {
 func (m *Memo) IsOptimized() bool {
 	// The memo is optimized once the root expression has its physical properties
 	// assigned.
-	return m.rootExpr != nil && m.rootExpr.RequiredPhysical() != nil
+	rel, ok := m.rootExpr.(RelExpr)
+	return ok && rel.RequiredPhysical() != nil
 }
 
 // OptimizationCost returns a rough estimate of the cost of optimization of the
@@ -605,12 +556,9 @@ func (m *Memo) NextRank() opt.ScalarRank {
 	return m.curRank
 }
 
-// CopyRankAndIDsFrom copies the next ScalarRank, WithID, and
-// RoutineResultBufferID from the other memo.
-func (m *Memo) CopyRankAndIDsFrom(other *Memo) {
+// CopyNextRankFrom copies the next ScalarRank from the other memo.
+func (m *Memo) CopyNextRankFrom(other *Memo) {
 	m.curRank = other.curRank
-	m.curWithID = other.curWithID
-	m.curRoutineResultBufferID = other.curRoutineResultBufferID
 }
 
 // RequestColStat calculates and returns the column statistic calculated on the
@@ -654,20 +602,11 @@ func (m *Memo) NextWithID() opt.WithID {
 	return m.curWithID
 }
 
-// NextRoutineResultBufferID returns a not-yet-assigned identifier for the
-// result buffer of a PL/pgSQL set-returning function.
-func (m *Memo) NextRoutineResultBufferID() RoutineResultBufferID {
-	m.curRoutineResultBufferID++
-	return m.curRoutineResultBufferID
-}
-
 // Detach is used when we detach a memo that is to be reused later (either for
 // execbuilding or with AssignPlaceholders). New expressions should no longer be
 // constructed in this memo.
 func (m *Memo) Detach() {
 	m.interner = interner{}
-	m.replacer = nil
-
 	// It is important to not hold on to the EvalCtx in the logicalPropsBuilder
 	// (#57059).
 	m.logPropsBuilder = logicalPropsBuilder{}
@@ -697,46 +636,9 @@ func (m *Memo) DisableCheckExpr() {
 	m.disableCheckExpr = true
 }
 
-// String prints the current expression tree stored in the memo. It should only
-// be used for testing and debugging.
-func (m *Memo) String() string {
-	return m.FormatExpr(m.rootExpr)
-}
-
-// FormatExpr prints the given expression for testing and debugging.
-func (m *Memo) FormatExpr(expr opt.Expr) string {
-	if expr == nil {
-		return ""
-	}
-	f := MakeExprFmtCtxBuffer(
-		context.Background(),
-		&bytes.Buffer{},
-		ExprFmtHideQualifications,
-		false, /* redactableValues */
-		m,
-		nil, /* catalog */
-	)
-	f.FormatExpr(expr)
-	return f.Buffer.String()
-}
-
-// OptimizationStats surfaces information about choices made during optimization
-// of a query for top-level observability (e.g. metrics, EXPLAIN output).
-type OptimizationStats struct {
-	// ClampedHistogramSelectivity is true if the selectivity estimate based on a
-	// histogram was prevented from dropping too low. See also the session var
-	// "optimizer_clamp_low_histogram_selectivity".
-	ClampedHistogramSelectivity bool
-	// ClampedInequalitySelectivity is true if the selectivity estimate for an
-	// inequality unbounded on one or both sides was prevented from dropping too
-	// low. See also the session var "optimizer_clamp_inequality_selectivity".
-	ClampedInequalitySelectivity bool
-}
-
-// GetOptimizationStats returns the OptimizationStats collected during a
-// previous optimization pass.
-func (m *Memo) GetOptimizationStats() *OptimizationStats {
-	return &m.optimizationStats
+// EvalContext returns the eval.Context of the current SQL request.
+func (m *Memo) EvalContext() *eval.Context {
+	return m.logPropsBuilder.evalCtx
 }
 
 // ValuesContainer lets ValuesExpr and LiteralValuesExpr share code.

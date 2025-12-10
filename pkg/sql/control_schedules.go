@@ -25,9 +25,9 @@ import (
 )
 
 type controlSchedulesNode struct {
-	singleInputPlanNode
-	rowsAffectedOutputHelper
+	rows    planNode
 	command tree.ScheduleCommand
+	numRows int
 }
 
 func collectTelemetry(command tree.ScheduleCommand) {
@@ -38,9 +38,12 @@ func collectTelemetry(command tree.ScheduleCommand) {
 		telemetry.Inc(sqltelemetry.ScheduledBackupControlCounter("resume"))
 	case tree.DropSchedule:
 		telemetry.Inc(sqltelemetry.ScheduledBackupControlCounter("drop"))
-	case tree.ExecuteSchedule:
-		telemetry.Inc(sqltelemetry.ScheduledBackupControlCounter("execute"))
 	}
+}
+
+// FastPathResults implements the planNodeFastPath interface.
+func (n *controlSchedulesNode) FastPathResults() (int, bool) {
+	return n.numRows, true
 }
 
 // JobSchedulerEnv returns JobSchedulerEnv.
@@ -107,7 +110,7 @@ func DeleteSchedule(
 // startExec implements planNode interface.
 func (n *controlSchedulesNode) startExec(params runParams) error {
 	for {
-		ok, err := n.input.Next(params)
+		ok, err := n.rows.Next(params)
 		if err != nil {
 			return err
 		}
@@ -115,7 +118,7 @@ func (n *controlSchedulesNode) startExec(params runParams) error {
 			break
 		}
 
-		schedule, err := loadSchedule(params, n.input.Values()[0])
+		schedule, err := loadSchedule(params, n.rows.Values()[0])
 		if err != nil {
 			return err
 		}
@@ -151,29 +154,6 @@ func (n *controlSchedulesNode) startExec(params runParams) error {
 						Update(params.ctx, schedule)
 				}
 			}
-		case tree.ExecuteSchedule:
-			if schedule.ExecutorType() == tree.ScheduledBackupExecutor.InternalName() {
-				err = errors.WithHintf(
-					pgerror.Newf(
-						pgcode.FeatureNotSupported,
-						"EXECUTE SCHEDULE is not supported for this schedule type",
-					),
-					"use ALTER BACKUP SCHEDULE ... EXECUTE IMMEDIATELY",
-				)
-				break
-			}
-			// Execute schedule will run the schedule immediately. It does this by
-			// setting the next run to now. The job scheduler daemon will pick it up
-			// and execute it.
-			if schedule.IsPaused() {
-				err = errors.Newf("cannot execute a paused schedule; use RESUME SCHEDULE instead")
-			} else {
-				env := JobSchedulerEnv(params.ExecCfg().JobsKnobs())
-				schedule.SetNextRun(env.Now())
-				err = jobs.ScheduledJobTxn(params.p.InternalSQLTxn()).
-					Update(params.ctx, schedule)
-			}
-
 		case tree.DropSchedule:
 			var ex jobs.ScheduledJobExecutor
 			ex, err = jobs.GetScheduledJobExecutor(schedule.ExecutorType())
@@ -195,7 +175,7 @@ func (n *controlSchedulesNode) startExec(params runParams) error {
 				if err != nil {
 					return errors.Wrap(err, "failed to run OnDrop")
 				}
-				n.addAffectedRows(additionalDroppedSchedules)
+				n.numRows += additionalDroppedSchedules
 			}
 			err = DeleteSchedule(
 				params.ctx, params.ExecCfg(), params.p.InternalSQLTxn(),
@@ -209,23 +189,19 @@ func (n *controlSchedulesNode) startExec(params runParams) error {
 		if err != nil {
 			return err
 		}
-		n.incAffectedRows()
+		n.numRows++
 	}
 
 	return nil
 }
 
-// Next implements the planNode interface.
-func (n *controlSchedulesNode) Next(_ runParams) (bool, error) {
-	return n.next(), nil
-}
+// Next implements planNode interface.
+func (*controlSchedulesNode) Next(runParams) (bool, error) { return false, nil }
 
-// Values implements the planNode interface.
-func (n *controlSchedulesNode) Values() tree.Datums {
-	return n.values()
-}
+// Values implements planNode interface.
+func (*controlSchedulesNode) Values() tree.Datums { return nil }
 
 // Close implements planNode interface.
 func (n *controlSchedulesNode) Close(ctx context.Context) {
-	n.input.Close(ctx)
+	n.rows.Close(ctx)
 }

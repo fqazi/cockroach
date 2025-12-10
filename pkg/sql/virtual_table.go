@@ -125,7 +125,16 @@ func setupGenerator(
 				// (#135760). This should be safe since we assume that the
 				// generator functions do not update shared state and do not
 				// manipulate locks.
-				defer errorutil.MaybeCatchPanic(&retErr, nil /* errCallback */)
+				defer func() {
+					if r := recover(); r != nil {
+						if ok, e := errorutil.ShouldCatch(r); ok {
+							retErr = e
+						} else {
+							// Panic object that is not an error - unexpected.
+							panic(r)
+						}
+					}
+				}()
 				return worker(ctx, funcRowPusher(addRow))
 			}()
 			// Notify that we are done sending rows.
@@ -163,7 +172,6 @@ func setupGenerator(
 // virtualTableNode is a planNode that constructs its rows by repeatedly
 // invoking a virtualTableGenerator function.
 type virtualTableNode struct {
-	zeroInputPlanNode
 	columns    colinfo.ResultColumns
 	next       virtualTableGenerator
 	cleanup    func(ctx context.Context)
@@ -207,7 +215,7 @@ func (n *virtualTableNode) Close(ctx context.Context) {
 // virtual index on the equality columns. For each row of the input, a virtual
 // table index lookup is performed, and the rows are joined together.
 type vTableLookupJoinNode struct {
-	singleInputPlanNode
+	input planNode
 
 	dbName string
 	db     catalog.DatabaseDescriptor

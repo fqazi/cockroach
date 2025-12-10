@@ -24,13 +24,11 @@ ALTER TABLE t SET SCHEMA does_not_exist
 statement ok
 CREATE TABLE s2.t();
 
-# use regex to accept both the legacy and the declarative schema changer format
-statement error pq: relation "(test.s2.)?t" already exists
+statement error pq: relation "t" already exists
 ALTER TABLE t SET SCHEMA s2
 
 # Ensure we cannot set schema to a virtual schema.
-# use regex to accept both the legacy and the declarative schema changer format
-statement error pq: (cannot move objects into or out of virtual schemas)?(user root does not have CREATE privilege on schema information_schema)?
+statement error pq: cannot move objects into or out of virtual schemas
 ALTER TABLE t SET SCHEMA information_schema
 
 # Ensure we cannot set schema for a table in a virtual schema.
@@ -182,8 +180,7 @@ statement error pq: "seq_not_view" is not a view
 ALTER VIEW seq_not_view SET SCHEMA s1
 
 # Set schema should not work for a table that is depended on by a view.
-# use regex to accept both the legacy and the declarative schema changer format
-statement error pq: cannot set schema on relation "(test.public.)?for_view" because view "vx" depends on it
+statement error pq: cannot set schema on relation "for_view" because view "vx" depends on it
 ALTER TABLE for_view SET SCHEMA s2
 
 statement ok
@@ -195,9 +192,6 @@ INSERT INTO s1.t3 VALUES (1)
 # Test ALTER TABLE SET SCHEMA inside a transaction.
 statement ok
 BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
-
-statement ok
-SET LOCAL autocommit_before_ddl=off;
 
 statement ok
 ALTER TABLE s1.t3 SET SCHEMA s2
@@ -240,9 +234,6 @@ CREATE TABLE s1.t4(x INT)
 # Ensure set schema gets rolled back if the transaction is canceled.
 statement ok
 BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
-
-statement ok
-SET LOCAL autocommit_before_ddl=off;
 
 statement ok
 ALTER TABLE s1.t4 SET SCHEMA s2
@@ -389,9 +380,6 @@ statement ok
 BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 
 statement ok
-SET LOCAL autocommit_before_ddl=off;
-
-statement ok
 ALTER TYPE s1.typ3 SET SCHEMA s2
 
 # ALTER TYPE SET SCHEMA changes should reflect in the transaction.
@@ -425,9 +413,6 @@ CREATE TYPE s1.typ4 AS ENUM ('hello')
 # Ensure set schema gets rolled back if the transaction is canceled.
 statement ok
 BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
-
-statement ok
-SET LOCAL autocommit_before_ddl=off;
 
 statement ok
 ALTER TYPE s1.typ4 SET SCHEMA s2

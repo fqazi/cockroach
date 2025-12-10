@@ -76,7 +76,6 @@ func (ti testInfra) newExecDeps(txn descs.Txn) scexec.Dependencies {
 		noopMetadataUpdater{},
 		noopTemporarySchemaCreator{},
 		noopStatsReferesher{},
-		nil, /* tableStatsCache */
 		&scexec.TestingKnobs{},
 		kvTrace,
 		schemaChangerJobID,
@@ -92,7 +91,7 @@ func setupTestInfra(t testing.TB) (_ *testInfra, cleanup func(context.Context)) 
 		nodeID:   s.NodeID(),
 		settings: tt.ClusterSettings(),
 		db:       tt.ExecutorConfig().(sql.ExecutorConfig).InternalDB,
-		lm:       tt.LeaseManager().(*lease.Manager),
+		lm:       s.LeaseManager().(*lease.Manager),
 		cf:       tt.ExecutorConfig().(sql.ExecutorConfig).CollectionFactory,
 		tsql:     sqlutils.MakeSQLRunner(db),
 	}, s.Stopper().Stop
@@ -278,6 +277,7 @@ func TestSchemaChanger(t *testing.T) {
 						TableID:                 fooTable.GetID(),
 						ColumnID:                2,
 						TypeT:                   scpb.TypeT{Type: types.Int},
+						IsNullable:              true,
 						ElementCreationMetadata: scdecomp.NewElementCreationMetadata(clusterversion.TestingClusterVersion),
 					},
 					metadata,
@@ -440,10 +440,7 @@ var _ scexec.IndexSpanSplitter = (*noopIndexSpanSplitter)(nil)
 
 // MaybeSplitIndexSpans will attempt to split the backfilled index span.
 func (n noopIndexSpanSplitter) MaybeSplitIndexSpans(
-	ctx context.Context,
-	table catalog.TableDescriptor,
-	indexToBackfill catalog.Index,
-	copyIndexSource catalog.Index,
+	ctx context.Context, table catalog.TableDescriptor, indexToBackfill catalog.Index,
 ) error {
 	return nil
 }
@@ -507,7 +504,8 @@ type noopStatsReferesher struct{}
 
 var _ scexec.StatsRefresher = noopStatsReferesher{}
 
-func (noopStatsReferesher) NotifyMutation(context.Context, catalog.TableDescriptor, int) {}
+func (noopStatsReferesher) NotifyMutation(table catalog.TableDescriptor, rowsAffected int) {
+}
 
 type noopMetadataUpdater struct{}
 
@@ -525,7 +523,7 @@ func (noopMetadataUpdater) DeleteSchedule(ctx context.Context, scheduleID jobspb
 
 // UpdateTTLScheduleLabel implements scexec.DescriptorMetadataUpdater.
 func (noopMetadataUpdater) UpdateTTLScheduleLabel(
-	ctx context.Context, tbl catalog.TableDescriptor,
+	ctx context.Context, tbl *tabledesc.Mutable,
 ) error {
 	return nil
 }

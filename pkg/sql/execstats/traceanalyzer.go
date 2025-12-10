@@ -12,7 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/util"
-	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 	"github.com/cockroachdb/errors"
@@ -96,7 +95,7 @@ func NewFlowsMetadata(flows map[base.SQLInstanceID]*execinfrapb.FlowSpec) *Flows
 // given traces and flow metadata.
 // NOTE: When adding fields to this struct, be sure to update Accumulate.
 type QueryLevelStats struct {
-	DistSQLNetworkBytesSent            int64
+	NetworkBytesSent                   int64
 	MaxMemUsage                        int64
 	MaxDiskUsage                       int64
 	KVBytesRead                        int64
@@ -117,14 +116,11 @@ type QueryLevelStats struct {
 	MvccRangeKeyCount                  int64
 	MvccRangeKeyContainedPoints        int64
 	MvccRangeKeySkippedPoints          int64
-	DistSQLNetworkMessages             int64
+	NetworkMessages                    int64
 	ContentionTime                     time.Duration
-	LockWaitTime                       time.Duration
-	LatchWaitTime                      time.Duration
 	ContentionEvents                   []kvpb.ContentionEvent
 	RUEstimate                         float64
-	SQLCPUTime                         time.Duration
-	AdmissionWaitTime                  time.Duration
+	CPUTime                            time.Duration
 	// SQLInstanceIDs is an ordered list of SQL instances that were involved in
 	// query processing.
 	SQLInstanceIDs []int32
@@ -158,7 +154,7 @@ func MakeQueryLevelStatsWithErr(stats QueryLevelStats, err error) QueryLevelStat
 
 // Accumulate accumulates other's stats into the receiver.
 func (s *QueryLevelStats) Accumulate(other QueryLevelStats) {
-	s.DistSQLNetworkBytesSent += other.DistSQLNetworkBytesSent
+	s.NetworkBytesSent += other.NetworkBytesSent
 	if other.MaxMemUsage > s.MaxMemUsage {
 		s.MaxMemUsage = other.MaxMemUsage
 	}
@@ -183,14 +179,11 @@ func (s *QueryLevelStats) Accumulate(other QueryLevelStats) {
 	s.MvccRangeKeyCount += other.MvccRangeKeyCount
 	s.MvccRangeKeyContainedPoints += other.MvccRangeKeyContainedPoints
 	s.MvccRangeKeySkippedPoints += other.MvccRangeKeySkippedPoints
-	s.DistSQLNetworkMessages += other.DistSQLNetworkMessages
+	s.NetworkMessages += other.NetworkMessages
 	s.ContentionTime += other.ContentionTime
-	s.LockWaitTime += other.LockWaitTime
-	s.LatchWaitTime += other.LatchWaitTime
 	s.ContentionEvents = append(s.ContentionEvents, other.ContentionEvents...)
 	s.RUEstimate += other.RUEstimate
-	s.SQLCPUTime += other.SQLCPUTime
-	s.AdmissionWaitTime += other.AdmissionWaitTime
+	s.CPUTime += other.CPUTime
 	s.SQLInstanceIDs = util.CombineUnique(s.SQLInstanceIDs, other.SQLInstanceIDs)
 	s.KVNodeIDs = util.CombineUnique(s.KVNodeIDs, other.KVNodeIDs)
 	s.Regions = util.CombineUnique(s.Regions, other.Regions)
@@ -287,10 +280,8 @@ func (a *TraceAnalyzer) ProcessStats() {
 		s.MvccRangeKeyContainedPoints += int64(stats.KV.RangeKeyContainedPoints.Value())
 		s.MvccRangeKeySkippedPoints += int64(stats.KV.RangeKeySkippedPoints.Value())
 		s.ContentionTime += stats.KV.ContentionTime.Value()
-		s.LockWaitTime += stats.KV.LockWaitTime.Value()
-		s.LatchWaitTime += stats.KV.LatchWaitTime.Value()
 		s.RUEstimate += float64(stats.Exec.ConsumedRU.Value())
-		s.SQLCPUTime += stats.Exec.CPUTime.Value()
+		s.CPUTime += stats.Exec.CPUTime.Value()
 	}
 
 	// Process streamStats.
@@ -298,8 +289,8 @@ func (a *TraceAnalyzer) ProcessStats() {
 		if stats.stats == nil {
 			continue
 		}
-		s.DistSQLNetworkBytesSent += getNetworkBytesFromComponentStats(stats.stats)
-		s.DistSQLNetworkMessages += getNumDistSQLNetworkMessagesFromComponentsStats(stats.stats)
+		s.NetworkBytesSent += getNetworkBytesFromComponentStats(stats.stats)
+		s.NetworkMessages += getNumNetworkMessagesFromComponentsStats(stats.stats)
 	}
 
 	// Process flowStats.
@@ -353,7 +344,7 @@ func getNetworkBytesFromComponentStats(v *execinfrapb.ComponentStats) int64 {
 	return 0
 }
 
-func getNumDistSQLNetworkMessagesFromComponentsStats(v *execinfrapb.ComponentStats) int64 {
+func getNumNetworkMessagesFromComponentsStats(v *execinfrapb.ComponentStats) int64 {
 	// We expect exactly one of MessagesReceived and MessagesSent to be set. It
 	// may seem like we are double-counting everything (from both the send and
 	// the receive side) but in practice only one side of each stream presents
@@ -381,35 +372,23 @@ func (a *TraceAnalyzer) GetQueryLevelStats() QueryLevelStats {
 	return a.queryLevelStats
 }
 
-func getKVAndACStats(
-	trace []tracingpb.RecordedSpan,
-) (contentionEvents []kvpb.ContentionEvent, acWaitTime time.Duration) {
+// getAllContentionEvents returns all contention events that are found in the
+// given trace.
+func getAllContentionEvents(trace []tracingpb.RecordedSpan) []kvpb.ContentionEvent {
+	var contentionEvents []kvpb.ContentionEvent
+	var ev kvpb.ContentionEvent
 	for i := range trace {
 		trace[i].Structured(func(any *pbtypes.Any, _ time.Time) {
-			if pbtypes.Is(any, (*kvpb.ContentionEvent)(nil)) {
-				var ce kvpb.ContentionEvent
-				if err := pbtypes.UnmarshalAny(any, &ce); err == nil {
-					contentionEvents = append(contentionEvents, ce)
-				}
+			if !pbtypes.Is(any, &ev) {
 				return
 			}
-			if pbtypes.Is(any, (*admissionpb.AdmissionWorkQueueStats)(nil)) {
-				var stats admissionpb.AdmissionWorkQueueStats
-				if err := pbtypes.UnmarshalAny(any, &stats); err == nil {
-					acWaitTime += stats.WaitDurationNanos
-				}
+			if err := pbtypes.UnmarshalAny(any, &ev); err != nil {
 				return
 			}
-			if pbtypes.Is(any, (*kvpb.QuorumReplicationFlowAdmissionEvent)(nil)) {
-				var event kvpb.QuorumReplicationFlowAdmissionEvent
-				if err := pbtypes.UnmarshalAny(any, &event); err == nil {
-					acWaitTime += event.WaitDurationNanos
-				}
-				return
-			}
+			contentionEvents = append(contentionEvents, ev)
 		})
 	}
-	return contentionEvents, acWaitTime
+	return contentionEvents
 }
 
 // GetQueryLevelStats returns all the top-level stats in a QueryLevelStats
@@ -431,8 +410,6 @@ func GetQueryLevelStats(
 		analyzer.ProcessStats()
 		queryLevelStats.Accumulate(analyzer.GetQueryLevelStats())
 	}
-	contentionEvents, acWaitTime := getKVAndACStats(trace)
-	queryLevelStats.AdmissionWaitTime = acWaitTime
-	queryLevelStats.ContentionEvents = contentionEvents
+	queryLevelStats.ContentionEvents = getAllContentionEvents(trace)
 	return queryLevelStats, errs
 }

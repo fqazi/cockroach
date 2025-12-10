@@ -27,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logflags"
 	"github.com/cockroachdb/cockroach/pkg/util/netutil/addr"
@@ -62,7 +61,6 @@ var storeSpecs base.StoreSpecList
 var goMemLimit int64
 var tenantIDFile string
 var localityFile string
-var encryptionSpecs encryptionSpecList
 
 // initPreFlagsDefaults initializes the values of the global variables
 // defined above.
@@ -294,10 +292,6 @@ func (f *keyTypeFilter) Set(v string) error {
 
 const backgroundEnvVar = "COCKROACH_BACKGROUND_RESTART"
 
-// This value is never read. It is used to hold the storage engine which is now
-// a hidden option.
-var deprecatedStorageEngine string
-
 func init() {
 	initCLIDefaults()
 
@@ -320,7 +314,7 @@ func init() {
 
 	// Add store flag handling for the pebble debug command as it needs store
 	// flags configured.
-	AddPersistentPreRunE(debugPebbleCmd, func(cmd *cobra.Command, _ []string) error {
+	AddPersistentPreRunE(DebugPebbleCmd, func(cmd *cobra.Command, _ []string) error {
 		return extraStoreFlagInit(cmd)
 	})
 
@@ -426,17 +420,6 @@ func init() {
 		// attributes too? Would this be useful for e.g. SQL query
 		// planning?
 		cliflagcfg.StringFlag(f, &serverCfg.Attrs, cliflags.Attrs)
-
-		cliflagcfg.VarFlag(cmd.Flags(), &encryptionSpecs, cliflags.EnterpriseEncryption)
-
-		// Add a new pre-run command to match encryption specs to store specs.
-		AddPersistentPreRunE(cmd, func(cmd *cobra.Command, _ []string) error {
-			return populateWithEncryptionOpts(
-				serverCfg.Stores,
-				&serverCfg.StorageConfig.WALFailover,
-				encryptionSpecs,
-			)
-		})
 	}
 
 	// Flags common to the start commands, the connect command, and the node join
@@ -463,9 +446,6 @@ func init() {
 		cliflagcfg.VarFlag(f, addr.NewAddrSetter(&serverHTTPAdvertiseAddr, &serverHTTPAdvertisePort), cliflags.HTTPAdvertiseAddr)
 
 		cliflagcfg.BoolFlag(f, &serverCfg.AcceptProxyProtocolHeaders, cliflags.AcceptProxyProtocolHeaders)
-
-		cliflagcfg.BoolFlag(f, &baseCfg.UseDRPC, cliflags.UseNewRPC)
-		_ = f.MarkHidden(cliflags.UseNewRPC.Name)
 
 		// Certificates directory. Use a server-specific flag and value to ignore environment
 		// variables, but share the same default.
@@ -527,17 +507,10 @@ func init() {
 		cliflagcfg.StringFlag(f, &localityFile, cliflags.LocalityFile)
 
 		cliflagcfg.VarFlag(f, &storeSpecs, cliflags.Store)
-
-		// deprecatedStorageEngine is only kept for backwards compatibility.
-		cliflagcfg.StringFlag(f, &deprecatedStorageEngine, cliflags.StorageEngine)
-		_ = pf.MarkHidden(cliflags.StorageEngine.Name)
-
-		cliflagcfg.VarFlag(f, &walFailoverWrapper{cfg: &serverCfg.StorageConfig.WALFailover}, cliflags.WALFailover)
-		// TODO(storage): Consider combining the uri and cache manual settings.
-		// Alternatively remove the ability to configure shared storage without
-		// passing a bootstrap configuration file.
-		cliflagcfg.StringFlag(f, &serverCfg.StorageConfig.SharedStorage.URI, cliflags.SharedStorage)
-		cliflagcfg.VarFlag(f, newSizeFlagVal(&serverCfg.StorageConfig.SharedStorage.Cache), cliflags.SecondaryCache)
+		cliflagcfg.VarFlag(f, &serverCfg.StorageEngine, cliflags.StorageEngine)
+		cliflagcfg.VarFlag(f, &serverCfg.WALFailover, cliflags.WALFailover)
+		cliflagcfg.StringFlag(f, &serverCfg.SharedStorage, cliflags.SharedStorage)
+		cliflagcfg.VarFlag(f, &serverCfg.SecondaryCache, cliflags.SecondaryCache)
 		cliflagcfg.VarFlag(f, &serverCfg.MaxOffset, cliflags.MaxOffset)
 		cliflagcfg.BoolFlag(f, &serverCfg.DisableMaxOffsetCheck, cliflags.DisableMaxOffsetCheck)
 		cliflagcfg.StringFlag(f, &serverCfg.ClockDevicePath, cliflags.ClockDevice)
@@ -561,22 +534,6 @@ func init() {
 
 		// Node cert distinguished name
 		cliflagcfg.StringFlag(f, &startCtx.serverNodeCertDN, cliflags.NodeCertDistinguishedName)
-
-		// We add the disallow root login flag for disabling the root user from rpc
-		// and sql access for compliance reasons. We currently mark it as hidden
-		// since the flag behavior is experimental and subject to change.
-		//
-		// NB: a user needs to be configured for collecting debug zips if this
-		// flag is enabled, which we currently do not validate.
-		cliflagcfg.BoolFlag(f, &startCtx.disallowRootLogin, cliflags.DisallowRootLogin)
-		_ = f.MarkHidden(cliflags.DisallowRootLogin.Name)
-
-		// We add the allow debug user flag for enabling the debuguser from rpc
-		// and sql access for debugging and troubleshooting purposes. We currently
-		// mark it as hidden since the flag behavior is experimental and subject to
-		// change. By default, debuguser is not allowed to authenticate.
-		cliflagcfg.BoolFlag(f, &startCtx.allowDebugUser, cliflags.AllowDebugUser)
-		_ = f.MarkHidden(cliflags.AllowDebugUser.Name)
 
 		// TLS Cipher Suites configured
 		cliflagcfg.StringSliceFlag(f, &startCtx.serverTLSCipherSuites, cliflags.TLSCipherSuites)
@@ -693,7 +650,7 @@ func init() {
 		if cmd == createClientCertCmd {
 			cliflagcfg.VarFlag(f, &tenantIDSetter{tenantIDs: &certCtx.tenantScope}, cliflags.TenantScope)
 			cliflagcfg.VarFlag(f, &tenantNameSetter{tenantNames: &certCtx.tenantNameScope}, cliflags.TenantScopeByNames)
-			_ = f.MarkDeprecated(cliflags.TenantScope.Name, fmt.Sprintf("use %s instead", cliflags.TenantScopeByNames.Name))
+			_ = f.MarkHidden(cliflags.TenantScopeByNames.Name)
 
 			// PKCS8 key format is only available for the client cert command.
 			cliflagcfg.BoolFlag(f, &certCtx.generatePKCS8Key, cliflags.GeneratePKCS8Key)
@@ -720,6 +677,7 @@ func init() {
 	clientCmds = append(clientCmds, authCmds...)
 	clientCmds = append(clientCmds, nodeCmds...)
 	clientCmds = append(clientCmds, nodeLocalCmds...)
+	clientCmds = append(clientCmds, importCmds...)
 	clientCmds = append(clientCmds, userFileCmds...)
 	clientCmds = append(clientCmds, stmtDiagCmds...)
 	clientCmds = append(clientCmds, debugResetQuorumCmd)
@@ -786,7 +744,6 @@ func init() {
 		cliflagcfg.BoolFlag(f, &zipCtx.includeRangeInfo, cliflags.ZipIncludeRangeInfo)
 		cliflagcfg.BoolFlag(f, &zipCtx.includeStacks, cliflags.ZipIncludeGoroutineStacks)
 		cliflagcfg.BoolFlag(f, &zipCtx.includeRunningJobTraces, cliflags.ZipIncludeRunningJobTraces)
-		cliflagcfg.BoolFlag(f, &zipCtx.validateZipFile, cliflags.ZipValidateFile)
 	}
 	// List-files + Zip commands.
 	for _, cmd := range []*cobra.Command{debugZipCmd, debugListFilesCmd} {
@@ -837,6 +794,7 @@ func init() {
 	sqlCmds = append(sqlCmds, demoCmd.Commands()...)
 	sqlCmds = append(sqlCmds, stmtDiagCmds...)
 	sqlCmds = append(sqlCmds, nodeLocalCmds...)
+	sqlCmds = append(sqlCmds, importCmds...)
 	sqlCmds = append(sqlCmds, userFileCmds...)
 	for _, cmd := range sqlCmds {
 		clientflags.AddSQLFlags(cmd, &cliCtx.clientOpts, sqlCtx,
@@ -954,6 +912,25 @@ func init() {
 		cliflagcfg.BoolFlag(stmtDiagCancelCmd.Flags(), &stmtDiagCtx.all, cliflags.StmtDiagCancelAll)
 	}
 
+	// import dump command.
+	{
+		d := importDumpFileCmd.Flags()
+		cliflagcfg.BoolFlag(d, &importCtx.skipForeignKeys, cliflags.ImportSkipForeignKeys)
+		cliflagcfg.IntFlag(d, &importCtx.maxRowSize, cliflags.ImportMaxRowSize)
+		cliflagcfg.IntFlag(d, &importCtx.rowLimit, cliflags.ImportRowLimit)
+		cliflagcfg.BoolFlag(d, &importCtx.ignoreUnsupported, cliflags.ImportIgnoreUnsupportedStatements)
+		cliflagcfg.StringFlag(d, &importCtx.ignoreUnsupportedLog, cliflags.ImportLogIgnoredStatements)
+		cliflagcfg.StringFlag(d, &cliCtx.clientOpts.Database, cliflags.Database)
+
+		t := importDumpTableCmd.Flags()
+		cliflagcfg.BoolFlag(t, &importCtx.skipForeignKeys, cliflags.ImportSkipForeignKeys)
+		cliflagcfg.IntFlag(t, &importCtx.maxRowSize, cliflags.ImportMaxRowSize)
+		cliflagcfg.IntFlag(t, &importCtx.rowLimit, cliflags.ImportRowLimit)
+		cliflagcfg.BoolFlag(t, &importCtx.ignoreUnsupported, cliflags.ImportIgnoreUnsupportedStatements)
+		cliflagcfg.StringFlag(t, &importCtx.ignoreUnsupportedLog, cliflags.ImportLogIgnoredStatements)
+		cliflagcfg.StringFlag(t, &cliCtx.clientOpts.Database, cliflags.Database)
+	}
+
 	// sqlfmt command.
 	{
 		f := sqlfmtCmd.Flags()
@@ -990,19 +967,20 @@ func init() {
 		f := debugRangeDataCmd.Flags()
 		cliflagcfg.BoolFlag(f, &debugCtx.replicated, cliflags.Replicated)
 		cliflagcfg.IntFlag(f, &debugCtx.maxResults, cliflags.Limit)
-		cliflagcfg.StringFlag(f, &serverCfg.StorageConfig.SharedStorage.URI, cliflags.SharedStorage)
+		cliflagcfg.StringFlag(f, &serverCfg.SharedStorage, cliflags.SharedStorage)
 	}
 	{
 		f := debugGossipValuesCmd.Flags()
 		cliflagcfg.StringFlag(f, &debugCtx.inputFile, cliflags.GossipInputFile)
+		cliflagcfg.BoolFlag(f, &debugCtx.printSystemConfig, cliflags.PrintSystemConfig)
 	}
 	{
 		f := debugBallastCmd.Flags()
-		cliflagcfg.VarFlag(f, newSizeFlagVal(&debugCtx.ballastSize), cliflags.Size)
+		cliflagcfg.VarFlag(f, &debugCtx.ballastSize, cliflags.Size)
 	}
 	{
 		// TODO(ayang): clean up so dir isn't passed to both pebble and --store
-		f := debugPebbleCmd.PersistentFlags()
+		f := DebugPebbleCmd.PersistentFlags()
 		cliflagcfg.VarFlag(f, &storeSpecs, cliflags.Store)
 	}
 	{
@@ -1167,8 +1145,6 @@ func extraServerFlagInit(cmd *cobra.Command) error {
 	if err := security.SetNodeSubject(startCtx.serverNodeCertDN); err != nil {
 		return err
 	}
-	security.SetDisallowRootLogin(startCtx.disallowRootLogin)
-	security.SetAllowDebugUser(startCtx.allowDebugUser)
 	// Currently we don't handle the case where we are setting the --insecure flag
 	// as well as providing the --tls-cipher-suites, we should probably error out
 	// if both are set, issue: #144935.
@@ -1178,8 +1154,6 @@ func extraServerFlagInit(cmd *cobra.Command) error {
 	serverCfg.User = username.NodeUserName()
 	serverCfg.Insecure = startCtx.serverInsecure
 	serverCfg.SSLCertsDir = startCtx.serverSSLCertsDir
-	serverCfg.DisallowRootLogin = startCtx.disallowRootLogin
-	serverCfg.AllowDebugUser = startCtx.allowDebugUser
 
 	fs := cliflagcfg.FlagSetForCmd(cmd)
 
@@ -1411,19 +1385,19 @@ func extraStoreFlagInit(cmd *cobra.Command) error {
 		serverCfg.Stores.Specs[i] = ss
 	}
 
-	if serverCfg.StorageConfig.WALFailover.Path.IsSet() {
-		absPath, err := base.GetAbsoluteFSPath("wal-failover.path", serverCfg.StorageConfig.WALFailover.Path.Path)
+	if serverCfg.WALFailover.Path.IsSet() {
+		absPath, err := base.GetAbsoluteFSPath("wal-failover.path", serverCfg.WALFailover.Path.Path)
 		if err != nil {
 			return err
 		}
-		serverCfg.StorageConfig.WALFailover.Path.Path = absPath
+		serverCfg.WALFailover.Path.Path = absPath
 	}
-	if serverCfg.StorageConfig.WALFailover.PrevPath.IsSet() {
-		absPath, err := base.GetAbsoluteFSPath("wal-failover.prev_path", serverCfg.StorageConfig.WALFailover.PrevPath.Path)
+	if serverCfg.WALFailover.PrevPath.IsSet() {
+		absPath, err := base.GetAbsoluteFSPath("wal-failover.prev_path", serverCfg.WALFailover.PrevPath.Path)
 		if err != nil {
 			return err
 		}
-		serverCfg.StorageConfig.WALFailover.PrevPath.Path = absPath
+		serverCfg.WALFailover.PrevPath.Path = absPath
 	}
 
 	// Configure the external I/O directory.
@@ -1503,47 +1477,13 @@ func mtStartSQLFlagsInit(cmd *cobra.Command) error {
 	// unless a ballast size was specified explicitly by the user.
 	for i := range serverCfg.Stores.Specs {
 		spec := &serverCfg.Stores.Specs[i]
-		if !spec.BallastSize.IsSet() {
+		if spec.BallastSize == nil {
 			// Only override if there was no ballast size specified to start
 			// with.
-			spec.BallastSize = storageconfig.BytesSize(0)
+			zero := base.SizeSpec{InBytes: 0, Percent: 0}
+			spec.BallastSize = &zero
 		}
 	}
-	return nil
-}
-
-// sizeFlagVal is a pflag.Value wrapper for storageconfig.Size. It can be
-// set to an absolute bytes amount or a percentage.
-type sizeFlagVal struct {
-	spec *storageconfig.Size
-}
-
-var _ pflag.Value = &sizeFlagVal{}
-
-func newSizeFlagVal(spec *storageconfig.Size) *sizeFlagVal {
-	return &sizeFlagVal{spec: spec}
-}
-
-// String returns a string representation of the Size. It is part of the
-// pflag.Value interface.
-func (sv *sizeFlagVal) String() string {
-	return sv.spec.String()
-}
-
-// Type returns the underlying type in string form.  It is part of the
-// pflag.Value interface.
-func (sv *sizeFlagVal) Type() string {
-	return "<bytes>|<percent%>"
-}
-
-// Set adds a new value to the StoreSpecValue. It is part of the pflag.Value
-// interface.
-func (sv *sizeFlagVal) Set(value string) error {
-	spec, err := storageconfig.ParseSizeSpec(value)
-	if err != nil {
-		return err
-	}
-	*sv.spec = spec
 	return nil
 }
 

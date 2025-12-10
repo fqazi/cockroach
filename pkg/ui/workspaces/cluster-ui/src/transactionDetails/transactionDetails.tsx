@@ -282,9 +282,9 @@ export class TransactionDetails extends React.Component<
     });
   };
 
-  onChangePage = (current: number, pageSize: number): void => {
+  onChangePage = (current: number): void => {
     const { pagination } = this.state;
-    this.setState({ pagination: { ...pagination, current, pageSize } });
+    this.setState({ pagination: { ...pagination, current } });
   };
 
   backToTransactionsClick = (): void => {
@@ -394,21 +394,15 @@ export class TransactionDetails extends React.Component<
                 <span className={cx("tooltip-info")}>unavailable</span>
               </Tooltip>
             );
-            const meanIdleLatency = (
+            const meanIdleLatency = transactionSampled ? (
               <Text>
                 {formatNumberForDisplay(
                   get(transactionStats, "idle_lat.mean", 0),
                   duration,
                 )}
               </Text>
-            );
-            const meanCommitLatency = (
-              <Text>
-                {formatNumberForDisplay(
-                  get(transactionStats, "commit_lat.mean", 0),
-                  duration,
-                )}
-              </Text>
+            ) : (
+              unavailableTooltip
             );
             const meansRows = `${formatNumberForDisplay(
               transactionStats.rows_read.mean,
@@ -521,10 +515,6 @@ export class TransactionDetails extends React.Component<
                           value={meanIdleLatency}
                         />
                         <SummaryCardItem
-                          label="Commit latency"
-                          value={meanCommitLatency}
-                        />
-                        <SummaryCardItem
                           label="Mean rows/bytes read"
                           value={meansRows}
                         />
@@ -606,7 +596,6 @@ export class TransactionDetails extends React.Component<
                   current={pagination.current}
                   total={aggregatedStatements.length}
                   onChange={this.onChangePage}
-                  onShowSizeChange={this.onChangePage}
                 />
               </React.Fragment>
             );

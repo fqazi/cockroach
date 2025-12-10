@@ -27,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/ts"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
@@ -59,6 +58,7 @@ func initCLIDefaults() {
 	setDemoContextDefaults()
 	setStmtDiagContextDefaults()
 	setAuthContextDefaults()
+	setImportContextDefaults()
 	setUserfileContextDefaults()
 	setCertContextDefaults()
 	setDebugRecoverContextDefaults()
@@ -371,10 +371,6 @@ type zipContext struct {
 
 	// The log/heap/etc files to include.
 	files fileSelection
-
-	// validateZipFile indicates whether the generated zip file should be validated
-	// post debug zip file generation.
-	validateZipFile bool
 }
 
 // setZipContextDefaults set the default values in zipCtx.  This
@@ -397,7 +393,6 @@ func setZipContextDefaults() {
 	zipCtx.includeRunningJobTraces = true
 	zipCtx.cpuProfDuration = 5 * time.Second
 	zipCtx.concurrency = 15
-	zipCtx.validateZipFile = true
 
 	// File selection covers the last 48 hours by default.
 	// We add 24 hours to now for the end timestamp to ensure
@@ -453,7 +448,8 @@ var debugCtx struct {
 	sizes             bool
 	replicated        bool
 	inputFile         string
-	ballastSize       storageconfig.Size
+	ballastSize       base.SizeSpec
+	printSystemConfig bool
 	maxResults        int
 	decodeAsTableDesc string
 	verbose           bool
@@ -470,8 +466,9 @@ func setDebugContextDefaults() {
 	debugCtx.sizes = false
 	debugCtx.replicated = false
 	debugCtx.inputFile = ""
-	debugCtx.ballastSize = storageconfig.BytesSize(1000000000)
+	debugCtx.ballastSize = base.SizeSpec{InBytes: 1000000000}
 	debugCtx.maxResults = 0
+	debugCtx.printSystemConfig = false
 	debugCtx.decodeAsTableDesc = ""
 	debugCtx.verbose = false
 	debugCtx.keyTypes = showAll
@@ -488,8 +485,6 @@ var startCtx struct {
 	serverRootCertDN       string
 	serverNodeCertDN       string
 	serverTLSCipherSuites  []string
-	disallowRootLogin      bool
-	allowDebugUser         bool
 
 	// The TLS auto-handshake parameters.
 	initToken             string
@@ -545,8 +540,6 @@ func setStartContextDefaults() {
 	startCtx.serverCertPrincipalMap = nil
 	startCtx.serverRootCertDN = ""
 	startCtx.serverNodeCertDN = ""
-	startCtx.disallowRootLogin = false
-	startCtx.allowDebugUser = false
 	startCtx.serverListenAddr = ""
 	startCtx.unencryptedLocalhostHTTP = false
 	startCtx.tempDir = ""
@@ -709,6 +702,23 @@ func setStmtDiagContextDefaults() {
 	stmtDiagCtx.all = false
 }
 
+// importCtx captures the command-line parameters of the 'import' command.
+var importCtx struct {
+	maxRowSize           int
+	skipForeignKeys      bool
+	ignoreUnsupported    bool
+	ignoreUnsupportedLog string
+	rowLimit             int
+}
+
+func setImportContextDefaults() {
+	importCtx.maxRowSize = 512 * (1 << 10) // 512 KiB
+	importCtx.skipForeignKeys = false
+	importCtx.ignoreUnsupported = false
+	importCtx.ignoreUnsupportedLog = ""
+	importCtx.rowLimit = 0
+}
+
 // userfileCtx captures the command-line parameters of the
 // `userfile` command.
 // See below for defaults.
@@ -723,4 +733,24 @@ var userfileCtx struct {
 // every test that exercises command-line parsing.
 func setUserfileContextDefaults() {
 	userfileCtx.recursive = false
+}
+
+// GetServerCfgStores provides direct public access to the StoreSpecList inside
+// serverCfg. This is used by CCL code to populate some fields.
+//
+// WARNING: consider very carefully whether you should be using this.
+// If you are not writing CCL code that performs command-line flag
+// parsing, you probably should not be using this.
+func GetServerCfgStores() base.StoreSpecList {
+	return serverCfg.Stores
+}
+
+// GetWALFailoverConfig provides direct public access to the WALFailoverConfig
+// inside serverCfg. This is used by CCL code to populate some fields.
+//
+// WARNING: consider very carefully whether you should be using this.
+// If you are not writing CCL code that performs command-line flag
+// parsing, you probably should not be using this.
+func GetWALFailoverConfig() *base.WALFailoverConfig {
+	return &serverCfg.WALFailover
 }

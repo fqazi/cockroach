@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/ioctx"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
@@ -217,21 +216,8 @@ func ExternalStorageFromURI(
 	if err != nil {
 		return nil, err
 	}
-	es, err := MakeExternalStorage(ctx, conf, externalConfig, settings, blobClientFactory,
+	return MakeExternalStorage(ctx, conf, externalConfig, settings, blobClientFactory,
 		db, limiters, metrics, opts...)
-	if err != nil {
-		return nil, err
-	}
-	if buildutil.CrdbTestBuild {
-		// Verify that the Conf() method returns the URI field.
-		returnedConf := es.Conf()
-		if returnedConf.URI != conf.URI {
-			return nil, errors.AssertionFailedf(
-				"ExternalStorage.Conf() did not return the original URI: expected %q, got %q",
-				uri, returnedConf.URI)
-		}
-	}
-	return es, nil
 }
 
 // MakeExternalStorage creates an ExternalStorage from the given config.
@@ -463,7 +449,7 @@ func (l *limitedReader) Read(ctx context.Context, p []byte) (int, error) {
 	const batchedWriteLimit = 128 << 10
 	if l.pool > batchedWriteLimit {
 		if err := l.lim.WaitN(ctx, l.pool); err != nil {
-			log.Dev.Warningf(ctx, "failed to throttle write: %+v", err)
+			log.Warningf(ctx, "failed to throttle write: %+v", err)
 		}
 		l.pool = 0
 	}
@@ -472,7 +458,7 @@ func (l *limitedReader) Read(ctx context.Context, p []byte) (int, error) {
 
 func (l *limitedReader) Close(ctx context.Context) error {
 	if err := l.lim.WaitN(ctx, l.pool); err != nil {
-		log.Dev.Warningf(ctx, "failed to throttle closing write: %+v", err)
+		log.Warningf(ctx, "failed to throttle closing write: %+v", err)
 	}
 	return l.r.Close(ctx)
 }
@@ -493,7 +479,7 @@ func (l *limitedWriter) Write(p []byte) (int, error) {
 	const batchedWriteLimit = 128 << 10
 	if l.pool > batchedWriteLimit {
 		if err := l.lim.WaitN(l.ctx, l.pool); err != nil {
-			log.Dev.Warningf(l.ctx, "failed to throttle write: %+v", err)
+			log.Warningf(l.ctx, "failed to throttle write: %+v", err)
 		}
 		l.pool = 0
 	}
@@ -503,7 +489,7 @@ func (l *limitedWriter) Write(p []byte) (int, error) {
 
 func (l *limitedWriter) Close() error {
 	if err := l.lim.WaitN(l.ctx, l.pool); err != nil {
-		log.Dev.Warningf(l.ctx, "failed to throttle closing write: %+v", err)
+		log.Warningf(l.ctx, "failed to throttle closing write: %+v", err)
 	}
 	return l.w.Close()
 }

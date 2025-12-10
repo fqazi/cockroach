@@ -28,21 +28,11 @@ import (
 const pausedJobsCountQuery = string(`
 	SELECT job_type, count(*)
 	FROM system.jobs
-	WHERE status = '` + jobs.StatePaused + `'
+	WHERE status = '` + jobs.StatusPaused + `'
   GROUP BY job_type`)
 
 // updatePausedMetrics counts the number of paused jobs per job type.
-func updatePausedMetrics(ctx context.Context, execCtx sql.JobExecContext, exit bool) error {
-	if exit {
-		metrics := execCtx.ExecCfg().JobRegistry.MetricsStruct()
-		for _, v := range jobspb.Type_value {
-			if metrics.JobMetrics[v] != nil {
-				metrics.JobMetrics[v].CurrentlyPaused.Update(0)
-			}
-		}
-		return nil
-	}
-
+func updatePausedMetrics(ctx context.Context, execCtx sql.JobExecContext) error {
 	var metricUpdates map[jobspb.Type]int
 	err := execCtx.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 		// In case of transaction retries, reset this map here.
@@ -91,20 +81,11 @@ func updatePausedMetrics(ctx context.Context, execCtx sql.JobExecContext, exit b
 // in the result, e.g. a new changefeed that is still in initial scan would not
 // change the result of the query, but if after its initial scan it was several
 // minutes behind and was the most lagged changefeed, that would be reflected.
-const lowTSForTypeQuery = `SELECT min(high_water_timestamp) FROM crdb_internal.jobs WHERE job_type = $1 AND status IN ` + jobs.NonTerminalStateTupleString
+const lowTSForTypeQuery = `SELECT min(high_water_timestamp) FROM crdb_internal.jobs WHERE job_type = $1 AND status IN ` + jobs.NonTerminalStatusTupleString
 
 // updateTSMetrics updates the metrics for jobs that have registered for ts
 // tracking.
-func updateTSMetrics(ctx context.Context, execCtx sql.JobExecContext, exit bool) error {
-	if exit {
-		for _, typ := range jobspb.Type_value {
-			if m := execCtx.ExecCfg().JobRegistry.MetricsStruct().ResolvedMetrics[typ]; m != nil {
-				m.Update(0)
-			}
-		}
-		return nil
-	}
-
+func updateTSMetrics(ctx context.Context, execCtx sql.JobExecContext) error {
 	for _, typ := range jobspb.Type_value {
 		m := execCtx.ExecCfg().JobRegistry.MetricsStruct().ResolvedMetrics[typ]
 		// If this job type does not register a resolved TS metric, skip it.
@@ -114,7 +95,6 @@ func updateTSMetrics(ctx context.Context, execCtx sql.JobExecContext, exit bool)
 
 		var ts hlc.Timestamp
 		if err := execCtx.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-			ts = hlc.Timestamp{}
 			if err := txn.KV().SetUserPriority(roachpb.MinUserPriority); err != nil {
 				return err
 			}
@@ -156,18 +136,7 @@ const cancelJobTimeout = 60 * time.Second
 // collecting statistics related to job PTS records. It also detects PTS records
 // that are too old (as configured by the owner job) and requests job
 // cancellation for those jobs.
-func manageProtectedTimestamps(ctx context.Context, execCtx sql.JobExecContext, exit bool) error {
-	if exit {
-		metrics := execCtx.ExecCfg().JobRegistry.MetricsStruct()
-		for _, typ := range jobspb.Type_value {
-			m := metrics.JobPTSMetrics[typ]
-			if m != nil {
-				m.NumJobsWithPTS.Update(0)
-				m.ProtectedAge.Update(0)
-			}
-		}
-		return nil
-	}
+func manageProtectedTimestamps(ctx context.Context, execCtx sql.JobExecContext) error {
 	var ptsStats map[jobspb.Type]*ptsStat
 	var schedulePtsStats map[string]*schedulePTSStat
 	var ptsState ptpb.State
@@ -213,7 +182,7 @@ func manageProtectedTimestamps(ctx context.Context, execCtx sql.JobExecContext, 
 			// If we fail to process one record, we should still try to process
 			// subsequent records, therefore, just log the error instead of returning
 			// early.
-			log.Dev.Infof(ctx, "could not process pts record id %d: %s", scannedRec.ID, err.Error())
+			log.Infof(ctx, "could not process pts record id %d: %s", scannedRec.ID, err.Error())
 		}
 	}
 
@@ -262,7 +231,7 @@ func processJobPTSRecord(
 				ptsExpired := errors.Newf(
 					"protected timestamp records %s as of %s (age %s) exceeds job configured limit of %s",
 					rec.ID, rec.Timestamp, timeutil.Since(rec.Timestamp.GoTime()), p.MaximumPTSAge)
-				log.Dev.Warningf(ctx, "job %d canceled due to %s", jobID, ptsExpired)
+				log.Warningf(ctx, "job %d canceled due to %s", jobID, ptsExpired)
 				return ju.CancelRequestedWithReason(ctx, md, ptsExpired)
 			}
 			return nil
@@ -284,10 +253,7 @@ func updateJobPTSMetrics(
 		if jobspb.Type(typ) == jobspb.TypeUnspecified { // do not track TypeUnspecified
 			continue
 		}
-		m := jobMetrics.JobPTSMetrics[typ]
-		if m == nil { // this job doesn't interact with PTS system
-			continue
-		}
+		m := jobMetrics.JobMetrics[typ]
 		stats, found := ptsStats[jobspb.Type(typ)]
 		if found {
 			m.NumJobsWithPTS.Update(stats.numRecords)

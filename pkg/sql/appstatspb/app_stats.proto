@@ -135,18 +135,6 @@ message StatementStatistics {
   // follower replicas.
   optional bool used_follower_read = 35 [(gogoproto.nullable) = false];
 
-  // generic_count is the count of executions that used a generic query plan.
-  optional int64 generic_count = 36 [(gogoproto.nullable) = false];
-
-  // stmt_hints_count is the count of executions that applied a hint from the
-  // system.statement_hints table.
-  optional int64 stmt_hints_count = 37 [(gogoproto.nullable) = false];
-
-  // kv_cpu_time_nanos is the CPU time in nanoseconds spent by KV. This is
-  // representative of the "synchronous" portion of work performed by KV
-  // (ex/ not replication related work).
-  optional NumericStat kv_cpu_time_nanos = 38 [(gogoproto.nullable) = false, (gogoproto.customname) = "KVCPUTimeNanos"];
-
   // Note: be sure to update `sql/app_stats.go` when adding/removing fields here!
 
   reserved 13, 14, 17, 18, 19, 20;
@@ -193,11 +181,6 @@ message TransactionStatistics {
 
   // RowsWritten collects the number of rows written to disk.
   optional NumericStat rows_written = 10 [(gogoproto.nullable) = false];
-  
-  // kv_cpu_time_nanos is the CPU time in nanoseconds spent by KV. This is
-  // representative of the "synchronous" portion of work performed by KV
-  // (ex/ not replication related work).
-  optional NumericStat kv_cpu_time_nanos = 12 [(gogoproto.nullable) = false, (gogoproto.customname) = "KVCPUTimeNanos"];
 }
 
 
@@ -345,9 +328,7 @@ message ExecStats {
   // run.
   optional int64 count = 1 [(gogoproto.nullable) = false];
 
-  // NetworkBytes collects the number of bytes sent over the network by DistSQL
-  // components.
-  // TODO(yuzefovich): rename this all the way up to the DB Console.
+  // NetworkBytes collects the number of bytes sent over the network.
   optional NumericStat network_bytes = 2 [(gogoproto.nullable) = false];
 
   // MaxMemUsage collects the maximum memory usage that occurred on a node.
@@ -357,8 +338,7 @@ message ExecStats {
   optional NumericStat contention_time = 4 [(gogoproto.nullable) = false];
 
   // NetworkMessages collects the number of messages that were sent over the
-  // network by DistSQL components.
-  // TODO(yuzefovich): rename this all the way up to the DB Console.
+  // network.
   optional NumericStat network_messages = 5 [(gogoproto.nullable) = false];
 
   // MaxDiskUsage collects the maximum temporary disk usage that occurred. This
@@ -376,9 +356,6 @@ message ExecStats {
   optional MVCCIteratorStats mvcc_iterator_stats = 8 [(gogoproto.nullable) = false,
     (gogoproto.customname) = "MVCCIteratorStats"];
 
-  // AdmissionWaitTime is the cumulative time spent in admission control queues.
-  optional NumericStat admission_wait_time = 9 [(gogoproto.nullable) = false];
-
   // Note: be sure to update `sql/app_stats.go` when adding/removing fields
   // here!
 }
@@ -391,23 +368,13 @@ message LatencyInfo {
   // Max is the maximum time in seconds spent executing the fingerprint.
   optional double max = 2 [(gogoproto.nullable) = false];
 
-  // Note: the percentiles below were previously populated via a method
-  // that led to much user confusion because the intervals over which
-  // the percentiles were computed was not well-defined and did not
-  // align with the aggregated timestamps used for the rest of the SQL
-  // Activity. The fields below are currently not populated but remain
-  // here so that we can re-introduce their use in the near-future.
-
-  // P50 is the 50 Percentile in seconds for the fingerprint. This
-  // value is currently unset.
+  // P50 is the 50 Percentile in seconds for the fingerprint.
   optional double p50 = 3 [(gogoproto.nullable) = false];
 
-  // P90 is the 90 Percentile in seconds for the fingerprint. This
-  // value is currently unset.
+  // P90 is the 90 Percentile in seconds for the fingerprint.
   optional double p90 = 4 [(gogoproto.nullable) = false];
 
-  // P99 is the 99 Percentile in seconds for the fingerprint. This
-  // value is currently unset.
+  // P99 is the 99 Percentile in seconds for the fingerprint.
   optional double p99 = 5 [(gogoproto.nullable) = false];
 }
 

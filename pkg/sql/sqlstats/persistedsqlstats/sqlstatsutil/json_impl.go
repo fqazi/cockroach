@@ -289,7 +289,7 @@ func (s *stmtFingerprintID) decodeJSON(js json.JSON) error {
 
 func (s *stmtFingerprintID) encodeJSON() (json.JSON, error) {
 	return json.FromString(
-		EncodeStmtFingerprintIDToString((appstatspb.StmtFingerprintID)(*s))), nil
+		encodeStmtFingerprintIDToString((appstatspb.StmtFingerprintID)(*s))), nil
 }
 
 type innerTxnStats appstatspb.TransactionStatistics
@@ -306,7 +306,6 @@ func (t *innerTxnStats) jsonFields() jsonFields {
 		{"bytesRead", (*numericStats)(&t.BytesRead)},
 		{"rowsRead", (*numericStats)(&t.RowsRead)},
 		{"rowsWritten", (*numericStats)(&t.RowsWritten)},
-		{"kvCPUTimeNanos", (*numericStats)(&t.KVCPUTimeNanos)},
 	}
 }
 
@@ -336,7 +335,6 @@ func (s *innerStmtStats) jsonFields() jsonFields {
 		{"bytesRead", (*numericStats)(&s.BytesRead)},
 		{"rowsRead", (*numericStats)(&s.RowsRead)},
 		{"rowsWritten", (*numericStats)(&s.RowsWritten)},
-		{"kvCPUTimeNanos", (*numericStats)(&s.KVCPUTimeNanos)},
 		{"nodes", (*int64Array)(&s.Nodes)},
 		{"kvNodeIds", (*int32Array)(&s.KVNodeIDs)},
 		{"regions", (*stringArray)(&s.Regions)},
@@ -346,8 +344,6 @@ func (s *innerStmtStats) jsonFields() jsonFields {
 		{"latencyInfo", (*latencyInfo)(&s.LatencyInfo)},
 		{"lastErrorCode", (*jsonString)(&s.LastErrorCode)},
 		{"failureCount", (*jsonInt)(&s.FailureCount)},
-		{"genericCount", (*jsonInt)(&s.GenericCount)},
-		{"stmtHintsCount", (*jsonInt)(&s.StmtHintsCount)},
 		{"sqlType", (*jsonString)(&s.SQLType)},
 	}
 }
@@ -372,7 +368,6 @@ func (e *execStats) jsonFields() jsonFields {
 		{"maxDiskUsage", (*numericStats)(&e.MaxDiskUsage)},
 		{"cpuSQLNanos", (*numericStats)(&e.CPUSQLNanos)},
 		{"mvccIteratorStats", (*iteratorStats)(&e.MVCCIteratorStats)},
-		{"admissionWaitTime", (*numericStats)(&e.AdmissionWaitTime)},
 	}
 }
 
@@ -435,6 +430,9 @@ func (l *latencyInfo) jsonFields() jsonFields {
 	return jsonFields{
 		{"min", (*jsonFloat)(&l.Min)},
 		{"max", (*jsonFloat)(&l.Max)},
+		{"p50", (*jsonFloat)(&l.P50)},
+		{"p90", (*jsonFloat)(&l.P90)},
+		{"p99", (*jsonFloat)(&l.P99)},
 	}
 }
 

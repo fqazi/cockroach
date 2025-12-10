@@ -8,7 +8,6 @@ package cdcevent
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -22,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/row"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
@@ -111,16 +109,6 @@ func (r Row) ForAllColumns() Iterator {
 // ForEachUDTColumn returns Datum iterator for each column containing user defined types.
 func (r Row) ForEachUDTColumn() Iterator {
 	return iter{r: r, cols: r.udtCols}
-}
-
-// NumKeyColumns returns the number of primary key columns in the row.
-func (r Row) NumKeyColumns() int {
-	return len(r.keyCols)
-}
-
-// NumValueColumns returns the number of value columns in the row.
-func (r Row) NumValueColumns() int {
-	return len(r.valueCols)
 }
 
 // DatumNamed returns the datum with the specified column name, in the form of an Iterator.
@@ -246,7 +234,6 @@ func (r Row) forEachColumn(fn ColumnFn, colIndexes []int) error {
 type ResultColumn struct {
 	colinfo.ResultColumn
 	Computed  bool
-	Nullable  bool
 	ord       int
 	sqlString string
 }
@@ -304,7 +291,7 @@ func NewEventDescriptor(
 	}
 
 	// addColumn is a helper to add a column to this descriptor.
-	addColumn := func(col catalog.Column, nameOverride string, ord int) int {
+	addColumn := func(col catalog.Column, ord int) int {
 		resultColumn := ResultColumn{
 			ResultColumn: colinfo.ResultColumn{
 				Name:           col.GetName(),
@@ -313,16 +300,13 @@ func NewEventDescriptor(
 				PGAttributeNum: uint32(col.GetPGAttributeNum()),
 			},
 			Computed:  col.IsComputed(),
-			Nullable:  col.IsNullable(),
 			ord:       ord,
 			sqlString: col.ColumnDesc().SQLStringNotHumanReadable(),
 		}
-		if nameOverride != "" {
-			resultColumn.Name = nameOverride
-		}
+
 		colIdx := len(sd.cols)
 		sd.cols = append(sd.cols, resultColumn)
-		sd.colsByName[resultColumn.Name] = colIdx
+		sd.colsByName[col.GetName()] = colIdx
 
 		if col.GetType().UserDefined() {
 			sd.udtCols = append(sd.udtCols, colIdx)
@@ -333,46 +317,7 @@ func NewEventDescriptor(
 	// Primary key columns must be added in the same order they
 	// appear in the primary key index.
 	primaryIdx := desc.GetPrimaryIndex()
-	// The declarative schema changer requires special handling for dropped columns
-	// to ensure their previous values are available to the changefeed.
-	// We select a prior descriptor where the column is in the WRITE_ONLY state
-	// (instead of PUBLIC) and treat it as visible.
-	// This is necessary because the schema change stages for dropped columns were
-	// intentionally shifted to support automatic `schema_locked` management. The
-	// declarative schema changer cannot make a column WRITE_ONLY and flip
-	// `schema_locked` in two separate stages, so we instead treat the WRITE_ONLY
-	//  stage as a non-backfilling change for CDC.
-	columnsToTrack := desc.PublicColumns()
-	colNameOverrides := make(map[catid.ColumnID]string)
-	if desc.GetDeclarativeSchemaChangerState() != nil {
-		hasMergedIndex := catalog.HasDeclarativeMergedPrimaryIndex(desc)
-		allColumns := desc.AllColumns()
-		columnsToTrack = make([]catalog.Column, 0, len(allColumns))
-		for _, column := range allColumns {
-			// Skip all adding columns and non-public column.
-			if column.Adding() {
-				continue
-			}
-			// Pick up any write-only columns.
-			if column.Dropped() {
-				if !column.WriteAndDeleteOnly() || hasMergedIndex || column.IsHidden() {
-					continue
-				}
-				if found, previousName := catalog.FindPreviousColumnNameForDeclarativeSchemaChange(desc, column.GetID()); found {
-					colNameOverrides[column.GetID()] = previousName
-				}
-			}
-			columnsToTrack = append(columnsToTrack, column)
-		}
-		// Recover the order of the original columns.
-		slices.SortStableFunc(columnsToTrack, func(a, b catalog.Column) int {
-			return int(a.GetPGAttributeNum()) - int(b.GetPGAttributeNum())
-		})
-	}
-	var colOrd catalog.TableColMap
-	for ord, col := range columnsToTrack {
-		colOrd.Set(col.GetID(), ord)
-	}
+	colOrd := catalog.ColumnIDToOrdinalMap(desc.PublicColumns())
 	writeOnlyAndPublic := catalog.ColumnIDToOrdinalMap(desc.WritableColumns())
 	var primaryKeyOrdinal catalog.TableColMap
 
@@ -388,7 +333,7 @@ func NewEventDescriptor(
 			}
 			return nil, errors.AssertionFailedf("expected to find column %d", ord)
 		}
-		primaryKeyOrdinal.Set(columnsToTrack[ord].GetID(), ordIdx)
+		primaryKeyOrdinal.Set(desc.PublicColumns()[ord].GetID(), ordIdx)
 		ordIdx += 1
 	}
 	sd.keyCols = make([]int, ordIdx)
@@ -396,12 +341,12 @@ func NewEventDescriptor(
 	switch {
 	case keyOnly:
 		ord := 0
-		for _, col := range columnsToTrack {
+		for _, col := range desc.PublicColumns() {
 			pKeyOrd, isPKey := primaryKeyOrdinal.Get(col.GetID())
 			if !isPKey {
 				continue
 			}
-			colIdx := addColumn(col, colNameOverrides[col.GetID()], ord)
+			colIdx := addColumn(col, ord)
 			ord++
 			sd.keyCols[pKeyOrd] = colIdx
 			sd.valueCols = append(sd.valueCols, colIdx)
@@ -412,9 +357,9 @@ func NewEventDescriptor(
 		// a sentinel ordinal position of virtualColOrd.
 		inFamily := catalog.MakeTableColSet(family.ColumnIDs...)
 		ord := 0
-		for _, col := range columnsToTrack {
+		for _, col := range desc.PublicColumns() {
 			if isVirtual := col.IsVirtual(); isVirtual && includeVirtualColumns {
-				colIdx := addColumn(col, colNameOverrides[col.GetID()], virtualColOrd)
+				colIdx := addColumn(col, virtualColOrd)
 				sd.valueCols = append(sd.valueCols, colIdx)
 				continue
 			}
@@ -423,7 +368,7 @@ func NewEventDescriptor(
 			if !isPKey && !isInFamily {
 				continue
 			}
-			colIdx := addColumn(col, colNameOverrides[col.GetID()], ord)
+			colIdx := addColumn(col, ord)
 			ord++
 			if isPKey {
 				sd.keyCols[pKeyOrd] = colIdx
@@ -490,12 +435,6 @@ type eventDescriptorFactory func(
 	schemaTS hlc.Timestamp,
 ) (*EventDescriptor, error)
 
-// DecoderOptions are options for the event decoder.
-type DecoderOptions struct {
-	// SkipOffline is true if the decoder should skip events from offline tables.
-	SkipOffline bool
-}
-
 type eventDecoder struct {
 	// Cached allocations for *row.Fetcher
 	rfCache *rowFetcherCache
@@ -514,9 +453,6 @@ type eventDecoder struct {
 	desc     catalog.TableDescriptor        // Current descriptor
 	family   *descpb.ColumnFamilyDescriptor // Current family
 	schemaTS hlc.Timestamp                  // Schema timestamp.
-
-	// skipOfflineEvents is true if the decoder should skip events from offline tables.
-	skipOfflineEvents bool
 }
 
 func getEventDescriptorCached(
@@ -556,7 +492,6 @@ func NewEventDecoder(
 	targets changefeedbase.Targets,
 	includeVirtual bool,
 	keyOnly bool,
-	opts DecoderOptions,
 ) (Decoder, error) {
 	rfCache, err := newRowFetcherCache(
 		ctx,
@@ -570,17 +505,13 @@ func NewEventDecoder(
 	if err != nil {
 		return nil, err
 	}
-	return NewEventDecoderWithCache(ctx, rfCache, includeVirtual, keyOnly, opts), nil
 
+	return NewEventDecoderWithCache(ctx, rfCache, includeVirtual, keyOnly), nil
 }
 
 // NewEventDecoderWithCache returns key value decoder.
 func NewEventDecoderWithCache(
-	ctx context.Context,
-	rfCache *rowFetcherCache,
-	includeVirtual bool,
-	keyOnly bool,
-	opts DecoderOptions,
+	ctx context.Context, rfCache *rowFetcherCache, includeVirtual bool, keyOnly bool,
 ) Decoder {
 	eventDescriptorCache := cache.NewUnorderedCache(DefaultCacheConfig)
 	getEventDescriptor := func(
@@ -594,7 +525,6 @@ func NewEventDecoderWithCache(
 	return &eventDecoder{
 		getEventDescriptor: getEventDescriptor,
 		rfCache:            rfCache,
-		skipOfflineEvents:  opts.SkipOffline,
 	}
 }
 
@@ -620,12 +550,6 @@ func (d *eventDecoder) DecodeKV(
 		return Row{}, err
 	}
 
-	// Table offline errors aren't terminal so return early and let caller
-	// decide what to do with it.
-	if errors.Is(err, ErrTableOffline) {
-		return Row{}, err
-	}
-
 	// Failure to decode roachpb.KeyValue we received from rangefeed is pretty bad.
 	// At this point, we only have guesses why this happened (schema change? data corruption?).
 	// Retrying this error however is likely to produce exactly the same result.
@@ -638,7 +562,7 @@ func (d *eventDecoder) DecodeKV(
 	err = changefeedbase.WithTerminalError(errors.Wrapf(err,
 		"error decoding key %s@%s (hex_kv: %x)",
 		keys.PrettyPrint(nil, kv.Key), kv.Value.Timestamp, kvBytes))
-	log.Changefeed.Errorf(ctx, "terminal error decoding KV: %v", err)
+	log.Errorf(ctx, "terminal error decoding KV: %v", err)
 	return Row{}, err
 }
 
@@ -694,10 +618,6 @@ func (d *eventDecoder) initForKey(
 	d.desc = desc
 	d.family = family
 	d.fetcher.Fetcher = fetcher
-
-	if d.skipOfflineEvents && desc.Offline() {
-		return ErrTableOffline
-	}
 	return nil
 }
 
@@ -774,39 +694,6 @@ func (it iter) Col(fn ColumnFn) error {
 	return it.r.forEachColumn(fn, it.cols)
 }
 
-// NewSkipIterator returns an iterator that skips columns with the specified name.
-func NewSkipIterator(it Iterator, skipColName string) Iterator {
-	return skipIter{it: it, skipColName: skipColName}
-}
-
-// skipIter wraps an Iterator with the ability to skip one column.
-type skipIter struct {
-	it          Iterator
-	skipColName string
-}
-
-// Col implements Iterator.
-func (s skipIter) Col(fn ColumnFn) error {
-	return s.it.Col(func(col ResultColumn) error {
-		if col.Name == s.skipColName {
-			return nil
-		}
-		return fn(col)
-	})
-}
-
-// Datum implements Iterator.
-func (s skipIter) Datum(fn DatumFn) error {
-	return s.it.Datum(func(d tree.Datum, col ResultColumn) error {
-		if col.Name == s.skipColName {
-			return nil
-		}
-		return fn(d, col)
-	})
-}
-
-var _ Iterator = skipIter{}
-
 // TestingMakeEventRow initializes Row with provided arguments.
 // Exposed for unit tests.
 func TestingMakeEventRow(
@@ -840,7 +727,7 @@ func TestingMakeEventRowFromDatums(datums tree.Datums) Row {
 	for i, d := range datums {
 		desc.cols = append(desc.cols, ResultColumn{ord: i})
 		desc.valueCols = append(desc.valueCols, i)
-		encRow = append(encRow, rowenc.DatumToEncDatumUnsafe(d.ResolvedType(), d))
+		encRow = append(encRow, rowenc.DatumToEncDatum(d.ResolvedType(), d))
 	}
 	return Row{
 		EventDescriptor: &desc,
@@ -874,7 +761,7 @@ func MakeRowFromTuple(ctx context.Context, evalCtx *eval.Context, t *tree.DTuple
 		r.AddValueColumn(name, d.ResolvedType())
 		if err := r.SetValueDatumAt(i, d); err != nil {
 			if build.IsRelease() {
-				log.Changefeed.Warningf(ctx, "failed to set row value from tuple due to error %v", err)
+				log.Warningf(ctx, "failed to set row value from tuple due to error %v", err)
 				_ = r.SetValueDatumAt(i, tree.DNull)
 			} else {
 				panic(err)
@@ -954,29 +841,7 @@ func getRelevantColumnsForFamily(
 	// matches the order of columns in the SQL table.
 	idx := 0
 	result := make([]descpb.ColumnID, cols.Len())
-	visibleColumns := tableDesc.PublicColumns()
-	if tableDesc.GetDeclarativeSchemaChangerState() != nil {
-		hasMergedIndex := catalog.HasDeclarativeMergedPrimaryIndex(tableDesc)
-		visibleColumns = make([]catalog.Column, 0, cols.Len())
-		for _, col := range tableDesc.AllColumns() {
-			if col.Adding() {
-				continue
-			}
-			if tableDesc.GetDeclarativeSchemaChangerState() == nil && !col.Public() {
-				continue
-			}
-			if col.Dropped() && (!col.WriteAndDeleteOnly() || hasMergedIndex) {
-				continue
-			}
-			visibleColumns = append(visibleColumns, col)
-		}
-		// Recover the order of the original columns.
-		slices.SortStableFunc(visibleColumns, func(a, b catalog.Column) int {
-			return int(a.GetPGAttributeNum()) - int(b.GetPGAttributeNum())
-		})
-	}
-	for _, col := range visibleColumns {
-		colID := col.GetID()
+	for _, colID := range tableDesc.PublicColumnIDs() {
 		if cols.Contains(colID) {
 			result[idx] = colID
 			idx++

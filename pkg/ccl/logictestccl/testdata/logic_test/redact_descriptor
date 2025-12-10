@@ -1,6 +1,3 @@
-# LogicTest: !schema-locked-disabled
-# knob-opt: allow-unsafe
-
 # NB: "Xw==" is the byte representation of "_", which is what we use to redact fields.
 statement ok
 CREATE TABLE collate_partition (a STRING COLLATE da PRIMARY KEY) PARTITION BY RANGE (a) (
@@ -149,7 +146,6 @@ SELECT descriptor from redacted_descriptors where id = 'collate_partition'::REGC
                 "b"
             ],
             "unique": true,
-            "vecConfig": {},
             "version": 4
         },
         "privileges": {
@@ -171,9 +167,8 @@ SELECT descriptor from redacted_descriptors where id = 'collate_partition'::REGC
         "replacementOf": {
             "time": {}
         },
-        "schemaLocked": true,
         "unexposedParentSchemaId": 105,
-        "version": "10"
+        "version": "9"
     }
 }
 
@@ -345,7 +340,6 @@ SELECT descriptor from redacted_descriptors where id = 'subpartition'::REGCLASS;
                 "c"
             ],
             "unique": true,
-            "vecConfig": {},
             "version": 4
         },
         "privileges": {
@@ -367,7 +361,6 @@ SELECT descriptor from redacted_descriptors where id = 'subpartition'::REGCLASS;
         "replacementOf": {
             "time": {}
         },
-        "schemaLocked": true,
         "unexposedParentSchemaId": 105,
         "version": "1"
     }

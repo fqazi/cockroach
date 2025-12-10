@@ -8,6 +8,7 @@ package schemachange
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -65,21 +66,16 @@ func (og *operationGenerator) columnExistsOnTable(
    )`, tableName.Schema(), tableName.Object(), columnName)
 }
 
-func (og *operationGenerator) fnExistsByName(
-	ctx context.Context, tx pgx.Tx, schemaName string, routineName string,
-) (bool, error) {
-	return og.scanBool(ctx, tx, `SELECT EXISTS (
-	SELECT routine_name
-    FROM information_schema.routines 
-   WHERE routine_schema = $1
-     AND routine_name = $2
-   )`, schemaName, routineName)
-}
-
 func (og *operationGenerator) tableHasRows(
 	ctx context.Context, tx pgx.Tx, tableName *tree.TableName,
 ) (bool, error) {
 	return og.scanBool(ctx, tx, fmt.Sprintf(`SELECT EXISTS (SELECT * FROM %s)`, tableName.String()))
+}
+
+func (og *operationGenerator) scanInt(
+	ctx context.Context, tx pgx.Tx, query string, args ...interface{},
+) (i int, err error) {
+	return Scan[int](ctx, og, tx, query, args...)
 }
 
 func (og *operationGenerator) scanBool(
@@ -108,16 +104,8 @@ func (og *operationGenerator) fnExists(
 	)`, fnName, argTypes)
 }
 
-// tableHasDependencies reports whether the given table has any schema dependencies,
-// optionally excluding foreign keys and/or self-references.
-//
-// A dependency is ignored if:
-// 1. It is a foreign key and includeFKs is false.
-// 2. It is a self-dependency (i.e., the table depends on itself) and:
-// a) It is a foreign key, or
-// b) skipSelfRef is true (regardless of dependency type).
 func (og *operationGenerator) tableHasDependencies(
-	ctx context.Context, tx pgx.Tx, tableName *tree.TableName, includeFKs, skipSelfRef bool,
+	ctx context.Context, tx pgx.Tx, tableName *tree.TableName, includeFKs bool,
 ) (bool, error) {
 	fkFilter := ""
 	if !includeFKs {
@@ -135,151 +123,156 @@ func (og *operationGenerator) tableHasDependencies(
                             ns.oid = c.relnamespace
                      WHERE c.relname = $1 AND ns.nspname = $2
                 )
-           AND NOT (
-             fd.descriptor_id = fd.dependedonby_id
-             AND (
-               fd.dependedonby_type = 'fk'
-               OR $3::BOOL = true
-             )
-           )
+           AND fd.descriptor_id != fd.dependedonby_id
            AND fd.dependedonby_type != 'sequence'
            %s
        )
 	`, fkFilter)
-	return og.scanBool(ctx, tx, q, tableName.Object(), tableName.Schema(), skipSelfRef)
+	return og.scanBool(ctx, tx, q, tableName.Object(), tableName.Schema())
 }
 
-// columnDropViolatesFKIndexRequirements determines if dropping this column
-// will violate foreign key index requirements. This occurs when dropping the
-// column would leave a foreign key without a suitable backing index.
-// CockroachDB requires backing indexes to have the same number of key columns
-// as the FK in any order. Only key columns (not stored columns) count toward
-// FK backing index requirements.
-func (og *operationGenerator) columnDropViolatesFKIndexRequirements(
+// columnRemovalWillDropFKBackingIndexes determines if dropping this column
+// will lead to no indexes backing a foreign key.
+func (og *operationGenerator) columnRemovalWillDropFKBackingIndexes(
 	ctx context.Context, tx pgx.Tx, tableName *tree.TableName, columName tree.Name,
 ) (bool, error) {
-	return og.scanBool(ctx, tx, `
-  WITH fk AS (
-            SELECT oid,
-                   (
-                    SELECT r.relname
-                      FROM pg_class AS r
-                     WHERE r.oid = c.confrelid
-                   ) AS base_table,
-                   a.attname AS base_col,
-                   array_position(
-                    c.confkey,
-                    a.attnum
-                   ) AS base_ordinal,
-                   (
-                    SELECT r.relname
-                      FROM pg_class AS r
-                     WHERE r.oid = c.conrelid
-                   ) AS referencing_table,
-                   unnest(
-                    (
-                        SELECT array_agg(attname)
-                          FROM pg_attribute
-                         WHERE attrelid = c.conrelid
-                               AND ARRAY[attnum] <@ c.conkey
-                               AND array_position(
-                                    c.confkey,
-                                    a.attnum
-                                )
-                                = array_position(
-                                        c.conkey,
-                                        attnum
-                                    )
-                    )
-                   ) AS referencing_col
-              FROM pg_constraint AS c
-                   JOIN pg_attribute AS a ON c.confrelid
-                                                     = a.attrelid
-                                                     AND ARRAY[
-                                                            attnum
-                                                        ]
-                                                        <@ c.conkey
-             WHERE c.confrelid = $1::REGCLASS::OID
-          ),
-       all_index_columns AS (
-                            SELECT
-                                i.indexrelid::REGCLASS::STRING
-                                    AS index_name,
-                                a.attname AS col_name,
-                                NOT
-                                    i.indisunique AS non_unique,
-                                a.attnum
-                                > i.indnkeyatts AS storing,
-                                a.attnum AS index_ordinal
-                            FROM
-                                pg_index AS i
-                                JOIN pg_attribute AS a ON
-                                        a.attrelid
-                                        = i.indexrelid
-                                        AND a.attnum > 0
-                            WHERE
-                                i.indrelid
-                                = $1::REGCLASS::OID
-                         ),
-       valid_indexes AS (
-                        SELECT *
-                          FROM all_index_columns
-                         WHERE index_name
-                               NOT IN (
-                                    SELECT DISTINCT
-                                           index_name
-                                      FROM all_index_columns
-                                     WHERE col_name = $2
-                                           AND index_name
-                                            NOT LIKE '%_pkey'
-                                )
-                     ),
-       fk_col_counts AS (
-                          SELECT oid, count(*) AS num_cols
-                            FROM fk
-                        GROUP BY oid
-                     ),
-       index_column_counts AS (
-                              SELECT index_name,
-                                     count(*) AS num_cols
-                                FROM valid_indexes
- 															WHERE storing='f'
-                              GROUP BY index_name
-                           ),
-       matching_fks AS (
-                          SELECT fk.oid
-                            FROM fk
-                                 JOIN valid_indexes ON
-                                        fk.base_col
-                                        = valid_indexes.col_name
-                                 JOIN index_column_counts ON
-                                        valid_indexes.index_name
-                                        = index_column_counts.index_name
-                                 JOIN fk_col_counts ON
-                                        fk.oid
-                                        = fk_col_counts.oid
-                           WHERE valid_indexes.storing
-                                 = false
-                                 AND valid_indexes.non_unique
-                                    = false
-                                 AND index_column_counts.num_cols
-                                    = fk_col_counts.num_cols
-                        GROUP BY fk.oid,
-                                 valid_indexes.index_name,
-                                 fk_col_counts.num_cols
-                          HAVING count(DISTINCT fk.base_col)
-                                 = fk_col_counts.num_cols
-                    )
-SELECT EXISTS(
-        SELECT *
-          FROM fk
-         WHERE oid
-               NOT IN (
-                    SELECT DISTINCT oid FROM matching_fks
-                )
-       );
-`,
-		tableName.String(), columName)
+	return og.scanBool(ctx, tx, fmt.Sprintf(`
+WITH
+	fk
+		AS (
+			SELECT
+				oid,
+				(
+					SELECT
+						r.relname
+					FROM
+						pg_class AS r
+					WHERE
+						r.oid = c.confrelid
+				)
+					AS base_table,
+				a.attname AS base_col,
+				array_position(c.confkey, a.attnum)
+					AS base_ordinal,
+				(
+					SELECT
+						r.relname
+					FROM
+						pg_class AS r
+					WHERE
+						r.oid = c.conrelid
+				)
+					AS referencing_table,
+				unnest(
+					(
+						SELECT
+							array_agg(attname)
+						FROM
+							pg_attribute
+						WHERE
+							attrelid = c.conrelid
+							AND ARRAY[attnum] <@ c.conkey
+							AND array_position(
+									c.confkey,
+									a.attnum
+								)
+								= array_position(
+										c.conkey,
+										attnum
+									)
+					)
+				)
+					AS referencing_col
+			FROM
+				pg_constraint AS c
+				JOIN pg_attribute AS a ON
+						c.confrelid = a.attrelid
+						AND ARRAY[attnum] <@ c.confkey
+			WHERE
+				c.confrelid = $1::REGCLASS::OID
+		),
+	valid_indexes
+		AS (
+			SELECT
+				*
+			FROM
+				[SHOW INDEXES FROM %s]
+			WHERE
+				index_name
+				NOT IN (
+						SELECT
+							DISTINCT index_name
+						FROM
+							[SHOW INDEXES FROM %s]
+						WHERE
+							column_name = $2
+							AND index_name
+								NOT LIKE '%%_pkey' -- renames would keep the old table name
+					)
+		),
+	matching_indexes
+		AS (
+			SELECT
+				oid,
+				index_name,
+				count(base_ordinal) AS count_base_ordinal,
+				count(seq_in_index) AS count_seq_in_index
+			FROM
+				fk, valid_indexes
+			WHERE
+				storing = 'f'
+				AND non_unique = 'f'
+				AND base_col = column_name
+			GROUP BY
+				(oid, index_name)
+		),
+	valid_index_attrib_count
+		AS (
+			SELECT
+				index_name,
+				max(seq_in_index) AS max_seq_in_index
+			FROM
+				valid_indexes
+			WHERE
+				storing = 'f'
+			GROUP BY
+				index_name
+		),
+	valid_fk_count
+		AS (
+			SELECT
+				oid, max(base_ordinal) AS max_base_ordinal
+			FROM
+				fk
+			GROUP BY
+				fk
+		),
+	matching_fks
+		AS (
+			SELECT
+				DISTINCT f.oid
+			FROM
+				valid_index_attrib_count AS i,
+				valid_fk_count AS f,
+				matching_indexes AS m
+			WHERE
+				f.oid = m.oid
+				AND i.index_name = m.index_name
+				AND i.max_seq_in_index
+					= m.count_seq_in_index
+				AND f.max_base_ordinal
+					= m.count_base_ordinal
+		)
+SELECT
+	EXISTS(
+		SELECT
+			*
+		FROM
+			fk
+		WHERE
+			oid NOT IN (SELECT oid FROM matching_fks)
+	);
+`, tableName.String(), tableName.String()), tableName.String(), columName)
 }
 
 func (og *operationGenerator) columnIsDependedOn(
@@ -406,6 +399,43 @@ func (og *operationGenerator) colIsRefByComputed(
 	return colIsRefByGeneratedExpr, nil
 }
 
+func (og *operationGenerator) columnIsDependedOnByView(
+	ctx context.Context, tx pgx.Tx, tableName *tree.TableName, columnName tree.Name,
+) (bool, error) {
+	return og.scanBool(ctx, tx, `SELECT EXISTS(
+		SELECT source.column_id
+			FROM (
+			   SELECT DISTINCT column_id
+			     FROM (
+			           SELECT unnest(
+			                   string_to_array(
+			                    rtrim(
+			                     ltrim(
+			                      fd.dependedonby_details,
+			                      'Columns: ['
+			                     ),
+			                     ']'
+			                    ),
+			                    ' '
+			                   )::INT8[]
+			                  ) AS column_id
+			             FROM crdb_internal.forward_dependencies
+			                   AS fd
+			            WHERE fd.descriptor_id
+			                  = $1::REGCLASS
+                    AND fd.dependedonby_type != 'sequence'
+			            )
+			 ) AS cons
+			 INNER JOIN (
+			   SELECT ordinal_position AS column_id
+			     FROM information_schema.columns
+			    WHERE table_schema = $2
+			      AND table_name = $3
+			      AND column_name = $4
+			  ) AS source ON source.column_id = cons.column_id
+)`, tableName.String(), tableName.Schema(), tableName.Object(), columnName)
+}
+
 func (og *operationGenerator) colIsPrimaryKey(
 	ctx context.Context, tx pgx.Tx, tableName *tree.TableName, columnName tree.Name,
 ) (bool, error) {
@@ -505,28 +535,6 @@ func isValidGenerationError(code string) bool {
 	return getValidGenerationErrors().contains(pgCode)
 }
 
-// tableHasBeforeInsertTrigger checks if the table has any BEFORE INSERT triggers
-// that could affect the insertion behavior.
-func (og *operationGenerator) tableHasBeforeInsertTrigger(
-	ctx context.Context, tx pgx.Tx, tableName *tree.TableName,
-) (bool, error) {
-	query := `
-	SELECT EXISTS (
-		SELECT 1 FROM pg_trigger t
-		JOIN pg_class c ON t.tgrelid = c.oid
-		JOIN pg_namespace n ON c.relnamespace = n.oid
-		WHERE n.nspname = $1 
-		AND c.relname = $2
-		AND t.tgenabled != 'D'
-		AND (t.tgtype & 2) = 2  -- BEFORE trigger
-		AND (t.tgtype & 4) = 4  -- INSERT trigger
-	)`
-
-	var hasTrigger bool
-	err := tx.QueryRow(ctx, query, tableName.Schema(), tableName.Object()).Scan(&hasTrigger)
-	return hasTrigger, err
-}
-
 // validateGeneratedExpressionsForInsert goes through generated expressions and
 // detects if a valid value can be generated with a given insert row.
 func (og *operationGenerator) validateGeneratedExpressionsForInsert(
@@ -547,12 +555,6 @@ func (og *operationGenerator) validateGeneratedExpressionsForInsert(
 			isInvalidInsert = true
 		}
 	}()
-
-	hasBeforeInsertTrigger, err := og.tableHasBeforeInsertTrigger(ctx, tx, tableName)
-	if err != nil {
-		return false, nil, nil, err
-	}
-
 	// Put values to be inserted into a column name to value map to simplify lookups.
 	columnsToValues := map[tree.Name]string{}
 	for i := 0; i < len(nonGeneratedColNames); i++ {
@@ -640,14 +642,7 @@ func (og *operationGenerator) validateGeneratedExpressionsForInsert(
 		}
 		if isNull && !isNullable && !nullViolationAdded {
 			nullViolationAdded = true
-			// If there is a trigger, then we cannot be sure if the NULL value
-			// will actually be inserted. It may be replaced or the row itself could
-			// be cleared.
-			if hasBeforeInsertTrigger {
-				potentialErrCodes = potentialErrCodes.append(pgcode.NotNullViolation)
-			} else {
-				expectedErrCodes = expectedErrCodes.append(pgcode.NotNullViolation)
-			}
+			expectedErrCodes = expectedErrCodes.append(pgcode.NotNullViolation)
 		}
 		// Re-run the another variant in case we have NULL values in arithmetic
 		// of expression, the evaluation order can differ depending on how variables
@@ -779,6 +774,36 @@ func (og *operationGenerator) scanStringArrayNullableRows(
 			humanReadableResults,
 			args...)
 	}
+	return results, nil
+}
+
+func (og *operationGenerator) scanStringArrayRows(
+	ctx context.Context, tx pgx.Tx, query string, args ...interface{},
+) ([][]string, error) {
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, errors.Wrapf(err, "scanStringArrayRows: %q %q", query, args)
+	}
+	defer rows.Close()
+
+	var results [][]string
+	for rows.Next() {
+		var columnNames []string
+		err := rows.Scan(&columnNames)
+		if err != nil {
+			return nil, errors.Wrapf(err, "scan: %q, args %q, scanArgs %q", query, columnNames, args)
+		}
+		results = append(results, columnNames)
+	}
+
+	if rows.Err() != nil {
+		return nil, rows.Err()
+	}
+
+	og.LogQueryResults(
+		query,
+		results,
+		args...)
 	return results, nil
 }
 
@@ -1012,6 +1037,257 @@ func (og *operationGenerator) constraintExists(
 	return og.scanBool(ctx, tx, `SELECT EXISTS(
 		SELECT * FROM information_schema.table_constraints WHERE table_name = $1 AND constraint_name = $2
 	 )`, string(tableName), string(constraintName))
+}
+
+func (og *operationGenerator) rowsSatisfyFkConstraint(
+	ctx context.Context,
+	tx pgx.Tx,
+	parentTable *tree.TableName,
+	parentColumn *column,
+	childTable *tree.TableName,
+	childColumn *column,
+) (bool, error) {
+	// Self referential foreign key constraints are acceptable.
+	selfReferential, err := og.scanBool(ctx, tx,
+		`SELECT $1:::REGCLASS=$2:::REGCLASS`,
+		parentTable.String(), childTable.String())
+	if err != nil {
+		return false, err
+	}
+	if selfReferential && parentColumn.name == childColumn.name {
+		return true, nil
+	}
+
+	// Validate the parent table has rows.
+	childRows, err := og.scanInt(ctx, tx,
+		fmt.Sprintf(`
+SELECT count(*) FROM %s
+		`, childTable.String()),
+	)
+	if err != nil {
+		return false, err
+	}
+
+	// If child table is empty then no violation can exist.
+	if childRows == 0 {
+		return true, nil
+	}
+
+	q := fmt.Sprintf(`
+	  SELECT count(*)
+	    FROM %s as t1
+		  LEFT JOIN %s as t2
+				     ON t1.%s = t2.%s
+			WHERE t2.%s IS NOT NULL
+`, childTable.String(), parentTable.String(), childColumn.name.String(), parentColumn.name.String(), parentColumn.name.String())
+
+	joinTx, err := tx.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	numJoinRows, err := og.scanInt(ctx, joinTx, q)
+	if err != nil {
+		rbkErr := joinTx.Rollback(ctx)
+		// UndefinedFunction errors mean that the column type is not comparable.
+		if pgErr := new(pgconn.PgError); errors.As(err, &pgErr) &&
+			((pgcode.MakeCode(pgErr.Code) == pgcode.UndefinedFunction) ||
+				(pgcode.MakeCode(pgErr.Code) == pgcode.UndefinedColumn)) {
+			return false, rbkErr
+		}
+		return false, errors.WithSecondaryError(err, rbkErr)
+	}
+	return numJoinRows == childRows, joinTx.Commit(ctx)
+}
+
+var (
+	// regexpUnknownSchemaErr matches unknown schema errors with
+	// a descriptor ID, which will have the form: unknown schema "[123]"
+	regexpUnknownSchemaErr = regexp.MustCompile(`unknown schema "\[\d+]"`)
+)
+
+// checkAndAdjustForUnknownSchemaErrors in certain contexts we will attempt to
+// bind descriptors without leasing them, since we are using crdb_internal tables,
+// so it's possible for said descriptor to be dropped before we bind it. This
+// method will allow for "unknown schema [xx]" in those contexts.
+func (og *operationGenerator) checkAndAdjustForUnknownSchemaErrors(err error) error {
+	if pgErr := new(pgconn.PgError); errors.As(err, &pgErr) &&
+		pgcode.MakeCode(pgErr.Code) == pgcode.InvalidSchemaName {
+		if regexpUnknownSchemaErr.MatchString(pgErr.Message) {
+			og.LogMessage(fmt.Sprintf("Rolling back due to unknown schema error %v",
+				err))
+			// Force a rollback and log inside the operation generator.
+			return errors.Mark(err, errRunInTxnRbkSentinel)
+		}
+	}
+	return err
+}
+
+// violatesFkConstraints checks if the rows to be inserted will result in a foreign key violation.
+func (og *operationGenerator) violatesFkConstraints(
+	ctx context.Context,
+	tx pgx.Tx,
+	tableName *tree.TableName,
+	nonGeneratedColNames []tree.Name,
+	rows [][]string,
+) (bool, error) {
+	// TODO(annie): readd the join on active constraints once #120702 is resolved.
+	//
+	// N.B. We add random noise to column names that makes it hard to just directly call on these names. This is
+	// not the case with table/schema names; thus, only column names are quote_ident'ed to ensure that they get
+	// referenced properly.
+	fkConstraints, err := og.scanStringArrayRows(ctx, tx, fmt.Sprintf(`
+		SELECT array[parent.table_schema, parent.table_name, parent.column_name, child.column_name]
+		  FROM (
+		        SELECT conname, conkey, confkey, conrelid, confrelid
+		          FROM pg_constraint
+		         WHERE contype = 'f'
+		           AND conrelid = '%s'::REGCLASS::INT8
+		       ) AS con
+		  JOIN (
+		        SELECT column_name, ordinal_position, column_default
+		          FROM information_schema.columns
+		         WHERE table_schema = '%s'
+		           AND table_name = '%s'
+		       ) AS child ON conkey[1] = child.ordinal_position
+		  JOIN (
+		        SELECT pc.oid,
+		               cols.table_schema,
+		               cols.table_name,
+		               cols.column_name,
+		               cols.ordinal_position
+		          FROM pg_class AS pc
+		          JOIN pg_namespace AS pn ON pc.relnamespace = pn.oid
+		          JOIN information_schema.columns AS cols ON (pc.relname = cols.table_name AND pn.nspname = cols.table_schema)
+		       ) AS parent ON (
+		                       con.confkey[1] = parent.ordinal_position
+		                       AND con.confrelid = parent.oid
+		                      )
+		 WHERE child.column_name != 'rowid';
+`, tableName.String(), tableName.Schema(), tableName.Object()))
+	if err != nil {
+		return false, og.checkAndAdjustForUnknownSchemaErrors(err)
+	}
+
+	// Maps a column name to its index. This way, the value of a column in a row can be looked up
+	// using row[colToIndexMap["columnName"]] = "valueForColumn"
+	columnNameToIndexMap := map[tree.Name]int{}
+
+	for i, name := range nonGeneratedColNames {
+		columnNameToIndexMap[name] = i
+	}
+
+	for _, row := range rows {
+		for _, constraint := range fkConstraints {
+			parentTableSchema := tree.Name(constraint[0])
+			parentTableName := tree.Name(constraint[1])
+			parentColumnName := tree.Name(constraint[2])
+			childColumnName := tree.Name(constraint[3])
+
+			// If self referential, there cannot be a violation.
+			parentAndChildAreSame := parentTableSchema == tableName.SchemaName && parentTableName == tableName.ObjectName
+			if parentAndChildAreSame && parentColumnName == childColumnName {
+				continue
+			}
+
+			violation, err := og.violatesFkConstraintsHelper(
+				ctx, tx, columnNameToIndexMap, parentTableSchema, parentTableName, parentColumnName, childColumnName, tableName, parentAndChildAreSame, row, rows,
+			)
+			if err != nil {
+				return false, err
+			}
+			if violation {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+// violatesFkConstraintsHelper checks if a single row will violate a foreign key constraint
+// between the childColumn and parentColumn.
+func (og *operationGenerator) violatesFkConstraintsHelper(
+	ctx context.Context,
+	tx pgx.Tx,
+	columnNameToIndexMap map[tree.Name]int,
+	parentTableSchema, parentTableName, parentColumn, childColumn tree.Name,
+	childTableName *tree.TableName,
+	parentAndChildAreSameTable bool,
+	rowToInsert []string,
+	allRows [][]string,
+) (bool, error) {
+
+	childIndex, ok := columnNameToIndexMap[childColumn]
+	if !ok {
+		return false, errors.Newf("child column %s does not exist in table %s", childColumn, childTableName)
+	}
+	childValue := rowToInsert[childIndex]
+	// If the value to insert in the child column is NULL and the column default is NULL, then it is not possible to have a fk violation.
+	if childValue == "NULL" {
+		return false, nil
+	}
+	// If the parent and child are the same table, then any rows in an existing
+	// insert may satisfy the same constraint.
+	var parentAndChildSameQueryColumns []string
+	if parentAndChildAreSameTable {
+		colsInfo, err := og.getTableColumns(ctx, tx, childTableName, false)
+		if err != nil {
+			return false, err
+		}
+
+		var parentColInfo *column
+		for _, colInfo := range colsInfo {
+			if colInfo.name == parentColumn {
+				parentColInfo = &colInfo
+				break
+			}
+		}
+		if parentColInfo == nil {
+			return false, errors.Newf("column %s not found in columns for %s", parentColumn, childTableName)
+		}
+
+		for _, otherRow := range allRows {
+			var parentValueInSameInsert string
+			if parentColInfo.generated {
+				// If the parent column is a computed column, spend time to generate the value.
+				columnsToValues := map[tree.Name]string{}
+				for name, idx := range columnNameToIndexMap {
+					columnsToValues[name] = rowToInsert[idx]
+				}
+				parentValueInSameInsert, err = og.generateColumn(ctx, tx, *parentColInfo, columnsToValues)
+				if err != nil {
+					return false, err
+				}
+			} else {
+				parentIdx, ok := columnNameToIndexMap[parentColumn]
+				if !ok {
+					return false, errors.Newf("parent column %s does not exist in table %s", parentColumn, childTableName)
+				}
+				parentValueInSameInsert = otherRow[parentIdx]
+			}
+
+			// Skip over NULL values.
+			if parentValueInSameInsert == "NULL" {
+				continue
+			}
+			parentAndChildSameQueryColumns = append(parentAndChildSameQueryColumns,
+				fmt.Sprintf("%s = %s", parentValueInSameInsert, childValue))
+		}
+	}
+	checkSharedParentChildRows := ""
+	if len(parentAndChildSameQueryColumns) > 0 {
+		// Check if none of the rows being inserted satisfy the foreign key constraint,
+		// since the foreign key constraints refers to the same table. So, anything in
+		// the insert batch can satisfy the constraint.
+		checkSharedParentChildRows = fmt.Sprintf("NOT (true = ANY (ARRAY [%s])) AND",
+			strings.Join(parentAndChildSameQueryColumns, ","))
+	}
+	q := fmt.Sprintf(`
+	    SELECT %s count(*) = 0 from %s.%s
+	    WHERE %s = (%s)
+	`,
+		checkSharedParentChildRows, parentTableSchema.String(), parentTableName.String(), parentColumn.String(), childValue)
+	return og.scanBool(ctx, tx, q)
 }
 
 func (og *operationGenerator) columnIsInAddingOrDroppingIndex(
@@ -1545,39 +1821,4 @@ func (og *operationGenerator) tableHasUniqueConstraintMutation(
 			WHERE (m->>'direction')::STRING IN ('ADD', 'DROP')
 			AND (m->'index'->>'unique')::BOOL IS TRUE
 		);`, tableName)
-}
-
-// getTableForeignKeyReferences returns a list of tables that reference
-// the specified table via foreign key references.
-func (og *operationGenerator) getTableForeignKeyReferences(
-	ctx context.Context, tx pgx.Tx, tableName *tree.TableName,
-) ([]tree.TableName, error) {
-	rows, err := tx.Query(ctx,
-		`WITH fk_refs AS (
-					SELECT conrelid FROM pg_constraint WHERE
-						confrelid = $1::REGCLASS AND
-						conrelid <> $1::REGCLASS
-				)
-				SELECT
-					n.nspname as schema_name,  c.relname AS object_name
-				FROM fk_refs AS f
-					JOIN pg_class AS c ON c.oid = f.conrelid
-					JOIN pg_namespace AS n ON c.relnamespace = n.oid
-`,
-		tableName.String())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []tree.TableName
-	for rows.Next() {
-		var table, schema string
-		err = rows.Scan(&schema, &table)
-		if err != nil {
-			return nil, err
-		}
-		name := tree.MakeTableNameWithSchema(tableName.CatalogName, tree.Name(schema), tree.Name(table))
-		result = append(result, name)
-	}
-	return result, rows.Err()
 }

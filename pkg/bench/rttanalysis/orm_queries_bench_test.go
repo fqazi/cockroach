@@ -946,8 +946,8 @@ ORDER BY
 		{
 			Name: `liquibase migrations on multiple dbs`,
 			// 15 databases, each with 40 tables.
-			SetupEx: liquibaseSetup,
-			ResetEx: liquibaseReset,
+			Setup: liquibaseSetup,
+			Reset: liquibaseReset,
 			Stmt: `SELECT
   NULL AS table_cat,
   n.nspname AS table_schem,
@@ -1027,38 +1027,6 @@ func buildNTables(n int) string {
 	return b.String()
 }
 
-func buildNFunctions(n int) string {
-	b := strings.Builder{}
-	for i := 0; i < n; i++ {
-		b.WriteString(fmt.Sprintf("CREATE FUNCTION fn%d() RETURNS int AS 'SELECT 1' LANGUAGE SQL;\n", i))
-	}
-	return b.String()
-}
-
-func buildNTablesWithTriggers(n int) string {
-	b := strings.Builder{}
-	b.WriteString(`
-CREATE OR REPLACE FUNCTION trigger_func()
-RETURNS TRIGGER AS $$
-BEGIN
-  RAISE NOTICE 'Trigger fired for NEW row: %', NEW;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-`)
-	for i := 0; i < n; i++ {
-		b.WriteString(fmt.Sprintf(`
-CREATE TABLE t%d (a INT, b INT);
-
-CREATE TRIGGER trigger_%d
-AFTER INSERT ON t%d
-FOR EACH ROW
-EXECUTE FUNCTION trigger_func();
-`, i, i, i))
-	}
-	return b.String()
-}
-
 func buildNTypes(n int) string {
 	b := strings.Builder{}
 	for i := 0; i < n; i++ {
@@ -1067,18 +1035,16 @@ func buildNTypes(n int) string {
 	return b.String()
 }
 
-func buildNDatabasesWithMTables(amtDbs int, amtTbls int) ([]string, []string) {
-	setupEx := make([]string, amtDbs)
-	resetEx := make([]string, amtDbs)
+func buildNDatabasesWithMTables(amtDbs int, amtTbls int) (string, string) {
+	b := strings.Builder{}
+	reset := strings.Builder{}
 	tbls := buildNTables(amtTbls)
 	for i := 0; i < amtDbs; i++ {
 		db := fmt.Sprintf("d%d", i)
-		b := strings.Builder{}
 		b.WriteString(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s;\n", db))
+		reset.WriteString(fmt.Sprintf("DROP DATABASE %s;\n", db))
 		b.WriteString(fmt.Sprintf("USE %s;\n", db))
 		b.WriteString(tbls)
-		setupEx[i] = b.String()
-		resetEx[i] = fmt.Sprintf("DROP DATABASE %s", db)
 	}
-	return setupEx, resetEx
+	return b.String(), reset.String()
 }

@@ -24,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/listenerutil"
@@ -101,8 +100,6 @@ func TestCollectInfoFromOnlineCluster(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderRace(t, "slow under race")
-
 	ctx := context.Background()
 	dir, cleanupFn := testutils.TempDir(t)
 	defer cleanupFn()
@@ -155,11 +152,7 @@ func TestCollectInfoFromOnlineCluster(t *testing.T) {
 	require.Equal(t, 2, len(stores), "collected replicas from stores")
 	require.Equal(t, 2, len(replicas.LocalInfo), "collected info is not split by node")
 	require.Equal(t, totalRanges*2, totalReplicas, "number of collected replicas")
-	// The number of range descriptors is counted by iterating over meta2 keys.
-	// Since meta1 and meta2 ranges are split, the number of range descriptors
-	// is going to be one less than the number of ranges as meta1 is a range but
-	// its descriptor isn't stored in meta2.
-	require.Equal(t, totalRanges-1, len(replicas.Descriptors),
+	require.Equal(t, totalRanges, len(replicas.Descriptors),
 		"number of collected descriptors from metadata")
 	require.Equal(t, clusterversion.Latest.Version(), replicas.Version,
 		"collected version info from stores")
@@ -174,7 +167,6 @@ func TestLossOfQuorumRecovery(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	skip.UnderDeadlock(t, "slow under deadlock")
-	skip.UnderStress(t, "slow under stress")
 
 	ctx := context.Background()
 	dir, cleanupFn := testutils.TempDir(t)
@@ -450,7 +442,6 @@ func TestHalfOnlineLossOfQuorumRecovery(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	skip.UnderDeadlock(t, "slow under deadlock")
-	skip.UnderStress(t, "fails under stress and leader leases")
 
 	ctx := context.Background()
 	dir, cleanupFn := testutils.TempDir(t)
@@ -464,7 +455,6 @@ func TestHalfOnlineLossOfQuorumRecovery(t *testing.T) {
 	listenerReg := listenerutil.NewListenerRegistry()
 	defer listenerReg.Close()
 
-	st := cluster.MakeTestingClusterSettings()
 	// Test cluster contains 3 nodes that we would turn into a single node
 	// cluster using loss of quorum recovery. To do that, we will terminate
 	// two nodes and run recovery on remaining one. Restarting node should
@@ -479,7 +469,6 @@ func TestHalfOnlineLossOfQuorumRecovery(t *testing.T) {
 	sa := make(map[int]base.TestServerArgs)
 	for i := 0; i < 3; i++ {
 		sa[i] = base.TestServerArgs{
-			Settings: st,
 			Knobs: base.TestingKnobs{
 				Server: &server.TestingKnobs{
 					StickyVFSRegistry: fs.NewStickyRegistry(),

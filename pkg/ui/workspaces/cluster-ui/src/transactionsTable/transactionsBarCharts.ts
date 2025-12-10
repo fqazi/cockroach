@@ -31,25 +31,14 @@ const bytesReadBar = [
 const bytesReadStdDev = bar(cx("bytes-read-dev"), (d: Transaction) =>
   stdDevLong(d.stats_data.stats.bytes_read, d.stats_data.stats.count),
 );
-const serviceLatencyBar = [
+const latencyBar = [
   bar(
     "bar-chart__service-lat",
     (d: Transaction) => d.stats_data.stats.service_lat.mean,
   ),
 ];
-const serviceLatencyStdDev = bar(
-  cx("bar-chart__overall-dev"),
-  (d: Transaction) =>
-    stdDevLong(d.stats_data.stats.service_lat, d.stats_data.stats.count),
-);
-const commitLatencyBar = [
-  bar(
-    "bar-chart__commit-lat",
-    (d: Transaction) => d.stats_data.stats.commit_lat.mean,
-  ),
-];
-const commitLatencyStdDev = bar("bar-chart__commit-dev", (d: Transaction) =>
-  stdDevLong(d.stats_data.stats.commit_lat, d.stats_data.stats.count),
+const latencyStdDev = bar(cx("bar-chart__overall-dev"), (d: Transaction) =>
+  stdDevLong(d.stats_data.stats.service_lat, d.stats_data.stats.count),
 );
 const contentionBar = [
   bar(
@@ -74,30 +63,6 @@ const cpuStdDev = bar(cx("cpu-dev"), (d: Transaction) =>
     d.stats_data.stats.exec_stats.cpu_sql_nanos,
     d.stats_data.stats.exec_stats.count,
   ),
-);
-const kvCPUTimeBar = [
-  bar(
-    "kv-cpu-time",
-    (d: TransactionInfo) => d.stats_data.stats.kv_cpu_time_nanos?.mean,
-  ),
-];
-const kvCPUTimeStdDev = bar(cx("kv-cpu-time-dev"), (d: Transaction) =>
-  stdDevLong(d.stats_data.stats.kv_cpu_time_nanos, d.stats_data.stats.count),
-);
-const admissionWaitTimeBar = [
-  bar(
-    "admission-wait-time",
-    (d: TransactionInfo) =>
-      d.stats_data.stats.exec_stats.admission_wait_time?.mean,
-  ),
-];
-const admissionWaitTimeStdDev = bar(
-  cx("admission-wait-time-dev"),
-  (d: Transaction) =>
-    stdDevLong(
-      d.stats_data.stats.exec_stats.admission_wait_time,
-      d.stats_data.stats.exec_stats.count,
-    ),
 );
 const maxMemUsageBar = [
   bar("max-mem-usage", (d: TransactionInfo) =>
@@ -138,17 +103,11 @@ export const transactionsBytesReadBarChart = barChartFactory(
   Bytes,
   bytesReadStdDev,
 );
-export const transactionsServiceLatencyBarChart = barChartFactory(
+export const transactionsLatencyBarChart = barChartFactory(
   "grey",
-  serviceLatencyBar,
+  latencyBar,
   v => Duration(v * 1e9),
-  serviceLatencyStdDev,
-);
-export const transactionsCommitLatencyBarChart = barChartFactory(
-  "grey",
-  commitLatencyBar,
-  v => Duration(v * 1e9),
-  commitLatencyStdDev,
+  latencyStdDev,
 );
 export const transactionsContentionBarChart = barChartFactory(
   "grey",
@@ -161,18 +120,6 @@ export const transactionsCPUBarChart = barChartFactory(
   cpuBar,
   v => Duration(v),
   cpuStdDev,
-);
-export const transactionsAdmissionWaitTimeBarChart = barChartFactory(
-  "grey",
-  admissionWaitTimeBar,
-  v => Duration(v),
-  admissionWaitTimeStdDev,
-);
-export const transactionsKVCPUTimeBarChart = barChartFactory(
-  "grey",
-  kvCPUTimeBar,
-  v => Duration(v),
-  kvCPUTimeStdDev,
 );
 export const transactionsMaxMemUsageBarChart = barChartFactory(
   "grey",

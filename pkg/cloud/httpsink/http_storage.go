@@ -31,7 +31,6 @@ import (
 func parseHTTPURL(uri *url.URL) (cloudpb.ExternalStorage, error) {
 	conf := cloudpb.ExternalStorage{}
 	conf.Provider = cloudpb.ExternalStorageProvider_http
-	conf.URI = uri.String()
 	conf.HttpPath.BaseUri = uri.String()
 	return conf, nil
 }
@@ -42,7 +41,6 @@ type httpStorage struct {
 	hosts    []string
 	settings *cluster.Settings
 	ioConf   base.ExternalIODirConfig
-	uri      string // original URI used to construct this storage
 }
 
 var _ cloud.ExternalStorage = &httpStorage{}
@@ -88,7 +86,6 @@ func MakeHTTPStorage(
 		hosts:    strings.Split(uri.Host, ","),
 		settings: args.Settings,
 		ioConf:   args.IOConf,
-		uri:      dest.URI,
 	}, nil
 }
 
@@ -98,7 +95,6 @@ func (h *httpStorage) Conf() cloudpb.ExternalStorage {
 		HttpPath: cloudpb.ExternalStorage_Http{
 			BaseUri: h.base.String(),
 		},
-		URI: h.uri,
 	}
 }
 
@@ -126,7 +122,7 @@ func (h *httpStorage) openStreamAt(
 			return resp, err
 		}
 
-		log.Dev.Errorf(ctx, "HTTP:Req error: err=%s (attempt %d)", err, attempt)
+		log.Errorf(ctx, "HTTP:Req error: err=%s (attempt %d)", err, attempt)
 
 		if !errors.HasType(err, (*retryableHTTPError)(nil)) {
 			return nil, err
@@ -187,9 +183,6 @@ func (h *httpStorage) Delete(ctx context.Context, basename string) error {
 	return timeutil.RunWithTimeout(ctx, redact.Sprintf("DELETE %s", basename),
 		cloud.Timeout.Get(&h.settings.SV), func(ctx context.Context) error {
 			_, err := h.reqNoBody(ctx, "DELETE", basename, nil)
-			if errors.Is(err, cloud.ErrFileDoesNotExist) {
-				return nil
-			}
 			return err
 		})
 }
@@ -223,10 +216,6 @@ func (h *httpStorage) reqNoBody(
 		resp.Body.Close()
 	}
 	return resp, err
-}
-
-func isNotFoundErr(resp *http.Response) bool {
-	return resp != nil && resp.StatusCode == http.StatusNotFound
 }
 
 func (h *httpStorage) req(
@@ -267,17 +256,22 @@ func (h *httpStorage) req(
 
 	switch resp.StatusCode {
 	case 200, 201, 204, 206:
-		// Pass.
-		return resp, nil
+	// Pass.
 	default:
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		err := errors.Errorf("error response from server: %s %q", resp.Status, body)
-		if isNotFoundErr(resp) {
-			return nil, cloud.WrapErrFileDoesNotExist(err, "http storage file does not exist")
+		if err != nil && resp.StatusCode == 404 {
+			// nolint:errwrap
+			err = errors.Wrapf(
+				errors.Wrap(cloud.ErrFileDoesNotExist, "http storage file does not exist"),
+				"%v",
+				err.Error(),
+			)
 		}
 		return nil, err
 	}
+	return resp, nil
 }
 
 func init() {

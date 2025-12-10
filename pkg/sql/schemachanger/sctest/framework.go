@@ -8,17 +8,14 @@ package sctest
 import (
 	"context"
 	gosql "database/sql"
-	"flag"
 	"fmt"
 	"math"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -446,7 +443,6 @@ func (e *stageExecStmt) Exec(
 		if len(stmt) == 0 {
 			continue
 		}
-		t.Logf("Starting execution of statment: %+v", stmt)
 		// Bind any variables for the statement.
 		boundSQL := os.Expand(stmt, func(s string) string {
 			switch s {
@@ -631,34 +627,6 @@ type CumulativeTestCaseSpec struct {
 	// DatabaseName contains the name of the database on which the schema change
 	// is applied.
 	DatabaseName string
-
-	// CreateDatabaseStmt contains the CREATE DATABASE statement for the database.
-	CreateDatabaseStmt string
-}
-
-// sampleAllPostCommitRevertible samples all post commit revertible stages, and
-// limits testing to maxStagesToTest if *runAllCumulative is not set.
-func sampleAllPostCommitRevertible(testCases []CumulativeTestCaseSpec) []CumulativeTestCaseSpec {
-	newTestCases := make([]CumulativeTestCaseSpec, 0, len(testCases))
-	for _, tc := range testCases {
-		if tc.Phase != scop.PostCommitNonRevertiblePhase {
-			newTestCases = append(newTestCases, tc)
-		}
-	}
-	return sampleAllPostCommitStages(newTestCases)
-}
-
-// sampleAllPostCommitStages samples all post-commit stages, and limits these to
-// maxStagesToTest if *runAllCumulative is not set.
-func sampleAllPostCommitStages(testCases []CumulativeTestCaseSpec) []CumulativeTestCaseSpec {
-	if len(testCases) > maxStagesToTest && !(*runAllCumulative) {
-		// Shuffle and pick up to maxStagesToTest.
-		rand.Shuffle(len(testCases), func(i, j int) {
-			testCases[i], testCases[j] = testCases[j], testCases[i]
-		})
-		testCases = testCases[:maxStagesToTest]
-	}
-	return testCases
 }
 
 func (cs CumulativeTestCaseSpec) run(t *testing.T, fn func(t *testing.T)) bool {
@@ -674,21 +642,13 @@ func (cs CumulativeTestCaseSpec) run(t *testing.T, fn func(t *testing.T)) bool {
 	return t.Run(fmt.Sprintf("%s_stage_%d_of_%d", prefix, cs.StageOrdinal, cs.StagesCount), fn)
 }
 
-// / runAllCumulative used to disable sampling for cumulative tests.
-var runAllCumulative = flag.Bool(
-	"run-all-cumulative", false,
-	"if true, run all cumulative instead of a random subset",
-)
-
 // cumulativeTestForEachPostCommitStage invokes `tf` once for each stage in the
 // PostCommitPhase.
 func cumulativeTestForEachPostCommitStage(
 	t *testing.T,
 	relTestCaseDir string,
 	factory TestServerFactory,
-	prepFn func(t *testing.T, spec CumulativeTestSpec, dbName string),
 	tf func(t *testing.T, spec CumulativeTestCaseSpec),
-	samplingFn func([]CumulativeTestCaseSpec) []CumulativeTestCaseSpec,
 ) {
 	testFunc := func(t *testing.T, spec CumulativeTestSpec) {
 		// Skip this test if any of the stmts is not fully supported.
@@ -698,7 +658,6 @@ func cumulativeTestForEachPostCommitStage(
 		var postCommitCount, postCommitNonRevertibleCount int
 		var after [][]string
 		var dbName string
-		var createDatabaseStmt string
 		prepfn := func(db *gosql.DB, p scplan.Plan) {
 			for _, s := range p.Stages {
 				switch s.Phase {
@@ -713,8 +672,6 @@ func cumulativeTestForEachPostCommitStage(
 			dbName, ok = maybeGetDatabaseForIDs(t, tdb, screl.AllTargetStateDescIDs(p.TargetState))
 			if ok {
 				tdb.Exec(t, fmt.Sprintf("USE %q", dbName))
-				res := tdb.QueryStr(t, fmt.Sprintf("SELECT create_statement FROM [SHOW CREATE DATABASE %q]", dbName))
-				createDatabaseStmt = res[0][0]
 			}
 			after = tdb.QueryStr(t, fetchDescriptorStateQuery)
 		}
@@ -736,7 +693,6 @@ func cumulativeTestForEachPostCommitStage(
 				StagesCount:        postCommitCount,
 				After:              after,
 				DatabaseName:       dbName,
-				CreateDatabaseStmt: createDatabaseStmt,
 			})
 		}
 		for stageOrdinal := 1; stageOrdinal <= postCommitNonRevertibleCount; stageOrdinal++ {
@@ -747,17 +703,9 @@ func cumulativeTestForEachPostCommitStage(
 				StagesCount:        postCommitNonRevertibleCount,
 				After:              after,
 				DatabaseName:       dbName,
-				CreateDatabaseStmt: createDatabaseStmt,
 			})
 		}
 		var hasFailed bool
-		if prepFn != nil {
-			prepFn(t, spec, dbName)
-		}
-		// If sampling is enabled limit the number of stages executed.
-		if samplingFn != nil {
-			testCases = samplingFn(testCases)
-		}
 		for _, tc := range testCases {
 			fn := func(t *testing.T) {
 				tf(t, tc)
@@ -860,13 +808,8 @@ func withPostCommitPlanAfterSchemaChange(
 	ctx := context.Background()
 	var processOnce sync.Once
 	var postCommitPlan scplan.Plan
-	var knobEnabled atomic.Bool
 	factory.WithSchemaChangerKnobs(&scexec.TestingKnobs{
 		BeforeStage: func(p scplan.Plan, _ int) error {
-			// Only enabled after setup.
-			if !knobEnabled.Load() {
-				return nil
-			}
 			if p.Params.ExecutionPhase >= scop.PostCommitPhase {
 				processOnce.Do(func() { postCommitPlan = p })
 			}
@@ -874,7 +817,6 @@ func withPostCommitPlanAfterSchemaChange(
 		},
 	}).Run(context.Background(), t, func(_ serverutils.TestServerInterface, db *gosql.DB) {
 		require.NoError(t, setupSchemaChange(ctx, t, spec, db))
-		knobEnabled.Swap(true)
 		require.NoError(t, executeSchemaChangeTxn(ctx, t, spec, db))
 		waitForSchemaChangesToFinish(t, sqlutils.MakeSQLRunner(db))
 		fn(db, postCommitPlan)
@@ -889,8 +831,9 @@ func setupSchemaChange(
 
 	tdb := sqlutils.MakeSQLRunner(db)
 
-	// Execute the setup statements with the declarative schema changer, we will
-	// disable the knobs before this.
+	// Execute the setup statements with the legacy schema changer so that the
+	// declarative schema changer testing knobs don't get used.
+	tdb.Exec(t, "SET use_declarative_schema_changer = 'off'")
 	for i, stmt := range spec.Setup {
 		if _, err := tdb.DB.ExecContext(ctx, stmt.SQL); err != nil {
 			// nolint:errcmp
@@ -933,10 +876,6 @@ func executeSchemaChangeTxn(
 			}
 			var tx *gosql.Tx
 			tx, err = conn.BeginTx(ctx, nil)
-			if err != nil {
-				return err
-			}
-			_, err = tx.ExecContext(ctx, "SET LOCAL autocommit_before_ddl = false")
 			if err != nil {
 				return err
 			}
@@ -1003,32 +942,9 @@ func waitForSchemaChangesToSucceed(t *testing.T, tdb *sqlutils.SQLRunner) {
 }
 
 func waitForSchemaChangesToFinish(t *testing.T, tdb *sqlutils.SQLRunner) {
-	// Schema changes in more complex tests can be slower, so give them
-	// a lot more headroom to complete.
-	old := tdb.SucceedsSoonDuration
-	tdb.SucceedsSoonDuration = time.Minute * 2
-	defer func() {
-		tdb.SucceedsSoonDuration = old
-	}()
 	tdb.CheckQueryResultsRetry(
 		t, schemaChangeWaitQuery(`('succeeded', 'failed')`), [][]string{},
 	)
-}
-
-// hasLatestSchemaChangeSucceededWithMaxJobID detects if the latest schema change
-// has changed. The function requires the last observed maximum job ID and takes
-// advantage of the increasing nature of the ID (since the upper bits encode
-// the current time). Note: We could have used `finished`, but it does not encode
-// enough precision.
-func hasLatestSchemaChangeSucceededWithMaxJobID(
-	t *testing.T, tdb *sqlutils.SQLRunner, maxJobID int64,
-) (succeeded bool, jobExists bool) {
-	result := tdb.QueryStr(t, fmt.Sprintf(
-		`SELECT status FROM [SHOW JOBS] WHERE job_type IN ('%s') AND job_id > $1 ORDER BY finished DESC, job_id DESC LIMIT 1`,
-		jobspb.TypeNewSchemaChange,
-	),
-		maxJobID)
-	return len(result) == 0 || result[0][0] == "succeeded", len(result) > 0
 }
 
 func hasLatestSchemaChangeSucceeded(t *testing.T, tdb *sqlutils.SQLRunner) bool {
@@ -1036,7 +952,7 @@ func hasLatestSchemaChangeSucceeded(t *testing.T, tdb *sqlutils.SQLRunner) bool 
 		`SELECT status FROM [SHOW JOBS] WHERE job_type IN ('%s') ORDER BY finished DESC, job_id DESC LIMIT 1`,
 		jobspb.TypeNewSchemaChange,
 	))
-	return len(result) == 0 || result[0][0] == "succeeded"
+	return result[0][0] == "succeeded"
 }
 
 func schemaChangeWaitQuery(statusInString string) string {

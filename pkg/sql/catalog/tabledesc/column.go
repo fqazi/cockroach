@@ -15,8 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/fetchpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemaexpr"
-	"github.com/cockroachdb/cockroach/pkg/sql/parserutils"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/idxtype"
+	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -111,7 +110,7 @@ func (w column) HasNullDefault() bool {
 	// that the default expressions is not parsable. Somebody with a context
 	// who needs to use it will be in a better place to log it. If it is not
 	// parsable, it is not NULL.
-	defaultExpr, _ := parserutils.ParseExpr(w.GetDefaultExpr())
+	defaultExpr, _ := parser.ParseExpr(w.GetDefaultExpr())
 	return defaultExpr == tree.DNull
 }
 
@@ -186,7 +185,7 @@ func (w column) NumUsesFunctions() int {
 // GetUsesFunctionID returns the ID of a function used by this column at the
 // given ordinal.
 func (w column) GetUsesFunctionID(ordinal int) descpb.ID {
-	return w.desc.UsesFunctionIds[ordinal]
+	return w.desc.UsesSequenceIds[ordinal]
 }
 
 // NumOwnsSequences returns the number of sequences owned by this column.
@@ -334,9 +333,8 @@ func newColumnCache(desc *descpb.TableDescriptor, mutations *mutationCache) *col
 	numMutations := len(mutations.columns)
 	numDeletable := numPublic + numMutations
 	for i := range colinfo.AllSystemColumnDescs {
-		desc := colinfo.AllSystemColumnDescs[i]
 		col := column{
-			desc:    &desc,
+			desc:    &colinfo.AllSystemColumnDescs[i],
 			ordinal: numDeletable + i,
 		}
 		backingStructs = append(backingStructs, col)
@@ -438,7 +436,7 @@ func makeIndexColumnCache(idx *descpb.IndexDescriptor, all []catalog.Column) (ic
 	// code needs to tolerate any descriptor state (like having no key columns, or
 	// having uninitialized column IDs).
 	var invertedColumnID descpb.ColumnID
-	if nKey > 0 && idx.Type == idxtype.INVERTED {
+	if nKey > 0 && idx.Type == descpb.IndexDescriptor_INVERTED {
 		invertedColumnID = idx.InvertedColumnID()
 	}
 	var compositeIDs catalog.TableColSet

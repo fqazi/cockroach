@@ -114,12 +114,10 @@ type s3Storage struct {
 	bucket         *string
 	conf           *cloudpb.ExternalStorage_S3
 	ioConf         base.ExternalIODirConfig
-	middleware     cloud.HttpMiddleware
 	settings       *cluster.Settings
 	prefix         string
 	metrics        *cloud.Metrics
 	storageOptions cloud.ExternalStorageOptions
-	uri            string // original URI used to construct this storage
 
 	opts   s3ClientConfig
 	cached *s3Client
@@ -333,7 +331,6 @@ func parseS3URL(uri *url.URL) (cloudpb.ExternalStorage, error) {
 	}
 
 	conf.Provider = cloudpb.ExternalStorageProvider_s3
-	conf.URI = uri.String()
 
 	// TODO(rui): currently the value of AssumeRoleParam is written into both of
 	// the RoleARN fields and the RoleProvider fields in order to support a mixed
@@ -515,13 +512,11 @@ func MakeS3Storage(
 		bucket:         aws.String(conf.Bucket),
 		conf:           conf,
 		ioConf:         args.IOConf,
-		middleware:     args.HttpMiddleware,
 		prefix:         conf.Prefix,
 		metrics:        args.MetricsRecorder,
 		settings:       args.Settings,
 		opts:           clientConfig(conf),
 		storageOptions: args.ExternalStorageOptions(),
-		uri:            dest.URI,
 	}
 
 	reuse := reuseSession.Get(&args.Settings.SV)
@@ -556,7 +551,7 @@ type awsLogAdapter struct {
 }
 
 func (l *awsLogAdapter) Logf(_ logging.Classification, format string, v ...interface{}) {
-	log.Dev.Infof(l.ctx, format, v...)
+	log.Infof(l.ctx, format, v...)
 }
 
 func newLogAdapter(ctx context.Context) *awsLogAdapter {
@@ -614,7 +609,6 @@ func (s *s3Storage) newClient(ctx context.Context) (s3Client, string, error) {
 			Client:             s.storageOptions.ClientName,
 			Cloud:              "aws",
 			InsecureSkipVerify: s.opts.skipTLSVerify,
-			HttpMiddleware:     s.middleware,
 		})
 	if err != nil {
 		return s3Client{}, "", err
@@ -643,11 +637,6 @@ func (s *s3Storage) newClient(ctx context.Context) (s3Client, string, error) {
 	cfg, err := config.LoadDefaultConfig(ctx, loadOptions...)
 	if err != nil {
 		return s3Client{}, "", errors.Wrap(err, "could not initialize an aws config")
-	}
-
-	if s.opts.skipChecksum {
-		cfg.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
-		cfg.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 	}
 
 	var endpointURI string
@@ -750,7 +739,6 @@ func (s *s3Storage) Conf() cloudpb.ExternalStorage {
 	return cloudpb.ExternalStorage{
 		Provider: cloudpb.ExternalStorageProvider_s3,
 		S3Config: s.conf,
-		URI:      s.uri,
 	}
 }
 
@@ -917,7 +905,7 @@ func (s *s3Storage) ReadFile(
 			}
 		} else {
 			if stream.ContentLength == nil {
-				log.Dev.Warningf(ctx, "Content length missing from S3 GetObject (is this actually s3?); attempting to lookup size with separate call...")
+				log.Warningf(ctx, "Content length missing from S3 GetObject (is this actually s3?); attempting to lookup size with separate call...")
 				// Some not-actually-s3 services may not set it, or set it in a way the
 				// official SDK finds it (e.g. if they don't use the expected checksummer)
 				// so try a Size() request.

@@ -38,11 +38,6 @@ import (
 func (mb *mutationBuilder) buildRowLevelBeforeTriggers(
 	eventType tree.TriggerEventType, cascade bool,
 ) bool {
-	if mb.b.evalCtx.SessionData().UseImprovedRoutineDepsTriggersAndComputedCols {
-		// Avoid adding transitive dependencies that are already tracked in the
-		// trigger object.
-		defer mb.b.DisableSchemaDepTracking()()
-	}
 	var eventsToMatch tree.TriggerEventTypeSet
 	eventsToMatch.Add(eventType)
 	triggers := cat.GetRowLevelTriggers(mb.tab, tree.TriggerActionTimeBefore, eventsToMatch)
@@ -85,7 +80,7 @@ func (mb *mutationBuilder) buildRowLevelBeforeTriggers(
 	canModifyRows := true
 	for i := range triggers {
 		trigger := triggers[i]
-		triggerScope.expr = f.ConstructBarrier(triggerScope.expr, false /* leakproofPermeable */)
+		triggerScope.expr = f.ConstructBarrier(triggerScope.expr)
 
 		// Resolve the trigger function and build the invocation.
 		args := mb.buildTriggerFunctionArgs(trigger, eventType, oldColID, newColID)
@@ -138,7 +133,7 @@ func (mb *mutationBuilder) buildRowLevelBeforeTriggers(
 			newColID = triggerFnColID
 		}
 	}
-	triggerScope.expr = f.ConstructBarrier(triggerScope.expr, false /* leakproofPermeable */)
+	triggerScope.expr = f.ConstructBarrier(triggerScope.expr)
 
 	// INSERT and UPDATE triggers can modify the row to be inserted or updated
 	// via the return value of the trigger function.
@@ -225,13 +220,11 @@ func (mb *mutationBuilder) buildTriggerFunctionArgs(
 	tgOp := tree.NewDString(eventType.String())
 	tgRelID := tree.NewDOid(oid.Oid(mb.tab.ID()))
 	tgTableName := tree.NewDString(string(mb.tab.Name()))
-	schema, err := mb.b.catalog.ResolveSchemaByID(
-		mb.b.ctx, cat.Flags{}, cat.StableID(mb.tab.GetSchemaID()),
-	)
+	fqName, err := mb.b.catalog.FullyQualifiedName(mb.b.ctx, mb.tab)
 	if err != nil {
 		panic(err)
 	}
-	tgTableSchema := tree.NewDString(schema.Name().Schema())
+	tgTableSchema := tree.NewDString(fqName.Schema())
 	tgNumArgs := tree.NewDInt(tree.DInt(len(trigger.FuncArgs())))
 	tgArgV := tree.NewDArray(types.String)
 	for _, arg := range trigger.FuncArgs() {
@@ -247,7 +240,7 @@ func (mb *mutationBuilder) buildTriggerFunctionArgs(
 		f.ConstructConstVal(tgWhen, types.String),        // TG_WHEN
 		f.ConstructConstVal(tgLevel, types.String),       // TG_LEVEL
 		f.ConstructConstVal(tgOp, types.String),          // TG_OP
-		f.ConstructConstVal(tgRelID, types.Oid),          // TG_RELID
+		f.ConstructConstVal(tgRelID, types.Oid),          // TG_RELIID
 		f.ConstructConstVal(tgTableName, types.String),   // TG_RELNAME
 		f.ConstructConstVal(tgTableName, types.String),   // TG_TABLE_NAME
 		f.ConstructConstVal(tgTableSchema, types.String), // TG_TABLE_SCHEMA
@@ -362,7 +355,7 @@ func (mb *mutationBuilder) ensureNoRowsModifiedByTrigger(
 		f.ConstructNull(types.Int),
 	)
 	mb.b.projectColWithMetadataName(triggerScope, "check-rows", types.Int, check)
-	triggerScope.expr = f.ConstructBarrier(triggerScope.expr, false /* leakproofPermeable */)
+	triggerScope.expr = f.ConstructBarrier(triggerScope.expr)
 }
 
 // recomputeComputedColsForTrigger resets all computed columns and builds new
@@ -665,13 +658,11 @@ func (tb *rowLevelAfterTriggerBuilder) Build(
 			tgLevel := tree.NewDString("ROW")
 			tgRelID := tree.NewDOid(oid.Oid(tb.mutatedTable.ID()))
 			tgTableName := tree.NewDString(string(tb.mutatedTable.Name()))
-			schema, err := b.catalog.ResolveSchemaByID(
-				b.ctx, cat.Flags{}, cat.StableID(tb.mutatedTable.GetSchemaID()),
-			)
+			fqName, err := b.catalog.FullyQualifiedName(ctx, tb.mutatedTable)
 			if err != nil {
 				panic(err)
 			}
-			tgTableSchema := tree.NewDString(schema.Name().Schema())
+			tgTableSchema := tree.NewDString(fqName.Schema())
 			var tgOp opt.ScalarExpr
 			switch tb.mutation {
 			case opt.InsertOp:
@@ -694,7 +685,7 @@ func (tb *rowLevelAfterTriggerBuilder) Build(
 			for i, trigger := range tb.triggers {
 				if i > 0 {
 					// No need to place a barrier below the first trigger.
-					triggerScope.expr = f.ConstructBarrier(triggerScope.expr, false /* leakproofPermeable */)
+					triggerScope.expr = f.ConstructBarrier(triggerScope.expr)
 				}
 
 				tgName := tree.NewDName(string(trigger.Name()))
@@ -713,7 +704,7 @@ func (tb *rowLevelAfterTriggerBuilder) Build(
 					f.ConstructConstVal(tgWhen, types.String),  // TG_WHEN
 					f.ConstructConstVal(tgLevel, types.String), // TG_LEVEL
 					tgOp,                                    // TG_OP
-					f.ConstructConstVal(tgRelID, types.Oid), // TG_RELID
+					f.ConstructConstVal(tgRelID, types.Oid), // TG_RELIID
 					f.ConstructConstVal(tgTableName, types.String),   // TG_RELNAME
 					f.ConstructConstVal(tgTableName, types.String),   // TG_TABLE_NAME
 					f.ConstructConstVal(tgTableSchema, types.String), // TG_TABLE_SCHEMA
@@ -765,7 +756,7 @@ func (tb *rowLevelAfterTriggerBuilder) Build(
 			}
 			// Always wrap the expression in a barrier, or else the projections will be
 			// pruned and the triggers will not be executed.
-			return f.ConstructBarrier(triggerScope.expr, false /* leakproofPermeable */)
+			return f.ConstructBarrier(triggerScope.expr)
 		})
 }
 
@@ -796,7 +787,7 @@ func (b *Builder) buildTriggerFunction(
 	triggerFuncScope := b.allocScope()
 	funcRef := &tree.FunctionOID{OID: catid.FuncIDToOID(catid.DescID(trigger.FuncID()))}
 	funcExpr := tree.FuncExpr{Func: tree.ResolvableFunctionReference{FunctionReference: funcRef}}
-	triggerFuncScope.resolveType(&funcExpr, types.AnyElement)
+	triggerFuncScope.resolveType(&funcExpr, types.Any)
 	resolvedDef := funcExpr.Func.FunctionReference.(*tree.ResolvedFunctionDefinition)
 	o := funcExpr.ResolvedOverload()
 
@@ -848,14 +839,12 @@ func (b *Builder) buildTriggerFunction(
 		panic(err)
 	}
 	plBuilder := newPLpgSQLBuilder(
-		b, basePLOptions().WithIsTriggerFn(), resolvedDef.Name, stmt.AST.Label, nil, /* colRefs */
-		params, tableTyp, nil /* outScope */, 0, /* resultBufferID */
+		b, resolvedDef.Name, stmt.AST.Label, nil /* colRefs */, params, tableTyp,
+		false /* isProc */, true /* buildSQL */, nil, /* outScope */
 	)
 	stmtScope := plBuilder.buildRootBlock(stmt.AST, triggerFuncScope, params)
 	udfDef.Body = []memo.RelExpr{stmtScope.expr}
 	udfDef.BodyProps = []*physical.Required{stmtScope.makePhysicalProps()}
-	// Placeholder that ensure the length of BodyTags is the same as Body.
-	udfDef.BodyTags = make([]string, 1)
 
 	return f.ConstructUDFCall(args, &memo.UDFCallPrivate{Def: udfDef}), resolvedDef
 }

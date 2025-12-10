@@ -19,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"github.com/lib/pq/oid"
 )
 
@@ -72,8 +71,7 @@ func (w *walkCtx) newExpression(expr string) (*scpb.Expression, error) {
 		for _, si := range seqIdents {
 			if !si.IsByID() {
 				panic(scerrors.NotImplementedErrorf(nil, /* n */
-					redact.Sprintf("sequence %q referenced by name", si.SeqName),
-				))
+					"sequence %q referenced by name", si.SeqName))
 			}
 			seqIDs.Add(descpb.ID(si.SeqID))
 		}
@@ -140,6 +138,7 @@ func NewElementCreationMetadata(
 	clusterVersion clusterversion.ClusterVersion,
 ) *scpb.ElementCreationMetadata {
 	return &scpb.ElementCreationMetadata{
-		In_26_1OrLater: clusterVersion.IsActive(clusterversion.V26_1),
+		In_23_1OrLater: true,
+		In_24_3OrLater: clusterVersion.IsActive(clusterversion.V24_3),
 	}
 }

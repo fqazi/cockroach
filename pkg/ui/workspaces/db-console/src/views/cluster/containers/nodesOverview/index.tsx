@@ -101,7 +101,6 @@ export interface NodeStatusRow {
   usedMemory: number;
   availableMemory: number;
   numCpus: number;
-  numVcpus?: number;
   version?: string;
   /*
    * status is a union of Node statuses and two artificial statuses
@@ -254,11 +253,6 @@ export class NodeList extends React.Component<LiveNodeListProps> {
       },
       sorter: (a: NodeStatusRow, b: NodeStatusRow) => {
         if (!isUndefined(a.nodeId) && !isUndefined(b.nodeId)) {
-          // If nodeId is defined but regionId is not, this means that there is only
-          // a single region. In this case, sort the by nodeId.
-          if (isUndefined(a.region) && isUndefined(b.region)) {
-            return a.nodeId - b.nodeId;
-          }
           return 0;
         }
         if (a.region < b.region) {
@@ -279,7 +273,13 @@ export class NodeList extends React.Component<LiveNodeListProps> {
         if (isUndefined(a.nodesCount) || isUndefined(b.nodesCount)) {
           return 0;
         }
-        return a.nodesCount - b.nodesCount;
+        if (a.nodesCount < b.nodesCount) {
+          return -1;
+        }
+        if (a.nodesCount > b.nodesCount) {
+          return 1;
+        }
+        return 0;
       },
       render: (_text: string, record: NodeStatusRow) => record.nodesCount,
       sortDirections: ["ascend", "descend"],
@@ -291,7 +291,7 @@ export class NodeList extends React.Component<LiveNodeListProps> {
       dataIndex: "uptime",
       render: formatWithPossibleStaleIndicator,
       title: <UptimeTooltip>Uptime</UptimeTooltip>,
-      sorter: false,
+      sorter: true,
       className: "column--align-right",
       width: "10%",
       ellipsis: true,
@@ -301,7 +301,7 @@ export class NodeList extends React.Component<LiveNodeListProps> {
       dataIndex: "replicas",
       render: formatWithPossibleStaleIndicator,
       title: <ReplicasTooltip>Replicas</ReplicasTooltip>,
-      sorter: (a: NodeStatusRow, b: NodeStatusRow) => a.replicas - b.replicas,
+      sorter: true,
       className: "column--align-right",
       width: "10%",
     },
@@ -337,10 +337,10 @@ export class NodeList extends React.Component<LiveNodeListProps> {
       width: "10%",
     },
     {
-      key: "vCpus",
+      key: "numCpus",
       title: <CPUsTooltip>vCPUs</CPUsTooltip>,
-      dataIndex: "numVcpus",
-      sorter: (a: NodeStatusRow, b: NodeStatusRow) => a.numVcpus - b.numVcpus,
+      dataIndex: "numCpus",
+      sorter: true,
       className: "column--align-right",
       width: "8%",
     },
@@ -348,7 +348,7 @@ export class NodeList extends React.Component<LiveNodeListProps> {
       key: "version",
       dataIndex: "version",
       title: <VersionTooltip>Version</VersionTooltip>,
-      sorter: false,
+      sorter: true,
       width: "8%",
       ellipsis: true,
     },
@@ -561,7 +561,6 @@ export const liveNodesTableDataSelector = createSelector(
                 usedMemory: ns.metrics[MetricConstants.rss],
                 availableMemory: FixLong(ns.total_system_memory).toNumber(),
                 numCpus: ns.num_cpus,
-                numVcpus: ns.num_vcpus,
                 version: ns.build_info.tag,
                 status:
                   nodesSummary.livenessStatusByNodeID[ns.desc.node_id] ||
@@ -615,7 +614,6 @@ export const liveNodesTableDataSelector = createSelector(
               usedMemory: sum(nestedRows.map(nr => nr.usedMemory)),
               availableMemory: sum(nestedRows.map(nr => nr.availableMemory)),
               numCpus: sum(nestedRows.map(nr => nr.numCpus)),
-              numVcpus: sum(nestedRows.map(nr => nr.numVcpus)),
               status: getLocalityStatus(),
               children: nestedRows,
             };

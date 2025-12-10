@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowcontrolpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowinspectpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/rac2"
@@ -22,9 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/raft"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/dd"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -87,7 +86,7 @@ func (rn *testRaftNode) SendPingRaftMuLocked(to roachpb.ReplicaID) bool {
 }
 
 func (rn *testRaftNode) SendMsgAppRaftMuLocked(
-	_ roachpb.ReplicaID, _ raft.LeadSlice,
+	_ roachpb.ReplicaID, _ raft.LogSlice,
 ) (raftpb.Message, bool) {
 	panic("unimplemented")
 }
@@ -139,9 +138,8 @@ type testRangeControllerFactory struct {
 func (f *testRangeControllerFactory) New(
 	ctx context.Context, state rangeControllerInitState,
 ) rac2.RangeController {
-	fmt.Fprintf(f.b,
-		" RangeControllerFactory.New(replicaSet=%s, leaseholder=%s, nextRaftIndex=%d, forceFlushIndex=%d)\n",
-		state.replicaSet, state.leaseholder, state.nextRaftIndex, state.forceFlushIndex)
+	fmt.Fprintf(f.b, " RangeControllerFactory.New(replicaSet=%s, leaseholder=%s, nextRaftIndex=%d)\n",
+		state.replicaSet, state.leaseholder, state.nextRaftIndex)
 	rc := &testRangeController{b: f.b, waited: true}
 	f.rcs = append(f.rcs, rc)
 	return rc
@@ -229,10 +227,6 @@ func (c *testRangeController) SetLeaseholderRaftMuLocked(
 	fmt.Fprintf(c.b, " RangeController.SetLeaseholderRaftMuLocked(%s)\n", replica)
 }
 
-func (c *testRangeController) ForceFlushIndexChangedLocked(ctx context.Context, index uint64) {
-	fmt.Fprintf(c.b, " RangeController.ForceFlushIndexChangedLocked(%d)\n", index)
-}
-
 func (c *testRangeController) CloseRaftMuLocked(ctx context.Context) {
 	fmt.Fprintf(c.b, " RangeController.CloseRaftMuLocked\n")
 }
@@ -244,11 +238,6 @@ func (c *testRangeController) InspectRaftMuLocked(ctx context.Context) kvflowins
 
 func (c *testRangeController) SendStreamStats(stats *rac2.RangeSendStreamStats) {
 	fmt.Fprintf(c.b, " RangeController.SendStreamStats\n")
-}
-
-func (c *testRangeController) StatusRaftMuLocked() serverpb.RACStatus {
-	fmt.Fprintf(c.b, " RangeController.StatusRaftMuLocked\n")
-	return serverpb.RACStatus{}
 }
 
 func makeTestMutexAsserter() rac2.ReplicaMutexAsserter {
@@ -289,7 +278,7 @@ func TestProcessorBasic(t *testing.T) {
 	var p *processorImpl
 	tenantID := roachpb.MustMakeTenantID(4)
 	muAsserter := makeTestMutexAsserter()
-	reset := func() {
+	reset := func(enabled kvflowcontrol.V2EnabledWhenLeaderLevel) {
 		b.Reset()
 		r = newTestReplica(&b)
 		sched = testRaftScheduler{b: &b}
@@ -308,10 +297,12 @@ func TestProcessorBasic(t *testing.T) {
 			ACWorkQueue:            &q,
 			MsgAppSender:           testMsgAppSender{},
 			RangeControllerFactory: &rcFactory,
+			EnabledWhenLeaderLevel: enabled,
 			EvalWaitMetrics:        rac2.NewEvalWaitMetrics(),
 		}).(*processorImpl)
-		fmt.Fprintf(&b, "n%s,s%s,r%s: replica=%s, tenant=%s\n",
-			p.opts.NodeID, p.opts.StoreID, p.opts.RangeID, p.opts.ReplicaID, tenantID)
+		fmt.Fprintf(&b, "n%s,s%s,r%s: replica=%s, tenant=%s, enabled-level=%s\n",
+			p.opts.NodeID, p.opts.StoreID, p.opts.RangeID, p.opts.ReplicaID, tenantID,
+			enabledLevelString(p.GetEnabledWhenLeader()))
 	}
 	builderStr := func() string {
 		str := b.String()
@@ -327,47 +318,56 @@ func TestProcessorBasic(t *testing.T) {
 
 			switch d.Cmd {
 			case "reset":
-				reset()
+				enabledLevel := parseEnabledLevel(t, d)
+				reset(enabledLevel)
 				return builderStr()
 
 			case "init-raft":
-				r.initRaft(rac2.LogMark{
-					Term:  dd.ScanArg[uint64](t, d, "log-term"),
-					Index: dd.ScanArg[uint64](t, d, "log-index"),
-				})
+				var mark rac2.LogMark
+				d.ScanArgs(t, "log-term", &mark.Term)
+				d.ScanArgs(t, "log-index", &mark.Index)
+				r.initRaft(mark)
 				unlockFunc := LockRaftMuAndReplicaMu(&muAsserter)
 				p.InitRaftLocked(ctx, r.raftNode, r.raftNode.mark)
 				unlockFunc()
 				return builderStr()
 
 			case "set-raft-state":
-				if id, ok := dd.ScanArgOpt[roachpb.ReplicaID](t, d, "leader"); ok {
-					r.raftNode.isLeader = id == replicaID
-					r.raftNode.leader = id
+				if d.HasArg("leader") {
+					var leaderID int
+					d.ScanArgs(t, "leader", &leaderID)
+					r.raftNode.isLeader = leaderID == replicaID
+					r.raftNode.leader = roachpb.ReplicaID(leaderID)
 				}
-				if idx, ok := dd.ScanArgOpt[uint64](t, d, "next-unstable-index"); ok {
-					r.raftNode.nextUnstableIndex = idx
+				if d.HasArg("next-unstable-index") {
+					var nextUnstableIndex uint64
+					d.ScanArgs(t, "next-unstable-index", &nextUnstableIndex)
+					r.raftNode.nextUnstableIndex = nextUnstableIndex
 				}
-				if term, ok := dd.ScanArgOpt[uint64](t, d, "term"); ok {
+				if d.HasArg("term") {
+					var term uint64
+					d.ScanArgs(t, "term", &term)
 					r.raftNode.term = term
 				}
-				if lh, ok := dd.ScanArgOpt[roachpb.ReplicaID](t, d, "leaseholder"); ok {
-					r.leaseholder = lh
+				if d.HasArg("leaseholder") {
+					var leaseholder int
+					d.ScanArgs(t, "leaseholder", &leaseholder)
+					r.leaseholder = roachpb.ReplicaID(leaseholder)
 				}
-				if term, ok := dd.ScanArgOpt[uint64](t, d, "log-term"); ok {
-					r.raftNode.setMark(t, rac2.LogMark{
-						Term:  term,
-						Index: dd.ScanArg[uint64](t, d, "log-index"),
-					})
+				if d.HasArg("log-term") {
+					var mark rac2.LogMark
+					d.ScanArgs(t, "log-term", &mark.Term)
+					d.ScanArgs(t, "log-index", &mark.Index)
+					r.raftNode.setMark(t, mark)
 				}
 				r.raftNode.print()
 				return builderStr()
 
 			case "synced-log":
-				p.SyncedLogStorage(ctx, rac2.LogMark{
-					Term:  dd.ScanArg[uint64](t, d, "term"),
-					Index: dd.ScanArg[uint64](t, d, "index"),
-				})
+				var mark rac2.LogMark
+				d.ScanArgs(t, "term", &mark.Term)
+				d.ScanArgs(t, "index", &mark.Index)
+				p.SyncedLogStorage(ctx, mark)
 				printLogTracker()
 				return builderStr()
 
@@ -375,6 +375,28 @@ func TestProcessorBasic(t *testing.T) {
 				unlockFunc := LockRaftMu(&muAsserter)
 				p.OnDestroyRaftMuLocked(ctx)
 				unlockFunc()
+				return builderStr()
+
+			case "set-enabled-level":
+				enabledLevel := parseEnabledLevel(t, d)
+				var state RaftNodeBasicState
+				if r.raftNode != nil {
+					state = RaftNodeBasicState{
+						Term:              r.raftNode.term,
+						IsLeader:          r.raftNode.isLeader,
+						Leader:            r.raftNode.leader,
+						NextUnstableIndex: r.raftNode.nextUnstableIndex,
+						Leaseholder:       r.leaseholder,
+					}
+				}
+				unlockFunc := LockRaftMu(&muAsserter)
+				p.SetEnabledWhenLeaderRaftMuLocked(ctx, enabledLevel, state)
+				unlockFunc()
+				return builderStr()
+
+			case "get-enabled-level":
+				enabledLevel := p.GetEnabledWhenLeader()
+				fmt.Fprintf(&b, "enabled-level: %s\n", enabledLevelString(enabledLevel))
 				return builderStr()
 
 			case "on-desc-changed":
@@ -389,11 +411,13 @@ func TestProcessorBasic(t *testing.T) {
 				// unused by processorImpl, and simply passed down to RangeController
 				// (which we've mocked out in this test).
 				var event rac2.RaftEvent
-				if arg, ok := dd.ScanArgOpt[string](t, d, "entries"); ok {
+				if d.HasArg("entries") {
+					var arg string
+					d.ScanArgs(t, "entries", &arg)
 					event.Entries = createEntries(t, parseEntryInfos(t, arg))
 				}
 				if len(event.Entries) > 0 {
-					event.Term = dd.ScanArg[uint64](t, d, "leader-term")
+					d.ScanArgs(t, "leader-term", &event.Term)
 				}
 				fmt.Fprintf(&b, "HandleRaftReady:\n")
 				var state RaftNodeBasicState
@@ -411,29 +435,31 @@ func TestProcessorBasic(t *testing.T) {
 				fmt.Fprintf(&b, ".....\n")
 				if len(event.Entries) > 0 {
 					fmt.Fprintf(&b, "AdmitRaftEntries:\n")
-					p.AdmitRaftEntriesRaftMuLocked(ctx, event)
+					destroyedOrV2 := p.AdmitRaftEntriesRaftMuLocked(ctx, event)
+					fmt.Fprintf(&b, "destroyed-or-leader-using-v2: %t\n", destroyedOrV2)
 					printLogTracker()
 				}
 				unlockFunc()
 				return builderStr()
 
 			case "enqueue-piggybacked-admitted":
-				from := dd.ScanArg[roachpb.ReplicaID](t, d, "from")
-				to := dd.ScanArg[roachpb.ReplicaID](t, d, "to")
-				require.Equal(t, p.opts.ReplicaID, to)
+				var from, to uint64
+				d.ScanArgs(t, "from", &from)
+				d.ScanArgs(t, "to", &to)
+				require.Equal(t, p.opts.ReplicaID, roachpb.ReplicaID(to))
 
-				term := dd.ScanArg[uint64](t, d, "term")
-				index := dd.ScanArg[uint64](t, d, "index")
-				pri := dd.ScanArg[raftpb.Priority](t, d, "pri")
-				require.Less(t, pri, raftpb.NumPriorities)
-
+				var term, index, pri int
+				d.ScanArgs(t, "term", &term)
+				d.ScanArgs(t, "index", &index)
+				d.ScanArgs(t, "pri", &pri)
+				require.Less(t, pri, int(raftpb.NumPriorities))
 				as := kvflowcontrolpb.AdmittedState{
-					Term:     term,
+					Term:     uint64(term),
 					Admitted: make([]uint64, raftpb.NumPriorities),
 				}
-				as.Admitted[pri] = index
+				as.Admitted[pri] = uint64(index)
 
-				p.EnqueuePiggybackedAdmittedAtLeader(from, as)
+				p.EnqueuePiggybackedAdmittedAtLeader(roachpb.ReplicaID(from), as)
 				return builderStr()
 
 			case "process-piggybacked-admitted":
@@ -443,11 +469,25 @@ func TestProcessorBasic(t *testing.T) {
 				return builderStr()
 
 			case "side-channel":
+				var usingV2 bool
+				if d.HasArg("v2") {
+					usingV2 = true
+				}
+				var leaderTerm uint64
+				d.ScanArgs(t, "leader-term", &leaderTerm)
+				var first, last uint64
+				d.ScanArgs(t, "first", &first)
+				d.ScanArgs(t, "last", &last)
+				var lowPriOverride bool
+				if d.HasArg("low-pri") {
+					lowPriOverride = true
+				}
 				info := SideChannelInfoUsingRaftMessageRequest{
-					LeaderTerm:     dd.ScanArg[uint64](t, d, "leader-term"),
-					First:          dd.ScanArg[uint64](t, d, "first"),
-					Last:           dd.ScanArg[uint64](t, d, "last"),
-					LowPriOverride: d.HasArg("low-pri"),
+					UsingV2Protocol: usingV2,
+					LeaderTerm:      leaderTerm,
+					First:           first,
+					Last:            last,
+					LowPriOverride:  lowPriOverride,
 				}
 				unlockFunc := LockRaftMu(&muAsserter)
 				p.SideChannelForPriorityOverrideAtFollowerRaftMuLocked(info)
@@ -455,13 +495,13 @@ func TestProcessorBasic(t *testing.T) {
 				return builderStr()
 
 			case "admitted-log-entry":
-				p.AdmittedLogEntry(ctx, EntryForAdmissionCallbackState{
-					Mark: rac2.LogMark{
-						Term:  dd.ScanArg[uint64](t, d, "leader-term"),
-						Index: dd.ScanArg[uint64](t, d, "index"),
-					},
-					Priority: dd.ScanArg[raftpb.Priority](t, d, "pri"),
-				})
+				var cb EntryForAdmissionCallbackState
+				d.ScanArgs(t, "leader-term", &cb.Mark.Term)
+				d.ScanArgs(t, "index", &cb.Mark.Index)
+				var pri int
+				d.ScanArgs(t, "pri", &pri)
+				cb.Priority = raftpb.Priority(pri)
+				p.AdmittedLogEntry(ctx, cb)
 				printLogTracker()
 				return builderStr()
 
@@ -481,7 +521,9 @@ func TestProcessorBasic(t *testing.T) {
 				rc := rcFactory.rcs[len(rcFactory.rcs)-1]
 				d.ScanArgs(t, "waited", &rc.waited)
 				rc.waitForEvalErr = nil
-				if errStr, ok := dd.ScanArgOpt[string](t, d, "err"); ok {
+				if d.HasArg("err") {
+					var errStr string
+					d.ScanArgs(t, "err", &errStr)
 					rc.waitForEvalErr = errors.Errorf("%s", errStr)
 				}
 				return builderStr()
@@ -504,7 +546,8 @@ func TestProcessorBasic(t *testing.T) {
 }
 
 func parseAdmissionPriority(t *testing.T, td *datadriven.TestData) admissionpb.WorkPriority {
-	priStr := dd.ScanArg[string](t, td, "pri")
+	var priStr string
+	td.ScanArgs(t, "pri", &priStr)
 	for k, v := range admissionpb.WorkPriorityDict {
 		if v == priStr {
 			return k
@@ -514,8 +557,41 @@ func parseAdmissionPriority(t *testing.T, td *datadriven.TestData) admissionpb.W
 	return admissionpb.NormalPri
 }
 
+func parseEnabledLevel(
+	t *testing.T, td *datadriven.TestData,
+) kvflowcontrol.V2EnabledWhenLeaderLevel {
+	if td.HasArg("enabled-level") {
+		var str string
+		td.ScanArgs(t, "enabled-level", &str)
+		switch str {
+		case "not-enabled":
+			return kvflowcontrol.V2NotEnabledWhenLeader
+		case "v1-encoding":
+			return kvflowcontrol.V2EnabledWhenLeaderV1Encoding
+		case "v2-encoding":
+			return kvflowcontrol.V2EnabledWhenLeaderV2Encoding
+		default:
+			t.Fatalf("unrecoginized level %s", str)
+		}
+	}
+	return kvflowcontrol.V2NotEnabledWhenLeader
+}
+
+func enabledLevelString(enabledLevel kvflowcontrol.V2EnabledWhenLeaderLevel) string {
+	switch enabledLevel {
+	case kvflowcontrol.V2NotEnabledWhenLeader:
+		return "not-enabled"
+	case kvflowcontrol.V2EnabledWhenLeaderV1Encoding:
+		return "v1-encoding"
+	case kvflowcontrol.V2EnabledWhenLeaderV2Encoding:
+		return "v2-encoding"
+	}
+	return "unknown-level"
+}
+
 func parseRangeDescriptor(t *testing.T, td *datadriven.TestData) roachpb.RangeDescriptor {
-	replicaStr := dd.ScanArg[string](t, td, "replicas")
+	var replicaStr string
+	td.ScanArgs(t, "replicas", &replicaStr)
 	parts := strings.Split(replicaStr, ",")
 	var desc roachpb.RangeDescriptor
 	for _, part := range parts {

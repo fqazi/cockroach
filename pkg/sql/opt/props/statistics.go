@@ -177,7 +177,7 @@ func (s *Statistics) StringWithoutHistograms() string {
 func (s *Statistics) stringImpl(includeHistograms bool) string {
 	var buf bytes.Buffer
 
-	fmt.Fprintf(&buf, "[rows=%.6g", s.RowCount)
+	fmt.Fprintf(&buf, "[rows=%.7g", s.RowCount)
 	colStats := make(ColumnStatistics, s.ColStats.Count())
 	for i := 0; i < s.ColStats.Count(); i++ {
 		colStats[i] = s.ColStats.Get(i)
@@ -283,9 +283,7 @@ func (c *ColumnStatistic) CopyFromOther(other *ColumnStatistic, evalCtx *eval.Co
 	c.NullCount = other.NullCount
 	if other.Histogram != nil && c.Cols.Len() == 1 {
 		c.Histogram = &Histogram{}
-		c.Histogram.Init(
-			evalCtx, c.Cols.SingleColumn(), other.Histogram.buckets, other.Histogram.resolution,
-		)
+		c.Histogram.Init(evalCtx, c.Cols.SingleColumn(), other.Histogram.buckets)
 	}
 }
 

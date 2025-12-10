@@ -28,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 )
 
@@ -39,6 +38,7 @@ var traceKVLogFrequency = settings.RegisterDurationSetting(
 	"changefeed.cdcevent.trace_kv.log_frequency",
 	"controls how frequently KVs are logged when KV tracing is enabled",
 	500*time.Millisecond,
+	settings.NonNegativeDuration,
 )
 
 // rowFetcherCache maintains a cache of single table row.Fetchers. Given a key
@@ -75,7 +75,7 @@ func (f *dbTableDescFetcher) FetchTableDesc(
 ) (catalog.TableDescriptor, error) {
 	// Retrieve the target TableDescriptor from the lease manager. No caching
 	// is attempted because the lease manager does its own caching.
-	desc, err := f.leaseMgr.Acquire(ctx, lease.TimestampToReadTimestamp(ts), tableID)
+	desc, err := f.leaseMgr.Acquire(ctx, ts, tableID)
 	if err != nil {
 		// Manager can return all kinds of errors during chaos, but based on
 		// its usage, none of them should ever be terminal.
@@ -186,7 +186,7 @@ func watchedFamilesFromTarget(targets changefeedbase.Targets) (map[watchedFamily
 	}
 	watchedFamilies := make(map[watchedFamily]struct{}, targets.Size)
 	err := targets.EachTarget(func(t changefeedbase.Target) error {
-		watchedFamilies[watchedFamily{tableID: t.DescID, familyName: t.FamilyName}] = struct{}{}
+		watchedFamilies[watchedFamily{tableID: t.TableID, familyName: t.FamilyName}] = struct{}{}
 		return nil
 	})
 	if err != nil {
@@ -237,9 +237,6 @@ func (c *rowFetcherCache) tableDescForKey(
 // ErrUnwatchedFamily is a sentinel error that indicates this part of the row
 // is not being watched and does not need to be decoded.
 var ErrUnwatchedFamily = errors.New("watched table but unwatched family")
-
-// ErrTableOffline is a sentinel error that indicates the watched table is offline.
-var ErrTableOffline = errors.New("watched table is offline")
 
 // RowFetcherForColumnFamily returns row.Fetcher for the specified column family.
 // Returns ErrUnwatchedFamily error if family is not watched.
@@ -322,7 +319,7 @@ func (c *rowFetcherCache) RowFetcherForColumnFamily(
 			Alloc:             &c.a,
 			Spec:              &spec,
 			TraceKV:           c.rfArgs.traceKV,
-			TraceKVEvery:      &util.EveryN[crtime.Mono]{N: c.rfArgs.traceKVLogFrequency},
+			TraceKVEvery:      &util.EveryN{N: c.rfArgs.traceKVLogFrequency},
 		},
 	); err != nil {
 		return nil, nil, err

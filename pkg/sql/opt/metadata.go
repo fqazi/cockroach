@@ -9,14 +9,10 @@ import (
 	"context"
 	"fmt"
 	"math/bits"
-	"slices"
 	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
-	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/multiregion"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
@@ -25,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"github.com/lib/pq/oid"
 )
@@ -133,7 +128,7 @@ type Metadata struct {
 	// objectRefsByName stores each unique name that the query uses to reference
 	// each object. It is needed because changes to the search path may change
 	// which object a given name refers to; for example, switching the database.
-	objectRefsByName map[cat.StableID]tree.UnresolvedObjectNameSet
+	objectRefsByName map[cat.StableID][]*tree.UnresolvedObjectName
 
 	// privileges stores the privileges needed to access each object that the
 	// query depends on.
@@ -144,18 +139,6 @@ type Metadata struct {
 	// path cause a function call to be resolved to a UDF with the same signature
 	// as a builtin function.
 	builtinRefsByName map[tree.UnresolvedName]struct{}
-
-	// rlsMeta stores row-level security policy metadata enforced during query
-	// execution.
-	rlsMeta RowLevelSecurityMeta
-
-	// hintIDs are the external statement hints that match this statement.
-	hintIDs []int64
-
-	digest struct {
-		syncutil.Mutex
-		depDigest cat.DependencyDigest
-	}
 
 	// NOTE! When adding fields here, update Init (if reusing allocated
 	// data structures is desired), CopyFrom and TestMetadata.
@@ -208,7 +191,7 @@ func (md *Metadata) Init() {
 
 	objectRefsByName := md.objectRefsByName
 	if objectRefsByName == nil {
-		objectRefsByName = make(map[cat.StableID]tree.UnresolvedObjectNameSet)
+		objectRefsByName = make(map[cat.StableID][]*tree.UnresolvedObjectName)
 	}
 	for id := range md.objectRefsByName {
 		delete(md.objectRefsByName, id)
@@ -258,7 +241,7 @@ func (md *Metadata) CopyFrom(from *Metadata, copyScalarFn func(Expr) Expr) {
 		len(md.sequences) != 0 || len(md.views) != 0 || len(md.userDefinedTypes) != 0 ||
 		len(md.userDefinedTypesSlice) != 0 || len(md.dataSourceDeps) != 0 ||
 		len(md.routineDeps) != 0 || len(md.objectRefsByName) != 0 || len(md.privileges) != 0 ||
-		len(md.builtinRefsByName) != 0 || md.rlsMeta.IsInitialized || len(md.hintIDs) != 0 {
+		len(md.builtinRefsByName) != 0 {
 		panic(errors.AssertionFailedf("CopyFrom requires empty destination"))
 	}
 	md.schemas = append(md.schemas, from.schemas...)
@@ -310,12 +293,10 @@ func (md *Metadata) CopyFrom(from *Metadata, copyScalarFn func(Expr) Expr) {
 
 	for id, names := range from.objectRefsByName {
 		if md.objectRefsByName == nil {
-			md.objectRefsByName = make(map[cat.StableID]tree.UnresolvedObjectNameSet)
+			md.objectRefsByName = make(map[cat.StableID][]*tree.UnresolvedObjectName)
 		}
-		newNames := tree.MakeUnresolvedObjectNameSet(names.Len())
-		for i, n := 0, names.Len(); i < n; i++ {
-			newNames.Add(names.Get(i))
-		}
+		newNames := make([]*tree.UnresolvedObjectName, len(names))
+		copy(newNames, names)
 		md.objectRefsByName[id] = newNames
 	}
 
@@ -339,10 +320,6 @@ func (md *Metadata) CopyFrom(from *Metadata, copyScalarFn func(Expr) Expr) {
 
 	// We cannot copy the bound expressions; they must be rebuilt in the new memo.
 	md.withBindings = nil
-
-	md.rlsMeta = from.rlsMeta.Copy()
-
-	md.hintIDs = append(md.hintIDs, from.hintIDs...)
 }
 
 // MDDepName stores either the unresolved DataSourceName or the StableID from
@@ -379,60 +356,8 @@ func (md *Metadata) AddDependency(name MDDepName, ds cat.DataSource, priv privil
 	md.privileges[id] = md.privileges[id] | (1 << priv)
 	if name.byID == 0 {
 		// This data source was referenced by name.
-		names := md.objectRefsByName[id]
-		names.Add(name.byName.ToUnresolvedObjectName())
-		md.objectRefsByName[id] = names
+		md.objectRefsByName[id] = append(md.objectRefsByName[id], name.byName.ToUnresolvedObjectName())
 	}
-}
-
-// dependencyDigestEquals checks if the stored dependency digest matches the
-// current dependency digest.
-func (md *Metadata) dependencyDigestEquals(currentDigest *cat.DependencyDigest) bool {
-	md.digest.Lock()
-	defer md.digest.Unlock()
-	return currentDigest.Equal(&md.digest.depDigest)
-}
-
-// leaseObjectsInMetaData ensures that all references within this metadata
-// are leased to prevent schema changes from modifying the underlying objects
-// excessively. Additionally, the metadata version and leased descriptor versions
-// are compared.
-func (md *Metadata) leaseObjectsInMetaData(
-	ctx context.Context, optCatalog cat.Catalog,
-) (leasedVersionMatchesMetadata bool, err error) {
-	for id, ds := range md.dataSourceDeps {
-		ver, err := optCatalog.LeaseByStableID(ctx, id)
-		if err != nil {
-			return false, err
-		}
-		if ver != ds.Version() {
-			return false, nil
-		}
-	}
-	for id, rd := range md.routineDeps {
-		ver, err := optCatalog.LeaseByStableID(ctx, id)
-		if err != nil {
-			return false, err
-		}
-		if ver != rd.overload.Version {
-			return false, nil
-		}
-	}
-	for _, typ := range md.userDefinedTypesSlice {
-		id := typedesc.UserDefinedTypeOIDToID(typ.Oid())
-		// Not a user defined type.
-		if id == catid.InvalidDescID {
-			continue
-		}
-		ver, err := optCatalog.LeaseByStableID(ctx, cat.StableID(id))
-		if err != nil {
-			return false, err
-		}
-		if ver != uint64(typ.TypeMeta.Version) {
-			return false, nil
-		}
-	}
-	return true, nil
 }
 
 // CheckDependencies resolves (again) each database object on which this
@@ -452,31 +377,13 @@ func (md *Metadata) leaseObjectsInMetaData(
 func (md *Metadata) CheckDependencies(
 	ctx context.Context, evalCtx *eval.Context, optCatalog cat.Catalog,
 ) (upToDate bool, err error) {
-	// If the query is AOST we must check all the dependencies, since the descriptors
-	// may have been different in the past. Otherwise, the dependency digest
-	// is sufficient.
-	currentDigest := optCatalog.GetDependencyDigest()
-	if evalCtx.SessionData().CatalogDigestStalenessCheckEnabled &&
-		evalCtx.Settings.Version.IsActive(ctx, clusterversion.V25_1) &&
-		evalCtx.AsOfSystemTime == nil &&
-		!evalCtx.Txn.ReadTimestampFixed() &&
-		md.dependencyDigestEquals(&currentDigest) {
-		// Lease the underlying descriptors for this metadata. If we fail to lease
-		// any descriptors attempt to resolve them by name through the more expensive
-		// code path below.
-		upToDate, err = md.leaseObjectsInMetaData(ctx, optCatalog)
-		if err == nil {
-			return upToDate, nil
-		}
-	}
-
 	// Check that no referenced data sources have changed.
 	for id, dataSource := range md.dataSourceDeps {
 		var toCheck cat.DataSource
 		if names, ok := md.objectRefsByName[id]; ok {
 			// The data source was referenced by name at least once.
-			for i, n := 0, names.Len(); i < n; i++ {
-				tableName := names.Get(i).ToTableName()
+			for _, name := range names {
+				tableName := name.ToTableName()
 				toCheck, _, err = optCatalog.ResolveDataSource(ctx, cat.Flags{}, &tableName)
 				if err != nil || !dataSource.Equals(toCheck) {
 					return false, maybeSwallowMetadataResolveErr(err)
@@ -495,8 +402,8 @@ func (md *Metadata) CheckDependencies(
 	for _, typ := range md.AllUserDefinedTypes() {
 		id := cat.StableID(catid.UserDefinedOIDToID(typ.Oid()))
 		if names, ok := md.objectRefsByName[id]; ok {
-			for i, n := 0, names.Len(); i < n; i++ {
-				toCheck, err := optCatalog.ResolveType(ctx, names.Get(i))
+			for _, name := range names {
+				toCheck, err := optCatalog.ResolveType(ctx, name)
 				if err != nil || typ.Oid() != toCheck.Oid() ||
 					typ.TypeMeta.Version != toCheck.TypeMeta.Version {
 					return false, maybeSwallowMetadataResolveErr(err)
@@ -515,8 +422,7 @@ func (md *Metadata) CheckDependencies(
 	for id, dep := range md.routineDeps {
 		overload := dep.overload
 		if names, ok := md.objectRefsByName[id]; ok {
-			for i, n := 0, names.Len(); i < n; i++ {
-				name := names.Get(i)
+			for _, name := range names {
 				definition, err := optCatalog.ResolveFunction(
 					ctx, tree.MakeUnresolvedFunctionName(name.ToUnresolvedName()),
 					&evalCtx.SessionData().SearchPath,
@@ -603,27 +509,6 @@ func (md *Metadata) CheckDependencies(
 		}
 	}
 
-	// Check for staleness from a row-level security point of view.
-	if upToDate, err := md.checkRLSDependencies(ctx, evalCtx, optCatalog); err != nil || !upToDate {
-		return upToDate, err
-	}
-
-	// Check that external statement hints have not changed.
-	var hintIDs []int64
-	if evalCtx.Planner != nil {
-		hintIDs = evalCtx.Planner.GetHintIDs()
-	}
-	if !slices.Equal(md.hintIDs, hintIDs) {
-		return false, nil
-	}
-
-	// Update the digest after a full dependency check, since our fast
-	// check did not succeed.
-	if evalCtx.SessionData().CatalogDigestStalenessCheckEnabled {
-		md.digest.Lock()
-		md.digest.depDigest = currentDigest
-		md.digest.Unlock()
-	}
 	return true, nil
 }
 
@@ -651,38 +536,20 @@ func maybeSwallowMetadataResolveErr(err error) error {
 // query for the referenced data sources have been revoked.
 func (md *Metadata) checkDataSourcePrivileges(ctx context.Context, optCatalog cat.Catalog) error {
 	for _, dataSource := range md.dataSourceDeps {
-		err := func() error {
-			privileges := md.privileges[dataSource.ID()]
-
-			// Check if this dependency has the special builtin-allowed privilege.
-			// If so, disable unsafe internal checks for all privilege checks on this data source.
-			if (privileges & (1 << privilege.BUILTIN_UNSAFE_ALLOWED)) != 0 {
-				// Clear the BUILTIN_UNSAFE_ALLOWED bit so the loop doesn't process it.
-				privileges &= ^privilegeBitmap(1 << privilege.BUILTIN_UNSAFE_ALLOWED)
-
-				// Disable unsafe internal checks for this data source.
-				defer optCatalog.DisableUnsafeInternalCheck()()
-			}
-
-			for privs := privileges; privs != 0; {
-				// Strip off each privilege bit and make call to CheckPrivilege for it.
-				// Note that priv == 0 can occur when a dependency was added with
-				// privilege.Kind = 0 (e.g. for a table within a view, where the table
-				// privileges do not need to be checked). Ignore the "zero privilege".
-				priv := privilege.Kind(bits.TrailingZeros32(uint32(privs)))
-				if priv != 0 {
-					if err := optCatalog.CheckPrivilege(ctx, dataSource, optCatalog.GetCurrentUser(), priv); err != nil {
-						return err
-					}
+		privileges := md.privileges[dataSource.ID()]
+		for privs := privileges; privs != 0; {
+			// Strip off each privilege bit and make call to CheckPrivilege for it.
+			// Note that priv == 0 can occur when a dependency was added with
+			// privilege.Kind = 0 (e.g. for a table within a view, where the table
+			// privileges do not need to be checked). Ignore the "zero privilege".
+			priv := privilege.Kind(bits.TrailingZeros32(uint32(privs)))
+			if priv != 0 {
+				if err := optCatalog.CheckPrivilege(ctx, dataSource, optCatalog.GetCurrentUser(), priv); err != nil {
+					return err
 				}
-				// Set the just-handled privilege bit to zero and look for next.
-				privs &= ^(1 << priv)
 			}
-
-			return nil
-		}()
-		if err != nil {
-			return err
+			// Set the just-handled privilege bit to zero and look for next.
+			privs &= ^(1 << priv)
 		}
 	}
 	return nil
@@ -715,9 +582,7 @@ func (md *Metadata) AddUserDefinedType(typ *types.T, name *tree.UnresolvedObject
 	}
 	if name != nil {
 		id := cat.StableID(catid.UserDefinedOIDToID(typ.Oid()))
-		names := md.objectRefsByName[id]
-		names.Add(name)
-		md.objectRefsByName[id] = names
+		md.objectRefsByName[id] = append(md.objectRefsByName[id], name)
 	}
 }
 
@@ -747,9 +612,7 @@ func (md *Metadata) AddUserDefinedRoutine(
 		invocationTypes: invocationTypes,
 	}
 	if name != nil {
-		names := md.objectRefsByName[id]
-		names.Add(name)
-		md.objectRefsByName[id] = names
+		md.objectRefsByName[id] = append(md.objectRefsByName[id], name)
 	}
 }
 
@@ -1053,8 +916,7 @@ func (md *Metadata) UpdateTableMeta(
 			// will have extra inverted columns added. Add any new inverted columns to
 			// the metadata.
 			for j, n := oldTable.ColumnCount(), newTable.ColumnCount(); j < n; j++ {
-				colID := md.AddColumn(string(newTable.Column(j).ColName()), types.Bytes)
-				md.ColumnMeta(colID).Table = md.tables[i].MetaID
+				md.AddColumn(string(newTable.Column(j).ColName()), types.Bytes)
 			}
 			if newTable.ColumnCount() > oldTable.ColumnCount() {
 				// If we added any new columns, we need to recalculate the not null
@@ -1156,13 +1018,6 @@ func (md *Metadata) WithBinding(id WithID) Expr {
 	return res
 }
 
-// HasWithBinding returns true if the given WithID is already bound to an
-// expression.
-func (md *Metadata) HasWithBinding(id WithID) bool {
-	_, ok := md.withBindings[id]
-	return ok
-}
-
 // ForEachWithBinding calls fn with each bound (WithID, Expr) pair in the
 // metadata.
 func (md *Metadata) ForEachWithBinding(fn func(WithID, Expr)) {
@@ -1213,90 +1068,11 @@ func (md *Metadata) TestingRoutineDepsEqual(other *Metadata) bool {
 }
 
 // TestingObjectRefsByName exposes the objectRefsByName for testing.
-func (md *Metadata) TestingObjectRefsByName() map[cat.StableID]tree.UnresolvedObjectNameSet {
+func (md *Metadata) TestingObjectRefsByName() map[cat.StableID][]*tree.UnresolvedObjectName {
 	return md.objectRefsByName
 }
 
 // TestingPrivileges exposes the privileges for testing.
 func (md *Metadata) TestingPrivileges() map[cat.StableID]privilegeBitmap {
 	return md.privileges
-}
-
-// SetRLSEnabled will update the metadata to indicate we came across a table
-// that had row-level security enabled.
-func (md *Metadata) SetRLSEnabled(
-	user username.SQLUsername,
-	isAdmin bool,
-	tableID TableID,
-	isTableOwnerAndNotForced, bypassRLS bool,
-) {
-	md.rlsMeta.MaybeInit(user, isAdmin)
-	md.rlsMeta.AddTableUse(tableID, isTableOwnerAndNotForced, bypassRLS)
-}
-
-// ClearRLSEnabled will clear out the initialized state for the rls meta. This
-// is used as a test helper.
-func (md *Metadata) ClearRLSEnabled() {
-	md.rlsMeta.Clear()
-}
-
-// GetRLSMeta returns the rls metadata struct
-func (md *Metadata) GetRLSMeta() *RowLevelSecurityMeta {
-	return &md.rlsMeta
-}
-
-// checkRLSDependencies will check the metadata for row-level security
-// dependencies to see if it is up to date.
-func (md *Metadata) checkRLSDependencies(
-	ctx context.Context, evalCtx *eval.Context, optCatalog cat.Catalog,
-) (upToDate bool, err error) {
-	// rlsMeta is lazily updated. If we didn't initialize it, then we didn't come
-	// across any RLS enabled tables. So, from a rls point of view the memo is up
-	// to date.
-	if !md.rlsMeta.IsInitialized {
-		return true, nil
-	}
-
-	// RLS policies that get applied could differ vastly based on the role. So, if
-	// the user is different, we cannot trust anything in the current memo.
-	if md.rlsMeta.User != evalCtx.SessionData().User() {
-		return false, nil
-	}
-
-	// If the role membership changes, resulting in the user gaining or losing
-	// admin privileges, the memo is considered stale. Admins are exempt from
-	// RLS policies.
-	if hasAdminRole, err := optCatalog.HasAdminRole(ctx); err != nil {
-		return false, err
-	} else if md.rlsMeta.HasAdminRole != hasAdminRole {
-		return false, nil
-	}
-
-	// Check if the current user has a role option/privilege that changed
-	// affecting the exemption of policies.
-	for i := range md.tables {
-		table := &md.tables[i]
-		policiesApplied, ok := md.rlsMeta.PoliciesApplied[table.MetaID]
-		if !ok {
-			continue
-		}
-		bypassRLS, err := optCatalog.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.BYPASSRLS, md.rlsMeta.User)
-		if err != nil {
-			return false, err
-		}
-		if bypassRLS != policiesApplied.BypassRLS {
-			return false, nil
-		}
-	}
-
-	// We do not check for specific policy changes or exemption due to FORCE RLS.
-	// Any time a policy or table attribute such as forced is modified on a table,
-	// a new version of the table descriptor is created. The metadata dependency
-	// check already accounts for changes in the table descriptor version.
-	return true, nil
-}
-
-// SetHintIDs copies the given matching hintIDs into the metadata.
-func (md *Metadata) SetHintIDs(hintIDs []int64) {
-	md.hintIDs = append(md.hintIDs, hintIDs...)
 }

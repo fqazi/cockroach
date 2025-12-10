@@ -16,12 +16,9 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdctest"
-	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -403,13 +400,8 @@ func newRangeDistributionTester(
 
 	systemDB := sqlutils.MakeSQLRunner(tc.SystemLayer(len(tc.Servers) - 1).SQLConn(t))
 	systemDB.Exec(t, "SET CLUSTER SETTING kv.rangefeed.enabled = true")
-	if tc.DefaultTenantDeploymentMode().IsExternal() {
-		tc.GrantTenantCapabilities(
-			ctx, t, serverutils.TestTenantID(),
-			map[tenantcapabilitiespb.ID]string{tenantcapabilitiespb.CanAdminRelocateRange: "true"})
-	}
-
 	if tc.StartedDefaultTestTenant() {
+		systemDB.Exec(t, `ALTER TENANT [$1] GRANT CAPABILITY can_admin_relocate_range=true`, serverutils.TestTenantID().ToUint64())
 		// Give 1,000,000 upfront tokens to the tenant, and keep the tokens per
 		// second rate to the default value of 10,000. This helps avoid throttling
 		// in the tests.
@@ -480,64 +472,6 @@ func (rdt *rangeDistributionTester) countRangesPerNode(partitions []sql.SpanPart
 // ranges per node. We add an extra 10% to the threshold for extra tolerance during testing.
 func (rdt *rangeDistributionTester) balancedDistributionUpperBound(numNodes int) int {
 	return int(math.Ceil((1 + rebalanceThreshold.Get(&rdt.lastNode.ClusterSettings().SV) + 0.1) * 64 / float64(numNodes)))
-}
-
-func TestChangefeedWithDistributionStrategyOptions(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	clusterOptions := []changefeedbase.ChangefeedRangeDistributionStrategy{
-		changefeedbase.ChangefeedRangeDistributionStrategyDefault,
-		changefeedbase.ChangefeedRangeDistributionStrategyBalancedSimple,
-	}
-	changefeedOptions := []changefeedbase.ChangefeedRangeDistributionStrategy{
-		changefeedbase.ChangefeedRangeDistributionStrategyDefault,
-		changefeedbase.ChangefeedRangeDistributionStrategyBalancedSimple,
-		changefeedbase.ChangefeedRangeDistributionStrategyNotSpecified,
-	}
-	testutils.RunValues(t, "cluster option", clusterOptions, func(t *testing.T, clusterOption changefeedbase.ChangefeedRangeDistributionStrategy) {
-		testutils.RunValues(t, "changefeed option", changefeedOptions, func(t *testing.T, changefeedOption changefeedbase.ChangefeedRangeDistributionStrategy) {
-			expectedStrat := changefeedOption
-			if changefeedOption == changefeedbase.ChangefeedRangeDistributionStrategyNotSpecified {
-				expectedStrat = clusterOption
-			}
-
-			testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-				sqlDB := sqlutils.MakeSQLRunner(s.DB)
-				sqlDB.Exec(t, fmt.Sprintf("SET CLUSTER SETTING changefeed.default_range_distribution_strategy = '%s'", clusterOption))
-				sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
-				sqlDB.Exec(t, `INSERT INTO foo VALUES (0, 'initial')`)
-
-				stratCh := make(chan changefeedbase.ChangefeedRangeDistributionStrategy, 1)
-
-				knobs := s.TestingKnobs.DistSQL.(*execinfra.TestingKnobs).Changefeed.(*TestingKnobs)
-				knobs.RangeDistributionStrategyCallback = func(strat changefeedbase.ChangefeedRangeDistributionStrategy) {
-					select {
-					case stratCh <- strat:
-					default:
-						fmt.Printf("skipping strat: %s\n", strat)
-					}
-				}
-
-				createStmt := "CREATE CHANGEFEED FOR foo"
-				if changefeedOption != changefeedbase.ChangefeedRangeDistributionStrategyNotSpecified {
-					createStmt += fmt.Sprintf(" WITH range_distribution_strategy='%s'", changefeedOption)
-				}
-				feed := feed(t, f, createStmt)
-				defer closeFeed(t, feed)
-				testutils.SucceedsSoon(t, func() error {
-					select {
-					case strat := <-stratCh:
-						require.Equal(t, expectedStrat, strat)
-						return nil
-					default:
-						return errors.New("no range distribution strategy callback found")
-					}
-				})
-			}
-			cdcTest(t, testFn)
-		})
-	})
 }
 
 func TestChangefeedWithNoDistributionStrategy(t *testing.T) {

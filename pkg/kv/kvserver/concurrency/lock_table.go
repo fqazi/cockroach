@@ -23,12 +23,14 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/container/list"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
+
+// Default upper bound on the number of locks in a lockTable.
+const defaultLockTableSize = 10000
 
 // The kind of waiting that the request is subject to.
 type waitKind int
@@ -179,6 +181,10 @@ type treeMu struct {
 	// primarily used for constraining memory consumption. Ideally, we should be
 	// doing better memory accounting than this.
 	numKeysLocked atomic.Int64
+
+	// For dampening the frequency with which we enforce
+	// lockTableImpl.maxKeysLocked.
+	lockAddMaxLocksCheckInterval uint64
 }
 
 // lockTableImpl is an implementation of lockTable.
@@ -259,21 +265,15 @@ type lockTableImpl struct {
 	// table. Locks on both Global and Local keys are stored in the same btree.
 	locks treeMu
 
-	// lockTableLimitsMu contains the lock table limit fields protected by a mutex.
-	lockTableLimitsMu struct {
-		syncutil.Mutex
-		// maxKeysLocked is a soft maximum on amount of per-key lock information
-		// tracking[1]. When it is exceeded, and subject to the dampening in
-		// lockAddMaxLocksCheckInterval, locks will be cleared.
-		//
-		// [1] Simply put, the number of keyLocks objects in the lockTable btree.
-		maxKeysLocked int64
-		// When maxKeysLocked is exceeded, will attempt to clear down to minKeysLocked,
-		// instead of clearing everything.
-		minKeysLocked int64
-		// For dampening the frequency with which we enforce maxKeysLocked.
-		lockAddMaxLocksCheckInterval uint64
-	}
+	// maxKeysLocked is a soft maximum on amount of per-key lock information
+	// tracking[1]. When it is exceeded, and subject to the dampening in
+	// lockAddMaxLocksCheckInterval, locks will be cleared.
+	//
+	// [1] Simply put, the number of keyLocks objects in the lockTable btree.
+	maxKeysLocked int64
+	// When maxKeysLocked is exceeded, will attempt to clear down to minKeysLocked,
+	// instead of clearing everything.
+	minKeysLocked int64
 
 	// txnStatusCache is a small LRU cache that tracks the status of
 	// transactions that have been successfully pushed.
@@ -289,58 +289,31 @@ type lockTableImpl struct {
 
 	// settings provides a handle to cluster settings.
 	settings *cluster.Settings
-
-	// The number of locks that are shed due to the lock table running into memory
-	// limits.
-	locksShedDueToMemoryLimit *metric.Counter
-	// The number of times the lock table ran into memory limits and shed locks as
-	// a result.
-	numLockShedDueToMemoryLimitEvents *metric.Counter
 }
 
 var _ lockTable = &lockTableImpl{}
 
 func newLockTable(
-	maxLocks int64,
-	rangeID roachpb.RangeID,
-	clock *hlc.Clock,
-	settings *cluster.Settings,
-	locksShedDueToMemoryLimit *metric.Counter,
-	numLockShedDueToMemoryLimitEvents *metric.Counter,
+	maxLocks int64, rangeID roachpb.RangeID, clock *hlc.Clock, settings *cluster.Settings,
 ) *lockTableImpl {
 	lt := &lockTableImpl{
-		rID:                               rangeID,
-		clock:                             clock,
-		settings:                          settings,
-		locksShedDueToMemoryLimit:         locksShedDueToMemoryLimit,
-		numLockShedDueToMemoryLimitEvents: numLockShedDueToMemoryLimitEvents,
+		rID:      rangeID,
+		clock:    clock,
+		settings: settings,
 	}
 	lt.setMaxKeysLocked(maxLocks)
 	return lt
 }
 
 func (t *lockTableImpl) setMaxKeysLocked(maxKeysLocked int64) {
-	t.lockTableLimitsMu.Lock()
-	defer t.lockTableLimitsMu.Unlock()
-
 	// Check at 5% intervals of the max count.
 	lockAddMaxLocksCheckInterval := maxKeysLocked / int64(20)
 	if lockAddMaxLocksCheckInterval == 0 {
 		lockAddMaxLocksCheckInterval = 1
 	}
-	t.lockTableLimitsMu.maxKeysLocked = maxKeysLocked
-	t.lockTableLimitsMu.minKeysLocked = maxKeysLocked / 2
-	t.lockTableLimitsMu.lockAddMaxLocksCheckInterval = uint64(lockAddMaxLocksCheckInterval)
-}
-
-// shouldCheckMaxLocks returns true if allocating the supplied sequence number
-// implies that we should check whether the lock table has exceeded its max
-// locks limit or not. We dampen how often the check is performed.
-func (t *lockTableImpl) shouldCheckMaxLocks(seqNum uint64) bool {
-	t.lockTableLimitsMu.Lock()
-	defer t.lockTableLimitsMu.Unlock()
-	interval := t.lockTableLimitsMu.lockAddMaxLocksCheckInterval
-	return seqNum%interval == 0
+	t.maxKeysLocked = maxKeysLocked
+	t.minKeysLocked = maxKeysLocked / 2
+	t.locks.lockAddMaxLocksCheckInterval = uint64(lockAddMaxLocksCheckInterval)
 }
 
 // lockTableGuardImpl is an implementation of lockTableGuard.
@@ -1064,71 +1037,9 @@ type unreplicatedLockHolderInfo struct {
 	// highest lock strength for unreplicated locks is Exclusive.
 	strengths [len(unreplicatedHolderStrengths)]enginepb.TxnSeq
 
-	// The ignoredSeqNums slice is the last-seen ignoredSeqNums
-	// from the acquiring transaction. At a given point in time,
-	// the transaction may have a larger set of ignoredSeqNums.
-	//
-	// The intent is to use this for potential flushing of unreplicated
-	// locks as replicated locks. When doing this flush, we want to avoid
-	// clobbering existing replicated locks that may be on disk and should
-	// be preserved to ensure correct rollback behaviour.
-	//
-	// *Motivating example*
-	//
-	// First consider the following state:
-	//
-	//    replicated lock @ seq=1 (on disk, not in memory)
-	//           rollback @ seq=1
-	//  unreplicated lock @ seq=2 (seq 1 ignored)
-	//
-	// The on-disk replicated lock will be ignored by future scans of the
-	// lock table. When we go to flush our unreplicated lock as a
-	// replicated lock, we want to overwrite the replicated lock at seq=1
-	// with our new lock at seq=2.
-	//
-	// Now consider a slightly different scenario:
-	//
-	//    replicated lock @ seq=1 (on disk, not in memory)
-	//  unreplicated lock @ seq=2
-	//
-	// In this case, the in-memory lock table will have an unreplicated lock
-	// at seq=2. When we go to flush our unreplicated lock as a replicated
-	// lock, we DO NOT want to overwrite the replicated lock at seq=1.
-	//
-	// Here we can see that in both cases we have an unreplicated lock held
-	// at seq=2, but what to do when flushing depends on what sequence
-	// numbers have been rolled back. Storing the set of ignored sequence
-	// numbers from the point of acquisition allows us to do this.
-	//
-	// Note that in the second case if seq=2 has been rolled back since we
-	// stored the ignoredSeqNums, that is OK, we have a lock at seq=1
-	// still. If seq=1 has been rolled back since we stored the
-	// ingoredSeqNums, that is also OK, because future requests will include
-	// it in the ignored seq number list and we also know there is no way to
-	// rollback 1 without rolling back 2.
-	//
-	// We may ask whether the min sequence number in strengths above is
-	// sufficient. It isn't since in the cases above, one cannot tell you
-	// whether or not you need to preserve the replicated lock at seq=1
-	// based on the sequence of the held unreplicated lock.
-	ignoredSeqNums []enginepb.IgnoredSeqNumRange
-
-	// ineligibleForExport, if true, indicates that this lock must never be
-	// exported from the lock table for replication. It is set to true via the
-	// lock manager's OnLockMissing function when QueryIntent reports a lock as
-	// missing to a client.
-	//
-	// Writing out a lock that "covers" a lock that we previously reported as
-	// missing can result in transaction recovery erroneously committing an
-	// uncomitted transaction because it finds a lock that the original
-	// transaction failed to find during its attempt to commit.
-	ineligibleForExport bool
-
 	// The timestamp at which the unreplicated lock is held. Must not regress.
 	ts hlc.Timestamp
 }
-
-const notHeldSentinel = -1
 
 // Fixed length slice for all supported lock strengths for unreplicated locks.
 // May be used to iterate supported lock strengths in strength order (strongest
@@ -1146,7 +1057,7 @@ var unreplicatedLockHolderStrengthToIndexMap = func() [lock.MaxStrength + 1]int 
 	var m [lock.MaxStrength + 1]int
 	// Initialize all to -1.
 	for str := range m {
-		m[str] = notHeldSentinel
+		m[str] = -1
 	}
 	// Set the indices of the valid strengths.
 	for i, str := range unreplicatedHolderStrengths {
@@ -1163,7 +1074,6 @@ func (ulh *unreplicatedLockHolderInfo) init() {
 // clear removes previously tracked unreplicated lock holder information.
 func (ulh *unreplicatedLockHolderInfo) clear() {
 	ulh.resetStrengths()
-	ulh.ignoredSeqNums = nil
 	ulh.ts = hlc.Timestamp{}
 }
 
@@ -1172,12 +1082,11 @@ func (ulh *unreplicatedLockHolderInfo) clear() {
 // left unchanged.
 func (ulh *unreplicatedLockHolderInfo) epochBumped() {
 	ulh.resetStrengths()
-	ulh.ignoredSeqNums = nil
 }
 
 func (ulh *unreplicatedLockHolderInfo) resetStrengths() {
 	for strIdx := range ulh.strengths {
-		ulh.strengths[strIdx] = notHeldSentinel
+		ulh.strengths[strIdx] = -1
 	}
 }
 
@@ -1188,40 +1097,12 @@ func (ulh *unreplicatedLockHolderInfo) minSeqNumber(str lock.Strength) enginepb.
 	return ulh.strengths[unreplicatedLockHolderStrengthToIndexMap[str]]
 }
 
-func (ulh *unreplicatedLockHolderInfo) ignoredSequenceNumbersEqual(
-	acq *roachpb.LockAcquisition,
-) bool {
-	// TODO(ssd): This uses structural equality rather than semantic equality. We
-	// should update this to make sure that the lists are semantically equivalent
-	// and add an assertion that the inbound set is a superset of the existing
-	// set.
-	if len(ulh.ignoredSeqNums) != len(acq.IgnoredSeqNums) {
-		return false
-	}
-	for i := range ulh.ignoredSeqNums {
-		if ulh.ignoredSeqNums[i] != acq.IgnoredSeqNums[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func (ulh *unreplicatedLockHolderInfo) setIgnoredSequenceNumbers(
-	ign []enginepb.IgnoredSeqNumRange,
-) {
-	if enginepb.TxnSeqListExtends(ign, ulh.ignoredSeqNums) {
-		ulh.ignoredSeqNums = ign
-	}
-}
-
 // acquire updates tracking on the receiver, if necessary[1], to denote the lock
 // is held with the supplied lock strength at the supplied sequence number.
 //
 // [1] We only track the lowest (non-rolled back) sequence number with which a
 // lock is held, as doing so is sufficient.
-func (ulh *unreplicatedLockHolderInfo) acquire(
-	str lock.Strength, seqNum enginepb.TxnSeq, ignoredSeqNums []enginepb.IgnoredSeqNumRange,
-) error {
+func (ulh *unreplicatedLockHolderInfo) acquire(str lock.Strength, seqNum enginepb.TxnSeq) error {
 	if ulh.held(str) && seqNum < ulh.minSeqNumber(str) {
 		// If the lock is already held at the given strength, with a given sequence
 		// number, that sequence number is not allowed to regress. This invariant
@@ -1234,14 +1115,12 @@ func (ulh *unreplicatedLockHolderInfo) acquire(
 	if !ulh.held(str) {
 		ulh.strengths[unreplicatedLockHolderStrengthToIndexMap[str]] = seqNum
 	}
-	ulh.setIgnoredSequenceNumbers(ignoredSeqNums)
-
 	return nil
 }
 
 // held returns true if the receiver is held with the supplied lock strength.
 func (ulh *unreplicatedLockHolderInfo) held(str lock.Strength) bool {
-	return ulh.minSeqNumber(str) != notHeldSentinel
+	return ulh.minSeqNumber(str) != -1
 }
 
 // rollbackIgnoredSeqNumbers mutates the receiver to rollback any locks that are
@@ -1263,7 +1142,6 @@ func (ulh *unreplicatedLockHolderInfo) rollbackIgnoredSeqNumbers(
 			ulh.strengths[strIdx] = -1
 		}
 	}
-	ulh.setIgnoredSequenceNumbers(ignoredSeqNums)
 }
 
 func (ulh *unreplicatedLockHolderInfo) isEmpty() bool {
@@ -1297,9 +1175,6 @@ func (ulh *unreplicatedLockHolderInfo) safeFormat(sb *redact.StringBuilder) {
 		)
 	}
 	sb.SafeString("]")
-	if len(ulh.ignoredSeqNums) > 0 {
-		sb.Printf(" ign seq: %v", ulh.ignoredSeqNums)
-	}
 }
 
 // Fixed length slice for all supported lock strengths for replicated locks. May
@@ -1533,6 +1408,9 @@ func (tl *txnLock) writeTS() hlc.Timestamp {
 	// lock strength == lock.Exclusive. Note that unreplicated locks can't be held
 	// with lock strength lock.Intent.
 	if tl.isHeldUnreplicated() && tl.unreplicatedInfo.held(lock.Exclusive) {
+		// If there's both a write intent and an unreplicated exclusive lock, we want
+		// to prefer the lower of the two timestamps, since the lower timestamp
+		// blocks more non-locking readers.
 		return tl.unreplicatedInfo.ts
 	}
 	return hlc.MaxTimestamp
@@ -1598,7 +1476,6 @@ func (tl *txnLock) getLockMode() lock.Mode {
 func (tl *txnLock) isIdempotentLockAcquisition(acq *roachpb.LockAcquisition) bool {
 	assert(tl.getLockHolderTxn().ID == acq.Txn.ID,
 		"existing lock transaction is different from the acquisition")
-
 	switch acq.Durability {
 	case lock.Unreplicated:
 		if !tl.unreplicatedInfo.held(acq.Strength) { // unheld lock
@@ -1611,27 +1488,19 @@ func (tl *txnLock) isIdempotentLockAcquisition(acq *roachpb.LockAcquisition) boo
 			// idempotent. Strictly speaking, we could tighten this condition to
 			// consider lock re-acquisition at lower timestamps idempotent, as a
 			// lock's timestamp at a given durability never regresses.
-			tl.unreplicatedInfo.ts.Equal(acq.Txn.WriteTimestamp) && tl.unreplicatedInfo.ignoredSequenceNumbersEqual(acq)
+			tl.unreplicatedInfo.ts.Equal(acq.Txn.WriteTimestamp)
 	case lock.Replicated:
 		// Lock is being re-acquired with the same strength.
-		isIdempotent := tl.replicatedInfo.held(acq.Strength)
-		// NB: Lock re-acquisitions at different timestamps are not considered
-		// idempotent. Strictly speaking, we could tighten this condition in a
-		// few ways:
-		//
-		// 1. We could consider lock re-acquisition at a lower timestamp idempotent,
-		// as a lock's timestamp at a given durability can never regress.
-		//
-		// 2. We could only check the timestamp if the lock is being acquired with
-		// strength lock.Intent, as we disregard the timestamp for all other lock
-		// strengths when dealing with replicated locks.
-		isIdempotent = isIdempotent && tl.replicatedInfo.ts.Equal(acq.Txn.WriteTimestamp)
-		// Lock acquisitions at a new epoch are not considered idempotent. In most
-		// cases of an epoch bump, the WriteTimestamp also changes. But in the case
-		// of an IntentMissingError, the WriteTimestamp isn't forwarded, but the
-		// on-disk intent has still changed.
-		isIdempotent = isIdempotent && tl.txn.Epoch == acq.Txn.Epoch
-		return isIdempotent
+		return tl.replicatedInfo.held(acq.Strength) &&
+			// NB: Lock re-acquisitions at different timestamps are not considered
+			// idempotent. Strictly speaking, we could tighten this condition in a
+			// few ways:
+			// 1. We could consider lock re-acquisition at a lower timestamp idempotent,
+			// as a lock's timestamp at a given durability can never regress.
+			// 2. We could only check the timestamp if the lock is being acquired with
+			// strength lock.Intent, as we disregard the timestamp for all other lock
+			// strengths when dealing with replicated locks.
+			tl.replicatedInfo.ts.Equal(acq.Txn.WriteTimestamp)
 	default:
 		panic(fmt.Sprintf("unknown lock durability: %s", acq.Durability))
 	}
@@ -1671,7 +1540,6 @@ func (tl *txnLock) reacquireLock(acq *roachpb.LockAcquisition) error {
 	if tl.isIdempotentLockAcquisition(acq) {
 		return nil // nothing more to do here.
 	}
-
 	// Forward the lock's timestamp instead of assigning to it blindly.
 	// While lock acquisition uses monotonically increasing timestamps
 	// from the perspective of the transaction's coordinator, this does
@@ -1712,7 +1580,7 @@ func (tl *txnLock) reacquireLock(acq *roachpb.LockAcquisition) error {
 	switch acq.Durability {
 	case lock.Unreplicated:
 		tl.unreplicatedInfo.ts.Forward(acq.Txn.WriteTimestamp)
-		if err := tl.unreplicatedInfo.acquire(acq.Strength, acq.Txn.Sequence, acq.IgnoredSeqNums); err != nil {
+		if err := tl.unreplicatedInfo.acquire(acq.Strength, acq.Txn.Sequence); err != nil {
 			return err
 		}
 	case lock.Replicated:
@@ -2069,7 +1937,7 @@ func (kl *keyLocks) lockStateInfo(now time.Time, rangeID roachpb.RangeID) []roac
 		lockWaiters = append(lockWaiters, lock.Waiter{
 			WaitingTxn:   g.txnMeta(),
 			ActiveWaiter: qg.active,
-			Strength:     qg.mode.Strength,
+			Strength:     lock.Exclusive,
 			WaitDuration: now.Sub(g.mu.curLockWaitStart),
 		})
 		g.mu.Unlock()
@@ -3084,7 +2952,7 @@ func (kl *keyLocks) acquireLock(
 	switch acq.Durability {
 	case lock.Unreplicated:
 		tl.unreplicatedInfo.ts = acq.Txn.WriteTimestamp
-		if err := tl.unreplicatedInfo.acquire(acq.Strength, acq.Txn.Sequence, acq.IgnoredSeqNums); err != nil {
+		if err := tl.unreplicatedInfo.acquire(acq.Strength, acq.Txn.Sequence); err != nil {
 			return err
 		}
 	case lock.Replicated:
@@ -3108,47 +2976,6 @@ func (kl *keyLocks) acquireLock(
 	return nil
 }
 
-// markLockIneligibleForExport marks any lock held by the same transaction on the
-// same key at an equal or greater strength as ineligible for export from the
-// in-memory lock table to storage because it would erroneously re-materialize a
-// lock that has been previously reported as missing.
-//
-// Acquires kl.mu.
-func (kl *keyLocks) markLockIneligibleForExport(acq *roachpb.LockAcquisition) {
-	assert(acq != nil, "unexpected nil LockAcquisition")
-
-	kl.mu.Lock()
-	defer kl.mu.Unlock()
-	if !kl.isLockedBy(acq.Txn.ID) {
-		return
-	}
-
-	for hl := kl.holders.Front(); hl != nil; hl = hl.Next() {
-		tl := hl.Value
-		if tl == nil || tl.unreplicatedInfo.isEmpty() {
-			continue
-		}
-		if tl.txn == nil {
-			continue
-		}
-		if tl.txn.ID != acq.Txn.ID {
-			continue
-		}
-
-		// NB: We might be able to be more conservative here with something like:
-		//
-		//     heldMode := tl.getLockMode()
-		//     if heldMode.Strength >= acq.Strength {
-		//         tl.unreplicatedInfo.ineligibleForExport = true
-		//     }
-		//
-		// But, we avoid that for now in case we are overlooking any cases where it
-		// would be possible for a transaction to acquire a new unreplicated lock
-		// on this key that would also be a problem to export.
-		tl.unreplicatedInfo.ineligibleForExport = true
-	}
-}
-
 // discoveredLock is called with a lock that is discovered by guard g when trying
 // to access this key with strength accessStrength.
 //
@@ -3159,7 +2986,6 @@ func (kl *keyLocks) discoveredLock(
 	accessStrength lock.Strength,
 	notRemovable bool,
 	clock *hlc.Clock,
-	st *cluster.Settings,
 ) error {
 	kl.mu.Lock()
 	defer kl.mu.Unlock()
@@ -3172,14 +2998,7 @@ func (kl *keyLocks) discoveredLock(
 	if kl.isLockedBy(foundLock.Txn.ID) {
 		e := kl.heldBy[foundLock.Txn.ID]
 		tl = e.Value
-
-		beforeTs := tl.writeTS()
-
 		tl.replicatedInfo.acquire(foundLock.Strength, foundLock.Txn.WriteTimestamp)
-
-		if beforeTs.Less(tl.writeTS()) {
-			kl.recomputeWaitQueues(st)
-		}
 		// TODO(arul): If the discovered lock indicates a newer epoch than what's
 		// being tracked, should we clear out unreplicatedLockInfo here?
 	} else {
@@ -3733,7 +3552,7 @@ func (kl *keyLocks) tryFreeLockOnReplicatedAcquire(
 	// Bail if there's an epoch number mismatch, as we can't compare sequence
 	// numbers across epochs. Note that we're not making any effort to forget
 	// unreplicated locks if the replicated lock acquisition corresponds to a
-	// newer epoch -- we defer to acquireLock to handle epoch bumps instead.
+	// newer epoch -- we defer to acquireLock to handle epcoh bumps instead.
 	if tl.txn.Epoch != acq.Txn.Epoch {
 		return false /* freed */, false /* mustGC */
 	}
@@ -3760,10 +3579,6 @@ func (kl *keyLocks) tryFreeLockOnReplicatedAcquire(
 		// UPDATE statements). We thus decide to ignore sequence numbers in our
 		// determination here -- savepoint rollbacks are rare enough. It's also
 		// not like unreplicated locks can't be lost for other reasons.
-		//
-		// TODO(ssd): Any change to this behaviour must consider IgnoredSeqNumbers
-		// and the case of the unreplicated locks being flushed. See the
-		// discussion on #140113.
 	}
 	if !canFree {
 		// The replicated lock acquisition doesn't offer sufficient protection
@@ -4173,9 +3988,10 @@ func (t *treeMu) Reset() {
 	t.btree.Reset()
 }
 
-func (t *treeMu) nextLockSeqNum() uint64 {
+func (t *treeMu) nextLockSeqNum() (seqNum uint64, checkMaxLocks bool) {
 	t.lockIDSeqNum++
-	return t.lockIDSeqNum
+	checkMaxLocks = t.lockIDSeqNum%t.lockAddMaxLocksCheckInterval == 0
+	return t.lockIDSeqNum, checkMaxLocks
 }
 
 func (t *lockTableImpl) ScanOptimistic(req Request) lockTableGuard {
@@ -4363,9 +4179,10 @@ func (t *lockTableImpl) AddDiscoveredLock(
 	t.locks.mu.Lock()
 	iter := t.locks.MakeIter()
 	iter.FirstOverlap(&keyLocks{key: key})
-	var lockSeqNum uint64
+	checkMaxLocks := false
 	if !iter.Valid() {
-		lockSeqNum = t.locks.nextLockSeqNum()
+		var lockSeqNum uint64
+		lockSeqNum, checkMaxLocks = t.locks.nextLockSeqNum()
 		l = &keyLocks{id: lockSeqNum, key: key}
 		l.queuedLockingRequests.Init()
 		l.waitingReaders.Init()
@@ -4385,11 +4202,11 @@ func (t *lockTableImpl) AddDiscoveredLock(
 		g.notRemovableLock = l
 		notRemovableLock = true
 	}
-	err = l.discoveredLock(foundLock, g, str, notRemovableLock, g.lt.clock, g.lt.settings)
+	err = l.discoveredLock(foundLock, g, str, notRemovableLock, g.lt.clock)
 	// Can't release tree.mu until call l.discoveredLock() since someone may
 	// find an empty lock and remove it from the tree.
 	t.locks.mu.Unlock()
-	if t.shouldCheckMaxLocks(lockSeqNum) {
+	if checkMaxLocks {
 		t.checkMaxKeysLockedAndTryClear()
 	}
 	if err != nil {
@@ -4426,7 +4243,7 @@ func (t *lockTableImpl) AcquireLock(acq *roachpb.LockAcquisition) error {
 	// tree.mu.RLock().
 	iter := t.locks.MakeIter()
 	iter.FirstOverlap(&keyLocks{key: acq.Key})
-	var lockSeqNum uint64
+	checkMaxLocks := false
 	if !iter.Valid() {
 		if acq.Durability == lock.Replicated {
 			// Don't remember uncontended replicated locks. The downside is that
@@ -4438,7 +4255,8 @@ func (t *lockTableImpl) AcquireLock(acq *roachpb.LockAcquisition) error {
 			t.locks.mu.Unlock()
 			return nil
 		}
-		lockSeqNum = t.locks.nextLockSeqNum()
+		var lockSeqNum uint64
+		lockSeqNum, checkMaxLocks = t.locks.nextLockSeqNum()
 		kl = &keyLocks{id: lockSeqNum, key: acq.Key}
 		kl.queuedLockingRequests.Init()
 		kl.waitingReaders.Init()
@@ -4471,41 +4289,11 @@ func (t *lockTableImpl) AcquireLock(acq *roachpb.LockAcquisition) error {
 	err := kl.acquireLock(acq, t.clock, t.settings)
 	t.locks.mu.Unlock()
 
-	if t.shouldCheckMaxLocks(lockSeqNum) {
+	if checkMaxLocks {
 		t.checkMaxKeysLockedAndTryClear()
 	}
 	if err != nil {
 		return err
-	}
-	return nil
-}
-
-// MarkIneligibleForExport implements the lockTable interface.
-func (t *lockTableImpl) MarkIneligibleForExport(acq *roachpb.LockAcquisition) error {
-	if acq == nil {
-		return errors.AssertionFailedf("unexpected nil lock acquisition")
-	}
-	if acq.Empty() {
-		return errors.AssertionFailedf("unexpected empty lock acquisition %s", acq)
-	}
-	if acq.Durability != lock.Replicated {
-		return errors.AssertionFailedf("unexpected lock acquisition durability %s", acq.Durability)
-	}
-
-	t.enabledMu.RLock()
-	defer t.enabledMu.RUnlock()
-	if !t.enabled {
-		// If not enabled, don't track any locks.
-		return nil
-	}
-
-	t.locks.mu.Lock()
-	defer t.locks.mu.Unlock()
-
-	iter := t.locks.MakeIter()
-	iter.FirstOverlap(&keyLocks{key: acq.Key})
-	if iter.Valid() {
-		iter.Cur().markLockIneligibleForExport(acq)
 	}
 	return nil
 }
@@ -4515,18 +4303,10 @@ func (t *lockTableImpl) MarkIneligibleForExport(acq *roachpb.LockAcquisition) er
 // method relieves memory pressure by clearing as much per-key tracking as it
 // can to bring things under budget.
 func (t *lockTableImpl) checkMaxKeysLockedAndTryClear() {
-	t.lockTableLimitsMu.Lock()
-	defer t.lockTableLimitsMu.Unlock()
-
 	totalLocks := t.locks.numKeysLocked.Load()
-	if totalLocks > t.lockTableLimitsMu.maxKeysLocked {
-		numToClear := totalLocks - t.lockTableLimitsMu.minKeysLocked
-		numCleared := t.tryClearLocks(false /* force */, int(numToClear))
-		// Update metrics if we successfully cleared any number of locks.
-		if numCleared != 0 {
-			t.locksShedDueToMemoryLimit.Inc(numCleared)
-			t.numLockShedDueToMemoryLimitEvents.Inc(1)
-		}
+	if totalLocks > t.maxKeysLocked {
+		numToClear := totalLocks - t.minKeysLocked
+		t.tryClearLocks(false /* force */, int(numToClear))
 	}
 }
 
@@ -4541,10 +4321,9 @@ func (t *lockTableImpl) lockCountForTesting() int64 {
 //
 // Waiters of removed locks are told to wait elsewhere or that they are done
 // waiting.
-func (t *lockTableImpl) tryClearLocks(force bool, numToClear int) int64 {
-	var clearCount int64
+func (t *lockTableImpl) tryClearLocks(force bool, numToClear int) {
+	clearCount := 0
 	t.locks.mu.Lock()
-	defer t.locks.mu.Unlock()
 	var locksToClear []*keyLocks
 	iter := t.locks.MakeIter()
 	for iter.First(); iter.Valid(); iter.Next() {
@@ -4552,63 +4331,11 @@ func (t *lockTableImpl) tryClearLocks(force bool, numToClear int) int64 {
 		if l.tryClearLock(force) {
 			locksToClear = append(locksToClear, l)
 			clearCount++
-			if !force && clearCount >= int64(numToClear) {
+			if !force && clearCount >= numToClear {
 				break
 			}
 		}
 	}
-	t.clearLocksMuLocked(locksToClear)
-	return clearCount
-}
-
-// tryClearLockGE attempts to clear all locks greater or equal to given key.
-//
-// Waiters of removed locks are told to wait elsewhere or that they are done
-// waiting.
-func (t *lockTableImpl) tryClearLocksGE(key roachpb.Key) []roachpb.LockAcquisition {
-	t.locks.mu.Lock()
-	defer t.locks.mu.Unlock()
-
-	var locksToClear []*keyLocks
-	var lockAcquisitionsToReturn []roachpb.LockAcquisition
-	iter := t.locks.MakeIter()
-	for iter.SeekGE(&keyLocks{key: key}); iter.Valid(); iter.Next() {
-		l := iter.Cur()
-
-		// Add any held locks to the slice of returned LockAcquisitions that the RHS
-		// should attempt.
-		for hl := l.holders.Front(); hl != nil; hl = hl.Next() {
-			tl := hl.Value
-			// The returned locks are used to populate a new
-			// in-memory lock table. We only return unreplicated
-			// locks because replicated locks already exist on disk.
-			if tl == nil || tl.unreplicatedInfo.isEmpty() {
-				continue
-			}
-
-			for _, str := range unreplicatedHolderStrengths {
-				if tl.unreplicatedInfo.held(str) {
-					lockAcquisitionsToReturn = append(lockAcquisitionsToReturn, roachpb.LockAcquisition{
-						Span: roachpb.Span{
-							Key: l.key,
-						},
-						Txn:        *hl.Value.txn,
-						Durability: lock.Unreplicated,
-						Strength:   str,
-					})
-				}
-			}
-		}
-
-		if l.tryClearLock(true) {
-			locksToClear = append(locksToClear, l)
-		}
-	}
-	t.clearLocksMuLocked(locksToClear)
-	return lockAcquisitionsToReturn
-}
-
-func (t *lockTableImpl) clearLocksMuLocked(locksToClear []*keyLocks) {
 	t.locks.numKeysLocked.Add(int64(-len(locksToClear)))
 	if t.locks.Len() == len(locksToClear) {
 		// Fast-path full clear.
@@ -4618,6 +4345,7 @@ func (t *lockTableImpl) clearLocksMuLocked(locksToClear []*keyLocks) {
 			t.locks.Delete(l)
 		}
 	}
+	t.locks.mu.Unlock()
 }
 
 // findHighestLockStrengthInSpans returns the highest lock strength specified
@@ -4777,73 +4505,6 @@ func (t *lockTableImpl) Clear(disable bool) {
 	t.txnStatusCache.clear()
 }
 
-// ClearGE implements the lockTable interface.
-func (t *lockTableImpl) ClearGE(key roachpb.Key) []roachpb.LockAcquisition {
-	return t.tryClearLocksGE(key)
-}
-
-// ExportUnreplicatedLocks implements the lockTable interface.
-//
-// TODO(ssd): Once we have the full set of functions we need for lock flushing, we
-// should do a refactoring pass to reduce some of the duplication.
-func (t *lockTableImpl) ExportUnreplicatedLocks(
-	span roachpb.Span, exporter func(*roachpb.LockAcquisition) bool,
-) {
-	t.enabledMu.RLock()
-	defer t.enabledMu.RUnlock()
-	if !t.enabled {
-		return
-	}
-
-	t.locks.mu.RLock()
-	defer t.locks.mu.RUnlock()
-
-	exportKeyLocks := func(l *keyLocks) bool {
-		l.mu.Lock()
-		defer l.mu.Unlock()
-
-		if !l.key.Less(span.EndKey) {
-			return false
-		}
-
-		for hl := l.holders.Front(); hl != nil; hl = hl.Next() {
-			tl := hl.Value
-			if tl == nil || tl.unreplicatedInfo.isEmpty() {
-				continue
-			}
-
-			if tl.unreplicatedInfo.ineligibleForExport {
-				continue
-			}
-
-			for _, str := range unreplicatedHolderStrengths {
-				if tl.unreplicatedInfo.held(str) {
-					keepGoing := exporter(&roachpb.LockAcquisition{
-						Span: roachpb.Span{
-							Key: l.key,
-						},
-						Txn:            *hl.Value.txn,
-						Durability:     lock.Unreplicated,
-						Strength:       str,
-						IgnoredSeqNums: tl.unreplicatedInfo.ignoredSeqNums,
-					})
-					if !keepGoing {
-						return false
-					}
-				}
-			}
-		}
-		return true
-	}
-
-	iter := t.locks.MakeIter()
-	for iter.SeekGE(&keyLocks{key: span.Key}); iter.Valid(); iter.Next() {
-		if !exportKeyLocks(iter.Cur()) {
-			break
-		}
-	}
-}
-
 // QueryLockTableState implements the lockTable interface.
 func (t *lockTableImpl) QueryLockTableState(
 	span roachpb.Span, opts QueryLockTableOptions,
@@ -4960,8 +4621,8 @@ func (t *lockTableImpl) stringRLocked() string {
 	return sb.String()
 }
 
-// SetMaxLockTableSize implements the lockTable interface.
-func (t *lockTableImpl) SetMaxLockTableSize(maxKeysLocked int64) {
+// TestingSetMaxLocks implements the lockTable interface.
+func (t *lockTableImpl) TestingSetMaxLocks(maxKeysLocked int64) {
 	t.setMaxKeysLocked(maxKeysLocked)
 }
 

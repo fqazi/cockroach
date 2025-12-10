@@ -8,12 +8,12 @@ package tree
 import (
 	"bytes"
 	"context"
+	"math/rand"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 )
 
 var tupleOfTwoInts = types.MakeTuple([]*types.T{types.Int, types.Int})
@@ -144,22 +144,21 @@ type noopUnwrapCompareContext struct {
 
 func (noopUnwrapCompareContext) UnwrapDatum(ctx context.Context, d Datum) Datum { return d }
 
-const randomArrayIterations = 100
+const randomArrayIterations = 1000
 const randomArrayMaxLength = 10
 const randomStringMaxLength = 1000
 
 func TestParseArrayRandomParseArray(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	rng, _ := randutil.NewTestRand()
 	for i := 0; i < randomArrayIterations; i++ {
-		numElems := rng.Intn(randomArrayMaxLength)
+		numElems := rand.Intn(randomArrayMaxLength)
 		ary := make([][]byte, numElems)
 		for aryIdx := range ary {
-			len := rng.Intn(randomStringMaxLength)
+			len := rand.Intn(randomStringMaxLength)
 			str := make([]byte, len)
 			for strIdx := 0; strIdx < len; strIdx++ {
-				str[strIdx] = byte(rng.Intn(256))
+				str[strIdx] = byte(rand.Intn(256))
 			}
 			ary[aryIdx] = str
 		}
@@ -176,7 +175,7 @@ func TestParseArrayRandomParseArray(t *testing.T) {
 			// means that there's no printable way to encode non-printing characters,
 			// users must use `e` prefixed strings).
 			for _, c := range b {
-				if c == '"' || c == '\\' || rng.Intn(10) == 0 {
+				if c == '"' || c == '\\' || rand.Intn(10) == 0 {
 					buf.WriteByte('\\')
 				}
 				buf.WriteByte(c)

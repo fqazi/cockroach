@@ -14,17 +14,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
-	"github.com/cockroachdb/cockroach/pkg/sql/parser/statements"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
@@ -33,7 +29,6 @@ import (
 
 // A callNode executes a procedure.
 type callNode struct {
-	zeroInputPlanNode
 	proc *tree.RoutineExpr
 	r    tree.Datums
 }
@@ -65,7 +60,7 @@ func (d *callNode) startExec(params runParams) error {
 	if res == tree.DNull {
 		return pgerror.New(pgcode.Internal, "procedure returned null record")
 	}
-	tuple, ok := res.(*tree.DTuple)
+	tuple, ok := tree.AsDTuple(res)
 	if !ok {
 		return errors.AssertionFailedf("expected a tuple, got %T", res)
 	}
@@ -158,20 +153,6 @@ func (p *planner) EvalRoutineExpr(
 		}
 		ctx = context.WithValue(ctx, triggerDepthKey{}, triggerDepth+1)
 	}
-	if buildutil.CrdbTestBuild && !tailCallOptimizationEnabled {
-		// In test builds when we disable tail-call optimization, we might hit
-		// stack overflow with infinite loops.
-		var routineDepth int
-		if routineDepthValue := ctx.Value(routineDepthKey{}); routineDepthValue != nil {
-			routineDepth = routineDepthValue.(int)
-		}
-		const maxDepth = 100
-		if routineDepth > maxDepth {
-			return nil, pgerror.Newf(pgcode.ProgramLimitExceeded,
-				"routine reached recursion depth limit: %d (probably infinite loop)", maxDepth)
-		}
-		ctx = context.WithValue(ctx, routineDepthKey{}, routineDepth+1)
-	}
 
 	var g routineGenerator
 	g.init(p, expr, args)
@@ -209,8 +190,6 @@ func (p *planner) EvalRoutineExpr(
 }
 
 type triggerDepthKey struct{}
-
-type routineDepthKey struct{}
 
 // RoutineExprGenerator returns an eval.ValueGenerator that produces the results
 // of a routine.
@@ -326,103 +305,51 @@ func (g *routineGenerator) startInternal(ctx context.Context, txn *kv.Txn) (err 
 	ef := newExecFactory(ctx, g.p)
 	rrw := NewRowResultWriter(&g.rch)
 	var cursorHelper *plpgsqlCursorHelper
-	err = g.expr.ForEachPlan(ctx, ef, rrw, g.args,
-		func(plan tree.RoutinePlan, builder tree.RoutineStatsBuilder, stmtForDistSQLDiagram string, isFinalPlan bool) error {
-			stmtIdx++
-			opName := "routine-stmt-" + g.expr.Name + "-" + strconv.Itoa(stmtIdx)
-			ctx, sp := tracing.ChildSpan(ctx, opName)
-			defer sp.Finish()
-			var statsBuilder *sqlstats.RecordedStatementStatsBuilder
-			var latencyRecorder *sqlstats.LatencyRecorder
-			if builder != nil {
-				if builderWithRecorder, ok := builder.(*sqlstats.StatsBuilderWithLatencyRecorder); !ok {
-					if buildutil.CrdbTestBuild {
-						panic("Statement stats builder is not of expected type")
-					}
-				} else {
-					statsBuilder = builderWithRecorder.StatsBuilder
-					latencyRecorder = builderWithRecorder.LatencyRecorder
-				}
-			}
-			var w rowResultWriter
-			var openCursor bool
-			switch {
-			case isFinalPlan && !g.expr.DiscardLastStmtResult:
-				// The result of this statement is the routine's output.
-				w = rrw
-			case stmtIdx == 1 && g.expr.CursorDeclaration != nil:
-				// The result of the first statement will be used to open a SQL cursor.
-				openCursor = true
-				cursorHelper, err = g.newCursorHelper(plan.(*planComponents))
-				if err != nil {
-					return err
-				}
-				w = NewRowResultWriter(&cursorHelper.container)
-			case stmtIdx == 1 && g.expr.FirstStmtResultWriter != nil:
-				// The result of the first statement will be added to an existing result
-				// set.
-				w = g.expr.FirstStmtResultWriter.(*RowResultWriter)
-			default:
-				// The result of this statement is not needed. Use a rowResultWriter
-				// that drops all rows added to it.
-				w = &droppingResultWriter{}
-			}
+	err = g.expr.ForEachPlan(ctx, ef, g.args, func(plan tree.RoutinePlan, stmtForDistSQLDiagram string, isFinalPlan bool) error {
+		stmtIdx++
+		opName := "udf-stmt-" + g.expr.Name + "-" + strconv.Itoa(stmtIdx)
+		ctx, sp := tracing.ChildSpan(ctx, opName)
+		defer sp.Finish()
 
-			// Place a sequence point before each statement in the routine for
-			// volatile functions. Unlike Postgres, we don't allow the txn's external
-			// read snapshot to advance, because we do not support restoring the txn's
-			// prior external read snapshot after returning from the volatile
-			// function.
-			if g.expr.EnableStepping {
-				if err := txn.Step(ctx, false /* allowReadTimestampStep */); err != nil {
-					return err
-				}
-			}
-			// Run the plan.
-			params := runParams{ctx, g.p.ExtendedEvalContext(), g.p}
-			if statsBuilder != nil {
-				defer func() {
-					flags := plan.(*planComponents).flags
-					sqlstats.RecordStatementPhase(latencyRecorder, sqlstats.StatementEnd)
-					if g.p.statsCollector == nil {
-						if buildutil.CrdbTestBuild {
-							panic("No stats collector exists on the planner, cannot record statement stats")
-						}
-						log.Dev.Error(ctx, "No stats collector exists on the planner, cannot record statement stats")
-						return
-					}
-					stmtStats := statsBuilder.
-						SessionID(g.p.ExtendedEvalContext().SessionID).
-						LatencyRecorder(latencyRecorder).
-						PlanMetadata(
-							flags.IsSet(planFlagGeneric),
-							flags.ShouldBeDistributed(),
-							flags.IsSet(planFlagVectorized),
-							flags.IsSet(planFlagImplicitTxn),
-							flags.IsSet(planFlagContainsFullIndexScan) || flags.IsSet(planFlagContainsFullTableScan),
-						).
-						QueryTags(g.p.stmt.QueryTags).
-						Build()
-					g.p.statsCollector.RecordStatement(ctx,
-						stmtStats,
-					)
-				}()
-			}
-			sqlstats.RecordStatementPhase(latencyRecorder, sqlstats.StatementStartExec)
-			queryStats, err := runPlanInsidePlan(ctx, params, plan.(*planComponents), w, g, stmtForDistSQLDiagram, statsBuilder)
-			sqlstats.RecordStatementPhase(latencyRecorder, sqlstats.StatementEndExec)
+		var w rowResultWriter
+		openCursor := stmtIdx == 1 && g.expr.CursorDeclaration != nil
+		if isFinalPlan {
+			// The result of this statement is the routine's output.
+			w = rrw
+		} else if openCursor {
+			// The result of the first statement will be used to open a SQL cursor.
+			cursorHelper, err = g.newCursorHelper(plan.(*planComponents))
 			if err != nil {
-				statsBuilder.StatementError(err)
 				return err
 			}
-			statsBuilder.QueryLevelStats(queryStats.bytesRead, queryStats.rowsRead, queryStats.rowsWritten, queryStats.kvCPUTimeNanos.Nanoseconds())
-			forwardInnerQueryStats(g.p.routineMetadataForwarder, queryStats)
-			if openCursor {
-				return cursorHelper.createCursor(g.p)
+			w = NewRowResultWriter(&cursorHelper.container)
+		} else {
+			// The result of this statement is not needed. Use a rowResultWriter that
+			// drops all rows added to it.
+			w = &droppingResultWriter{}
+		}
+
+		// Place a sequence point before each statement in the routine for volatile
+		// functions. Unlike Postgres, we don't allow the txn's external read
+		// snapshot to advance, because we do not support restoring the txn's prior
+		// external read snapshot after returning from the volatile function.
+		if g.expr.EnableStepping {
+			if err := txn.Step(ctx, false /* allowReadTimestampStep */); err != nil {
+				return err
 			}
-			return nil
-		},
-	)
+		}
+
+		// Run the plan.
+		params := runParams{ctx, g.p.ExtendedEvalContext(), g.p}
+		err = runPlanInsidePlan(ctx, params, plan.(*planComponents), w, g, stmtForDistSQLDiagram)
+		if err != nil {
+			return err
+		}
+		if openCursor {
+			return cursorHelper.createCursor(g.p)
+		}
+		return nil
+	})
 	if err != nil {
 		if cursorHelper != nil && !cursorHelper.addedCursor {
 			// The cursor wasn't successfully added to the list, so we clean it up
@@ -504,19 +431,12 @@ func (g *routineGenerator) handleException(ctx context.Context, err error) error
 			g.reset(ctx, g.p, branch, args)
 
 			// Configure stepping for volatile routines so that mutations made by the
-			// invoking statement are visible to the routine. Make sure to also step
-			// before caching the read sequence number, since the read sequence number
-			// may be part of "ignored" list set when restoring the savepoint above.
+			// invoking statement are visible to the routine.
 			var prevSteppingMode kv.SteppingMode
 			var prevSeqNum enginepb.TxnSeq
 			txn := g.p.Txn()
 			if g.expr.EnableStepping {
 				prevSteppingMode = txn.ConfigureStepping(ctx, kv.SteppingEnabled)
-				stepErr := txn.Step(ctx, false /* allowReadTimestampStep */)
-				if stepErr != nil {
-					// This error is unexpected, so return immediately.
-					return errors.CombineErrors(err, errors.WithAssertionFailure(stepErr))
-				}
 				prevSeqNum = txn.GetReadSeqNum()
 			}
 
@@ -652,23 +572,18 @@ func (g *routineGenerator) newCursorHelper(plan *planComponents) (*plpgsqlCursor
 		// "unnamed" portal, which always exists.
 		return nil, pgerror.Newf(pgcode.DuplicateCursor, "cursor \"\" already in use")
 	}
-	// Disabling the CloseCursorsAtCommit setting provides oracle-compatible
-	// behavior, where cursors are holdable by default unless they contain
-	// locking.
-	withHold := !g.p.SessionData().CloseCursorsAtCommit && !plan.flags.IsSet(planFlagContainsLocking)
-	planCols := plan.main.planColumns()
-	cursorHelper := &plpgsqlCursorHelper{
-		cursorName: cursorName,
-		cursorSql:  open.CursorSQL,
-		withHold:   withHold,
-	}
 	// Use context.Background(), since the cursor can outlive the context in which
 	// it was created.
-	cursorHelper.ctx = context.Background()
-	cursorHelper.resultCols = make(colinfo.ResultColumns, len(planCols))
+	planCols := plan.main.planColumns()
+	cursorHelper := &plpgsqlCursorHelper{
+		ctx:        context.Background(),
+		cursorName: cursorName,
+		resultCols: make(colinfo.ResultColumns, len(planCols)),
+		cursorSql:  open.CursorSQL,
+	}
 	copy(cursorHelper.resultCols, planCols)
 	mon := g.p.Mon()
-	if withHold {
+	if !g.p.SessionData().CloseCursorsAtCommit {
 		mon = g.p.sessionMonitor
 		if mon == nil {
 			return nil, errors.AssertionFailedf("cannot open cursor WITH HOLD without an active session")
@@ -687,30 +602,32 @@ func (g *routineGenerator) newCursorHelper(plan *planComponents) (*plpgsqlCursor
 // plpgsqlCursorHelper wraps a row container in order to feed the results of
 // executing a SQL statement to a SQL cursor. Note that the SQL statement is not
 // lazily executed; its entire result is written to the container.
-//
 // TODO(#111479): while the row container can spill to disk, we should default
 // to lazy execution for cursors for performance reasons.
 type plpgsqlCursorHelper struct {
-	persistedCursorHelper
-
+	ctx         context.Context
 	cursorName  tree.Name
 	cursorSql   string
 	addedCursor bool
-	withHold    bool
-}
 
-var _ isql.Rows = &plpgsqlCursorHelper{}
+	// Fields related to implementing the isql.Rows interface.
+	container    rowContainerHelper
+	iter         *rowContainerIterator
+	resultCols   colinfo.ResultColumns
+	lastRow      tree.Datums
+	rowsAffected int
+}
 
 func (h *plpgsqlCursorHelper) createCursor(p *planner) error {
 	h.iter = newRowContainerIterator(h.ctx, h.container)
 	cursor := &sqlCursor{
-		Rows:       h,
-		readSeqNum: p.txn.GetReadSeqNum(),
-		txn:        p.txn,
-		statement:  h.cursorSql,
-		created:    timeutil.Now(),
-		withHold:   h.withHold,
-		persisted:  true,
+		Rows:           h,
+		readSeqNum:     p.txn.GetReadSeqNum(),
+		txn:            p.txn,
+		statement:      h.cursorSql,
+		created:        timeutil.Now(),
+		withHold:       !p.SessionData().CloseCursorsAtCommit,
+		eagerExecution: true,
 	}
 	if err := p.checkIfCursorExists(h.cursorName); err != nil {
 		return err
@@ -722,6 +639,52 @@ func (h *plpgsqlCursorHelper) createCursor(p *planner) error {
 	return nil
 }
 
+var _ isql.Rows = &plpgsqlCursorHelper{}
+
+// Next implements the isql.Rows interface.
+func (h *plpgsqlCursorHelper) Next(_ context.Context) (bool, error) {
+	row, err := h.iter.Next()
+	if err != nil || row == nil {
+		return false, err
+	}
+	// Shallow-copy the row to ensure that it is safe to hold on to after Next()
+	// and Close() calls - see the isql.Rows interface.
+	h.lastRow = make(tree.Datums, len(row))
+	copy(h.lastRow, row)
+	h.rowsAffected++
+	return true, nil
+}
+
+// Cur implements the isql.Rows interface.
+func (h *plpgsqlCursorHelper) Cur() tree.Datums {
+	return h.lastRow
+}
+
+// RowsAffected implements the isql.Rows interface.
+func (h *plpgsqlCursorHelper) RowsAffected() int {
+	return h.rowsAffected
+}
+
+// Close implements the isql.Rows interface.
+func (h *plpgsqlCursorHelper) Close() error {
+	if h.iter != nil {
+		h.iter.Close()
+		h.iter = nil
+	}
+	h.container.Close(h.ctx)
+	return nil
+}
+
+// Types implements the isql.Rows interface.
+func (h *plpgsqlCursorHelper) Types() colinfo.ResultColumns {
+	return h.resultCols
+}
+
+// HasResults implements the isql.Rows interface.
+func (h *plpgsqlCursorHelper) HasResults() bool {
+	return h.lastRow != nil
+}
+
 // storedProcTxnStateAccessor provides a method for stored procedures to request
 // that the current transaction be committed or aborted and supply a
 // continuation stored procedure to resume execution in the new transaction.
@@ -730,10 +693,7 @@ type storedProcTxnStateAccessor struct {
 }
 
 func (a *storedProcTxnStateAccessor) setStoredProcTxnState(
-	txnOp tree.StoredProcTxnOp,
-	txnModes *tree.TransactionModes,
-	resumeProc *memo.Memo,
-	resumeStmt statements.Statement[tree.Statement],
+	txnOp tree.StoredProcTxnOp, txnModes *tree.TransactionModes, resumeProc *memo.Memo,
 ) {
 	if a.ex == nil {
 		panic(errors.AssertionFailedf("setStoredProcTxnState is not supported without connExecutor"))
@@ -741,7 +701,6 @@ func (a *storedProcTxnStateAccessor) setStoredProcTxnState(
 	a.ex.extraTxnState.storedProcTxnState.txnOp = txnOp
 	a.ex.extraTxnState.storedProcTxnState.txnModes = txnModes
 	a.ex.extraTxnState.storedProcTxnState.resumeProc = resumeProc
-	a.ex.extraTxnState.storedProcTxnState.resumeStmt = resumeStmt
 }
 
 func (a *storedProcTxnStateAccessor) getTxnOp() tree.StoredProcTxnOp {
@@ -787,8 +746,6 @@ func (p *planner) EvalTxnControlExpr(
 	if err != nil {
 		return nil, err
 	}
-	p.storedProcTxnState.setStoredProcTxnState(
-		expr.Op, &expr.Modes, resumeProc.(*memo.Memo), p.stmt.Statement,
-	)
+	p.storedProcTxnState.setStoredProcTxnState(expr.Op, &expr.Modes, resumeProc.(*memo.Memo))
 	return tree.DNull, nil
 }

@@ -331,9 +331,6 @@ func newZigzagJoiner(
 
 	collectingStats := false
 	if execstats.ShouldCollectStats(ctx, flowCtx.CollectStats) {
-		if flowTxn := flowCtx.EvalCtx.Txn; flowTxn != nil {
-			z.contentionEventsListener.Init(flowTxn.ID())
-		}
 		collectingStats = true
 		z.ExecStatsForTrace = z.execStatsForTrace
 	}
@@ -803,7 +800,7 @@ func (z *zigzagJoiner) maybeFetchInitialRow() error {
 			zigzagJoinerBatchSize,
 		)
 		if err != nil {
-			log.Dev.Errorf(z.Ctx(), "scan error: %s", err)
+			log.Errorf(z.Ctx(), "scan error: %s", err)
 			return err
 		}
 		fetchedRow, err := z.fetchRow(z.Ctx())
@@ -853,8 +850,6 @@ func (z *zigzagJoiner) execStatsForTrace() *execinfrapb.ComponentStats {
 		BytesRead:           optional.MakeUint(uint64(z.getBytesRead())),
 		KVPairsRead:         optional.MakeUint(uint64(z.getKVPairsRead())),
 		ContentionTime:      optional.MakeTimeValue(z.contentionEventsListener.GetContentionTime()),
-		LockWaitTime:        optional.MakeTimeValue(z.contentionEventsListener.GetLockWaitTime()),
-		LatchWaitTime:       optional.MakeTimeValue(z.contentionEventsListener.GetLatchWaitTime()),
 		BatchRequestsIssued: optional.MakeUint(uint64(z.getBatchRequestsIssued())),
 	}
 	scanStats := z.scanStatsListener.GetScanStats()
@@ -892,14 +887,6 @@ func (z *zigzagJoiner) getKVPairsRead() int64 {
 	return kvPairsRead
 }
 
-func (z *zigzagJoiner) getKVCPUTime() int64 {
-	var kvCPUTime int64
-	for i := range z.infos {
-		kvCPUTime += z.infos[i].fetcher.GetKVCPUTime()
-	}
-	return kvCPUTime
-}
-
 func (z *zigzagJoiner) getRowsRead() int64 {
 	var rowsRead int64
 	for i := range z.infos {
@@ -922,7 +909,6 @@ func (z *zigzagJoiner) generateMeta() []execinfrapb.ProducerMetadata {
 	meta.Metrics = execinfrapb.GetMetricsMeta()
 	meta.Metrics.BytesRead = z.getBytesRead()
 	meta.Metrics.RowsRead = z.getRowsRead()
-	meta.Metrics.KVCPUTime = z.getKVCPUTime()
 	if tfs := execinfra.GetLeafTxnFinalState(z.Ctx(), z.FlowCtx.Txn); tfs != nil {
 		trailingMeta = append(trailingMeta, execinfrapb.ProducerMetadata{LeafTxnFinalState: tfs})
 	}

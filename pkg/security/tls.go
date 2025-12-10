@@ -6,7 +6,6 @@
 package security
 
 import (
-	"crypto/fips140"
 	"crypto/tls"
 	"crypto/x509"
 
@@ -119,7 +118,7 @@ func newBaseTLSConfig(settings TLSSettings, caPEM []byte) (*tls.Config, error) {
 		}
 	}
 
-	baseCfg := &tls.Config{
+	return &tls.Config{
 		RootCAs: certPool,
 
 		VerifyPeerCertificate: makeOCSPVerifier(settings),
@@ -127,14 +126,5 @@ func newBaseTLSConfig(settings TLSSettings, caPEM []byte) (*tls.Config, error) {
 		CipherSuites: RecommendedCipherSuites(),
 
 		MinVersion: tls.VersionTLS12,
-	}
-
-	// If the binary is compiled in FIPS mode, Go will refuse to use the
-	// default X25519 curve. We switch to a FIPS-friendly curve in this
-	// mode.
-	if fips140.Enabled() {
-		baseCfg.CurvePreferences = []tls.CurveID{tls.CurveP256}
-	}
-
-	return baseCfg, nil
+	}, nil
 }

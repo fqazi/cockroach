@@ -75,7 +75,8 @@ type planNode interface {
 	// of results each time that Next() returns true.
 	//
 	// Available after startPlan(). It is illegal to call Next() after it returns
-	// false.
+	// false. It is legal to call Next() even if the node implements
+	// planNodeFastPath and the FastPathResults() method returns true.
 	Next(params runParams) (bool, error)
 
 	// Values returns the values at the current row. The result is only valid
@@ -96,49 +97,6 @@ type planNode interface {
 	// The node must not be used again after this method is called. Some nodes put
 	// themselves back into memory pools on Close.
 	Close(ctx context.Context)
-
-	InputCount() int
-	Input(i int) (planNode, error)
-	SetInput(i int, p planNode) error
-}
-
-// zeroInputPlanNode is embedded in planNode implementations that have no input
-// planNode. It implements the InputCount, Input, and SetInput methods of
-// planNode.
-type zeroInputPlanNode struct{}
-
-func (zeroInputPlanNode) InputCount() int { return 0 }
-
-func (zeroInputPlanNode) Input(i int) (planNode, error) {
-	return nil, errors.AssertionFailedf("node has no inputs")
-}
-
-func (zeroInputPlanNode) SetInput(i int, p planNode) error {
-	return errors.AssertionFailedf("node has no inputs")
-}
-
-// singleInputPlanNode is embedded in planNode implementations that have a
-// single input planNode. It implements the InputCount, Input, and SetInput
-// methods of planNode.
-type singleInputPlanNode struct {
-	input planNode
-}
-
-func (n *singleInputPlanNode) InputCount() int { return 1 }
-
-func (n *singleInputPlanNode) Input(i int) (planNode, error) {
-	if i == 0 {
-		return n.input, nil
-	}
-	return nil, errors.AssertionFailedf("input index %d is out of range", i)
-}
-
-func (n *singleInputPlanNode) SetInput(i int, p planNode) error {
-	if i == 0 {
-		n.input = p
-		return nil
-	}
-	return errors.AssertionFailedf("input index %d is out of range", i)
 }
 
 // mutationPlanNode is a specification of planNode for mutations operations
@@ -160,15 +118,20 @@ type mutationPlanNode interface {
 	// modified by this planNode. It should only be called once Next returns
 	// false.
 	indexBytesWritten() int64
+}
 
-	// returnsRowsAffected indicates that the planNode returns the number of
-	// rows affected by the mutation, rather than the rows themselves.
-	returnsRowsAffected() bool
+// PlanNode is the exported name for planNode. Useful for CCL hooks.
+type PlanNode = planNode
 
-	// kvCPUTime returns the cumulative CPU time (in nanoseconds) that KV reported
-	// in BatchResponse headers during the execution of this mutation. It should
-	// only be called once Next returns false.
-	kvCPUTime() int64
+// planNodeFastPath is implemented by nodes that can perform all their
+// work during startPlan(), possibly affecting even multiple rows. For
+// example, DELETE can do this.
+type planNodeFastPath interface {
+	// FastPathResults returns the affected row count and true if the
+	// node has no result set and has already executed when startPlan() completes.
+	// Note that Next() must still be valid even if this method returns
+	// true, although it may have nothing left to do.
+	FastPathResults() (int, bool)
 }
 
 // planNodeReadingOwnWrites can be implemented by planNodes which do
@@ -214,7 +177,6 @@ var _ planNode = &CreateRoleNode{}
 var _ planNode = &createViewNode{}
 var _ planNode = &delayedNode{}
 var _ planNode = &deleteNode{}
-var _ planNode = &deleteSwapNode{}
 var _ planNode = &deleteRangeNode{}
 var _ planNode = &distinctNode{}
 var _ planNode = &dropDatabaseNode{}
@@ -228,7 +190,6 @@ var _ planNode = &dropViewNode{}
 var _ planNode = &errorIfRowsNode{}
 var _ planNode = &explainVecNode{}
 var _ planNode = &filterNode{}
-var _ planNode = &endPreparedTxnNode{}
 var _ planNode = &GrantRoleNode{}
 var _ planNode = &groupNode{}
 var _ planNode = &hookFnNode{}
@@ -251,9 +212,11 @@ var _ planNode = &renameIndexNode{}
 var _ planNode = &renameTableNode{}
 var _ planNode = &renderNode{}
 var _ planNode = &RevokeRoleNode{}
+var _ planNode = &rowCountNode{}
 var _ planNode = &scanBufferNode{}
 var _ planNode = &scanNode{}
 var _ planNode = &scatterNode{}
+var _ planNode = &serializeNode{}
 var _ planNode = &sequenceSelectNode{}
 var _ planNode = &showFingerprintsNode{}
 var _ planNode = &showTraceNode{}
@@ -266,14 +229,18 @@ var _ planNode = &truncateNode{}
 var _ planNode = &unaryNode{}
 var _ planNode = &unionNode{}
 var _ planNode = &updateNode{}
-var _ planNode = &updateSwapNode{}
 var _ planNode = &upsertNode{}
 var _ planNode = &valuesNode{}
-var _ planNode = &vectorMutationSearchNode{}
-var _ planNode = &vectorSearchNode{}
 var _ planNode = &virtualTableNode{}
 var _ planNode = &windowNode{}
 var _ planNode = &zeroNode{}
+
+var _ planNodeFastPath = &deleteRangeNode{}
+var _ planNodeFastPath = &rowCountNode{}
+var _ planNodeFastPath = &serializeNode{}
+var _ planNodeFastPath = &setZoneConfigNode{}
+var _ planNodeFastPath = &controlJobsNode{}
+var _ planNodeFastPath = &controlSchedulesNode{}
 
 var _ planNodeReadingOwnWrites = &alterIndexNode{}
 var _ planNodeReadingOwnWrites = &alterSchemaNode{}
@@ -293,11 +260,33 @@ var _ planNodeReadingOwnWrites = &dropTypeNode{}
 var _ planNodeReadingOwnWrites = &refreshMaterializedViewNode{}
 var _ planNodeReadingOwnWrites = &setZoneConfigNode{}
 
+// planNodeRequireSpool serves as marker for nodes whose parent must
+// ensure that the node is fully run to completion (and the results
+// spooled) during the start phase. This is currently implemented by
+// all mutation statements except for upsert.
+type planNodeRequireSpool interface {
+	requireSpool()
+}
+
+var _ planNodeRequireSpool = &serializeNode{}
+
+// planNodeSpool serves as marker for nodes that can perform all their
+// execution during the start phase. This is different from the "fast
+// path" interface because a node that performs all its execution
+// during the start phase might still have some result rows and thus
+// not implement the fast path.
+//
+// This interface exists for the following optimization: nodes
+// that require spooling but are the children of a spooled node
+// do not require the introduction of an explicit spool.
+type planNodeSpooled interface {
+	spooled()
+}
+
+var _ planNodeSpooled = &spoolNode{}
+
 type flowInfo struct {
-	typ planComponentType
-	// diagram is only populated when instrumentationHelper.shouldSaveDiagrams()
-	// returns true. (Even in that case we've seen a sentry report #149987 where
-	// it was nil.)
+	typ     planComponentType
 	diagram execinfrapb.FlowDiagram
 	// explainVec and explainVecVerbose are only populated when collecting a
 	// statement bundle when the plan was vectorized.
@@ -416,7 +405,6 @@ const (
 	planComponentTypeMainQuery
 	planComponentTypeSubquery
 	planComponentTypePostquery
-	planComponentTypeInner
 )
 
 func (t planComponentType) String() string {
@@ -504,16 +492,10 @@ func (p *planTop) init(stmt *Statement, instrumentation *instrumentationHelper) 
 func (p *planTop) savePlanInfo() {
 	vectorized := p.flags.IsSet(planFlagVectorized)
 	distribution := physicalplan.LocalPlan
-	if p.flags.IsSet(planFlagDistributedExecution) {
-		// Only show that the plan was distributed if we actually had
-		// distributed execution. This matches the logic from explainPlanNode
-		// where we use the actual physical plan's distribution rather than the
-		// physical planning heuristic.
-		if p.flags.IsSet(planFlagFullyDistributed) {
-			distribution = physicalplan.FullyDistributedPlan
-		} else if p.flags.IsSet(planFlagPartiallyDistributed) {
-			distribution = physicalplan.PartiallyDistributedPlan
-		}
+	if p.flags.IsSet(planFlagFullyDistributed) {
+		distribution = physicalplan.FullyDistributedPlan
+	} else if p.flags.IsSet(planFlagPartiallyDistributed) {
+		distribution = physicalplan.PartiallyDistributedPlan
 	}
 	containsMutation := p.flags.IsSet(planFlagContainsMutation)
 	generic := p.flags.IsSet(planFlagGeneric)
@@ -524,38 +506,37 @@ func (p *planTop) savePlanInfo() {
 }
 
 // startExec calls startExec() on each planNode using a depth-first, post-order
-// traversal. The subqueries, if any, are also started.
+// traversal.  The subqueries, if any, are also started.
 //
 // If the planNode also implements the nodeReadingOwnWrites interface,
 // the txn is temporarily reconfigured to use read-your-own-writes for
 // the duration of the call to startExec. This is used e.g. by
 // DDL statements.
+//
+// Reminder: walkPlan() ensures that subqueries and sub-plans are
+// started before startExec() is called.
 func startExec(params runParams, plan planNode) error {
-	switch plan.(type) {
-	case *explainVecNode, *explainDDLNode:
-		// Do not recurse: we're not starting the plan if we just show its
-		// structure with EXPLAIN.
-	case *showTraceNode:
-		// showTrace needs to override the params struct, and does so in its
-		// startExec() method.
-	default:
-		// Start children nodes first. This ensures that subqueries and
-		// sub-plans are started before startExec() is called.
-		for i, n := 0, plan.InputCount(); i < n; i++ {
-			child, err := plan.Input(i)
-			if err != nil {
-				return err
+	o := planObserver{
+		enterNode: func(ctx context.Context, _ string, p planNode) (bool, error) {
+			switch p.(type) {
+			case *explainVecNode, *explainDDLNode:
+				// Do not recurse: we're not starting the plan if we just show its structure with EXPLAIN.
+				return false, nil
+			case *showTraceNode:
+				// showTrace needs to override the params struct, and does so in its startExec() method.
+				return false, nil
 			}
-			if err := startExec(params, child); err != nil {
-				return err
+			return true, nil
+		},
+		leaveNode: func(_ string, n planNode) (err error) {
+			if _, ok := n.(planNodeReadingOwnWrites); ok {
+				prevMode := params.p.Txn().ConfigureStepping(params.ctx, kv.SteppingDisabled)
+				defer func() { _ = params.p.Txn().ConfigureStepping(params.ctx, prevMode) }()
 			}
-		}
+			return n.startExec(params)
+		},
 	}
-	if _, ok := plan.(planNodeReadingOwnWrites); ok {
-		prevMode := params.p.Txn().ConfigureStepping(params.ctx, kv.SteppingDisabled)
-		defer func() { _ = params.p.Txn().ConfigureStepping(params.ctx, prevMode) }()
-	}
-	return plan.startExec(params)
+	return walkPlan(params.ctx, plan, o)
 }
 
 func (p *planner) maybePlanHook(ctx context.Context, stmt tree.Statement) (planNode, error) {
@@ -576,21 +557,21 @@ func (p *planner) maybePlanHook(ctx context.Context, stmt tree.Statement) (planN
 			if !matched {
 				continue
 			}
-			return newHookFnNode(planHook.name, func(ctx context.Context, datums chan<- tree.Datums) error {
+			return newHookFnNode(planHook.name, func(ctx context.Context, nodes []planNode, datums chan<- tree.Datums) error {
 				return errors.AssertionFailedf(
 					"cannot execute prepared %v statement",
 					planHook.name,
 				)
-			}, header, p.execCfg.Stopper), nil
+			}, header, nil /* subplans */, p.execCfg.Stopper), nil
 		}
 
-		if fn, header, avoidBuffering, err := planHook.fn(ctx, stmt, p); err != nil {
+		if fn, header, subplans, avoidBuffering, err := planHook.fn(ctx, stmt, p); err != nil {
 			return nil, err
 		} else if fn != nil {
 			if avoidBuffering {
 				p.curPlan.avoidBuffering = true
 			}
-			return newHookFnNode(planHook.name, fn, header, p.execCfg.Stopper), nil
+			return newHookFnNode(planHook.name, fn, header, subplans, p.execCfg.Stopper), nil
 		}
 	}
 	return nil, nil
@@ -609,18 +590,16 @@ const (
 	// did not find one.
 	planFlagOptCacheMiss
 
-	// planFlagFullyDistributed is set if the query is planned to use full
-	// distribution. This flag indicates that the query is such that it can be
-	// distributed, and we think it's worth doing so; however, due to range
-	// placement and other physical planning decisions, the plan might still end
-	// up being local. See planFlagDistributedExecution if interested in whether
-	// the physical plan actually ends up being distributed.
+	// planFlagFullyDistributed is set if the query execution is is fully
+	// distributed.
 	planFlagFullyDistributed
 
-	// planFlagPartiallyDistributed is set if the query is planned to use
-	// partial distribution (see physicalplan.PartiallyDistributedPlan). Same
-	// caveats apply as for planFlagFullyDistributed.
+	// planFlagPartiallyDistributed is set if the query execution is is partially
+	// distributed (see physicalplan.PartiallyDistributedPlan).
 	planFlagPartiallyDistributed
+
+	// planFlagNotDistributed is set if the query execution is not distributed.
+	planFlagNotDistributed
 
 	// planFlagImplicitTxn marks that the plan was run inside of an implicit
 	// transaction.
@@ -681,10 +660,6 @@ const (
 	// current execution of the query.
 	planFlagOptimized
 
-	// planFlagDistributedExecution is set if execution of any part of the plan
-	// was distributed.
-	planFlagDistributedExecution
-
 	// These flags indicate whether at least one DELETE, INSERT, UPDATE, or
 	// UPSERT stmt was found in the whole plan.
 	planFlagContainsDelete
@@ -708,10 +683,8 @@ func (pf *planFlags) Unset(flags planFlags) {
 	*pf &^= flags
 }
 
-// ShouldBeDistributed returns true if either fully distributed or partially
-// distributed flag is set. In other words, it returns whether the plan should
-// be distributed (we might end up not distributing it though due to range
-// placement or moving the single flow to the gateway).
-func (pf planFlags) ShouldBeDistributed() bool {
+// IsDistributed returns true if either the fully or the partially distributed
+// flags is set.
+func (pf planFlags) IsDistributed() bool {
 	return pf&(planFlagFullyDistributed|planFlagPartiallyDistributed) != 0
 }

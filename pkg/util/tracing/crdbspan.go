@@ -758,10 +758,9 @@ func (s *crdbSpan) getVerboseRecording(includeDetachedChildren bool, finishing b
 		result.StructuredRecordsSizeBytes -= result.Root.StructuredRecordsSizeBytes
 		result.Root = s.getRecordingNoChildrenLocked(tracingpb.RecordingVerbose, finishing)
 		result.StructuredRecordsSizeBytes += result.Root.StructuredRecordsSizeBytes
-		maxStructuredBytes := s.tracer.MaxStructuredBytesPerTrace()
 		for i := range oldEvents {
 			size := int64(oldEvents[i].Size())
-			if result.StructuredRecordsSizeBytes+size <= maxStructuredBytes {
+			if result.StructuredRecordsSizeBytes+size < maxStructuredBytesPerTrace {
 				result.Root.AddStructuredRecord(oldEvents[i])
 				result.StructuredRecordsSizeBytes += size
 			}
@@ -794,7 +793,7 @@ func (s *crdbSpan) getVerboseRecording(includeDetachedChildren bool, finishing b
 				rollupChildrenMetadata(childrenMetadata, openChildRecording.Root.ChildrenMetadata)
 			}
 		}
-		result.addChildren(openRecordings, maxRecordedSpansPerTrace, maxStructuredBytes)
+		result.addChildren(openRecordings, maxRecordedSpansPerTrace, maxStructuredBytesPerTrace)
 	}()
 
 	// Copy over the OperationMetadata collected from s' children into the root of
@@ -882,28 +881,16 @@ func (s *crdbSpan) recordFinishedChildrenLocked(childRec Trace) {
 		// processors run in spans that FollowFrom an RPC Span that we don't
 		// collect.
 		childRec.Root.ParentSpanID = s.spanID
-		s.mu.recording.finishedChildren.addChildren([]Trace{childRec}, maxRecordedSpansPerTrace, s.tracer.MaxStructuredBytesPerTrace())
+		s.mu.recording.finishedChildren.addChildren([]Trace{childRec}, maxRecordedSpansPerTrace, maxStructuredBytesPerTrace)
 	case tracingpb.RecordingStructured:
-		fc := &s.mu.recording.finishedChildren
-		num := len(fc.Root.StructuredRecords)
-		fc.Root.StructuredRecords = childRec.appendStructuredEventsRecursively(fc.Root.StructuredRecords)
-		// Account for the size of the structured records that were appended,
-		// breaking out of the loop if we hit the byte limit. This incorporates
-		// the byte size accounting logic from RecordedSpan.AddStructuredRecord.
-		maxStructuredBytes := s.tracer.MaxStructuredBytesPerTrace()
-		for ; num < len(fc.Root.StructuredRecords); num++ {
-			size := int64(fc.Root.StructuredRecords[num].MemorySize())
-			if fc.StructuredRecordsSizeBytes+size > maxStructuredBytes {
-				break
+		buf := childRec.appendStructuredEventsRecursively(nil /* buffer */)
+		for i := range buf {
+			event := &buf[i]
+			if s.mu.recording.finishedChildren.StructuredRecordsSizeBytes+int64(event.MemorySize()) < maxStructuredBytesPerTrace {
+				size := s.mu.recording.finishedChildren.Root.AddStructuredRecord(*event)
+				s.mu.recording.finishedChildren.StructuredRecordsSizeBytes += size
 			}
-			fc.Root.StructuredRecordsSizeBytes += size
-			fc.StructuredRecordsSizeBytes += size
 		}
-		// Trim any remaining entries if we hit the byte limit.
-		for i := num; i < len(fc.Root.StructuredRecords); i++ {
-			fc.Root.StructuredRecords[i] = tracingpb.StructuredRecord{}
-		}
-		fc.Root.StructuredRecords = fc.Root.StructuredRecords[:num]
 	case tracingpb.RecordingOff:
 		break
 	default:

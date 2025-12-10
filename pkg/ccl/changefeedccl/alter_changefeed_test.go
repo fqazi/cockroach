@@ -10,7 +10,6 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
-	"maps"
 	"math/rand"
 	"net/url"
 	"slices"
@@ -25,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/ccl/utilccl"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobfrontier"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
@@ -35,10 +33,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -60,7 +56,7 @@ func TestAlterChangefeedAddTargetPrivileges(t *testing.T) {
 	ctx := context.Background()
 
 	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142799),
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 		Knobs: base.TestingKnobs{
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			DistSQL: &execinfra.TestingKnobs{
@@ -85,8 +81,6 @@ func TestAlterChangefeedAddTargetPrivileges(t *testing.T) {
 		`CREATE TABLE table_b (id int, type type_a)`,
 		`CREATE TABLE table_c (id int, type type_a)`,
 		`CREATE USER feedCreator`,
-		`CREATE ROLE feedowner`,
-		`GRANT feedowner TO feedCreator`,
 		`GRANT SELECT ON table_a TO feedCreator`,
 		`GRANT CHANGEFEED ON table_a TO feedCreator`,
 		`CREATE EXTERNAL CONNECTION "first" AS 'kafka://nope'`,
@@ -127,25 +121,23 @@ func TestAlterChangefeedAddTargetPrivileges(t *testing.T) {
 			row := userDB.QueryRow(t, "CREATE CHANGEFEED for table_a INTO 'external://first'")
 			row.Scan(&jobID)
 			userDB.Exec(t, `PAUSE JOB $1`, jobID)
-			waitForJobState(userDB, t, catpb.JobID(jobID), `paused`)
-			userDB.Exec(t, `ALTER JOB $1 OWNER TO feedowner`, jobID)
+			waitForJobStatus(userDB, t, catpb.JobID(jobID), `paused`)
 		})
 
 		// user1 is missing the CHANGEFEED privilege on table_b and table_c.
 		withUser(t, "user1", func(userDB *sqlutils.SQLRunner) {
 			userDB.ExpectErr(t,
-				"user user1 does not have privileges for job",
+				"user user1 requires the CHANGEFEED privilege on all target tables to be able to run an enterprise changefeed",
 				fmt.Sprintf("ALTER CHANGEFEED %d ADD table_b, table_c set sink='external://second'", jobID),
 			)
 		})
 		rootDB.Exec(t, `GRANT CHANGEFEED ON table_b TO user1`)
 		withUser(t, "user1", func(userDB *sqlutils.SQLRunner) {
 			userDB.ExpectErr(t,
-				"user user1 does not have privileges for job",
+				"user user1 requires the CHANGEFEED privilege on all target tables to be able to run an enterprise changefeed",
 				fmt.Sprintf("ALTER CHANGEFEED %d ADD table_b, table_c set sink='external://second'", jobID),
 			)
 		})
-		rootDB.Exec(t, `GRANT feedowner TO user1`)
 		rootDB.Exec(t, `GRANT CHANGEFEED ON table_c TO user1`)
 		withUser(t, "user1", func(userDB *sqlutils.SQLRunner) {
 			userDB.Exec(t,
@@ -181,28 +173,20 @@ func TestAlterChangefeedAddTargetPrivileges(t *testing.T) {
 			row := userDB.QueryRow(t, "CREATE CHANGEFEED for table_a INTO 'kafka://foo'")
 			row.Scan(&jobID)
 			userDB.Exec(t, `PAUSE JOB $1`, jobID)
-			waitForJobState(userDB, t, catpb.JobID(jobID), `paused`)
-			userDB.Exec(t, `ALTER JOB $1 OWNER TO feedowner`, jobID)
+			waitForJobStatus(userDB, t, catpb.JobID(jobID), `paused`)
 		})
 
 		// user2 is missing the SELECT privilege on table_b and table_c.
 		withUser(t, "user2", func(userDB *sqlutils.SQLRunner) {
 			userDB.ExpectErr(t,
-				"pq: user user2 does not have privileges for job",
+				"pq: user user2 with CONTROLCHANGEFEED role option requires the SELECT privilege on all target tables to be able to run an enterprise changefeed",
 				fmt.Sprintf("ALTER CHANGEFEED %d ADD table_b, table_c set sink='kafka://bar'", jobID),
 			)
 		})
 		rootDB.Exec(t, `GRANT SELECT ON table_b TO user2`)
 		withUser(t, "user2", func(userDB *sqlutils.SQLRunner) {
 			userDB.ExpectErr(t,
-				"pq: user user2 does not have privileges for job",
-				fmt.Sprintf("ALTER CHANGEFEED %d ADD table_b, table_c set sink='kafka://bar'", jobID),
-			)
-		})
-		rootDB.Exec(t, `GRANT feedowner TO user2`)
-		withUser(t, "user2", func(userDB *sqlutils.SQLRunner) {
-			userDB.ExpectErr(t,
-				"requires the SELECT privilege on all target tables",
+				"pq: user user2 with CONTROLCHANGEFEED role option requires the SELECT privilege on all target tables to be able to run an enterprise changefeed",
 				fmt.Sprintf("ALTER CHANGEFEED %d ADD table_b, table_c set sink='kafka://bar'", jobID),
 			)
 		})
@@ -224,21 +208,19 @@ func TestAlterChangefeedAddTarget(t *testing.T) {
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
 		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo`, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo`)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
 		require.True(t, ok)
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d ADD bar`, feed.JobID()))
 
 		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, feed.JobID()))
-		waitForJobState(sqlDB, t, feed.JobID(), `running`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `running`)
 
 		sqlDB.Exec(t, `INSERT INTO foo VALUES(1)`)
 		assertPayloads(t, testFeed, []string{
@@ -254,96 +236,11 @@ func TestAlterChangefeedAddTarget(t *testing.T) {
 	cdcTest(t, testFn, feedTestEnterpriseSinks, feedTestNoExternalConnection)
 }
 
-// TestAlterChangefeedAddTargetAfterInitialScan tests adding a new target
-// after the changefeed has already completed its initial scan.
-func TestAlterChangefeedAddTargetAfterInitialScan(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	testutils.RunValues(t, "initial_scan", []string{"yes", "no", "only"}, func(t *testing.T, initialScan string) {
-		testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-			sqlDB := sqlutils.MakeSQLRunner(s.DB)
-			sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
-			sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b INT)`)
-
-			testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo`, optOutOfMetamorphicDBLevelChangefeed{
-				reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-			})
-			defer closeFeed(t, testFeed)
-
-			feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
-			require.True(t, ok)
-
-			checkHighwaterAdvance := func(ts hlc.Timestamp) func() error {
-				return func() error {
-					hw, err := feed.HighWaterMark()
-					if err != nil {
-						return err
-					}
-					if hw.After(ts) {
-						return nil
-					}
-					return errors.Newf("waiting for highwater to advance past %s", ts)
-				}
-			}
-
-			// Insert and update row into new table after changefeed was already created.
-			sqlDB.Exec(t, `INSERT INTO bar VALUES(2, 2)`)
-			sqlDB.Exec(t, `UPDATE bar SET b = 9 WHERE a = 2`)
-
-			var tsStr string
-			sqlDB.QueryRow(t, `INSERT INTO foo VALUES(1) RETURNING cluster_logical_timestamp()`).Scan(&tsStr)
-			assertPayloads(t, testFeed, []string{
-				`foo: [1]->{"after": {"a": 1}}`,
-			})
-			ts := parseTimeToHLC(t, tsStr)
-			testutils.SucceedsSoon(t, checkHighwaterAdvance(ts))
-
-			sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-			waitForJobState(sqlDB, t, feed.JobID(), `paused`)
-
-			sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d ADD bar WITH initial_scan = '%s'`, feed.JobID(), initialScan))
-
-			sqlDB.Exec(t, `RESUME JOB $1`, feed.JobID())
-			waitForJobState(sqlDB, t, feed.JobID(), `running`)
-
-			// Updates for the new table only start at the changefeed's current
-			// highwater at the time of the ALTER CHANGEFEED.
-			switch initialScan {
-			case "yes":
-				assertPayloads(t, testFeed, []string{
-					// There is no `bar: [2]->{"after": {"a": 2, "b": 2}}` message
-					// because it was inserted before the highwater.
-					`bar: [2]->{"after": {"a": 2, "b": 9}}`,
-				})
-			case "only":
-				// Strangely, when initial_scan = 'only', we don't do an initial
-				// scan unless the original changefeed was initial_scan = 'only'.
-			case "no":
-			default:
-				t.Fatalf("unknown initial scan type %q", initialScan)
-			}
-
-			sqlDB.Exec(t, `INSERT INTO foo VALUES(2)`)
-			assertPayloads(t, testFeed, []string{
-				`foo: [2]->{"after": {"a": 2}}`,
-			})
-
-			sqlDB.Exec(t, `UPDATE bar SET b = 25 WHERE a = 2`)
-			assertPayloads(t, testFeed, []string{
-				`bar: [2]->{"after": {"a": 2, "b": 25}}`,
-			})
-		}
-
-		cdcTest(t, testFn, feedTestEnterpriseSinks, feedTestNoExternalConnection)
-	})
-}
-
 func TestAlterChangefeedAddTargetFamily(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "helpers_test=1")
+	require.NoError(t, log.SetVModule("helpers_test=1"))
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
@@ -378,12 +275,12 @@ func TestAlterChangefeedAddTargetFamily(t *testing.T) {
 		})
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d ADD foo FAMILY onlyb`, feed.JobID()))
 
 		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, feed.JobID()))
-		waitForJobState(sqlDB, t, feed.JobID(), `running`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `running`)
 		sqlDB.Exec(t, `INSERT INTO foo VALUES(37, 'goodbye')`)
 		assertPayloads(t, testFeed, []string{
 			// Note that we don't see foo.onlyb.[42] here, because we're not
@@ -400,8 +297,6 @@ func TestAlterChangefeedAddTargetFamily(t *testing.T) {
 func TestAlterChangefeedSwitchFamily(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	testutils.SetVModule(t, "helpers_test=1")
 
 	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
@@ -437,12 +332,12 @@ func TestAlterChangefeedSwitchFamily(t *testing.T) {
 		})
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d ADD foo FAMILY onlyb DROP foo FAMILY onlya`, feed.JobID()))
 
 		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, feed.JobID()))
-		waitForJobState(sqlDB, t, feed.JobID(), `running`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `running`)
 
 		sqlDB.Exec(t, `INSERT INTO foo VALUES(2, 'goodbye')`)
 		assertPayloads(t, testFeed, []string{
@@ -465,21 +360,19 @@ func TestAlterChangefeedDropTarget(t *testing.T) {
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
 		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar`, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar`)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
 		require.True(t, ok)
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d DROP bar`, feed.JobID()))
 
 		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, feed.JobID()))
-		waitForJobState(sqlDB, t, feed.JobID(), `running`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `running`)
 
 		sqlDB.Exec(t, `INSERT INTO foo VALUES(1)`)
 		assertPayloads(t, testFeed, []string{
@@ -502,11 +395,7 @@ func TestAlterChangefeedDropTargetAfterTableDrop(t *testing.T) {
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
 		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar WITH on_error='pause'`,
-			optOutOfMetamorphicDBLevelChangefeed{
-				reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-			},
-		)
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar WITH on_error='pause'`)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
@@ -514,12 +403,12 @@ func TestAlterChangefeedDropTargetAfterTableDrop(t *testing.T) {
 
 		// Drop bar table.  This should cause the job to be paused.
 		sqlDB.Exec(t, `DROP TABLE bar`)
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d DROP bar`, feed.JobID()))
 
 		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, feed.JobID()))
-		waitForJobState(sqlDB, t, feed.JobID(), `running`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `running`)
 
 		sqlDB.Exec(t, `INSERT INTO foo VALUES(1)`)
 		assertPayloads(t, testFeed, []string{
@@ -527,7 +416,7 @@ func TestAlterChangefeedDropTargetAfterTableDrop(t *testing.T) {
 		})
 	}
 
-	cdcTest(t, testFn, feedTestEnterpriseSinks, feedTestNoExternalConnection, withAllowChangefeedErr("error is expected when dropping"))
+	cdcTest(t, testFn, feedTestEnterpriseSinks, feedTestNoExternalConnection)
 }
 
 func TestAlterChangefeedDropTargetFamily(t *testing.T) {
@@ -538,23 +427,19 @@ func TestAlterChangefeedDropTargetFamily(t *testing.T) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING, FAMILY onlya (a), FAMILY onlyb (b))`)
 
-		var args []any
-		if _, ok := f.(*webhookFeedFactory); ok {
-			args = append(args, optOutOfMetamorphicEnrichedEnvelope{reason: "metamorphic enriched envelope does not support column families for webhook sinks"})
-		}
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo FAMILY onlya, foo FAMILY onlyb`, args...)
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo FAMILY onlya, foo FAMILY onlyb`)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
 		require.True(t, ok)
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d DROP foo FAMILY onlyb`, feed.JobID()))
 
 		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, feed.JobID()))
-		waitForJobState(sqlDB, t, feed.JobID(), `running`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `running`)
 
 		sqlDB.Exec(t, `INSERT INTO foo VALUES(1, 'hello')`)
 		sqlDB.Exec(t, `INSERT INTO foo VALUES(2, 'goodbye')`)
@@ -583,12 +468,12 @@ func TestAlterChangefeedSetDiffOption(t *testing.T) {
 		require.True(t, ok)
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d SET diff`, feed.JobID()))
 
 		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, feed.JobID()))
-		waitForJobState(sqlDB, t, feed.JobID(), `running`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `running`)
 
 		sqlDB.Exec(t, `INSERT INTO foo VALUES (0, 'initial')`)
 		assertPayloads(t, testFeed, []string{
@@ -615,7 +500,7 @@ func TestAlterChangefeedRespectsCDCQuery(t *testing.T) {
 		require.True(t, ok)
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d SET diff`, feed.JobID()))
 		registry := s.Server.JobRegistry().(*jobs.Registry)
@@ -656,12 +541,12 @@ func TestAlterChangefeedUnsetDiffOption(t *testing.T) {
 		require.True(t, ok)
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d UNSET diff`, feed.JobID()))
 
 		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, feed.JobID()))
-		waitForJobState(sqlDB, t, feed.JobID(), `running`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `running`)
 
 		sqlDB.Exec(t, `INSERT INTO foo VALUES (0, 'initial')`)
 		assertPayloads(t, testFeed, []string{
@@ -681,9 +566,7 @@ func TestAlterChangefeedErrors(t *testing.T) {
 		sqlDB := sqlutils.MakeSQLRunner(s.DB)
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
 		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo`, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo`)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
@@ -708,7 +591,7 @@ func TestAlterChangefeedErrors(t *testing.T) {
 		)
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.ExpectErr(t,
 			`pq: target "TABLE baz" does not exist`,
@@ -780,16 +663,14 @@ func TestAlterChangefeedDropAllTargetsError(t *testing.T) {
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
 		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar`, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar`)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
 		require.True(t, ok)
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.ExpectErr(t,
 			`cannot drop all targets`,
@@ -816,9 +697,7 @@ func TestAlterChangefeedTelemetry(t *testing.T) {
 		// Reset the counts.
 		_ = telemetry.GetFeatureCounts(telemetry.Raw, telemetry.ResetCounts)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar WITH diff`, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo, bar WITH diff`)
 		defer closeFeed(t, testFeed)
 		feed := testFeed.(cdctest.EnterpriseTestFeed)
 
@@ -906,12 +785,12 @@ func TestAlterChangefeedPersistSinkURI(t *testing.T) {
 	sqlDB.QueryRow(t, `CREATE CHANGEFEED FOR TABLE foo, bar INTO $1`, unredactedSinkURI).Scan(&changefeedID)
 
 	sqlDB.Exec(t, `PAUSE JOB $1`, changefeedID)
-	waitForJobState(sqlDB, t, changefeedID, `paused`)
+	waitForJobStatus(sqlDB, t, changefeedID, `paused`)
 
 	sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d SET diff`, changefeedID))
 
 	sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, changefeedID))
-	waitForJobState(sqlDB, t, changefeedID, `running`)
+	waitForJobStatus(sqlDB, t, changefeedID, `running`)
 
 	job, err := registry.LoadJob(ctx, changefeedID)
 	require.NoError(t, err)
@@ -937,7 +816,7 @@ func TestAlterChangefeedChangeSinkTypeError(t *testing.T) {
 		require.True(t, ok)
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.ExpectErr(t,
 			`pq: New sink type "null" does not match original sink type "kafka". Altering the sink type of a changefeed is disallowed, consider creating a new changefeed instead.`,
@@ -966,14 +845,14 @@ func TestAlterChangefeedChangeSinkURI(t *testing.T) {
 		require.True(t, ok)
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		newSinkURI := `kafka://new_kafka_uri`
 
 		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d SET sink = '%s'`, feed.JobID(), newSinkURI))
 
 		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, feed.JobID()))
-		waitForJobState(sqlDB, t, feed.JobID(), `running`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `running`)
 
 		job, err := registry.LoadJob(ctx, feed.JobID())
 		require.NoError(t, err)
@@ -1013,10 +892,7 @@ func TestAlterChangefeedAddTargetErrors(t *testing.T) {
 			return true, nil
 		}
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '100ms'`,
-			optOutOfMetamorphicDBLevelChangefeed{
-				reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-			})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '100ms'`)
 
 		// Kafka feeds are not buffered, so we have to consume messages.
 		g := ctxgroup.WithContext(context.Background())
@@ -1037,7 +913,7 @@ func TestAlterChangefeedAddTargetErrors(t *testing.T) {
 		require.True(t, ok)
 
 		require.NoError(t, feed.Pause())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 		sqlDB.Exec(t, `INSERT INTO bar VALUES (1), (2), (3)`)
@@ -1066,7 +942,7 @@ func TestAlterChangefeedAddTargetErrors(t *testing.T) {
 		})
 
 		require.NoError(t, feed.Pause())
-		waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 		sqlDB.Exec(t, `CREATE TABLE baz (a INT PRIMARY KEY)`)
 		sqlDB.Exec(t, `INSERT INTO baz VALUES (1), (2), (3)`)
@@ -1090,10 +966,7 @@ func TestAlterChangefeedDatabaseQualifiedNames(t *testing.T) {
 		sqlDB.Exec(t, `CREATE TABLE d.users (id INT PRIMARY KEY, name STRING)`)
 		sqlDB.Exec(t, `INSERT INTO d.drivers VALUES (1, 'Alice')`)
 		sqlDB.Exec(t, `INSERT INTO d.users VALUES (1, 'Bob')`)
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR d.drivers WITH resolved = '100ms', diff`,
-			optOutOfMetamorphicDBLevelChangefeed{
-				reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-			})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR d.drivers WITH resolved = '100ms', diff`)
 		defer closeFeed(t, testFeed)
 
 		assertPayloads(t, testFeed, []string{
@@ -1144,11 +1017,7 @@ func TestAlterChangefeedDatabaseScope(t *testing.T) {
 			`INSERT INTO new_movr.drivers VALUES (1, 'Bob')`,
 		)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR movr.drivers WITH diff`,
-			optOutOfMetamorphicDBLevelChangefeed{
-				reason: "changefeed watches tables not in the default database",
-			},
-		)
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR movr.drivers WITH diff`)
 		defer closeFeed(t, testFeed)
 
 		assertPayloads(t, testFeed, []string{
@@ -1174,813 +1043,6 @@ func TestAlterChangefeedDatabaseScope(t *testing.T) {
 	cdcTest(t, testFn, feedTestEnterpriseSinks, feedTestNoExternalConnection, feedTestUseRootUserConnection)
 }
 
-// TestAlterChangefeedDatabaseLevelChangefeedFilters tests that we can alter a
-// database level changefeed to set/unset include/exclude filters. We do not
-// create or drop any tables in this test once we create the changefeed so that
-// it doesn't depend on the table watcher functionality.
-func TestAlterChangefeedDatabaseLevelChangefeedFilters(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 154053, "unreleased feature")
-
-	// The cases in this test will either a) create a changefeed with no filter,
-	// and then remove the filter with an ALTER CHANGEFEED, or b) create a
-	// changefeed with a filter and then remove the filter with an `ALTER
-	// CHANGEFEED UNSET (INCLUDE|EXCLUDE)` statement.
-	// expectActiveFilter is true if we expect there to be an active filter at
-	// the end of the test (case a) or false if we expect there to be no active
-	// filter (case b) at the end of the test when we make out assertions.
-	type filterTestCase struct {
-		name               string
-		createStmt         string
-		alterStmt          string
-		expectActiveFilter bool
-	}
-
-	testCases := []filterTestCase{
-		{
-			name:               "set_exclude",
-			createStmt:         "CREATE CHANGEFEED FOR DATABASE d",
-			alterStmt:          "SET EXCLUDE TABLES foo",
-			expectActiveFilter: true,
-		},
-		{
-			name:               "set_include",
-			createStmt:         "CREATE CHANGEFEED FOR DATABASE d",
-			alterStmt:          "SET INCLUDE TABLES bar",
-			expectActiveFilter: true,
-		},
-		{
-			name:               "unset_include",
-			createStmt:         "CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES bar",
-			alterStmt:          "UNSET INCLUDE TABLES",
-			expectActiveFilter: false,
-		},
-		{
-			name:               "unset_exclude",
-			createStmt:         "CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo",
-			alterStmt:          "UNSET EXCLUDE TABLES",
-			expectActiveFilter: false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-				sqlDB := sqlutils.MakeSQLRunner(s.DB)
-				sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
-				sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b STRING)`)
-
-				foo := feed(t, f, tc.createStmt)
-				defer closeFeed(t, foo)
-
-				jobID := foo.(cdctest.EnterpriseTestFeed).JobID()
-
-				sqlDB.Exec(t, `PAUSE JOB $1`, jobID)
-				waitForJobState(sqlDB, t, jobID, `paused`)
-
-				sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d %s`, jobID, tc.alterStmt))
-
-				sqlDB.Exec(t, `RESUME JOB $1`, jobID)
-				waitForJobState(sqlDB, t, jobID, `running`)
-
-				// This event will be filtered out in the case where our ALTER
-				// statement SET a filter, but will be emitted in the case
-				// where our ALTER statement UNSET a filter.
-				sqlDB.Exec(t, `INSERT INTO foo VALUES (0, 'initial')`)
-
-				// These events should always be emitted.
-				sqlDB.Exec(t, `INSERT INTO bar VALUES (0, 'initial')`)
-				sqlDB.Exec(t, `UPSERT INTO bar VALUES (0, 'updated')`)
-
-				expectedPayloads := []string{
-					`bar: [0]->{"after": {"a": 0, "b": "initial"}}`,
-					`bar: [0]->{"after": {"a": 0, "b": "updated"}}`,
-				}
-				if !tc.expectActiveFilter {
-					expectedPayloads = append([]string{`foo: [0]->{"after": {"a": 0, "b": "initial"}}`}, expectedPayloads...)
-				}
-
-				assertPayloads(t, foo, expectedPayloads)
-			}
-			cdcTest(t, testFn, feedTestEnterpriseSinks)
-		})
-	}
-}
-
-// TestAlterChangefeedDatabaseLevelChangefeedDoesntRemoveFilter tests that we don't
-// remove the filter when we do an ALTER CHANGEFEED that doesn't explicitly
-// set or unset a filter.
-func TestAlterChangefeedDatabaseLevelChangefeedDoesntRemoveFilter(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 154053, "unreleased feature")
-
-	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-		sqlDB := sqlutils.MakeSQLRunner(s.DB)
-		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
-		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b STRING)`)
-
-		foo := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo`)
-		defer closeFeed(t, foo)
-
-		jobID := foo.(cdctest.EnterpriseTestFeed).JobID()
-
-		sqlDB.Exec(t, `PAUSE JOB $1`, jobID)
-		waitForJobState(sqlDB, t, jobID, `paused`)
-
-		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d SET DIFF`, jobID))
-
-		sqlDB.Exec(t, `RESUME JOB $1`, jobID)
-		waitForJobState(sqlDB, t, jobID, `running`)
-
-		// This event should still be excluded.
-		sqlDB.Exec(t, `INSERT INTO foo VALUES (0, 'initial')`)
-
-		// These events should be emitted with diff.
-		sqlDB.Exec(t, `INSERT INTO bar VALUES (0, 'initial')`)
-		sqlDB.Exec(t, `UPSERT INTO bar VALUES (0, 'updated')`)
-
-		assertPayloads(t, foo, []string{
-			`bar: [0]->{"after": {"a": 0, "b": "initial"}, "before": null}`,
-			`bar: [0]->{"after": {"a": 0, "b": "updated"}, "before": {"a": 0, "b": "initial"}}`,
-		})
-	}
-
-	cdcTest(t, testFn, feedTestEnterpriseSinks)
-}
-
-// TestAlterChangefeedDatabaseLevelChangefeedRemainsDatabaseLevel tests that we
-// don't silently convert a database level changefeed to a table level changefeed
-// when we do an unrelated alter.
-func TestAlterChangefeedDatabaseLevelChangefeedRemainsDatabaseLevel(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 154053, "unreleased feature")
-
-	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-		sqlDB := sqlutils.MakeSQLRunner(s.DB)
-		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
-		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b STRING)`)
-
-		foo := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo`)
-		defer closeFeed(t, foo)
-
-		jobID := foo.(cdctest.EnterpriseTestFeed).JobID()
-
-		sqlDB.Exec(t, `PAUSE JOB $1`, jobID)
-		waitForJobState(sqlDB, t, jobID, `paused`)
-
-		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d SET DIFF`, jobID))
-		// This should not fail, which it would if the changefeeed were
-		// silently converted to a table-level changefeed.
-		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d UNSET EXCLUDE TABLES`, jobID))
-
-		sqlDB.Exec(t, `RESUME JOB $1`, jobID)
-		waitForJobState(sqlDB, t, jobID, `running`)
-
-		sqlDB.Exec(t, `INSERT INTO foo VALUES (0, 'initial')`)
-		sqlDB.Exec(t, `INSERT INTO bar VALUES (0, 'initial')`)
-		sqlDB.Exec(t, `UPSERT INTO bar VALUES (0, 'updated')`)
-
-		assertPayloads(t, foo, []string{
-			`foo: [0]->{"after": {"a": 0, "b": "initial"}, "before": null}`,
-			`bar: [0]->{"after": {"a": 0, "b": "initial"}, "before": null}`,
-			`bar: [0]->{"after": {"a": 0, "b": "updated"}, "before": {"a": 0, "b": "initial"}}`,
-		})
-	}
-
-	cdcTest(t, testFn, feedTestEnterpriseSinks)
-}
-
-// TestAlterChangefeedDatabaseLevelChangefeedDiff tests that we can alter a
-// database level changefeed to turn on the diff option. We do not create or
-// drop any tables in this test once we create the changefeed so that it doesn't
-// depend on the table watcher functionality.
-func TestAlterChangefeedDatabaseLevelChangefeedDiff(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 154053, "unreleased feature")
-
-	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-		sqlDB := sqlutils.MakeSQLRunner(s.DB)
-		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
-		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b STRING)`)
-
-		foo := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d WITH initial_scan='no'`)
-		defer closeFeed(t, foo)
-
-		jobID := foo.(cdctest.EnterpriseTestFeed).JobID()
-
-		sqlDB.Exec(t, `PAUSE JOB $1`, jobID)
-		waitForJobState(sqlDB, t, jobID, `paused`)
-
-		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d SET DIFF`, jobID))
-
-		sqlDB.Exec(t, `RESUME JOB $1`, jobID)
-		waitForJobState(sqlDB, t, jobID, `running`)
-
-		sqlDB.Exec(t, `INSERT INTO foo VALUES (0, 'initial')`)
-		sqlDB.Exec(t, `INSERT INTO bar VALUES (0, 'initial')`)
-		sqlDB.Exec(t, `UPSERT INTO bar VALUES (0, 'updated')`)
-
-		assertPayloads(t, foo, []string{
-			`foo: [0]->{"after": {"a": 0, "b": "initial"}, "before": null}`,
-			`bar: [0]->{"after": {"a": 0, "b": "initial"}, "before": null}`,
-			`bar: [0]->{"after": {"a": 0, "b": "updated"}, "before": {"a": 0, "b": "initial"}}`,
-		})
-	}
-
-	cdcTest(t, testFn, feedTestEnterpriseSinks)
-}
-
-// TestAlterChangefeedDatabaseLevelChangefeedFailsOnTargetAlter tests that
-// ADD and DROP operations fail on database level changefeeds.
-func TestAlterChangefeedDatabaseLevelChangefeedFailsOnTargetAlter(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 154053, "unreleased feature")
-
-	for _, op := range []string{"ADD", "DROP"} {
-		testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-			sqlDB := sqlutils.MakeSQLRunner(s.DB)
-			sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
-			sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b STRING)`)
-
-			foo := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d`)
-			defer closeFeed(t, foo)
-
-			jobID := foo.(cdctest.EnterpriseTestFeed).JobID()
-
-			sqlDB.Exec(t, `PAUSE JOB $1`, jobID)
-			waitForJobState(sqlDB, t, jobID, `paused`)
-
-			sqlDB.ExpectErr(
-				t,
-				"pq: cannot alter targets for a database level changefeed",
-				fmt.Sprintf(`ALTER CHANGEFEED %d %s foo`, jobID, op),
-			)
-		}
-
-		cdcTest(t, testFn, feedTestEnterpriseSinks)
-	}
-}
-
-// TestAlterChangefeedDatabaseLevelChangefeedMultipleSetClauses tests that
-// a single ALTER statement can include multiple SET clauses and all changes
-// are respected.
-func TestAlterChangefeedDatabaseLevelChangefeedMultipleSetClauses(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 154053, "unreleased feature")
-
-	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-		sqlDB := sqlutils.MakeSQLRunner(s.DB)
-		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
-		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b STRING)`)
-
-		foo := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d`)
-		defer closeFeed(t, foo)
-
-		jobID := foo.(cdctest.EnterpriseTestFeed).JobID()
-
-		sqlDB.Exec(t, `PAUSE JOB $1`, jobID)
-		waitForJobState(sqlDB, t, jobID, `paused`)
-
-		// Alter with both SET diff and SET INCLUDE TABLES in a single statement
-		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d SET diff SET INCLUDE TABLES foo`, jobID))
-
-		sqlDB.Exec(t, `RESUME JOB $1`, jobID)
-		waitForJobState(sqlDB, t, jobID, `running`)
-
-		// Insert into both tables
-		sqlDB.Exec(t, `INSERT INTO foo VALUES (0, 'initial')`)
-		sqlDB.Exec(t, `INSERT INTO bar VALUES (0, 'initial')`)
-		sqlDB.Exec(t, `UPSERT INTO foo VALUES (0, 'updated')`)
-
-		assertPayloads(t, foo, []string{
-			`foo: [0]->{"after": {"a": 0, "b": "initial"}, "before": null}`,
-			`foo: [0]->{"after": {"a": 0, "b": "updated"}, "before": {"a": 0, "b": "initial"}}`,
-		})
-	}
-
-	cdcTest(t, testFn, feedTestEnterpriseSinks)
-}
-
-// TestAlterChangefeedDatabaseLevelChangefeedFilterSemantics tests various
-// filter alteration behaviors including replacement and switching between
-// INCLUDE/EXCLUDE modes.
-func TestAlterChangefeedDatabaseLevelChangefeedFilterSemantics(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 154053, "unreleased feature")
-
-	type alterSpec struct {
-		stmt string
-		// When expectedErr is non-empty, this alter is expected to fail with this error.
-		expectedErr string
-	}
-
-	type filterTestCase struct {
-		name       string
-		createStmt string
-		alters     []alterSpec
-		// expectPayloads maps a table name to whether payloads are expected after
-		// the alter statement(s).
-		expectPayloads map[string]bool
-	}
-
-	testCases := []filterTestCase{
-		{
-			name:       "exclude_replaces_exclude_single",
-			createStmt: "CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo",
-			alters:     []alterSpec{{stmt: "SET EXCLUDE TABLES bar"}},
-			// Altering the changefeed to exclude bar means that bar is the only
-			// excluded table. foo is no longer excluded.
-			expectPayloads: map[string]bool{"foo": true, "bar": false, "baz": true},
-		},
-		{
-			name:           "exclude_replaces_with_multiple",
-			createStmt:     "CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo",
-			alters:         []alterSpec{{stmt: "SET EXCLUDE TABLES foo, bar"}},
-			expectPayloads: map[string]bool{"foo": false, "bar": false, "baz": true},
-		},
-		{
-			name:       "include_replaces_include",
-			createStmt: "CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo",
-			alters:     []alterSpec{{stmt: "SET INCLUDE TABLES bar"}},
-			// Altering the changefeed to include bar means that bar is the only
-			// included table. foo is no longer included.
-			expectPayloads: map[string]bool{"foo": false, "bar": true, "baz": false},
-		},
-		{
-			// This test is the same as the previous one, except that SET INCLUDE
-			// foo and SET INCLUDE bar are in a single ALTER CHANGEFEED statement.
-			name:           "include_replaces_include_single_alter",
-			createStmt:     "CREATE CHANGEFEED FOR DATABASE d",
-			alters:         []alterSpec{{stmt: "SET INCLUDE TABLES foo SET INCLUDE TABLES bar"}},
-			expectPayloads: map[string]bool{"foo": false, "bar": true, "baz": false},
-		},
-		{
-			name:           "include_replaces_with_multiple",
-			createStmt:     "CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo",
-			alters:         []alterSpec{{stmt: "SET INCLUDE TABLES foo, bar"}},
-			expectPayloads: map[string]bool{"foo": true, "bar": true, "baz": false},
-		},
-		{
-			name:       "include_then_exclude_single_alter_fails",
-			createStmt: "CREATE CHANGEFEED FOR DATABASE d",
-			alters: []alterSpec{
-				{
-					stmt:        "SET INCLUDE TABLES foo SET EXCLUDE TABLES bar",
-					expectedErr: "cannot alter filter type from INCLUDE to EXCLUDE",
-				},
-			},
-		},
-		{
-			name:       "include_then_exclude_single_alter_fails_same_table",
-			createStmt: "CREATE CHANGEFEED FOR DATABASE d",
-			alters: []alterSpec{
-				{
-					stmt:        "SET INCLUDE TABLES foo SET EXCLUDE TABLES foo",
-					expectedErr: "cannot alter filter type from INCLUDE to EXCLUDE",
-				},
-			},
-		},
-		{
-			name:       "include_then_exclude_two_alters_fails",
-			createStmt: "CREATE CHANGEFEED FOR DATABASE d",
-			alters: []alterSpec{
-				{stmt: "SET INCLUDE TABLES foo"},
-				{
-					stmt:        "SET EXCLUDE TABLES bar",
-					expectedErr: "cannot alter filter type from INCLUDE to EXCLUDE",
-				},
-			},
-		},
-		{
-			name:       "exclude_then_include_single_alter_fails",
-			createStmt: "CREATE CHANGEFEED FOR DATABASE d",
-			alters: []alterSpec{
-				{
-					stmt:        "SET EXCLUDE TABLES foo SET INCLUDE TABLES bar",
-					expectedErr: "cannot alter filter type from EXCLUDE to INCLUDE",
-				},
-			},
-		},
-		{
-			name:       "exclude_then_include_two_alters_fails",
-			createStmt: "CREATE CHANGEFEED FOR DATABASE d",
-			alters: []alterSpec{
-				{stmt: "SET EXCLUDE TABLES foo"},
-				{
-					stmt:        "SET INCLUDE TABLES bar",
-					expectedErr: "cannot alter filter type from EXCLUDE to INCLUDE",
-				},
-			},
-		},
-		{
-			name:           "unset_include_when_no_filter_is_fine",
-			createStmt:     "CREATE CHANGEFEED FOR DATABASE d",
-			alters:         []alterSpec{{stmt: "UNSET INCLUDE TABLES"}},
-			expectPayloads: map[string]bool{"foo": true, "bar": true, "baz": true},
-		},
-		{
-			name:           "unset_exclude_when_no_filter_is_fine",
-			createStmt:     "CREATE CHANGEFEED FOR DATABASE d",
-			alters:         []alterSpec{{stmt: "UNSET EXCLUDE TABLES"}},
-			expectPayloads: map[string]bool{"foo": true, "bar": true, "baz": true},
-		},
-		{
-			name:       "set_include_then_unset_exclude_fails",
-			createStmt: "CREATE CHANGEFEED FOR DATABASE d",
-			alters: []alterSpec{
-				{stmt: "SET INCLUDE TABLES foo"},
-				{
-					stmt:        "UNSET EXCLUDE TABLES",
-					expectedErr: "cannot alter filter type from INCLUDE to EXCLUDE",
-				},
-			},
-		},
-		{
-			name:       "unset_include_then_set_exclude_single_alter",
-			createStmt: "CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo",
-			alters:     []alterSpec{{stmt: "UNSET INCLUDE TABLES SET EXCLUDE TABLES bar"}},
-			// UNSET INCLUDE clears the filter, then SET EXCLUDE should succeed
-			// since the filter check passes when tables list is empty.
-			expectPayloads: map[string]bool{"foo": true, "bar": false, "baz": true},
-		},
-		{
-			name:           "unset_include_then_set_exclude",
-			createStmt:     "CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo",
-			alters:         []alterSpec{{stmt: "UNSET INCLUDE TABLES"}, {stmt: "SET EXCLUDE TABLES bar"}},
-			expectPayloads: map[string]bool{"foo": true, "bar": false, "baz": true},
-		},
-		{
-			name:       "set_exclude_then_unset_include_fails",
-			createStmt: "CREATE CHANGEFEED FOR DATABASE d",
-			alters: []alterSpec{
-				{stmt: "SET EXCLUDE TABLES foo"},
-				{
-					stmt:        "UNSET INCLUDE TABLES",
-					expectedErr: "cannot alter filter type from EXCLUDE to INCLUDE",
-				},
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-				sqlDB := sqlutils.MakeSQLRunner(s.DB)
-				sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
-				sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b STRING)`)
-				sqlDB.Exec(t, `CREATE TABLE baz (a INT PRIMARY KEY, b STRING)`)
-
-				feed := feed(t, f, tc.createStmt)
-				defer closeFeed(t, feed)
-
-				jobID := feed.(cdctest.EnterpriseTestFeed).JobID()
-
-				sqlDB.Exec(t, `PAUSE JOB $1`, jobID)
-				waitForJobState(sqlDB, t, jobID, `paused`)
-
-				for _, alter := range tc.alters {
-					if alter.expectedErr != "" {
-						sqlDB.ExpectErr(
-							t,
-							alter.expectedErr,
-							fmt.Sprintf(`ALTER CHANGEFEED %d %s`, jobID, alter.stmt),
-						)
-						// If we expect an error, that's the end of the test.
-						return
-					}
-
-					sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d %s`, jobID, alter.stmt))
-				}
-
-				sqlDB.Exec(t, `RESUME JOB $1`, jobID)
-				waitForJobState(sqlDB, t, jobID, `running`)
-
-				sqlDB.Exec(t, `INSERT INTO foo VALUES (0, 'foo')`)
-				sqlDB.Exec(t, `INSERT INTO bar VALUES (0, 'bar')`)
-				sqlDB.Exec(t, `INSERT INTO baz VALUES (0, 'baz')`)
-
-				var expected []string
-				for _, table := range []string{"foo", "bar", "baz"} {
-					if tc.expectPayloads[table] {
-						expectation := fmt.Sprintf(
-							`%s: [0]->{"after": {"a": 0, "b": "%s"}}`, table, table,
-						)
-						expected = append(expected, expectation)
-					}
-				}
-
-				assertPayloads(t, feed, expected)
-			}
-
-			cdcTest(t, testFn, feedTestEnterpriseSinks)
-		})
-	}
-}
-
-// TestAlterChangefeedFilterChangesDontEmitPreAlterEvents tests that if
-// we alter a changefeed's filter options in a way that means new tables are
-// being watched that we do not emit events for the new tables from before the
-// ALTER CHANGEFEED statement.
-func TestAlterChangefeedFilterChangesDontEmitPreAlterEvents(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 154053, "unreleased feature")
-
-	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-		sqlDB := sqlutils.MakeSQLRunner(s.DB)
-		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
-		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b STRING)`)
-
-		// If the checkpoint advances, that will be the point we resume from for
-		// all tables, including 'bar' skipping the pre-alter event. This makes
-		// the test fail more consistently if we didn't add 'bar' to the frontier.
-		knobs := s.TestingKnobs.
-			DistSQL.(*execinfra.TestingKnobs).
-			Changefeed.(*TestingKnobs)
-		knobs.ShouldCheckpointToJobRecord = func(hw hlc.Timestamp) bool {
-			return false
-		}
-
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo`)
-		defer closeFeed(t, testFeed)
-
-		sqlDB.Exec(t, `INSERT INTO foo VALUES (1, 'before alter')`)
-		sqlDB.Exec(t, `INSERT INTO bar VALUES (1, 'before alter')`)
-
-		assertPayloads(t, testFeed, []string{
-			`foo: [1]->{"after": {"a": 1, "b": "before alter"}}`,
-		})
-
-		sqlDB.Exec(t, fmt.Sprintf(`PAUSE JOB %d`, testFeed.(cdctest.EnterpriseTestFeed).JobID()))
-		waitForJobState(sqlDB, t, testFeed.(cdctest.EnterpriseTestFeed).JobID(), `paused`)
-
-		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d UNSET INCLUDE TABLES`,
-			testFeed.(cdctest.EnterpriseTestFeed).JobID()))
-
-		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, testFeed.(cdctest.EnterpriseTestFeed).JobID()))
-		waitForJobState(sqlDB, t, testFeed.(cdctest.EnterpriseTestFeed).JobID(), `running`)
-
-		sqlDB.Exec(t, `INSERT INTO foo VALUES (2, 'after alter')`)
-		sqlDB.Exec(t, `INSERT INTO bar VALUES (2, 'after alter')`)
-
-		// We should only see the event from bar that was inserted after the alter,
-		// but we should see both events from foo. This test may falsely pass if
-		// we "get lucky" and the pre-alter event for bar is the last one emitted.
-		assertPayloads(t, testFeed, []string{
-			`foo: [2]->{"after": {"a": 2, "b": "after alter"}}`,
-			`bar: [2]->{"after": {"a": 2, "b": "after alter"}}`,
-		})
-	}
-
-	cdcTest(t, testFn, feedTestEnterpriseSinks)
-}
-
-// TestAlterChangefeedFilterChangesWriteProgressForTablesThatWillBeAdded tests
-// that if we alter a changefeed's filter to include a table added after the
-// highwater mark, that we write progress for it, so that it starts from the
-// ALTER CHANGEFEED statement time and not the table's creation time.
-func TestAlterChangefeedFilterChangesWriteProgressForTablesThatWillBeAdded(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 154053, "unreleased feature")
-
-	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-		sqlDB := sqlutils.MakeSQLRunner(s.DB)
-
-		knobs := s.TestingKnobs.
-			DistSQL.(*execinfra.TestingKnobs).
-			Changefeed.(*TestingKnobs)
-		knobs.ShouldCheckpointToJobRecord = func(hw hlc.Timestamp) bool {
-			return false
-		}
-
-		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo`)
-		defer closeFeed(t, testFeed)
-
-		sqlDB.Exec(t, `INSERT INTO foo VALUES (1, 'before alter')`)
-		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b STRING)`)
-		sqlDB.Exec(t, `INSERT INTO bar VALUES (1, 'before alter')`)
-
-		assertPayloads(t, testFeed, []string{
-			`foo: [1]->{"after": {"a": 1, "b": "before alter"}}`,
-		})
-
-		sqlDB.Exec(t, fmt.Sprintf(`PAUSE JOB %d`, testFeed.(cdctest.EnterpriseTestFeed).JobID()))
-		waitForJobState(sqlDB, t, testFeed.(cdctest.EnterpriseTestFeed).JobID(), `paused`)
-
-		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d UNSET INCLUDE TABLES`,
-			testFeed.(cdctest.EnterpriseTestFeed).JobID()))
-
-		// Once the tableset watcher is working, we can directly check that the
-		// event for bar from before the alter does NOT get emitted, but an event
-		// for bar from after the alter does.
-		require.NoError(t, s.Server.InternalDB().(isql.DB).Txn(
-			context.Background(),
-			func(ctx context.Context, txn isql.Txn) error {
-				spans, found, err := jobfrontier.GetResolvedSpans(
-					ctx, txn, testFeed.(cdctest.EnterpriseTestFeed).JobID(), `alter_changefeed`,
-				)
-				if err != nil {
-					return err
-				}
-				require.True(t, found)
-				require.Equal(t, 1, len(spans))
-				return nil
-			},
-		))
-	}
-
-	cdcTest(t, testFn, feedTestEnterpriseSinks)
-}
-
-// TestAlterChangefeedFilterChangesDontWriteProgressForTablesThatWillBeDropped
-// tests that if a table is dropped between the highwater and the ALTER CHANGEFEED
-// statement, that we do not store progress for it. This table will never be
-// watched by the changefeed.
-func TestAlterChangefeedFilterChangesDontWriteProgressForTablesThatWillBeDropped(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 154053, "unreleased feature")
-
-	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-		sqlDB := sqlutils.MakeSQLRunner(s.DB)
-
-		knobs := s.TestingKnobs.
-			DistSQL.(*execinfra.TestingKnobs).
-			Changefeed.(*TestingKnobs)
-		knobs.ShouldCheckpointToJobRecord = func(hw hlc.Timestamp) bool {
-			return false
-		}
-
-		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
-		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b STRING)`)
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d EXCLUDE TABLES foo`)
-		defer closeFeed(t, testFeed)
-
-		sqlDB.Exec(t, `DROP TABLE foo`)
-
-		sqlDB.Exec(t, fmt.Sprintf(`PAUSE JOB %d`, testFeed.(cdctest.EnterpriseTestFeed).JobID()))
-		waitForJobState(sqlDB, t, testFeed.(cdctest.EnterpriseTestFeed).JobID(), `paused`)
-
-		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d UNSET EXCLUDE TABLES`,
-			testFeed.(cdctest.EnterpriseTestFeed).JobID()))
-
-		require.NoError(t, s.Server.InternalDB().(isql.DB).Txn(
-			context.Background(),
-			func(ctx context.Context, txn isql.Txn) error {
-				_, found, err := jobfrontier.GetResolvedSpans(
-					ctx, txn, testFeed.(cdctest.EnterpriseTestFeed).JobID(), `alter_changefeed`,
-				)
-				if err != nil {
-					return err
-				}
-				// Writing this progress when we should not have will not effect
-				// which events are emitted, so we have to check it directly.
-				require.False(t, found)
-				return nil
-			},
-		))
-	}
-
-	cdcTest(t, testFn, feedTestEnterpriseSinks)
-}
-
-// TestAlterChangefeedFilterChangesDontOverwriteProgress tests that if we alter
-// a changefeed's filter options twice, we will not remove progress (the time we
-// should start watching the new table) for other tables.
-func TestAlterChangefeedFilterChangesDontOverwriteProgress(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 154053, "unreleased feature")
-
-	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-		sqlDB := sqlutils.MakeSQLRunner(s.DB)
-
-		knobs := s.TestingKnobs.
-			DistSQL.(*execinfra.TestingKnobs).
-			Changefeed.(*TestingKnobs)
-		knobs.ShouldCheckpointToJobRecord = func(hw hlc.Timestamp) bool {
-			return false
-		}
-
-		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
-		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b STRING)`)
-		sqlDB.Exec(t, `CREATE TABLE baz (a INT PRIMARY KEY, b STRING)`)
-
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo`)
-		defer closeFeed(t, testFeed)
-
-		sqlDB.Exec(t, `INSERT INTO foo VALUES (0, 'initial')`)
-		sqlDB.Exec(t, `INSERT INTO bar VALUES (0, 'initial')`)
-		sqlDB.Exec(t, `INSERT INTO baz VALUES (0, 'initial')`)
-
-		sqlDB.Exec(t, fmt.Sprintf(`PAUSE JOB %d`, testFeed.(cdctest.EnterpriseTestFeed).JobID()))
-		waitForJobState(sqlDB, t, testFeed.(cdctest.EnterpriseTestFeed).JobID(), `paused`)
-
-		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d SET INCLUDE TABLES foo, bar`,
-			testFeed.(cdctest.EnterpriseTestFeed).JobID()))
-
-		sqlDB.Exec(t, `INSERT INTO foo VALUES (1, 'after include bar')`)
-		sqlDB.Exec(t, `INSERT INTO bar VALUES (1, 'after include bar')`)
-		sqlDB.Exec(t, `INSERT INTO baz VALUES (1, 'after include bar')`)
-
-		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d SET INCLUDE TABLES foo, bar, baz`,
-			testFeed.(cdctest.EnterpriseTestFeed).JobID()))
-
-		sqlDB.Exec(t, `INSERT INTO foo VALUES (2, 'after include baz')`)
-		sqlDB.Exec(t, `INSERT INTO bar VALUES (2, 'after include baz')`)
-		sqlDB.Exec(t, `INSERT INTO baz VALUES (2, 'after include baz')`)
-
-		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, testFeed.(cdctest.EnterpriseTestFeed).JobID()))
-		waitForJobState(sqlDB, t, testFeed.(cdctest.EnterpriseTestFeed).JobID(), `running`)
-
-		assertPayloads(t, testFeed, []string{
-			// foo sees all three payloads.
-			`foo: [0]->{"after": {"a": 0, "b": "initial"}}`,
-			`foo: [1]->{"after": {"a": 1, "b": "after include bar"}}`,
-			`foo: [2]->{"after": {"a": 2, "b": "after include baz"}}`,
-			// bar sees the payloads from after it was added.
-			// When this test fails, we expect to see the payload for bar with key 0,
-			// which means that when it was picked up by the changefeed, we did
-			// not resume from a persisted frontier timestamp.
-			`bar: [1]->{"after": {"a": 1, "b": "after include bar"}}`,
-			`bar: [2]->{"after": {"a": 2, "b": "after include baz"}}`,
-			// baz only sees the payloads from after it was added.
-			`baz: [2]->{"after": {"a": 2, "b": "after include baz"}}`,
-		})
-
-		// Verify directly that the progress contains both bar and baz.
-		require.NoError(t, s.Server.InternalDB().(isql.DB).Txn(
-			context.Background(),
-			func(ctx context.Context, txn isql.Txn) error {
-				spans, found, err := jobfrontier.GetResolvedSpans(
-					ctx, txn, testFeed.(cdctest.EnterpriseTestFeed).JobID(), `alter_changefeed`,
-				)
-				if err != nil {
-					return err
-				}
-				require.True(t, found)
-				require.Equal(t, 2, len(spans))
-				require.NotEqual(t, spans[0].Timestamp, spans[1].Timestamp)
-				return nil
-			},
-		))
-	}
-
-	cdcTest(t, testFn, feedTestEnterpriseSinks)
-}
-
-// TestAlterChangefeedDatabaseLevelChangefeedWithInitialScan tests that we
-// can alter a database level changefeed with initial scan set and if we change
-// the filters to include more tables, those will NOT have an initial scan
-// performed for them.
-func TestAlterChangefeedDatabaseLevelChangefeedWithInitialScan(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	skip.WithIssue(t, 154053, "unreleased feature")
-
-	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
-		sqlDB := sqlutils.MakeSQLRunner(s.DB)
-		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY, b STRING)`)
-		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY, b STRING)`)
-
-		sqlDB.Exec(t, `INSERT INTO foo VALUES (0, 'initial')`)
-		sqlDB.Exec(t, `INSERT INTO bar VALUES (0, 'initial')`)
-
-		feed := feed(t, f, `CREATE CHANGEFEED FOR DATABASE d INCLUDE TABLES foo WITH initial_scan = 'yes'`)
-		defer closeFeed(t, feed)
-		assertPayloads(t, feed, []string{
-			`foo: [0]->{"after": {"a": 0, "b": "initial"}}`,
-		})
-
-		jobID := feed.(cdctest.EnterpriseTestFeed).JobID()
-		sqlDB.Exec(t, fmt.Sprintf(`PAUSE JOB %d`, jobID))
-		waitForJobState(sqlDB, t, jobID, `paused`)
-		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d UNSET INCLUDE TABLES`, jobID))
-		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, jobID))
-		waitForJobState(sqlDB, t, jobID, `running`)
-
-		sqlDB.Exec(t, `INSERT INTO foo VALUES (1, 'after alter')`)
-		sqlDB.Exec(t, `INSERT INTO bar VALUES (1, 'after alter')`)
-
-		// We do not expect to see a payload for bar with key 0 since we
-		// are not doing an initial scan for bar.
-		assertPayloads(t, feed, []string{
-			`foo: [1]->{"after": {"a": 1, "b": "after alter"}}`,
-			`bar: [1]->{"after": {"a": 1, "b": "after alter"}}`,
-		})
-	}
-	cdcTest(t, testFn, feedTestEnterpriseSinks)
-}
-
 func TestAlterChangefeedDatabaseScopeUnqualifiedName(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1998,10 +1060,7 @@ func TestAlterChangefeedDatabaseScopeUnqualifiedName(t *testing.T) {
 		)
 
 		sqlDB.Exec(t, `USE movr`)
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR drivers WITH diff, resolved = '100ms'`,
-			optOutOfMetamorphicDBLevelChangefeed{
-				reason: "changefeed watches tables not in the default database",
-			})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR drivers WITH diff, resolved = '100ms'`)
 		defer closeFeed(t, testFeed)
 
 		assertPayloads(t, testFeed, []string{
@@ -2046,14 +1105,7 @@ func TestAlterChangefeedColumnFamilyDatabaseScope(t *testing.T) {
 			`INSERT INTO movr.drivers VALUES (1, 'Alice')`,
 		)
 
-		var args []any
-		if _, ok := f.(*webhookFeedFactory); ok {
-			args = append(args, optOutOfMetamorphicEnrichedEnvelope{reason: "metamorphic enriched envelope does not support column families for webhook sinks"})
-		}
-		args = append(args, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "changefeed watches tables not in the default database",
-		})
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR movr.drivers WITH diff, split_column_families`, args...)
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR movr.drivers WITH diff, split_column_families`)
 		defer closeFeed(t, testFeed)
 
 		assertPayloads(t, testFeed, []string{
@@ -2096,20 +1148,7 @@ func TestAlterChangefeedAlterTableName(t *testing.T) {
 		sqlDB.Exec(t,
 			`INSERT INTO movr.users VALUES (1, 'Alice')`,
 		)
-
-		// TODO(#145927): currently the metamorphic enriched envelope system for
-		// webhook uses source.table_name as the topic. This test expects the
-		// topic name to be durable across table renames, which is not expected
-		// to be true for source.table_name.
-		var args []any
-		if _, ok := f.(*webhookFeedFactory); ok {
-			args = append(args, optOutOfMetamorphicEnrichedEnvelope{reason: "see comment"})
-		}
-		args = append(args, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "changefeed watches tables not in the default database",
-		})
-
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR movr.users WITH diff, resolved = '100ms'`, args...)
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR movr.users WITH diff, resolved = '100ms'`)
 		defer closeFeed(t, testFeed)
 
 		assertPayloads(t, testFeed, []string{
@@ -2118,8 +1157,7 @@ func TestAlterChangefeedAlterTableName(t *testing.T) {
 
 		expectResolvedTimestamp(t, testFeed)
 
-		sqlDB.Exec(t, `ALTER TABLE movr.users RENAME TO movr.riders`)
-		sqlDB.CheckQueryResultsRetry(t, "SELECT count(*) FROM [SHOW TABLES FROM movr] WHERE table_name = 'riders'", [][]string{{"1"}})
+		waitForSchemaChange(t, sqlDB, `ALTER TABLE movr.users RENAME TO movr.riders`)
 
 		var tsLogical string
 		sqlDB.QueryRow(t, `SELECT cluster_logical_timestamp()`).Scan(&tsLogical)
@@ -2160,9 +1198,6 @@ func TestAlterChangefeedAddTargetsDuringSchemaChangeError(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	// Set verbose log to confirm whether or not we hit the same nil row issue as in #140669
-	testutils.SetVModule(t, "kv_feed=2,changefeed_processors=2")
-
 	rnd, seed := randutil.NewPseudoRand()
 	t.Logf("random seed: %d", seed)
 
@@ -2194,11 +1229,7 @@ func TestAlterChangefeedAddTargetsDuringSchemaChangeError(t *testing.T) {
 			return nil
 		}
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo
-WITH resolved = '1s', no_initial_scan, min_checkpoint_frequency='1ns'`,
-			optOutOfMetamorphicDBLevelChangefeed{
-				reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-			})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '1s', no_initial_scan`)
 		jobFeed := testFeed.(cdctest.EnterpriseTestFeed)
 		jobRegistry := s.Server.JobRegistry().(*jobs.Registry)
 
@@ -2225,11 +1256,11 @@ WITH resolved = '1s', no_initial_scan, min_checkpoint_frequency='1ns'`,
 
 		var maxCheckpointSize int64 = 100 << 20
 		// Ensure that checkpoints happen every time by setting a large checkpoint size.
-		// Because setting 0 for the SpanCheckpointInterval disables checkpointing,
+		// Because setting 0 for the FrontierCheckpointFrequency disables checkpointing,
 		// setting 1 nanosecond is the smallest possible value.
-		changefeedbase.SpanCheckpointInterval.Override(
+		changefeedbase.FrontierCheckpointFrequency.Override(
 			context.Background(), &s.Server.ClusterSettings().SV, 1*time.Nanosecond)
-		changefeedbase.SpanCheckpointMaxBytes.Override(
+		changefeedbase.FrontierCheckpointMaxBytes.Override(
 			context.Background(), &s.Server.ClusterSettings().SV, maxCheckpointSize)
 
 		// Note the tableSpan to avoid resolved events that leave no gaps
@@ -2267,9 +1298,10 @@ WITH resolved = '1s', no_initial_scan, min_checkpoint_frequency='1ns'`,
 			if nextProgressCheck.IsZero() || nextProgressCheck.Before(timeutil.Now()) {
 				// Check if we've set a checkpoint yet
 				progress := loadProgress(t, jobFeed, jobRegistry)
-				if checkpoint := loadCheckpoint(t, progress); checkpoint != nil {
-					initialCheckpoint = makeSpanGroupFromCheckpoint(t, checkpoint)
+				if p := progress.GetChangefeed(); p != nil && p.Checkpoint != nil && len(p.Checkpoint.Spans) > 0 {
+					initialCheckpoint.Add(p.Checkpoint.Spans...)
 					atomic.StoreInt32(&foundCheckpoint, 1)
+					t.Logf("found checkpoint %v", p.Checkpoint.Spans)
 				}
 				nextProgressCheck = timeutil.Now().Add(progressBackoff)
 			}
@@ -2308,7 +1340,7 @@ WITH resolved = '1s', no_initial_scan, min_checkpoint_frequency='1ns'`,
 		})
 
 		require.NoError(t, jobFeed.Pause())
-		waitForJobState(sqlDB, t, jobFeed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, jobFeed.JobID(), `paused`)
 
 		errMsg := fmt.Sprintf(
 			`pq: cannot perform initial scan on newly added targets while the checkpoint is non-empty, please unpause the changefeed and wait until the high watermark progresses past the current value %s to add these targets.`,
@@ -2368,40 +1400,35 @@ func TestAlterChangefeedAddTargetsDuringBackfill(t *testing.T) {
 
 		// Emit resolved events for the majority of spans. Be extra paranoid and ensure that
 		// we have at least 1 span for which we don't emit resolvedFoo timestamp (to force checkpointing).
-		// We however also need to ensure there's at least one span that isn't filtered out.
-		var allowedOne, haveGaps bool
-		knobs.FilterSpanWithMutation = func(r *jobspb.ResolvedSpan) (filter bool, _ error) {
+		haveGaps := false
+		knobs.FilterSpanWithMutation = func(r *jobspb.ResolvedSpan) (bool, error) {
 			rndMu.Lock()
 			defer rndMu.Unlock()
-			defer func() {
-				t.Logf("resolved span: %s@%s, filter: %t", r.Span, r.Timestamp, filter)
-			}()
 
 			if r.Span.Equal(fooTableSpan) {
-				return true, nil
-			}
-			if !allowedOne {
-				allowedOne = true
+				// Do not emit resolved events for the entire table span.
+				// We "simulate" large table by splitting single table span into many parts, so
+				// we want to resolve those sub-spans instead of the entire table span.
+				// However, we have to emit something -- otherwise the entire changefeed
+				// machine would not work.
+				r.Span.EndKey = fooTableSpan.Key.Next()
 				return false, nil
 			}
-			if !haveGaps {
-				haveGaps = true
-				return true, nil
+			if haveGaps {
+				return rndMu.rnd.Intn(10) > 7, nil
 			}
-			return rndMu.rnd.Intn(10) > 7, nil
+			haveGaps = true
+			return true, nil
 		}
 
 		// Checkpoint progress frequently, and set the checkpoint size limit.
-		changefeedbase.SpanCheckpointInterval.Override(
+		changefeedbase.FrontierCheckpointFrequency.Override(
 			context.Background(), &s.Server.ClusterSettings().SV, 1)
-		changefeedbase.SpanCheckpointMaxBytes.Override(
+		changefeedbase.FrontierCheckpointMaxBytes.Override(
 			context.Background(), &s.Server.ClusterSettings().SV, maxCheckpointSize)
 
 		registry := s.Server.JobRegistry().(*jobs.Registry)
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo
-WITH resolved = '100ms', min_checkpoint_frequency='1ns'`, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '100ms'`)
 
 		g := ctxgroup.WithContext(context.Background())
 		g.Go(func() error {
@@ -2412,7 +1439,7 @@ WITH resolved = '100ms', min_checkpoint_frequency='1ns'`, optOutOfMetamorphicDBL
 				expectedValues[j] = fmt.Sprintf(`foo: [%d]->{"after": {"val": %d}}`, j, j)
 				expectedValues[j+numRowsPerTable] = fmt.Sprintf(`bar: [%d]->{"after": {"val": %d}}`, j, j)
 			}
-			return assertPayloadsBaseErr(context.Background(), testFeed, expectedValues, false, false, nil, changefeedbase.OptEnvelopeWrapped)
+			return assertPayloadsBaseErr(context.Background(), testFeed, expectedValues, false, false)
 		})
 
 		defer func() {
@@ -2433,17 +1460,17 @@ WITH resolved = '100ms', min_checkpoint_frequency='1ns'`, optOutOfMetamorphicDBL
 		noHighWater := h == nil || h.IsEmpty()
 		require.True(t, noHighWater)
 
-		checkpoint := makeSpanGroupFromCheckpoint(t, loadCheckpoint(t, progress))
-		require.Greater(t, checkpoint.Len(), 0)
+		jobCheckpoint := progress.GetChangefeed().Checkpoint
+		require.Less(t, 0, len(jobCheckpoint.Spans))
+		var checkpoint roachpb.SpanGroup
+		checkpoint.Add(jobCheckpoint.Spans...)
 
 		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d ADD bar WITH initial_scan`, jobFeed.JobID()))
 
 		// Collect spans we attempt to resolve after when we resume.
 		var resolvedFoo []roachpb.Span
-		knobs.FilterSpanWithMutation = func(r *jobspb.ResolvedSpan) (filter bool, _ error) {
-			defer func() {
-				t.Logf("resolved span: %s@%s, filter: %t", r.Span, r.Timestamp, filter)
-			}()
+		knobs.FilterSpanWithMutation = func(r *jobspb.ResolvedSpan) (bool, error) {
+			t.Logf("resolved span: %#v", r)
 			if !r.Span.Equal(fooTableSpan) {
 				resolvedFoo = append(resolvedFoo, r.Span)
 			}
@@ -2457,7 +1484,8 @@ WITH resolved = '100ms', min_checkpoint_frequency='1ns'`, optOutOfMetamorphicDBL
 
 		// At this point, highwater mark should be set, and previous checkpoint should be gone.
 		progress = loadProgress(t, jobFeed, registry)
-		require.Nil(t, loadCheckpoint(t, progress))
+		require.NotNil(t, progress.GetChangefeed())
+		require.Equal(t, 0, len(progress.GetChangefeed().Checkpoint.Spans))
 
 		require.NoError(t, jobFeed.Pause())
 
@@ -2541,10 +1569,7 @@ func TestAlterChangefeedDropTargetDuringInitialScan(t *testing.T) {
 		if rnd.Intn(2) == 0 {
 			targets = "bar, foo"
 		}
-		testFeed := feed(t, f, fmt.Sprintf(`CREATE CHANGEFEED for %s`, targets),
-			optOutOfMetamorphicDBLevelChangefeed{
-				reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-			})
+		testFeed := feed(t, f, fmt.Sprintf(`CREATE CHANGEFEED for %s`, targets))
 		defer closeFeed(t, testFeed)
 
 		// Wait for all spans to have been resolved.
@@ -2595,10 +1620,7 @@ func TestAlterChangefeedInitialScan(t *testing.T) {
 			sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 			sqlDB.Exec(t, `INSERT INTO bar VALUES (1), (2), (3)`)
 
-			testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '1s', no_initial_scan`,
-				optOutOfMetamorphicDBLevelChangefeed{
-					reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-				})
+			testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo WITH resolved = '1s', no_initial_scan`)
 			defer closeFeed(t, testFeed)
 
 			expectResolvedTimestamp(t, testFeed)
@@ -2607,14 +1629,14 @@ func TestAlterChangefeedInitialScan(t *testing.T) {
 			require.True(t, ok)
 
 			sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
-			waitForJobState(sqlDB, t, feed.JobID(), `paused`)
+			waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
 
 			sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d ADD bar WITH %s`, feed.JobID(), initialScanOption))
 
 			sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, feed.JobID()))
-			waitForJobState(sqlDB, t, feed.JobID(), `running`)
+			waitForJobStatus(sqlDB, t, feed.JobID(), `running`)
 
-			expectPayloads := initialScanOption == "initial_scan = 'yes'" || initialScanOption == "initial_scan"
+			expectPayloads := (initialScanOption == "initial_scan = 'yes'" || initialScanOption == "initial_scan")
 			if expectPayloads {
 				assertPayloads(t, testFeed, []string{
 					`bar: [1]->{"after": {"a": 1}}`,
@@ -2633,10 +1655,8 @@ func TestAlterChangefeedInitialScan(t *testing.T) {
 	for _, initialScanOpt := range []string{
 		"initial_scan = 'yes'",
 		"initial_scan = 'no'",
-		"initial_scan = 'only'",
 		"initial_scan",
-		"no_initial_scan",
-	} {
+		"no_initial_scan"} {
 		cdcTest(t, testFn(initialScanOpt), feedTestForceSink("kafka"), feedTestNoExternalConnection)
 	}
 }
@@ -2678,7 +1698,7 @@ func TestAlterChangefeedWithOldCursorFromCreateChangefeed(t *testing.T) {
 		})
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, castedFeed.JobID())
-		waitForJobState(sqlDB, t, castedFeed.JobID(), `paused`)
+		waitForJobStatus(sqlDB, t, castedFeed.JobID(), `paused`)
 
 		sqlDB.Exec(t, `INSERT INTO foo VALUES (2, 'after')`)
 
@@ -2696,7 +1716,7 @@ func TestAlterChangefeedWithOldCursorFromCreateChangefeed(t *testing.T) {
 		sqlDB.Exec(t, fmt.Sprintf(`ALTER CHANGEFEED %d UNSET resolved`, castedFeed.JobID()))
 
 		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, castedFeed.JobID()))
-		waitForJobState(sqlDB, t, castedFeed.JobID(), `running`)
+		waitForJobStatus(sqlDB, t, castedFeed.JobID(), `running`)
 
 		assertPayloads(t, testFeed, []string{
 			`foo: [2]->{"after": {"a": 2, "b": "after"}}`,
@@ -2717,9 +1737,7 @@ func TestAlterChangefeedAccessControl(t *testing.T) {
 		rootDB := sqlutils.MakeSQLRunner(s.DB)
 
 		createFeed := func(stmt string) (cdctest.EnterpriseTestFeed, func()) {
-			successfulFeed := feed(t, f, stmt, optOutOfMetamorphicDBLevelChangefeed{
-				reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-			})
+			successfulFeed := feed(t, f, stmt)
 			closeCf := func() {
 				closeFeed(t, successfulFeed)
 			}
@@ -2735,8 +1753,7 @@ func TestAlterChangefeedAccessControl(t *testing.T) {
 			currentFeed, closeCf = createFeed(`CREATE CHANGEFEED FOR table_a, table_b`)
 		})
 		rootDB.Exec(t, "PAUSE job $1", currentFeed.JobID())
-		waitForJobState(rootDB, t, currentFeed.JobID(), `paused`)
-		rootDB.Exec(t, "ALTER JOB $1 OWNER TO feedowner", currentFeed.JobID())
+		waitForJobStatus(rootDB, t, currentFeed.JobID(), `paused`)
 
 		// Verify who can modify the existing changefeed.
 		asUser(t, f, `userWithAllGrants`, func(userDB *sqlutils.SQLRunner) {
@@ -2747,13 +1764,13 @@ func TestAlterChangefeedAccessControl(t *testing.T) {
 		})
 		// jobController can access the job, but will hit an error re-creating the changefeed.
 		asUser(t, f, `jobController`, func(userDB *sqlutils.SQLRunner) {
-			userDB.ExpectErr(t, `pq: user "jobcontroller" requires the CHANGEFEED privilege on all target tables to be able to run an enterprise changefeed`, fmt.Sprintf(`ALTER CHANGEFEED %d DROP table_b`, currentFeed.JobID()))
+			userDB.ExpectErr(t, "pq: user jobcontroller requires the CHANGEFEED privilege on all target tables to be able to run an enterprise changefeed", fmt.Sprintf(`ALTER CHANGEFEED %d DROP table_b`, currentFeed.JobID()))
 		})
 		asUser(t, f, `userWithSomeGrants`, func(userDB *sqlutils.SQLRunner) {
-			userDB.ExpectErr(t, "does not have privileges for job", fmt.Sprintf(`ALTER CHANGEFEED %d ADD table_b`, currentFeed.JobID()))
+			userDB.ExpectErr(t, "pq: user userwithsomegrants does not have CHANGEFEED privilege on relation table_b", fmt.Sprintf(`ALTER CHANGEFEED %d ADD table_b`, currentFeed.JobID()))
 		})
 		asUser(t, f, `regularUser`, func(userDB *sqlutils.SQLRunner) {
-			userDB.ExpectErr(t, "does not have privileges for job", fmt.Sprintf(`ALTER CHANGEFEED %d ADD table_b`, currentFeed.JobID()))
+			userDB.ExpectErr(t, "pq: user regularuser does not have CHANGEFEED privilege on relation (table_a|table_b)", fmt.Sprintf(`ALTER CHANGEFEED %d ADD table_b`, currentFeed.JobID()))
 		})
 		closeCf()
 
@@ -2763,8 +1780,8 @@ func TestAlterChangefeedAccessControl(t *testing.T) {
 		})
 		asUser(t, f, `otherAdminUser`, func(userDB *sqlutils.SQLRunner) {
 			userDB.Exec(t, "PAUSE job $1", currentFeed.JobID())
-			require.NoError(t, currentFeed.WaitForState(func(s jobs.State) bool {
-				return s == jobs.StatePaused
+			require.NoError(t, currentFeed.WaitForStatus(func(s jobs.Status) bool {
+				return s == jobs.StatusPaused
 			}))
 		})
 		asUser(t, f, `userWithAllGrants`, func(userDB *sqlutils.SQLRunner) {
@@ -2791,9 +1808,7 @@ func TestAlterChangefeedAddDropSameTarget(t *testing.T) {
 		sqlDB.Exec(t, `CREATE TABLE foo (a INT PRIMARY KEY)`)
 		sqlDB.Exec(t, `CREATE TABLE bar (a INT PRIMARY KEY)`)
 
-		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo`, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo`)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
@@ -2844,7 +1859,7 @@ func TestAlterChangefeedRandomizedTargetChanges(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	testutils.SetVModule(t, "helpers_test=1")
+	require.NoError(t, log.SetVModule("helpers_test=1"))
 
 	rnd, _ := randutil.NewPseudoRand()
 
@@ -2910,9 +1925,7 @@ func TestAlterChangefeedRandomizedTargetChanges(t *testing.T) {
 		createStmt := fmt.Sprintf(
 			`CREATE CHANGEFEED FOR %s WITH updated`, strings.Join(initialTables, ", "))
 		t.Log(createStmt)
-		testFeed := feed(t, f, createStmt, optOutOfMetamorphicDBLevelChangefeed{
-			reason: "db level changefeeds don't support ADD/DROP TARGETS in ALTER CHANGEFEEDs",
-		})
+		testFeed := feed(t, f, createStmt)
 		defer closeFeed(t, testFeed)
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
@@ -3039,7 +2052,11 @@ func getNFromSet[K cmp.Ordered](rnd *rand.Rand, s map[K]struct{}, n int) []K {
 	if len(s) < n {
 		panic(fmt.Sprintf("not enough elements in set, wanted %d, found %d", n, len(s)))
 	}
-	ks := slices.Sorted(maps.Keys(s))
+	ks := make([]K, 0, len(s))
+	for k := range s {
+		ks = append(ks, k)
+	}
+	slices.Sort(ks)
 	rnd.Shuffle(len(ks), func(i, j int) {
 		ks[i], ks[j] = ks[j], ks[i]
 	})

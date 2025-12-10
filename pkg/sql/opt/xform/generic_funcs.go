@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/errors"
 )
 
 // GenericRulesEnabled returns true if rules for optimizing generic query plans
@@ -37,7 +36,7 @@ func (c *CustomFuncs) HasPlaceholdersOrStableExprs(e memo.RelExpr) bool {
 // placeholders or stable expressions, ok=false is returned.
 func (c *CustomFuncs) GenerateParameterizedJoinValuesAndFilters(
 	filters memo.FiltersExpr,
-) (values memo.RelExpr, newFilters memo.FiltersExpr, parameterizedCols opt.ColSet, ok bool) {
+) (values memo.RelExpr, newFilters memo.FiltersExpr, ok bool) {
 	var exprs memo.ScalarListExpr
 	var cols opt.ColList
 	placeholderCols := make(map[tree.PlaceholderIdx]opt.ColumnID)
@@ -59,7 +58,6 @@ func (c *CustomFuncs) GenerateParameterizedJoinValuesAndFilters(
 			placeholderCols[idx] = col
 			exprs = append(exprs, t)
 			cols = append(cols, col)
-			parameterizedCols.Add(col)
 			return c.e.f.ConstructVariable(col)
 
 		case *memo.FunctionExpr:
@@ -72,7 +70,6 @@ func (c *CustomFuncs) GenerateParameterizedJoinValuesAndFilters(
 				col := c.e.f.Metadata().AddColumn("", t.DataType())
 				exprs = append(exprs, t)
 				cols = append(cols, col)
-				parameterizedCols.Add(col)
 				return c.e.f.ConstructVariable(col)
 			}
 		}
@@ -100,7 +97,7 @@ func (c *CustomFuncs) GenerateParameterizedJoinValuesAndFilters(
 	// If no placeholders or stable expressions were replaced, there is nothing
 	// to do.
 	if len(exprs) == 0 {
-		return nil, nil, opt.ColSet{}, false
+		return nil, nil, false
 	}
 
 	// Create the Values expression with one row and one column for each
@@ -116,76 +113,14 @@ func (c *CustomFuncs) GenerateParameterizedJoinValuesAndFilters(
 		ID:   c.e.f.Metadata().NextUniqueID(),
 	})
 
-	return values, newFilters, parameterizedCols, true
+	return values, newFilters, true
 }
 
 // ParameterizedJoinPrivate returns JoinPrivate that disabled join reordering and
 // merge join exploration.
-func (c *CustomFuncs) ParameterizedJoinPrivate(parameterizedCols opt.ColSet) *memo.JoinPrivate {
+func (c *CustomFuncs) ParameterizedJoinPrivate() *memo.JoinPrivate {
 	return &memo.JoinPrivate{
-		Flags:             memo.DisallowMergeJoin,
-		ParameterizedCols: parameterizedCols,
-		SkipReorderJoins:  true,
+		Flags:            memo.DisallowMergeJoin,
+		SkipReorderJoins: true,
 	}
-}
-
-// PlaceholderScanSpanAndPrivate returns a span and scan private for a
-// PlaceholderScan expression that is semantically equivalent to the given
-// lookup join with input values. See
-// ConvertParameterizedLookupJoinToPlaceholderScan for more details.
-func (c *CustomFuncs) PlaceholderScanSpanAndPrivate(
-	lookupPrivate *memo.LookupJoinPrivate,
-	values *memo.ValuesExpr,
-	row memo.ScalarListExpr,
-	outputCols opt.ColSet,
-) (span memo.ScalarListExpr, scanPrivate *memo.ScanPrivate, ok bool) {
-	// The lookup join must be an inner join.
-	if lookupPrivate.JoinType != opt.InnerJoinOp {
-		return nil, nil, false
-	}
-	// The lookup join must only have key columns, no lookup expressions.
-	if len(lookupPrivate.KeyCols) == 0 ||
-		lookupPrivate.LookupExpr != nil ||
-		lookupPrivate.RemoteLookupExpr != nil {
-		return nil, nil, false
-	}
-	// The lookup join must not be part of a paired join.
-	if lookupPrivate.IsFirstJoinInPairedJoiner || lookupPrivate.IsSecondJoinInPairedJoiner {
-		return nil, nil, false
-	}
-	// The index must be able to produce all the output columns.
-	md := c.e.f.Metadata()
-	indexCols := md.TableMeta(lookupPrivate.Table).IndexColumns(lookupPrivate.Index)
-	if !outputCols.SubsetOf(indexCols) {
-		return nil, nil, false
-	}
-
-	// Map columns in the input Values expression to the key columns.
-	span = make(memo.ScalarListExpr, len(lookupPrivate.KeyCols))
-	for i, keyCol := range lookupPrivate.KeyCols {
-		for j, valCol := range values.Cols {
-			if keyCol == valCol {
-				if !verifyType(md, keyCol, row[j].DataType()) {
-					// TODO(mgartner): This was added to copy the same check
-					// made while planning the the placeholder fast-path, but it
-					// may not be necessary here because the lookup join may
-					// have already checked this.
-					return nil, nil, false
-				}
-				span[i] = row[j]
-				break
-			}
-		}
-		if span[i] == nil {
-			panic(errors.AssertionFailedf("no value found for key column %d", keyCol))
-		}
-	}
-
-	scanPrivate = &memo.ScanPrivate{
-		Table:   lookupPrivate.Table,
-		Index:   lookupPrivate.Index,
-		Cols:    outputCols.Copy(),
-		Locking: lookupPrivate.Locking,
-	}
-	return span, scanPrivate, true
 }

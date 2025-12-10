@@ -14,12 +14,11 @@ import (
 	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
+	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/tests"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -32,7 +31,7 @@ func TestAsOfTime(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var params base.TestServerArgs
+	params, _ := createTestServerParams()
 	params.Knobs.GCJob = &sql.GCJobTestingKnobs{RunBeforeResume: func(_ jobspb.JobID) error {
 		<-ctx.Done()
 		return nil
@@ -129,13 +128,12 @@ func TestAsOfTime(t *testing.T) {
 	}
 
 	// Future queries shouldn't work if too far in the future.
-	if err := db.QueryRow("SELECT a FROM d.t AS OF SYSTEM TIME '+10h'").Scan(&i); !testutils.IsError(err, `pq: AS OF SYSTEM TIME: interval value '\+10h' is in the future`) {
+	if err := db.QueryRow("SELECT a FROM d.t AS OF SYSTEM TIME '+10h'").Scan(&i); !testutils.IsError(err, "pq: request timestamp .* too far in future") {
 		t.Fatal(err)
 	}
 
-	// Even small future intervals (e.g., +10ms) are disallowed when using interval-based AS OF.
-	// Slight tolerance is only permitted when using a fixed timestamp.
-	if err := db.QueryRow("SELECT a FROM d.t AS OF SYSTEM TIME '+10ms'").Scan(&i); !testutils.IsError(err, `pq: AS OF SYSTEM TIME: interval value '\+10ms' is in the future`) {
+	// Future queries work if only slightly in the future.
+	if err := db.QueryRow("SELECT a FROM d.t AS OF SYSTEM TIME '+10ms'").Scan(&i); err != nil {
 		t.Fatal(err)
 	}
 
@@ -265,13 +263,7 @@ func TestAsOfRetry(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var cmdFilters tests.CommandFilters
-	params := base.TestServerArgs{}
-	params.Knobs.Store = &kvserver.StoreTestingKnobs{
-		EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
-			TestingEvalFilter: cmdFilters.RunFilters,
-		},
-	}
+	params, cmdFilters := createTestServerParams()
 	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
 
@@ -320,6 +312,9 @@ func TestAsOfRetry(t *testing.T) {
 
 			switch req := args.Req.(type) {
 			case *kvpb.GetRequest:
+				if kv.TestingIsRangeLookupRequest(req) {
+					return nil
+				}
 				for key, count := range magicVals.restartCounts {
 					if err := checkCorrectTxn(string(req.Key), magicVals, args.Hdr.Txn); err != nil {
 						return kvpb.NewError(err)

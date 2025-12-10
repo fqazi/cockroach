@@ -41,10 +41,23 @@ const (
 	ArchARM64   = CPUArch("arm64")
 	ArchAMD64   = CPUArch("amd64")
 	ArchFIPS    = CPUArch("fips")
-	ArchS390x   = CPUArch("s390x")
 	ArchUnknown = CPUArch("unknown")
 
-	DefaultLifetime = 12 * time.Hour
+	// InitializedFile is the base name of the initialization paths defined below.
+	InitializedFile = ".roachprod-initialized"
+	// OSInitializedFile is a marker file that is created on a VM to indicate
+	// that it has been initialized at least once by the VM start-up script. This
+	// is used to avoid re-initializing a VM that has been stopped and restarted.
+	OSInitializedFile = "/" + InitializedFile
+	// DisksInitializedFile is a marker file that is created on a VM to indicate
+	// that the disks have been initialized by the VM start-up script. This is
+	// separate from OSInitializedFile, because the disks may be ephemeral and
+	// need to be re-initialized on every start. The presence of this file
+	// automatically implies the presence of OSInitializedFile.
+	DisksInitializedFile = "/mnt/data1/" + InitializedFile
+	// StartupLogs is a log file that is created on a VM to redirect startup script
+	// output logs.
+	StartupLogs = "/var/log/roachprod_startup.log"
 )
 
 // UnimplementedError is returned when a method is not implemented by a
@@ -73,9 +86,6 @@ func ParseArch(s string) CPUArch {
 	}
 	if strings.Contains(arch, "fips") {
 		return ArchFIPS
-	}
-	if strings.Contains(arch, "s390x") {
-		return ArchS390x
 	}
 	return ArchUnknown
 }
@@ -122,11 +132,8 @@ type VM struct {
 	// The provider-specific id for the instance.  This may or may not be the same as Name, depending
 	// on whether or not the cloud provider automatically assigns VM identifiers.
 	ProviderID string `json:"provider_id"`
-	// The provider-specific account id for the instance. E.g., in GCE this is project name, in AWS this is IAM id,
-	// in Azure it's a subscription id, etc.
-	ProviderAccountID string `json:"provider_account_id"`
-	PrivateIP         string `json:"private_ip"`
-	PublicIP          string `json:"public_ip"`
+	PrivateIP  string `json:"private_ip"`
+	PublicIP   string `json:"public_ip"`
 	// The username that should be used to connect to the VM.
 	RemoteUser string `json:"remote_user"`
 	// The VPC value defines an equivalency set for VMs that can route
@@ -173,14 +180,13 @@ func Name(cluster string, idx int) string {
 
 // Error values for VM.Error
 var (
-	ErrBadNetwork         = errors.New("could not determine network information")
-	ErrBadScheduling      = errors.New("could not determine scheduling information")
-	ErrInvalidUserName    = errors.New("invalid user name")
-	ErrInvalidClusterName = errors.New("invalid cluster name")
-	ErrNoExpiration       = errors.New("could not determine expiration")
+	ErrBadNetwork    = errors.New("could not determine network information")
+	ErrBadScheduling = errors.New("could not determine scheduling information")
+	ErrInvalidName   = errors.New("invalid VM name")
+	ErrNoExpiration  = errors.New("could not determine expiration")
 )
 
-var regionRE = regexp.MustCompile(`(.*[^-])-?[0-9a-z]$`)
+var regionRE = regexp.MustCompile(`(.*[^-])-?[a-z]$`)
 
 // IsLocal returns true if the VM represents the local host.
 func (vm *VM) IsLocal() bool {
@@ -279,35 +285,12 @@ func (vl List) ProviderIDs() []string {
 	return ret
 }
 
-type Filesystem string
-
 const (
 	// Zfs refers to the zfs file system.
-	Zfs Filesystem = "zfs"
+	Zfs = "zfs"
 	// Ext4 refers to the ext4 file system.
-	Ext4 Filesystem = "ext4"
-	// Xfs refers to the xfs file system.
-	Xfs Filesystem = "xfs"
-	// F2fs refers to the f2fs file system.
-	F2fs Filesystem = "f2fs"
-	// Btrfs refers to the btrfs file system.
-	Btrfs Filesystem = "btrfs"
+	Ext4 = "ext4"
 )
-
-// ParseFilesystemString parses and validates a filesystem string.
-func ParseFilesystemString(s string) (Filesystem, error) {
-	return ParseFileSystemOption(Filesystem(s))
-}
-
-// ParseFileSystemOption parses and validates a Filesystem option.
-func ParseFileSystemOption(s Filesystem) (Filesystem, error) {
-	switch s {
-	case Zfs, Ext4, Xfs, F2fs, Btrfs:
-		return s, nil
-	default:
-		return "", errors.Newf("unsupported filesystem: %s", s)
-	}
-}
 
 // CreateOpts is the set of options when creating VMs.
 type CreateOpts struct {
@@ -324,7 +307,7 @@ type CreateOpts struct {
 		// mounting the SSD. Ignored if UseLocalSSD is not set.
 		NoExt4Barrier bool
 		// The file system to be used. This is set to "ext4" by default.
-		FileSystem Filesystem
+		FileSystem string
 	}
 	OsVolumeSize int
 }
@@ -333,7 +316,7 @@ type CreateOpts struct {
 func DefaultCreateOpts() CreateOpts {
 	defaultCreateOpts := CreateOpts{
 		ClusterName:    "",
-		Lifetime:       DefaultLifetime,
+		Lifetime:       12 * time.Hour,
 		GeoDistributed: false,
 		VMProviders:    []string{},
 		OsVolumeSize:   10,
@@ -370,6 +353,13 @@ type ProviderOpts interface {
 	// ConfigureCreateFlags configures a FlagSet with any options relevant to the
 	// `create` command.
 	ConfigureCreateFlags(*pflag.FlagSet)
+	// ConfigureClusterFlags configures a FlagSet with any options relevant to
+	// cluster manipulation commands (`create`, `destroy`, `list`, `sync` and
+	// `gc`).
+	ConfigureClusterFlags(*pflag.FlagSet, MultipleProjectsOption)
+	// ConfigureClusterCleanupFlags configures a FlagSet with any options relevant to
+	// commands (`gc`)
+	ConfigureClusterCleanupFlags(*pflag.FlagSet)
 }
 
 // VolumeSnapshot is an abstract representation of a specific volume snapshot.
@@ -478,14 +468,6 @@ type ServiceAddress struct {
 
 // A Provider is a source of virtual machines running on some hosting platform.
 type Provider interface {
-	// ConfigureProviderFlags is used to specify flags that apply to the provider
-	// instance and should be used for all clusters managed by the provider.
-	ConfigureProviderFlags(*pflag.FlagSet, MultipleProjectsOption)
-
-	// ConfigureClusterCleanupFlags configures a FlagSet with any options
-	// relevant to commands (`gc`)
-	ConfigureClusterCleanupFlags(*pflag.FlagSet)
-
 	CreateProviderOpts() ProviderOpts
 	CleanSSH(l *logger.Logger) error
 
@@ -548,8 +530,6 @@ type Provider interface {
 	GetPreemptedSpotVMs(l *logger.Logger, vms List, since time.Time) ([]PreemptedVM, error)
 	// GetHostErrorVMs returns a list of VMs that had host error since the time specified.
 	GetHostErrorVMs(l *logger.Logger, vms List, since time.Time) ([]string, error)
-	// GetLiveMigrationVMs checks a list of VMs if a live migration happened since the time specified.
-	GetLiveMigrationVMs(l *logger.Logger, vms List, since time.Time) ([]string, error)
 	// GetVMSpecs returns a map from VM.Name to a map of VM attributes, according to a specific cloud provider.
 	GetVMSpecs(l *logger.Logger, vms List) (map[string]map[string]interface{}, error)
 
@@ -641,9 +621,7 @@ func FindActiveAccounts(l *logger.Logger) (map[string]string, error) {
 		err := ProvidersSequential(AllProviderNames(), func(p Provider) error {
 			account, err := p.FindActiveAccount(l)
 			if err != nil {
-				l.Printf("WARN: provider=%q has no active account", p.Name())
-				//nolint:returnerrcheck
-				return nil
+				return err
 			}
 			if len(account) > 0 {
 				source[p.Name()] = account

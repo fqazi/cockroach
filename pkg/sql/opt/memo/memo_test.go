@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
-	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/norm"
@@ -295,12 +294,6 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.SessionData().DisallowFullTableScans = false
 	notStale()
 
-	// Stale avoid full table scan.
-	evalCtx.SessionData().AvoidFullTableScansInMutations = true
-	stale()
-	evalCtx.SessionData().AvoidFullTableScansInMutations = false
-	notStale()
-
 	// Stale large full scan rows.
 	evalCtx.SessionData().LargeFullScanRows = 1000
 	stale()
@@ -371,12 +364,6 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.SessionData().TestingOptimizerDisableRuleProbability = 1
 	stale()
 	evalCtx.SessionData().TestingOptimizerDisableRuleProbability = 0
-	notStale()
-
-	// Stale disable_optimizer_rules.
-	evalCtx.SessionData().DisableOptimizerRules = []string{"some_rule"}
-	stale()
-	evalCtx.SessionData().DisableOptimizerRules = nil
 	notStale()
 
 	// Stale allow_ordinal_column_references.
@@ -510,12 +497,6 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.SessionData().OptimizerUseImprovedMultiColumnSelectivityEstimate = false
 	notStale()
 
-	// Stale optimizer_use_max_frequency_selectivity.
-	evalCtx.SessionData().OptimizerUseMaxFrequencySelectivity = true
-	stale()
-	evalCtx.SessionData().OptimizerUseMaxFrequencySelectivity = false
-	notStale()
-
 	// Stale optimizer_prove_implication_with_virtual_computed_columns.
 	evalCtx.SessionData().OptimizerProveImplicationWithVirtualComputedColumns = true
 	stale()
@@ -566,61 +547,9 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.SessionData().OptimizerCheckInputMinRowCount = 0
 	notStale()
 
-	evalCtx.SessionData().OptimizerPlanLookupJoinsWithReverseScans = true
-	stale()
-	evalCtx.SessionData().OptimizerPlanLookupJoinsWithReverseScans = false
-	notStale()
-
-	evalCtx.SessionData().InsertFastPath = true
-	stale()
-	evalCtx.SessionData().InsertFastPath = false
-	notStale()
-
-	evalCtx.SessionData().Internal = true
-	stale()
-	evalCtx.SessionData().Internal = false
-	notStale()
-
-	evalCtx.SessionData().UsePre_25_2VariadicBuiltins = true
-	stale()
-	evalCtx.SessionData().UsePre_25_2VariadicBuiltins = false
-	notStale()
-
 	evalCtx.SessionData().OptimizerUseExistsFilterHoistRule = true
 	stale()
 	evalCtx.SessionData().OptimizerUseExistsFilterHoistRule = false
-	notStale()
-
-	evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables = true
-	stale()
-	evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables = false
-	notStale()
-
-	evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject = true
-	stale()
-	evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject = false
-	notStale()
-
-	evalCtx.SessionData().OptimizerClampLowHistogramSelectivity = true
-	stale()
-	evalCtx.SessionData().OptimizerClampLowHistogramSelectivity = false
-	notStale()
-
-	evalCtx.SessionData().OptimizerClampInequalitySelectivity = true
-	stale()
-	evalCtx.SessionData().OptimizerClampInequalitySelectivity = false
-	notStale()
-
-	// Stale prevent_update_set_column_drop.
-	evalCtx.SessionData().PreventUpdateSetColumnDrop = true
-	stale()
-	evalCtx.SessionData().PreventUpdateSetColumnDrop = false
-	notStale()
-
-	// Stale use_improved_routine_deps_triggers_and_computed_cols.
-	evalCtx.SessionData().UseImprovedRoutineDepsTriggersAndComputedCols = true
-	stale()
-	evalCtx.SessionData().UseImprovedRoutineDepsTriggersAndComputedCols = false
 	notStale()
 
 	// User no longer has access to view.
@@ -682,37 +611,6 @@ func TestMemoIsStale(t *testing.T) {
 	stale()
 	catalog.Function("one").Version = 0
 	notStale()
-
-	// User changes (without RLS)
-	oldUser := evalCtx.SessionData().UserProto
-	newUser := username.MakeSQLUsernameFromPreNormalizedString("newuser").EncodeProto()
-	evalCtx.SessionData().UserProto = newUser
-	notStale()
-	evalCtx.SessionData().UserProto = oldUser
-	notStale()
-
-	// User changes (with RLS)
-	o.Memo().Metadata().SetRLSEnabled(evalCtx.SessionData().User(), true, /* admin */
-		1 /* tableID */, false, /* isTableOwnerAndNotForced */
-		false /* bypassRLS */)
-	notStale()
-	evalCtx.SessionData().UserProto = newUser
-	stale()
-	evalCtx.SessionData().UserProto = oldUser
-	notStale()
-
-	// User changes (after RLS was reinitialized)
-	o.Memo().Metadata().ClearRLSEnabled()
-	evalCtx.SessionData().UserProto = newUser
-	notStale()
-	evalCtx.SessionData().UserProto = oldUser
-	notStale()
-
-	// Stale row_security.
-	evalCtx.SessionData().RowSecurity = true
-	stale()
-	evalCtx.SessionData().RowSecurity = false
-	notStale()
 }
 
 // TestStatsAvailable tests that the statisticsBuilder correctly identifies
@@ -741,15 +639,15 @@ func TestStatsAvailable(t *testing.T) {
 
 	// Stats should not be available for any expression.
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, "SELECT * FROM t WHERE a=1")
-	testNotAvailable(o.Memo().RootExpr())
+	testNotAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, "SELECT sum(a), b FROM t GROUP BY b")
-	testNotAvailable(o.Memo().RootExpr())
+	testNotAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx,
 		"SELECT * FROM t AS t1, t AS t2 WHERE t1.a = t2.a AND t1.b = 5",
 	)
-	testNotAvailable(o.Memo().RootExpr())
+	testNotAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	if _, err := catalog.ExecuteDDL(
 		`ALTER TABLE t INJECT STATISTICS '[
@@ -779,15 +677,15 @@ func TestStatsAvailable(t *testing.T) {
 
 	// Stats should be available for all expressions.
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, "SELECT * FROM t WHERE a=1")
-	testAvailable(o.Memo().RootExpr())
+	testAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx, "SELECT sum(a), b FROM t GROUP BY b")
-	testAvailable(o.Memo().RootExpr())
+	testAvailable(o.Memo().RootExpr().(memo.RelExpr))
 
 	opttestutils.BuildQuery(t, &o, catalog, &evalCtx,
 		"SELECT * FROM t AS t1, t AS t2 WHERE t1.a = t2.a AND t1.b = 5",
 	)
-	testAvailable(o.Memo().RootExpr())
+	testAvailable(o.Memo().RootExpr().(memo.RelExpr))
 }
 
 // traverseExpr is a helper function to recursively traverse a relational

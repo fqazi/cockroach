@@ -9,9 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"sort"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -33,94 +31,62 @@ func TestExcludeAggregateMetrics(t *testing.T) {
 	counter.AddChild("xyz")
 	r.AddMetric(counter)
 
-	testutils.RunTrueAndFalse(t, "reinitialisableBugFixEnabled", func(t *testing.T, includeBugFix bool) {
-		// Don't include child metrics, so only report the aggregate.
-		// Flipping the includeAggregateMetrics flag should have no effect.
-		testutils.RunTrueAndFalse(t, "includeChildMetrics=false,includeAggregateMetrics", func(t *testing.T, includeAggregateMetrics bool) {
-			pe := metric.MakePrometheusExporter()
-			pe.ScrapeRegistry(r, metric.WithIncludeChildMetrics(false), metric.WithIncludeAggregateMetrics(includeAggregateMetrics), metric.WithReinitialisableBugFixEnabled(includeBugFix))
-			families, err := pe.Gather()
-			require.NoError(t, err)
-			require.Equal(t, 1, len(families))
-			require.Equal(t, "counter", families[0].GetName())
-			require.Equal(t, 1, len(families[0].GetMetric()))
-			require.Equal(t, 0, len(families[0].GetMetric()[0].GetLabel()))
-		})
-
-		testutils.RunTrueAndFalse(t, "includeChildMetrics=true,includeAggregateMetrics", func(t *testing.T, includeAggregateMetrics bool) {
-			pe := metric.MakePrometheusExporter()
-			pe.ScrapeRegistry(r, metric.WithIncludeChildMetrics(true), metric.WithIncludeAggregateMetrics(includeAggregateMetrics), metric.WithReinitialisableBugFixEnabled(includeBugFix))
-			families, err := pe.Gather()
-			require.NoError(t, err)
-			require.Equal(t, 1, len(families))
-			require.Equal(t, "counter", families[0].GetName())
-			var labelPair *prometheusgo.LabelPair
-			if includeAggregateMetrics {
-				require.Equal(t, 2, len(families[0].GetMetric()))
-				require.Equal(t, 0, len(families[0].GetMetric()[0].GetLabel()))
-				require.Equal(t, 1, len(families[0].GetMetric()[1].GetLabel()))
-				labelPair = families[0].GetMetric()[1].GetLabel()[0]
-			} else {
-				require.Equal(t, 1, len(families[0].GetMetric()))
-				require.Equal(t, 1, len(families[0].GetMetric()[0].GetLabel()))
-				labelPair = families[0].GetMetric()[0].GetLabel()[0]
-			}
-			require.Equal(t, "child_label", *labelPair.Name)
-			require.Equal(t, "xyz", *labelPair.Value)
-		})
-	})
-
-	t.Run("reinitialisable metrics", func(t *testing.T) {
-		r := metric.NewRegistry()
-		counter := NewSQLCounter(metric.Metadata{Name: "counter"})
-		r.AddMetric(counter)
-
-		// Aggregate disabled, but no children, so the aggregate is still reported.
+	// Don't include child metrics, so only report the aggregate.
+	// Flipping the includeAggregateMetrics flag should have no effect.
+	testutils.RunTrueAndFalse(t, "includeChildMetrics=false,includeAggregateMetrics", func(t *testing.T, includeAggregateMetrics bool) {
 		pe := metric.MakePrometheusExporter()
-		pe.ScrapeRegistry(r, metric.WithIncludeChildMetrics(true), metric.WithIncludeAggregateMetrics(false), metric.WithReinitialisableBugFixEnabled(true))
+		pe.ScrapeRegistry(r, false, includeAggregateMetrics)
 		families, err := pe.Gather()
 		require.NoError(t, err)
 		require.Equal(t, 1, len(families))
+		require.Equal(t, "counter", families[0].GetName())
 		require.Equal(t, 1, len(families[0].GetMetric()))
-		require.Equal(t, 0, len(families[0].GetMetric()[0].GetLabel())) // The aggregate has no labels.
-
-		// Add children (app and db label). Now only the childset metric is reported.
-		r.ReinitialiseChildMetrics(true, true)
-		counter.Inc(1, "db_foo", "app_foo")
-		pe = metric.MakePrometheusExporter()
-		pe.ScrapeRegistry(r, metric.WithIncludeChildMetrics(true), metric.WithIncludeAggregateMetrics(false), metric.WithReinitialisableBugFixEnabled(true))
-		families, err = pe.Gather()
-		require.NoError(t, err)
-		require.Equal(t, 1, len(families))
-		require.Equal(t, 1, len(families[0].GetMetric()))
-		// Childset metric labels.
-		labelPair := families[0].GetMetric()[0].GetLabel()[0]
-		require.Equal(t, "database", *labelPair.Name)
-		labelPair = families[0].GetMetric()[0].GetLabel()[1]
-		require.Equal(t, "application_name", *labelPair.Name)
-
-		// Enable aggregate. Now reporting two metrics (the aggregate and the childset).
-		pe = metric.MakePrometheusExporter()
-		pe.ScrapeRegistry(r, metric.WithIncludeChildMetrics(true), metric.WithIncludeAggregateMetrics(true), metric.WithReinitialisableBugFixEnabled(true))
-		families, err = pe.Gather()
-		require.NoError(t, err)
-		require.Equal(t, 1, len(families))
-		require.Equal(t, 2, len(families[0].GetMetric()))
-		require.Equal(t, 0, len(families[0].GetMetric()[0].GetLabel())) // The aggregate has no labels.
-		// Childset metric labels.
-		labelPair = families[0].GetMetric()[1].GetLabel()[0]
-		require.Equal(t, "database", *labelPair.Name)
-		labelPair = families[0].GetMetric()[1].GetLabel()[1]
-		require.Equal(t, "application_name", *labelPair.Name)
+		require.Equal(t, 0, len(families[0].GetMetric()[0].GetLabel()))
 	})
 
+	testutils.RunTrueAndFalse(t, "includeChildMetrics=true,includeAggregateMetrics", func(t *testing.T, includeAggregateMetrics bool) {
+		pe := metric.MakePrometheusExporter()
+		pe.ScrapeRegistry(r, true, includeAggregateMetrics)
+		families, err := pe.Gather()
+		require.NoError(t, err)
+		require.Equal(t, 1, len(families))
+		require.Equal(t, "counter", families[0].GetName())
+		var labelPair *prometheusgo.LabelPair
+		if includeAggregateMetrics {
+			require.Equal(t, 2, len(families[0].GetMetric()))
+			require.Equal(t, 0, len(families[0].GetMetric()[0].GetLabel()))
+			require.Equal(t, 1, len(families[0].GetMetric()[1].GetLabel()))
+			labelPair = families[0].GetMetric()[1].GetLabel()[0]
+		} else {
+			require.Equal(t, 1, len(families[0].GetMetric()))
+			require.Equal(t, 1, len(families[0].GetMetric()[0].GetLabel()))
+			labelPair = families[0].GetMetric()[0].GetLabel()[0]
+		}
+		require.Equal(t, "child_label", *labelPair.Name)
+		require.Equal(t, "xyz", *labelPair.Value)
+	})
 }
 
 func TestAggMetric(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
 	r := metric.NewRegistry()
-	writePrometheusMetrics := WritePrometheusMetricsFunc(r)
+	writePrometheusMetrics := func(t *testing.T) string {
+		var in bytes.Buffer
+		ex := metric.MakePrometheusExporter()
+		scrape := func(ex *metric.PrometheusExporter) {
+			ex.ScrapeRegistry(r, true /* includeChildMetrics */, true)
+		}
+		require.NoError(t, ex.ScrapeAndPrintAsText(&in, expfmt.FmtText, scrape))
+		var lines []string
+		for sc := bufio.NewScanner(&in); sc.Scan(); {
+			if !bytes.HasPrefix(sc.Bytes(), []byte{'#'}) {
+				lines = append(lines, sc.Text())
+			}
+		}
+		sort.Strings(lines)
+		return strings.Join(lines, "\n")
+	}
 
 	c := NewCounter(metric.Metadata{
 		Name: "foo_counter",
@@ -167,11 +133,9 @@ func TestAggMetric(t *testing.T) {
 
 	t.Run("basic", func(t *testing.T) {
 		c2.Inc(2)
-		c3.UpdateIfHigher(3)
-		c3.Inc(1)
+		c3.Inc(4)
 		d2.Inc(123456.5)
-		d3.UpdateIfHigher(9.5)
-		d3.Inc(789080.0)
+		d3.Inc(789089.5)
 		g2.Inc(2)
 		g3.Inc(3)
 		g3.Dec(1)
@@ -331,347 +295,4 @@ func TestAggHistogramRotate(t *testing.T) {
 		now = now.Add(time.Duration(i+1) * 10 * time.Second)
 		// Go to beginning.
 	}
-}
-
-func TestAggMetricClear(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	r := metric.NewRegistry()
-	writePrometheusMetrics := WritePrometheusMetricsFunc(r)
-
-	c := NewCounter(metric.Metadata{
-		Name: "foo_counter",
-	}, "tenant_id")
-	r.AddMetric(c)
-
-	d := NewSQLCounter(metric.Metadata{
-		Name: "bar_counter",
-	})
-	r.AddMetric(d)
-	d.mu.labelConfig = metric.LabelConfigAppAndDB
-	tenant2 := roachpb.MustMakeTenantID(2)
-	c1 := c.AddChild(tenant2.String())
-
-	t.Run("before clear", func(t *testing.T) {
-		c1.Inc(2)
-		d.Inc(2, "test-db", "test-app")
-		testFile := "aggMetric_pre_clear.txt"
-		echotest.Require(t, writePrometheusMetrics(t), datapathutils.TestDataPath(t, testFile))
-	})
-
-	c.clear()
-	d.mu.children.Clear()
-
-	t.Run("post clear", func(t *testing.T) {
-		testFile := "aggMetric_post_clear.txt"
-		echotest.Require(t, writePrometheusMetrics(t), datapathutils.TestDataPath(t, testFile))
-	})
-}
-
-func TestMetricKey(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	defer leaktest.AfterTest(t)()
-
-	for _, tc := range []struct {
-		name              string
-		labelValues       []string
-		expectedHashValue uint64
-	}{
-		{
-			name:              "empty label values",
-			labelValues:       []string{},
-			expectedHashValue: 0xcbf29ce484222325,
-		},
-		{
-			name:              "single label value",
-			labelValues:       []string{"test_db"},
-			expectedHashValue: 0x7b629443ea81c091,
-		},
-		{
-			name:              "multiple label values",
-			labelValues:       []string{"test_db", "test_app", "test_tenant"},
-			expectedHashValue: 0xa1aaab8437836050,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.expectedHashValue, metricKey(tc.labelValues...))
-		})
-	}
-}
-
-func WritePrometheusMetricsFunc(r *metric.Registry) func(t *testing.T) string {
-	writePrometheusMetrics := func(t *testing.T) string {
-		var in bytes.Buffer
-		ex := metric.MakePrometheusExporter()
-		scrape := func(ex *metric.PrometheusExporter) {
-			ex.ScrapeRegistry(r, metric.WithIncludeChildMetrics(true), metric.WithIncludeAggregateMetrics(true))
-		}
-		require.NoError(t, ex.ScrapeAndPrintAsText(&in, expfmt.FmtText, scrape))
-		var lines []string
-		for sc := bufio.NewScanner(&in); sc.Scan(); {
-			if !bytes.HasPrefix(sc.Bytes(), []byte{'#'}) {
-				lines = append(lines, sc.Text())
-			}
-		}
-		sort.Strings(lines)
-		return strings.Join(lines, "\n")
-	}
-	return writePrometheusMetrics
-}
-
-func TestSQLMetricsReinitialise(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	r := metric.NewRegistry()
-	writePrometheusMetrics := WritePrometheusMetricsFunc(r)
-
-	counter := NewSQLCounter(metric.Metadata{Name: "test.counter"})
-	r.AddMetric(counter)
-
-	gauge := NewSQLGauge(metric.Metadata{Name: "test.gauge"})
-	r.AddMetric(gauge)
-
-	histogram := NewSQLHistogram(metric.HistogramOptions{
-		Metadata: metric.Metadata{
-			Name: "test.histogram",
-		},
-		Duration:     base.DefaultHistogramWindowInterval(),
-		MaxVal:       100,
-		SigFigs:      1,
-		BucketConfig: metric.Percent100Buckets,
-	})
-	r.AddMetric(histogram)
-
-	t.Run("before invoking reinitialise sql metrics", func(t *testing.T) {
-		counter.Inc(1, "test_db", "test_app")
-		gauge.Update(10, "test_db", "test_app")
-		histogram.RecordValue(10, "test_db", "test_app")
-
-		testFile := "sql_metric_pre_reinitialise_child_metrics.txt"
-		if metric.HdrEnabled() {
-			testFile = "sql_metric_pre_reinitialise_child_metrics_hdr.txt"
-		}
-		echotest.Require(t, writePrometheusMetrics(t), datapathutils.TestDataPath(t, testFile))
-	})
-
-	r.ReinitialiseChildMetrics(true, true)
-
-	t.Run("after invoking reinitialise sql metrics", func(t *testing.T) {
-		counter.Inc(1, "test_db", "test_app")
-		gauge.Update(10, "test_db", "test_app")
-		histogram.RecordValue(10, "test_db", "test_app")
-
-		testFile := "sql_metric_post_reinitialise_child_metrics.txt"
-		if metric.HdrEnabled() {
-			testFile = "sql_metric_post_reinitialise_child_metrics_hdr.txt"
-		}
-		echotest.Require(t, writePrometheusMetrics(t), datapathutils.TestDataPath(t, testFile))
-	})
-
-}
-
-// TestConcurrentUpdatesAndReinitialiseMetric tests that concurrent updates to a metric
-// do not cause a panic when the metric is reinitialised and scraped. The test case
-// validates the fix for the bug #147475.
-func TestConcurrentUpdatesAndReinitialiseMetric(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	r := metric.NewRegistry()
-
-	c := NewSQLCounter(metric.Metadata{Name: "test.counter"})
-	c.ReinitialiseChildMetrics(metric.LabelConfigApp)
-	r.AddMetric(c)
-	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func() {
-			c.Inc(1, "test_db"+"_"+strconv.Itoa(i), "test_app"+"_"+strconv.Itoa(i))
-			wg.Done()
-		}()
-	}
-	c.ReinitialiseChildMetrics(metric.LabelConfigAppAndDB)
-	wg.Wait()
-	pe := metric.MakePrometheusExporter()
-	require.NotPanics(t, func() {
-		pe.ScrapeRegistry(r, metric.WithIncludeChildMetrics(true), metric.WithIncludeAggregateMetrics(true))
-	})
-}
-
-// TestHighCardinalityMetricsWithOptions tests all high cardinality metric types
-// (Counter, Gauge, Histogram) with both custom and default options.
-func TestHighCardinalityMetricsWithOptions(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	// Test with custom options
-	t.Run("CustomOptions", func(t *testing.T) {
-		// Save and restore the original values
-		originalMaxLabelValues := metric.MaxLabelValues
-		originalRetentionTime := metric.RetentionTimeTillEviction
-		defer func() {
-			metric.MaxLabelValues = originalMaxLabelValues
-			metric.RetentionTimeTillEviction = originalRetentionTime
-		}()
-
-		const customCacheSize = 5
-		const customRetention = 2 * time.Second
-
-		// Set the package-level variables directly since they're cached at package load time
-		metric.MaxLabelValues = 5
-		metric.RetentionTimeTillEviction = 2 * time.Second
-
-		r := metric.NewRegistry()
-		writePrometheusMetrics := WritePrometheusMetricsFunc(r)
-
-		// Create all three metric types with custom options
-		counter := NewHighCardinalityCounter(
-			metric.HighCardinalityMetricOptions{
-				Metadata:                  metric.Metadata{Name: "custom_options_counter"},
-				MaxLabelValues:            customCacheSize,
-				RetentionTimeTillEviction: customRetention,
-			},
-			"database", "application_name",
-		)
-		r.AddMetric(counter)
-
-		gauge := NewHighCardinalityGauge(
-			metric.HighCardinalityMetricOptions{
-				Metadata:                  metric.Metadata{Name: "custom_options_gauge"},
-				MaxLabelValues:            customCacheSize,
-				RetentionTimeTillEviction: customRetention,
-			},
-			"database", "application_name",
-		)
-		r.AddMetric(gauge)
-
-		histogram := NewHighCardinalityHistogram(
-			metric.HistogramOptions{
-				Metadata: metric.Metadata{
-					Name: "custom_options_histogram",
-				},
-				Duration:     base.DefaultHistogramWindowInterval(),
-				MaxVal:       100,
-				SigFigs:      1,
-				BucketConfig: metric.Percent100Buckets,
-				HighCardinalityOpts: metric.HighCardinalityMetricOptions{
-					MaxLabelValues:            customCacheSize,
-					RetentionTimeTillEviction: customRetention,
-				},
-			},
-			"database", "application_name",
-		)
-		r.AddMetric(histogram)
-
-		// Initialize with label slice caches
-		labelSliceCache := metric.NewLabelSliceCache()
-		counter.InitializeMetrics(labelSliceCache)
-		gauge.InitializeMetrics(labelSliceCache)
-		histogram.InitializeMetrics(labelSliceCache)
-
-		// Add more entries than the custom cache size
-		for i := 0; i < customCacheSize+3; i++ {
-			counter.Inc(1, "db1", strconv.Itoa(i))
-			gauge.Update(int64(i+1), "db1", strconv.Itoa(i))
-			histogram.RecordValue(int64(i+1), "db1", strconv.Itoa(i))
-		}
-
-		// Wait for custom retention time to pass
-		time.Sleep(customRetention + 500*time.Millisecond)
-
-		testFile := "HighCardinalityMetrics_custom_options_pre_eviction.txt"
-		if metric.HdrEnabled() {
-			testFile = "HighCardinalityMetrics_custom_options_pre_eviction_hdr.txt"
-		}
-		echotest.Require(t, writePrometheusMetrics(t), datapathutils.TestDataPath(t, testFile))
-
-		// Add new entries to trigger eviction
-		for i := customCacheSize + 3; i < customCacheSize+6; i++ {
-			counter.Inc(1, "db2", strconv.Itoa(i))
-			gauge.Inc(5, "db2", strconv.Itoa(i))
-			histogram.RecordValue(int64(i+10), "db2", strconv.Itoa(i))
-		}
-
-		testFile = "HighCardinalityMetrics_custom_options_post_eviction.txt"
-		if metric.HdrEnabled() {
-			testFile = "HighCardinalityMetrics_custom_options_post_eviction_hdr.txt"
-		}
-		echotest.Require(t, writePrometheusMetrics(t), datapathutils.TestDataPath(t, testFile))
-
-		// Verify that old entries were evicted
-		for i := 0; i < 3; i++ {
-			metricKey := metric.LabelSliceCacheKey(metricKey("db1", strconv.Itoa(i)))
-			_, ok := labelSliceCache.Get(metricKey)
-			require.False(t, ok, "old entry should have been evicted")
-		}
-	})
-
-	// Test with default options
-	t.Run("DefaultOptions", func(t *testing.T) {
-		r := metric.NewRegistry()
-		writePrometheusMetrics := WritePrometheusMetricsFunc(r)
-
-		// Create all three metric types with default options
-		counter := NewHighCardinalityCounter(
-			metric.HighCardinalityMetricOptions{
-				Metadata:                  metric.Metadata{Name: "default_options_counter"},
-				MaxLabelValues:            0, // Should default to 5000
-				RetentionTimeTillEviction: 0, // Should default to 20 seconds
-			},
-			"database", "application_name",
-		)
-		r.AddMetric(counter)
-
-		gauge := NewHighCardinalityGauge(
-			metric.HighCardinalityMetricOptions{
-				Metadata:                  metric.Metadata{Name: "default_options_gauge"},
-				MaxLabelValues:            0, // Should default to 5000
-				RetentionTimeTillEviction: 0, // Should default to 20 seconds
-			},
-			"database", "application_name",
-		)
-		r.AddMetric(gauge)
-
-		histogram := NewHighCardinalityHistogram(
-			metric.HistogramOptions{
-				Metadata: metric.Metadata{
-					Name: "default_options_histogram",
-				},
-				Duration:     base.DefaultHistogramWindowInterval(),
-				MaxVal:       100,
-				SigFigs:      1,
-				BucketConfig: metric.Percent100Buckets,
-				HighCardinalityOpts: metric.HighCardinalityMetricOptions{
-					MaxLabelValues:            0, // Should default to 5000
-					RetentionTimeTillEviction: 0, // Should default to 20 seconds
-				},
-			},
-			"database", "application_name",
-		)
-		r.AddMetric(histogram)
-
-		// Initialize with label slice caches
-		labelSliceCache := metric.NewLabelSliceCache()
-		counter.InitializeMetrics(labelSliceCache)
-		gauge.InitializeMetrics(labelSliceCache)
-		histogram.InitializeMetrics(labelSliceCache)
-
-		// Add a few entries
-		for i := 0; i < 10; i++ {
-			counter.Inc(1, "db1", strconv.Itoa(i))
-			gauge.Update(int64(i+1), "db1", strconv.Itoa(i))
-			histogram.RecordValue(int64(i+1), "db1", strconv.Itoa(i))
-		}
-
-		testFile := "HighCardinalityMetrics_default_options.txt"
-		if metric.HdrEnabled() {
-			testFile = "HighCardinalityMetrics_default_options_hdr.txt"
-		}
-		echotest.Require(t, writePrometheusMetrics(t), datapathutils.TestDataPath(t, testFile))
-
-		// Verify all entries are still present (shouldn't evict with default settings)
-		for i := 0; i < 10; i++ {
-			metricKey := metric.LabelSliceCacheKey(metricKey("db1", strconv.Itoa(i)))
-			labelSliceValue, ok := labelSliceCache.Get(metricKey)
-			require.True(t, ok, "entry should still be present with default settings")
-			require.Equal(t, int64(3), labelSliceValue.Counter.Load())
-		}
-	})
 }

@@ -30,9 +30,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
-	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 )
 
@@ -93,6 +93,9 @@ func newSampleAggregator(
 	for _, s := range spec.Sketches {
 		if len(s.Columns) == 0 {
 			return nil, errors.Errorf("no columns")
+		}
+		if _, ok := supportedSketchTypes[s.SketchType]; !ok {
+			return nil, errors.Errorf("unsupported sketch type %s", s.SketchType)
 		}
 		if s.GenerateHistogram && s.HistogramMaxBuckets == 0 {
 			return nil, errors.Errorf("histogram max buckets not specified")
@@ -238,21 +241,21 @@ func (s *sampleAggregator) mainLoop(
 		// If it changed by less than 1%, just check for cancellation (which is more
 		// efficient).
 		if fractionCompleted < 1.0 && fractionCompleted < lastReportedFractionCompleted+0.01 {
-			return job.NoTxn().CheckState(ctx)
+			return job.NoTxn().CheckStatus(ctx)
 		}
 		lastReportedFractionCompleted = fractionCompleted
 		return job.NoTxn().FractionProgressed(ctx, jobs.FractionUpdater(fractionCompleted))
 	}
 
 	var rowsProcessed uint64
-	progressUpdates := util.EveryMono(SampleAggregatorProgressInterval)
+	progressUpdates := util.Every(SampleAggregatorProgressInterval)
 	var da tree.DatumAlloc
 	for {
 		row, meta := s.input.Next()
 		if meta != nil {
 			if meta.SamplerProgress != nil {
 				rowsProcessed += meta.SamplerProgress.RowsProcessed
-				if progressUpdates.ShouldProcess(crtime.NowMono()) {
+				if progressUpdates.ShouldProcess(timeutil.Now()) {
 					// Periodically report fraction progressed and check that the job has
 					// not been paused or canceled.
 					var fractionCompleted float32
@@ -407,7 +410,7 @@ func (s *sampleAggregator) maybeDecreaseSamples(
 	if capacity, err := row[s.numRowsCol].GetInt(); err == nil {
 		prevCapacity := sr.Cap()
 		if sr.MaybeResize(ctx, int(capacity)) {
-			log.Dev.Infof(
+			log.Infof(
 				ctx, "histogram samples reduced from %d to %d to match sampler processor",
 				prevCapacity, sr.Cap(),
 			)
@@ -426,10 +429,10 @@ func (s *sampleAggregator) sampleRow(
 		// We hit an out of memory error. Clear the sample reservoir and
 		// disable histogram sample collection.
 		sr.Disable()
-		log.Dev.Info(ctx, "disabling histogram collection due to excessive memory utilization")
+		log.Info(ctx, "disabling histogram collection due to excessive memory utilization")
 		telemetry.Inc(sqltelemetry.StatsHistogramOOMCounter)
 	} else if sr.Cap() != prevCapacity {
-		log.Dev.Infof(
+		log.Infof(
 			ctx, "histogram samples reduced from %d to %d due to excessive memory utilization",
 			prevCapacity, sr.Cap(),
 		)
@@ -529,8 +532,8 @@ func (s *sampleAggregator) writeResults(ctx context.Context) error {
 				columnIDs[i] = s.sampledCols[c]
 			}
 
-			// Delete old stats that have been superseded, if the new statistic
-			// is not partial.
+			// Delete old stats that have been superseded,
+			// if the new statistic is not partial
 			if si.spec.PartialPredicate == "" {
 				if err := stats.DeleteOldStatsForColumns(
 					ctx,
@@ -654,14 +657,15 @@ func (s *sampleAggregator) generateHistogram(
 	}
 
 	if sr.Cap() != prevCapacity {
-		log.Dev.Infof(
+		log.Infof(
 			ctx, "histogram samples reduced from %d to %d due to excessive memory utilization",
 			prevCapacity, sr.Cap(),
 		)
 	}
 
 	if lowerBound != nil {
-		h, _, err := stats.ConstructExtremesHistogram(ctx, evalCtx, colType, values, numRows, distinctCount, maxBuckets, lowerBound, evalCtx.Settings)
+		h, buckets, err := stats.ConstructExtremesHistogram(ctx, evalCtx, colType, values, numRows, distinctCount, maxBuckets, lowerBound, evalCtx.Settings)
+		_ = buckets
 		return h, err
 	}
 

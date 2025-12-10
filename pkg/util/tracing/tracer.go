@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +20,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
-	"github.com/cockroachdb/cockroach/pkg/util/debugutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/iterutil"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
@@ -50,22 +50,22 @@ const (
 	maxRecordedSpansPerTrace = 1000
 	// maxRecordedBytesPerSpan limits the size of unstructured logs in a span.
 	maxLogBytesPerSpan = 256 * (1 << 10) // 256 KiB
-	// defaultMaxStructuredBytesPerSpan limits the size of structured logs in a span.
+	// maxStructuredBytesPerSpan limits the size of structured logs in a span.
 	// This limit applies to records directly logged into the span; it does not
 	// apply to records in child span (including structured records copied from
 	// the child into the parent when the child is dropped because of the number
 	// of spans limit).
 	// See also maxStructuredBytesPerTrace.
-	defaultMaxStructuredBytesPerSpan = 10 * (1 << 10) // 10 KiB
-	// defaultMaxStructuredBytesPerTrace limits the total size of structured logs in a
+	maxStructuredBytesPerSpan = 10 * (1 << 10) // 10 KiB
+	// maxStructuredBytesPerTrace limits the total size of structured logs in a
 	// trace recording, across all spans. This limit is enforced at the time when
 	// a span is finished and its recording is copied to the parent, and at the
 	// time when an open span's recording is collected - which calls into all its
 	// open children. Thus, if there are multiple open spans that are part of the
 	// same trace, each one of them can temporarily have up to
-	// defaultMaxStructuredBytesPerTrace worth of messages under it. Each open span is
-	// also subject to the defaultMaxStructuredBytesPerSpan limit.
-	defaultMaxStructuredBytesPerTrace = 1 << 20 // 1 MiB
+	// maxStructuredBytesPerTrace worth of messages under it. Each open span is
+	// also subject to the maxStructuredBytesPerSpan limit.
+	maxStructuredBytesPerTrace = 1 << 20 // 1 MiB
 
 	// maxSpanRegistrySize limits the number of local root spans tracked in
 	// a Tracer's registry.
@@ -179,7 +179,7 @@ var EnableActiveSpansRegistry = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"trace.span_registry.enabled",
 	"if set, ongoing traces can be seen at https://<ui>/#/debug/tracez",
-	envutil.EnvOrDefaultBool("COCKROACH_REAL_SPANS", false),
+	envutil.EnvOrDefaultBool("COCKROACH_REAL_SPANS", true),
 	settings.WithPublic)
 
 var periodicSnapshotInterval = settings.RegisterDurationSetting(
@@ -187,19 +187,8 @@ var periodicSnapshotInterval = settings.RegisterDurationSetting(
 	"trace.snapshot.rate",
 	"if non-zero, interval at which background trace snapshots are captured",
 	0,
+	settings.NonNegativeDuration,
 	settings.WithPublic)
-
-var structuredBytesLimit = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"trace.structured_bytes_per_trace.max",
-	"maximum size of structured log entries per trace recording",
-	defaultMaxStructuredBytesPerTrace)
-
-var structuredBytesPerSpanLimit = settings.RegisterByteSizeSetting(
-	settings.ApplicationLevel,
-	"trace.structured_bytes_per_span.max",
-	"maximum size of structured log entries per span",
-	defaultMaxStructuredBytesPerSpan)
 
 // panicOnUseAfterFinish, if set, causes use of a span after Finish() to panic
 // if detected.
@@ -298,6 +287,11 @@ var spanReusePercent = metamorphic.ConstantWithTestRange(
 // this won't be the case if the cluster settings move away from using global
 // state.
 type Tracer struct {
+	// Preallocated noopSpans, used to avoid creating spans when we are not using
+	// x/net/trace or OpenTelemetry and we are not recording.
+	noopSpan        *Span
+	sterileNoopSpan *Span
+
 	// True if tracing to the debug/requests endpoint. Accessed via t.useNetTrace().
 	_useNetTrace int32 // updated atomically
 
@@ -319,7 +313,12 @@ type Tracer struct {
 	// explicitly requested.
 	_activeSpansRegistryEnabled int32 // accessed atomically
 
-	opNameRegexp atomic.Pointer[regexp.Regexp]
+	forceVerboseMu struct {
+		syncutil.RWMutex
+		// opNameRegexp is matched against during span initialization. If the span
+		// operation name matches, then the span is forced to a VERBOSE recording mode.
+		opNameRegexp *regexp.Regexp
+	}
 
 	// activeSpans is a map that references all non-Finish'ed local root spans,
 	// i.e. those for which no WithParent(<non-nil>) option was supplied.
@@ -380,19 +379,9 @@ type Tracer struct {
 
 	testing TracerTestingKnobs
 
-	// maxStructuredBytesPerTrace limits the total size of structured logs in a
-	// trace recording. This value is configurable via the
-	// trace.structured_bytes_per_trace.max cluster setting.
-	_maxStructuredBytesPerTrace int64 // accessed atomically
-
-	// maxStructuredBytesPerSpan limits the size of structured logs in each span.
-	// This value is configurable via the trace.structured_bytes_per_span.max
-	// cluster setting.
-	_maxStructuredBytesPerSpan int64 // accessed atomically
-
 	// stack is populated in NewTracer and is printed in assertions related to
 	// mixing tracers.
-	stack debugutil.SafeStack
+	stack string
 	// closed is set on Close().
 	_closed int32 // accessed atomically
 }
@@ -610,30 +599,6 @@ func (t *Tracer) SetActiveSpansRegistryEnabled(to bool) {
 	atomic.StoreInt32(&t._activeSpansRegistryEnabled, n)
 }
 
-// SetMaxStructuredBytesPerTrace sets the maximum size of structured logs per
-// trace recording.
-func (t *Tracer) SetMaxStructuredBytesPerTrace(limit int64) {
-	atomic.StoreInt64(&t._maxStructuredBytesPerTrace, limit)
-}
-
-// MaxStructuredBytesPerTrace returns the maximum size of structured logs per
-// trace recording.
-func (t *Tracer) MaxStructuredBytesPerTrace() int64 {
-	return atomic.LoadInt64(&t._maxStructuredBytesPerTrace)
-}
-
-// SetMaxStructuredBytesPerSpan sets the maximum size of structured logs per
-// span.
-func (t *Tracer) SetMaxStructuredBytesPerSpan(limit int64) {
-	atomic.StoreInt64(&t._maxStructuredBytesPerSpan, limit)
-}
-
-// MaxStructuredBytesPerSpan returns the maximum size of structured logs per
-// span.
-func (t *Tracer) MaxStructuredBytesPerSpan() int64 {
-	return atomic.LoadInt64(&t._maxStructuredBytesPerSpan)
-}
-
 // ActiveSpansRegistryEnabled returns true if this tracer is configured
 // to register spans with the activeSpansRegistry
 func (t *Tracer) ActiveSpansRegistryEnabled() bool {
@@ -652,10 +617,8 @@ func NewTracer() *Tracer {
 	}
 
 	t := &Tracer{
-		stack:                       debugutil.Stack(),
-		activeSpansRegistry:         makeSpanRegistry(),
-		_maxStructuredBytesPerTrace: defaultMaxStructuredBytesPerTrace,
-		_maxStructuredBytesPerSpan:  defaultMaxStructuredBytesPerSpan,
+		stack:               string(debug.Stack()),
+		activeSpansRegistry: makeSpanRegistry(),
 		// These might be overridden in NewTracerWithOpt.
 		panicOnUseAfterFinish: panicOnUseAfterFinish,
 		debugUseAfterFinish:   debugUseAfterFinish,
@@ -683,6 +646,8 @@ func NewTracer() *Tracer {
 			return h
 		},
 	}
+	t.noopSpan = &Span{i: spanInner{tracer: t}}
+	t.sterileNoopSpan = &Span{i: spanInner{tracer: t, sterile: true}}
 	return t
 }
 
@@ -702,7 +667,7 @@ func NewTracerWithOpt(ctx context.Context, opts ...TracerOption) *Tracer {
 		t.spanReusePercent = *o.spanReusePercent
 	}
 	t.testing = o.knobs
-	t.SetActiveSpansRegistryEnabled(o.tracingDefault == TracingModeActiveSpansRegistry)
+	t.SetActiveSpansRegistryEnabled(o.tracingDefault != TracingModeOnDemand)
 	if o.sv != nil {
 		t.configure(ctx, o.sv, o.tracingDefault)
 		forceVerboseSpanRegexp.SetOnChange(o.sv, func(ctx context.Context) {
@@ -809,15 +774,17 @@ func WithUseAfterFinishOpt(panicOnUseAfterFinish, debugUseAfterFinish bool) Trac
 }
 
 func (t *Tracer) setVerboseOpNameRegexp(s string) error {
+	t.forceVerboseMu.Lock()
+	defer t.forceVerboseMu.Unlock()
 	if s == "" {
-		t.opNameRegexp.Store(nil)
+		t.forceVerboseMu.opNameRegexp = nil
 		return nil
 	}
 	compiled, err := regexp.Compile(s)
 	if err != nil {
 		return err
 	}
-	t.opNameRegexp.Store(compiled)
+	t.forceVerboseMu.opNameRegexp = compiled
 	return nil
 }
 
@@ -833,11 +800,6 @@ func (t *Tracer) configure(ctx context.Context, sv *settings.Values, tracingDefa
 		otlpCollectorAddr := openTelemetryCollector.Get(sv)
 		zipkinAddr := ZipkinCollector.Get(sv)
 		enableRedactable := enableTraceRedactable.Get(sv)
-		structuredBytesLimitVal := structuredBytesLimit.Get(sv)
-		structuredBytesPerSpanLimitVal := structuredBytesPerSpanLimit.Get(sv)
-
-		t.SetMaxStructuredBytesPerTrace(structuredBytesLimitVal)
-		t.SetMaxStructuredBytesPerSpan(structuredBytesPerSpanLimitVal)
 
 		switch tracingDefault {
 		case TracingModeFromEnv:
@@ -925,8 +887,6 @@ func (t *Tracer) configure(ctx context.Context, sv *settings.Values, tracingDefa
 	openTelemetryCollector.SetOnChange(sv, reconfigure)
 	ZipkinCollector.SetOnChange(sv, reconfigure)
 	enableTraceRedactable.SetOnChange(sv, reconfigure)
-	structuredBytesLimit.SetOnChange(sv, reconfigure)
-	structuredBytesPerSpanLimit.SetOnChange(sv, reconfigure)
 }
 
 func createOTLPSpanProcessor(
@@ -1115,20 +1075,17 @@ func (t *Tracer) releaseSpanToPool(sp *Span) {
 func (t *Tracer) StartSpanCtx(
 	ctx context.Context, operationName string, os ...SpanOption,
 ) (context.Context, *Span) {
-	if t == nil {
-		return ctx, nil
-	}
 	// NB: apply takes and returns a value to avoid forcing
 	// `opts` on the heap here.
 	var opts spanOptions
-	for i := range os {
-		if os[i] == nil {
+	for _, o := range os {
+		if o == nil {
 			continue
 		}
-		opts = os[i].apply(opts)
+		opts = o.apply(opts)
 	}
 
-	return t.startSpanFast(ctx, operationName, &opts)
+	return t.startSpanGeneric(ctx, operationName, opts)
 }
 
 // AlwaysTrace returns true if operations should be traced regardless of the
@@ -1142,69 +1099,35 @@ func (t *Tracer) AlwaysTrace() bool {
 }
 
 func (t *Tracer) forceOpNameVerbose(opName string) bool {
-	if r := t.opNameRegexp.Load(); r != nil {
-		return r.MatchString(opName)
+	t.forceVerboseMu.RLock()
+	defer t.forceVerboseMu.RUnlock()
+	if t.forceVerboseMu.opNameRegexp == nil {
+		return false
 	}
-	return false
-}
-
-// startSpanFast implements a fast path for the common case of tracing
-// being disabled on the current span and its parent. We make only the
-// checks necessary to ensure that recording is disabled and wrap the
-// context in a nil span.
-func (t *Tracer) startSpanFast(
-	ctx context.Context, opName string, opts *spanOptions,
-) (context.Context, *Span) {
-	if opts.RefType != childOfRef && opts.RefType != followsFromRef {
-		panic(errors.AssertionFailedf("unexpected RefType %v", opts.RefType))
-	}
-
-	// This is a fast path for the common case where there's no parent
-	// span. This contains duplicated logic from
-	// `(*spanOptions).recordingType()`. Specifically, we are aiming to
-	// avoid creating local copies of `opts.Parent` and
-	// `opts.RemoteParent` hence conditional logic is being inlined and
-	// checked locally. This logic should only change if
-	// `recordingType()` is being modified.
-	if opts.Parent.Span == nil && opts.RemoteParent.Empty() {
-		var recordingType tracingpb.RecordingType
-
-		if opts.recordingTypeExplicit {
-			recordingType = opts.recordingTypeOpt
-		}
-
-		if recordingType < opts.minRecordingTypeOpt {
-			recordingType = opts.minRecordingTypeOpt
-		}
-
-		shouldBeNilSpan := !(t.AlwaysTrace() || opts.ForceRealSpan || recordingType != tracingpb.RecordingOff)
-		forceVerbose := t.forceOpNameVerbose(opName)
-		if shouldBeNilSpan && !forceVerbose && !opts.Sterile {
-			return maybeWrapCtx(ctx, nil)
-		}
-	}
-	return t.startSpanGeneric(ctx, opName, opts)
+	return t.forceVerboseMu.opNameRegexp.MatchString(opName)
 }
 
 // startSpanGeneric is the implementation of StartSpanCtx and StartSpan. In
 // the latter case, ctx == noCtx and the returned Context is the supplied one;
 // otherwise the returned Context embeds the returned Span.
 func (t *Tracer) startSpanGeneric(
-	ctx context.Context, opName string, opts *spanOptions,
+	ctx context.Context, opName string, opts spanOptions,
 ) (context.Context, *Span) {
 	if opts.RefType != childOfRef && opts.RefType != followsFromRef {
 		panic(errors.AssertionFailedf("unexpected RefType %v", opts.RefType))
 	}
 
 	if !opts.Parent.empty() {
-		// If we don't panic, opts.Parent will be moved into the child, and this
-		// release() will be a no-op.
-		defer opts.Parent.release()
+		if !opts.Parent.IsNoop() {
+			// If we don't panic, opts.Parent will be moved into the child, and this
+			// release() will be a no-op.
+			// Note that we can't call release() on a no-op span.
+			defer opts.Parent.release()
+		}
 
 		if !opts.RemoteParent.Empty() {
 			panic(errors.AssertionFailedf("can't specify both Parent and RemoteParent"))
 		}
-
 		if opts.Parent.i.sterile {
 			// A sterile parent should have been optimized away by
 			// WithParent.
@@ -1226,18 +1149,25 @@ child operation: %s, tracer created at:
 %s`,
 				opts.Parent.OperationName(), s.stack, opName, t.stack))
 		}
+		if opts.Parent.IsNoop() {
+			// If the parent is a no-op, we'll create a root span.
+			opts.Parent = spanRef{}
+		}
 	}
 
 	// Are we tracing everything, or have a parent, or want a real span, or were
 	// asked for a recording? Then we create a real trace span. In all other
-	// cases, a nil span will do.
-	shouldBeNilSpan := !(t.AlwaysTrace() || opts.parentTraceID() != 0 || opts.ForceRealSpan || opts.recordingType() != tracingpb.RecordingOff)
+	// cases, a noop span will do.
+	shouldBeNoopSpan := !(t.AlwaysTrace() || opts.parentTraceID() != 0 || opts.ForceRealSpan || opts.recordingType() != tracingpb.RecordingOff)
 	// Finally, we should check to see if this opName is configured to always be forced to the
 	// tracingpb.RecordingVerbose RecordingType. If it is, we'll want to create a real trace
 	// span.
 	forceVerbose := t.forceOpNameVerbose(opName)
-	if shouldBeNilSpan && !forceVerbose {
-		return maybeWrapCtx(ctx, nil)
+	if shouldBeNoopSpan && !forceVerbose {
+		if !opts.Sterile {
+			return maybeWrapCtx(ctx, t.noopSpan)
+		}
+		return maybeWrapCtx(ctx, t.sterileNoopSpan)
 	}
 
 	if opts.LogTags == nil {
@@ -1662,24 +1592,19 @@ func EnsureForkSpan(ctx context.Context, tr *Tracer, opName string) (context.Con
 	return tr.StartSpanCtx(ctx, opName, opts...)
 }
 
-// ChildSpan creates a child span of the current one, if any, via the WithParent
-// option. Recordings from child spans are automatically propagated to the
-// parent span, and the tags are inherited from the context's log tags
-// automatically. Also see `ForkSpan`, for the other kind of derived span
-// relation.
+// ChildSpan creates a child span of the current one, if any. Recordings from
+// child spans are automatically propagated to the parent span, and the tags are
+// inherited from the context's log tags automatically. Also see `ForkSpan`,
+// for the other kind of derived span relation.
 //
 // A context wrapping the newly created span is returned, along with the span
 // itself. If non-nil, the caller is responsible for eventually Finish()ing it.
-func ChildSpan(ctx context.Context, opName string, os ...SpanOption) (context.Context, *Span) {
+func ChildSpan(ctx context.Context, opName string) (context.Context, *Span) {
 	sp := SpanFromContext(ctx)
 	if sp == nil {
 		return ctx, nil
 	}
-	if len(os) == 0 {
-		return sp.Tracer().StartSpanCtx(ctx, opName, WithParent(sp))
-	}
-	os = append(os[:len(os):len(os)], WithParent(sp))
-	return sp.Tracer().StartSpanCtx(ctx, opName, os...)
+	return sp.Tracer().StartSpanCtx(ctx, opName, WithParent(sp))
 }
 
 // EnsureChildSpan looks at the supplied Context. If it contains a Span, returns
@@ -1806,7 +1731,7 @@ func (w MetadataCarrier) ForEach(fn func(key, val string) error) error {
 //
 // See #17177.
 func SpanInclusionFuncForClient(parent *Span) bool {
-	return parent != nil
+	return parent != nil && !parent.IsNoop()
 }
 
 // SpanInclusionFuncForServer is used as a SpanInclusionFunc for the server-side

@@ -38,17 +38,18 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/gc"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/replicastats"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig/spanconfigtestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/bootstrap"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/systemschema"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
@@ -60,7 +61,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/ts"
 	"github.com/cockroachdb/cockroach/pkg/ts/tspb"
-	"github.com/cockroachdb/cockroach/pkg/upgrade/upgradebase"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -76,7 +76,6 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/gogo/protobuf/proto"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/exp/maps"
 )
 
 // adminSplitArgs creates an AdminSplitRequest for the provided split key.
@@ -235,7 +234,7 @@ func TestStoreSplitAbortSpan(t *testing.T) {
 
 	collect := func(as *abortspan.AbortSpan) []roachpb.AbortSpanEntry {
 		var results []roachpb.AbortSpanEntry
-		if err := as.Iterate(ctx, store.StateEngine(), func(_ roachpb.Key, entry roachpb.AbortSpanEntry) error {
+		if err := as.Iterate(ctx, store.TODOEngine(), func(_ roachpb.Key, entry roachpb.AbortSpanEntry) error {
 			entry.Priority = 0 // don't care about that
 			results = append(results, entry)
 			return nil
@@ -376,7 +375,7 @@ func TestStoreRangeSplitIntents(t *testing.T) {
 	}
 	for _, key := range []roachpb.Key{keys.RangeDescriptorKey(roachpb.RKeyMin), keys.RangeDescriptorKey(splitKeyAddr)} {
 		if _, err := storage.MVCCGet(
-			ctx, store.StateEngine(), key, store.Clock().Now(), storage.MVCCGetOptions{},
+			ctx, store.TODOEngine(), key, store.Clock().Now(), storage.MVCCGetOptions{},
 		); err != nil {
 			t.Errorf("failed to read consistent range descriptor for key %s: %+v", key, err)
 		}
@@ -392,7 +391,7 @@ func TestStoreRangeSplitIntents(t *testing.T) {
 	// Verify the transaction record is gone.
 	start := storage.MakeMVCCMetadataKey(keys.MakeRangeKeyPrefix(roachpb.RKeyMin))
 	end := storage.MakeMVCCMetadataKey(keys.MakeRangeKeyPrefix(roachpb.RKeyMax))
-	iter, err := store.StateEngine().NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{UpperBound: end.Key})
+	iter, err := store.TODOEngine().NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{UpperBound: end.Key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +665,7 @@ func TestStoreRangeSplitIdempotency(t *testing.T) {
 	originalRepl := store.LookupReplica(roachpb.RKey(splitKey))
 	require.NotNil(t, originalRepl)
 	// Get the original stats for key and value bytes.
-	ms, err := kvstorage.MakeStateLoader(originalRepl.RangeID).LoadMVCCStats(ctx, store.StateEngine())
+	ms, err := stateloader.Make(originalRepl.RangeID).LoadMVCCStats(ctx, store.TODOEngine())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -685,7 +684,7 @@ func TestStoreRangeSplitIdempotency(t *testing.T) {
 	}
 	for _, key := range []roachpb.Key{keys.RangeDescriptorKey(roachpb.RKeyMin), keys.RangeDescriptorKey(splitKeyAddr)} {
 		if _, err := storage.MVCCGet(
-			context.Background(), store.StateEngine(), key, store.Clock().Now(), storage.MVCCGetOptions{},
+			context.Background(), store.TODOEngine(), key, store.Clock().Now(), storage.MVCCGetOptions{},
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -739,12 +738,12 @@ func TestStoreRangeSplitIdempotency(t *testing.T) {
 
 	// Compare stats of split ranges to ensure they are non zero and
 	// exceed the original range when summed.
-	left, err := kvstorage.MakeStateLoader(originalRepl.RangeID).LoadMVCCStats(ctx, store.StateEngine())
+	left, err := stateloader.Make(originalRepl.RangeID).LoadMVCCStats(ctx, store.TODOEngine())
 	if err != nil {
 		t.Fatal(err)
 	}
 	lKeyBytes, lValBytes := left.KeyBytes, left.ValBytes
-	right, err := kvstorage.MakeStateLoader(newRng.RangeID).LoadMVCCStats(ctx, store.StateEngine())
+	right, err := stateloader.Make(newRng.RangeID).LoadMVCCStats(ctx, store.TODOEngine())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -797,7 +796,7 @@ func TestStoreRangeSplitMergeStats(t *testing.T) {
 
 	// Verify empty range has empty stats.
 	repl := store.LookupReplica(roachpb.RKey(keyPrefix))
-	assertRangeStats(t, "empty stats", store.StateEngine(), repl.RangeID, enginepb.MVCCStats{})
+	assertRangeStats(t, "empty stats", store.TODOEngine(), repl.RangeID, enginepb.MVCCStats{})
 
 	// Write random data.
 	splitKey := kvserver.WriteRandomDataToRange(t, store, repl.RangeID, keyPrefix)
@@ -809,11 +808,11 @@ func TestStoreRangeSplitMergeStats(t *testing.T) {
 	// See: https://github.com/cockroachdb/cockroach/issues/129601#issuecomment-2309865742
 	repl.RaftLock()
 	replMS := repl.GetMVCCStats()
-	snap := store.StateEngine().NewSnapshot()
+	snap := store.TODOEngine().NewSnapshot()
 	defer snap.Close()
 	repl.RaftUnlock()
 
-	ms, err := kvstorage.MakeStateLoader(repl.RangeID).LoadMVCCStats(ctx, snap)
+	ms, err := stateloader.Make(repl.RangeID).LoadMVCCStats(ctx, snap)
 	require.NoError(t, err)
 	assertRecomputedStats(t, "before split", snap, repl.Desc(), ms, start.WallTime)
 
@@ -825,12 +824,12 @@ func TestStoreRangeSplitMergeStats(t *testing.T) {
 	_, pErr = repl.AdminSplit(ctx, *adminSplitArgs(splitKey), "test")
 	require.NoError(t, pErr.GoError())
 
-	snap = store.StateEngine().NewSnapshot()
+	snap = store.TODOEngine().NewSnapshot()
 	defer snap.Close()
-	msLeft, err := kvstorage.MakeStateLoader(repl.RangeID).LoadMVCCStats(ctx, snap)
+	msLeft, err := stateloader.Make(repl.RangeID).LoadMVCCStats(ctx, snap)
 	require.NoError(t, err)
 	replRight := store.LookupReplica(splitKey)
-	msRight, err := kvstorage.MakeStateLoader(replRight.RangeID).LoadMVCCStats(ctx, snap)
+	msRight, err := stateloader.Make(replRight.RangeID).LoadMVCCStats(ctx, snap)
 	require.NoError(t, err)
 
 	// Stats should both have the new timestamp.
@@ -886,10 +885,10 @@ func TestStoreRangeSplitMergeStats(t *testing.T) {
 	require.NoError(t, pErr.GoError())
 
 	repl = store.LookupReplica(roachpb.RKey(keyPrefix))
-	snap = store.StateEngine().NewSnapshot()
+	snap = store.TODOEngine().NewSnapshot()
 	defer snap.Close()
 
-	msMerged, err := kvstorage.MakeStateLoader(repl.RangeID).LoadMVCCStats(ctx, snap)
+	msMerged, err := stateloader.Make(repl.RangeID).LoadMVCCStats(ctx, snap)
 	require.NoError(t, err)
 	assertRecomputedStats(t, "in-mem after merge", snap, repl.Desc(), msMerged, s.Clock().PhysicalNow())
 
@@ -1006,12 +1005,12 @@ func TestStoreRangeSplitWithConcurrentWrites(t *testing.T) {
 					// Wait for the split to complete.
 					require.Nil(t, g.Wait())
 
-					snap := store.StateEngine().NewSnapshot()
+					snap := store.TODOEngine().NewSnapshot()
 					defer snap.Close()
-					lhsStats, err := kvstorage.MakeStateLoader(lhsRepl.RangeID).LoadMVCCStats(ctx, snap)
+					lhsStats, err := stateloader.Make(lhsRepl.RangeID).LoadMVCCStats(ctx, snap)
 					require.NoError(t, err)
 					rhsRepl := store.LookupReplica(splitKeyAddr)
-					rhsStats, err := kvstorage.MakeStateLoader(rhsRepl.RangeID).LoadMVCCStats(ctx, snap)
+					rhsStats, err := stateloader.Make(rhsRepl.RangeID).LoadMVCCStats(ctx, snap)
 					require.NoError(t, err)
 					// If the split is producing estimates and neither of the tight count
 					// and bytes thresholds is set, expect non-zero ContainsEstimates.
@@ -1042,17 +1041,17 @@ func TestStoreRangeSplitWithConcurrentWrites(t *testing.T) {
 					_, pErr = rhsRepl.AdminSplit(ctx, *adminSplitArgs(splitKeyRight), "test")
 					require.NoError(t, pErr.GoError())
 
-					snap = store.StateEngine().NewSnapshot()
+					snap = store.TODOEngine().NewSnapshot()
 					defer snap.Close()
-					lhs1Stats, err := kvstorage.MakeStateLoader(lhsRepl.RangeID).LoadMVCCStats(ctx, snap)
+					lhs1Stats, err := stateloader.Make(lhsRepl.RangeID).LoadMVCCStats(ctx, snap)
 					require.NoError(t, err)
 					lhs2Repl := store.LookupReplica(splitKeyLeftAddr)
-					lhs2Stats, err := kvstorage.MakeStateLoader(lhs2Repl.RangeID).LoadMVCCStats(ctx, snap)
+					lhs2Stats, err := stateloader.Make(lhs2Repl.RangeID).LoadMVCCStats(ctx, snap)
 					require.NoError(t, err)
-					rhs1Stats, err := kvstorage.MakeStateLoader(rhsRepl.RangeID).LoadMVCCStats(ctx, snap)
+					rhs1Stats, err := stateloader.Make(rhsRepl.RangeID).LoadMVCCStats(ctx, snap)
 					require.NoError(t, err)
 					rhs2Repl := store.LookupReplica(splitKeyRightAddr)
-					rhs2Stats, err := kvstorage.MakeStateLoader(rhs2Repl.RangeID).LoadMVCCStats(ctx, snap)
+					rhs2Stats, err := stateloader.Make(rhs2Repl.RangeID).LoadMVCCStats(ctx, snap)
 					require.NoError(t, err)
 
 					// Stats should agree with re-computation unless we're producing
@@ -1083,8 +1082,8 @@ func TestStoreRangeSplitWithTracing(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	l := log.ScopeWithoutShowLogs(t)
+	_ = log.SetVModule("split_queue=1")
 	defer l.Close(t)
-	testutils.SetVModule(t, "split_queue=1")
 
 	splitKey := roachpb.Key("b")
 	var targetRange atomic.Int32
@@ -1416,7 +1415,7 @@ func TestStoreRangeSplitStatsWithMerges(t *testing.T) {
 	// NOTE that this value is expected to change over time, depending on what
 	// we store in the sys-local keyspace. Update it accordingly for this test.
 	empty := enginepb.MVCCStats{LastUpdateNanos: start.WallTime}
-	assertRangeStats(t, "empty stats", store.StateEngine(), repl.RangeID, empty)
+	assertRangeStats(t, "empty stats", store.TODOEngine(), repl.RangeID, empty)
 
 	// Write random TimeSeries data.
 	midKey := writeRandomTimeSeriesDataToRange(t, store, repl.RangeID, keyPrefix)
@@ -1427,12 +1426,12 @@ func TestStoreRangeSplitStatsWithMerges(t *testing.T) {
 	_, pErr = repl.AdminSplit(ctx, *adminSplitArgs(midKey), "test")
 	require.NoError(t, pErr.GoError())
 
-	snap := store.StateEngine().NewSnapshot()
+	snap := store.TODOEngine().NewSnapshot()
 	defer snap.Close()
-	msLeft, err := kvstorage.MakeStateLoader(repl.RangeID).LoadMVCCStats(ctx, snap)
+	msLeft, err := stateloader.Make(repl.RangeID).LoadMVCCStats(ctx, snap)
 	require.NoError(t, err)
 	replRight := store.LookupReplica(midKey)
-	msRight, err := kvstorage.MakeStateLoader(replRight.RangeID).LoadMVCCStats(ctx, snap)
+	msRight, err := stateloader.Make(replRight.RangeID).LoadMVCCStats(ctx, snap)
 	require.NoError(t, err)
 
 	// Stats should both have the new timestamp.
@@ -1463,7 +1462,7 @@ func fillRange(
 	src := rand.New(rand.NewSource(0))
 	var key []byte
 	for {
-		ms, err := kvstorage.MakeStateLoader(rangeID).LoadMVCCStats(context.Background(), store.StateEngine())
+		ms, err := stateloader.Make(rangeID).LoadMVCCStats(context.Background(), store.TODOEngine())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1516,7 +1515,6 @@ func TestStoreZoneUpdateAndRangeSplit(t *testing.T) {
 	tdb.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.target_duration = '20ms'`)
 	tdb.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.side_transport_interval = '20ms'`)
 	tdb.Exec(t, `SET CLUSTER SETTING kv.rangefeed.closed_timestamp_refresh_interval = '20ms'`)
-	tdb.Exec(t, `SET CLUSTER SETTING kv.range_split.by_load_enabled = false`)
 	tdb.Exec(t, "CREATE TABLE t ()")
 	var descID uint32
 	tdb.QueryRow(t, "SELECT 't'::regclass::int").Scan(&descID)
@@ -1729,7 +1727,7 @@ func TestStoreRangeSplitBackpressureWrites(t *testing.T) {
 				if err := s.Stopper().RunAsyncTask(ctx, "force split", func(_ context.Context) {
 					store.TestingSetSplitQueueActive(true)
 					if err := store.ForceSplitScanAndProcess(); err != nil {
-						log.KvDistribution.Fatalf(ctx, "%v", err)
+						log.Fatalf(ctx, "%v", err)
 					}
 				}); err != nil {
 					t.Fatal(err)
@@ -1945,19 +1943,15 @@ func runSetupSplitSnapshotRace(
 	// are up to date.
 	tc.WaitForValues(t, rightKey, []int64{0, 0, 0, 0 /* stopped */, 5, 5})
 
-	// Scan the meta ranges to resolve all intents.
-	if err := tc.Server(0).DB().Txn(context.Background(), func(ctx context.Context, txn *kv.Txn) error {
-		ba := &kvpb.BatchRequest{}
-		ba.Add(&kvpb.ScanRequest{
+	// Scan the meta ranges to resolve all intents
+	if _, pErr := kv.SendWrapped(context.Background(), tc.Servers[0].DistSenderI().(kv.Sender),
+		&kvpb.ScanRequest{
 			RequestHeader: kvpb.RequestHeader{
 				Key:    keys.MetaMin,
 				EndKey: keys.MetaMax,
 			},
-		})
-		_, pErr := txn.Send(ctx, ba)
-		return pErr.GoError()
-	}); err != nil {
-		t.Fatal(err)
+		}); pErr != nil {
+		t.Fatal(pErr)
 	}
 
 	// Stop the remaining data stores.
@@ -2081,12 +2075,12 @@ func TestStoreSplitTimestampCacheDifferentLeaseHolder(t *testing.T) {
 		if !argOK || !descOK || !bytes.Equal(leaseReq.Key, splitKey) {
 			return nil
 		}
-		log.KvDistribution.Infof(ctx, "received lease request (%s, %s)",
+		log.Infof(ctx, "received lease request (%s, %s)",
 			leaseReq.Span(), leaseReq.Lease)
 		if !reflect.DeepEqual(*forbiddenDesc, leaseReq.Lease.Replica) {
 			return nil
 		}
-		log.KvExec.Infof(ctx,
+		log.Infof(ctx,
 			"refusing lease request (%s, %s) because %+v held lease for LHS of split",
 			leaseReq.Span(), leaseReq.Lease, forbiddenDesc)
 		return kvpb.NewError(&kvpb.NotLeaseHolderError{RangeID: args.Hdr.RangeID})
@@ -2162,7 +2156,7 @@ func TestStoreSplitTimestampCacheDifferentLeaseHolder(t *testing.T) {
 		return replica
 	}
 	blocklistedLeaseHolder := leaseHolder(leftKey)
-	log.KvDistribution.Infof(ctx, "blocklisting replica %+v for leases", blocklistedLeaseHolder)
+	log.Infof(ctx, "blocklisting replica %+v for leases", blocklistedLeaseHolder)
 	noLeaseForDesc.Store(&blocklistedLeaseHolder)
 
 	// Pull the trigger. This actually also reads the RHS descriptor after the
@@ -2177,7 +2171,7 @@ func TestStoreSplitTimestampCacheDifferentLeaseHolder(t *testing.T) {
 	//
 	// In practice, this should only be possible if second-long delays occur
 	// just above this comment, and we assert against it below.
-	log.KvDistribution.Infof(ctx, "splitting at %s", splitKey)
+	log.Infof(ctx, "splitting at %s", splitKey)
 	if _, _, err := tc.SplitRange(splitKey); err != nil {
 		t.Fatal(err)
 	}
@@ -2389,7 +2383,7 @@ func TestStoreSplitGCThreshold(t *testing.T) {
 		t.Fatalf("expected RHS's GCThreshold is equal to %v, but got %v", specifiedGCThreshold, gcThreshold)
 	}
 
-	repl.AssertState(ctx, store.StateEngine(), store.LogEngine())
+	repl.AssertState(ctx, store.TODOEngine())
 }
 
 func TestStoreSplitGCHint(t *testing.T) {
@@ -2451,7 +2445,7 @@ func TestStoreSplitGCHint(t *testing.T) {
 	gcHint = repl.GetGCHint()
 	require.False(t, gcHint.IsEmpty(), "GC hint is empty after range delete")
 
-	repl.AssertState(ctx, store.StateEngine(), store.LogEngine())
+	repl.AssertState(ctx, store.TODOEngine())
 }
 
 // TestStoreRangeSplitRaceUninitializedRHS reproduces #7600 (before it was
@@ -2586,7 +2580,7 @@ func TestStoreRangeSplitRaceUninitializedRHS(t *testing.T) {
 						From: raftpb.PeerID(replicas[1].ReplicaID),
 						Term: term,
 					},
-				}, rpcbase.DefaultClass); !sent {
+				}, rpc.DefaultClass); !sent {
 					// SendAsync can return false, indicating the message didn't send.
 					// The most likely reason this test encounters a message failing to
 					// send is the outgoing message queue being full. The queue filling
@@ -2594,7 +2588,7 @@ func TestStoreRangeSplitRaceUninitializedRHS(t *testing.T) {
 					// attempting to sending 1 MsgVote every microsecond. See comments
 					// below and above for the frequency rationale.
 					if failedSendLog.ShouldLog() {
-						log.KvDistribution.Infof(ctx, "transport failed to send vote request")
+						log.Infof(ctx, "transport failed to send vote request")
 					}
 				}
 				select {
@@ -2628,58 +2622,45 @@ func TestLeaderAfterSplit(t *testing.T) {
 	skip.UnderDeadlock(t)
 	skip.UnderRace(t)
 
-	testutils.RunValues(t, "lease-type", roachpb.TestingAllLeaseTypes(), func(t *testing.T, leaseType roachpb.LeaseType) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // time out early
-		defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // time out early
+	defer cancel()
 
-		settings := cluster.MakeTestingClusterSettings()
-		kvserver.OverrideDefaultLeaseType(ctx, &settings.SV, leaseType)
-		raftConfig := base.RaftConfig{
-			RangeLeaseDuration: time.Hour, // don't expire leases
-		}
-		// Suppress timeout-based elections to avoid leadership changes in ways this
-		// test doesn't expect. For leader leases, fortification itself provides us
-		// this guarantee.
-		if leaseType != roachpb.LeaseLeader {
-			raftConfig.RaftElectionTimeoutTicks = 1000000
-		}
-		tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
-			ReplicationMode: base.ReplicationManual,
-			ServerArgs: base.TestServerArgs{
-				Settings:   settings,
-				RaftConfig: raftConfig,
+	tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
+		ReplicationMode: base.ReplicationManual,
+		ServerArgs: base.TestServerArgs{
+			RaftConfig: base.RaftConfig{
+				RangeLeaseDuration:       time.Hour, // don't expire leases
+				RaftElectionTimeoutTicks: 1000000,   // disable elections
 			},
-		})
-		defer tc.Stopper().Stop(ctx)
-
-		store := tc.GetFirstStoreFromServer(t, 0)
-		sender := tc.Servers[0].DistSenderI().(kv.Sender)
-
-		leftKey := roachpb.Key("a")
-		splitKey := roachpb.Key("m")
-		rightKey := roachpb.Key("z")
-
-		repl := store.LookupReplica(roachpb.RKey(leftKey))
-		require.NotNil(t, repl)
-		tc.AddVotersOrFatal(t, repl.Desc().StartKey.AsRawKey(), tc.Targets(1, 2)...)
-
-		// Split the range.
-		_, pErr := kv.SendWrapped(ctx, sender, adminSplitArgs(splitKey))
-		require.NoError(t, pErr.GoError())
-
-		// Make sure both the LHS and RHS can replicate a write request. This will
-		// time out if the RHS can't elect a Raft leader.
-		_, pErr = kv.SendWrapped(ctx, sender, incrementArgs(leftKey, 1))
-		require.NoError(t, pErr.GoError())
-
-		_, pErr = kv.SendWrapped(ctx, sender, incrementArgs(rightKey, 1))
-		require.NoError(t, pErr.GoError())
+		},
 	})
+	defer tc.Stopper().Stop(ctx)
+
+	store := tc.GetFirstStoreFromServer(t, 0)
+	sender := tc.Servers[0].DistSenderI().(kv.Sender)
+
+	leftKey := roachpb.Key("a")
+	splitKey := roachpb.Key("m")
+	rightKey := roachpb.Key("z")
+
+	repl := store.LookupReplica(roachpb.RKey(leftKey))
+	require.NotNil(t, repl)
+	tc.AddVotersOrFatal(t, repl.Desc().StartKey.AsRawKey(), tc.Targets(1, 2)...)
+
+	// Split the range.
+	_, pErr := kv.SendWrapped(ctx, sender, adminSplitArgs(splitKey))
+	require.NoError(t, pErr.GoError())
+
+	// Make sure both the LHS and RHS can replicate a write request. This will
+	// time out if the RHS can't elect a Raft leader.
+	_, pErr = kv.SendWrapped(ctx, sender, incrementArgs(leftKey, 1))
+	require.NoError(t, pErr.GoError())
+
+	_, pErr = kv.SendWrapped(ctx, sender, incrementArgs(rightKey, 1))
+	require.NoError(t, pErr.GoError())
 }
 
 func BenchmarkStoreRangeSplit(b *testing.B) {
-	defer log.Scope(b).Close(b)
-
 	ctx := context.Background()
 	s := serverutils.StartServerOnly(b, base.TestServerArgs{})
 
@@ -2687,23 +2668,20 @@ func BenchmarkStoreRangeSplit(b *testing.B) {
 	store, err := s.GetStores().(*kvserver.Stores).GetStore(s.GetFirstStoreID())
 	require.NoError(b, err)
 
-	_, err = s.ScratchRange()
-	require.NoError(b, err)
-
 	// Perform initial split of ranges.
-	sArgs := adminSplitArgs(scratchKey("b"))
+	sArgs := adminSplitArgs(roachpb.Key("b"))
 	if _, err := kv.SendWrapped(ctx, store.TestSender(), sArgs); err != nil {
 		b.Fatal(err)
 	}
 
 	// Write some values left and right of the split key.
-	aDesc := store.LookupReplica([]byte(scratchKey("a"))).Desc()
-	bDesc := store.LookupReplica([]byte(scratchKey("c"))).Desc()
-	kvserver.WriteRandomDataToRange(b, store, aDesc.RangeID, scratchKey("aaa"))
-	kvserver.WriteRandomDataToRange(b, store, bDesc.RangeID, scratchKey("ccc"))
+	aDesc := store.LookupReplica([]byte("a")).Desc()
+	bDesc := store.LookupReplica([]byte("c")).Desc()
+	kvserver.WriteRandomDataToRange(b, store, aDesc.RangeID, []byte("aaa"))
+	kvserver.WriteRandomDataToRange(b, store, bDesc.RangeID, []byte("ccc"))
 
 	// Merge the b range back into the a range.
-	mArgs := adminMergeArgs(keys.ScratchRangeMin)
+	mArgs := adminMergeArgs(roachpb.KeyMin)
 	if _, err := kv.SendWrapped(ctx, store.TestSender(), mArgs); err != nil {
 		b.Fatal(err)
 	}
@@ -2821,7 +2799,7 @@ func TestStoreRangeGossipOnSplits(t *testing.T) {
 
 	var lastSD roachpb.StoreDescriptor
 	rangeCountCh := make(chan int32)
-	unregister := store.Gossip().RegisterCallback(storeKey, func(_ string, val roachpb.Value, _ int64) {
+	unregister := store.Gossip().RegisterCallback(storeKey, func(_ string, val roachpb.Value) {
 		var sd roachpb.StoreDescriptor
 		if err := val.GetProto(&sd); err != nil {
 			panic(err)
@@ -2860,7 +2838,7 @@ func TestStoreRangeGossipOnSplits(t *testing.T) {
 		if pErr := splitFunc(i); pErr != nil {
 			// Avoid flakes caused by bad clocks.
 			if testutils.IsPError(pErr, "rejecting command with timestamp in the future") {
-				log.KvDistribution.Warningf(context.Background(), "ignoring split error: %s", pErr)
+				log.Warningf(context.Background(), "ignoring split error: %s", pErr)
 				continue
 			}
 			t.Fatal(pErr)
@@ -3067,8 +3045,8 @@ func TestUnsplittableRange(t *testing.T) {
 			SpanConfig: &spanconfig.TestingKnobs{
 				ProtectedTSReaderOverrideFn: spanconfig.EmptyProtectedTSReader,
 			},
-			KeyVisualizer:  &keyvisualizer.TestingKnobs{SkipZoneConfigBootstrap: true},
-			UpgradeManager: &upgradebase.TestingKnobs{SkipZoneConfigBootstrap: true},
+			KeyVisualizer: &keyvisualizer.TestingKnobs{SkipZoneConfigBootstrap: true},
+			SQLStatsKnobs: &sqlstats.TestingKnobs{SkipZoneConfigBootstrap: true},
 		},
 	})
 
@@ -4146,12 +4124,7 @@ func TestStoreRangeSplitAndMergeWithGlobalReads(t *testing.T) {
 
 	// Verify that the closed timestamp policy is set up.
 	repl := store.LookupReplica(roachpb.RKey(descKey))
-	testutils.SucceedsSoon(t, func() error {
-		if actual := repl.ClosedTimestampPolicy(); actual != roachpb.LEAD_FOR_GLOBAL_READS {
-			return errors.Newf("expected LEAD_FOR_GLOBAL_READS, got %s", actual)
-		}
-		return nil
-	})
+	require.Equal(t, repl.ClosedTimestampPolicy(), roachpb.LEAD_FOR_GLOBAL_READS)
 
 	// Write to the range, which has the effect of bumping the closed timestamp.
 	pArgs := putArgs(descKey, []byte("foo"))
@@ -4506,7 +4479,7 @@ func TestSplitWithExternalFilesFastStats(t *testing.T) {
 
 			originalRepl := store.LookupReplica(roachpb.RKey(splitKey))
 			require.NotNil(t, originalRepl)
-			origStats, err := kvstorage.MakeStateLoader(originalRepl.RangeID).LoadMVCCStats(ctx, store.StateEngine())
+			origStats, err := stateloader.Make(originalRepl.RangeID).LoadMVCCStats(ctx, store.TODOEngine())
 			require.NoError(t, err)
 			require.Greater(t, origStats.ContainsEstimates, int64(0), "range expected to have estimated stats")
 
@@ -4525,9 +4498,9 @@ func TestSplitWithExternalFilesFastStats(t *testing.T) {
 				t.Errorf("ranges mismatched, wanted %q=%q=%q", lhsRepl.Desc().EndKey, splitKey, rhsRepl.Desc().StartKey)
 			}
 
-			lhsStats, err := kvstorage.MakeStateLoader(lhsRepl.RangeID).LoadMVCCStats(ctx, snap)
+			lhsStats, err := stateloader.Make(lhsRepl.RangeID).LoadMVCCStats(ctx, snap)
 			require.NoError(t, err)
-			rhsStats, err := kvstorage.MakeStateLoader(rhsRepl.RangeID).LoadMVCCStats(ctx, snap)
+			rhsStats, err := stateloader.Make(rhsRepl.RangeID).LoadMVCCStats(ctx, snap)
 			require.NoError(t, err)
 
 			if fastStats {
@@ -4558,141 +4531,4 @@ func TestSplitWithExternalFilesFastStats(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestStoreRangeSplitRaftSnapshotAfterRHSRebalanced tests that a replica that
-// learns about a split through a snapshot after the RHS has been rebalanced
-// away correctly deletes the RHS replica's on-disk data.
-//
-// Serves as a regression test for
-// https://github.com/cockroachdb/cockroach/issues/73462.
-func TestStoreRangeSplitRaftSnapshotAfterRHSRebalanced(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	// Start a 5 node cluster.
-	tc := testcluster.StartTestCluster(t, 5, base.TestClusterArgs{
-		ReplicationMode: base.ReplicationManual,
-	})
-	defer tc.Stopper().Stop(ctx)
-
-	store0 := tc.GetFirstStoreFromServer(t, 0)
-	store2 := tc.GetFirstStoreFromServer(t, 2)
-	distSender := tc.Servers[0].DistSenderI().(kv.Sender)
-
-	// Create a scratch range and upreplicate to stores 2 and 3.
-	keyStart := tc.ScratchRange(t)
-	repl := store0.LookupReplica(roachpb.RKey(keyStart))
-	keyEnd := repl.Desc().EndKey.AsRawKey()
-	keyD := keyStart.Next().Next().Next().Next()
-
-	tc.AddVotersOrFatal(t, keyStart, tc.Targets(1, 2)...)
-	tc.WaitForValues(t, keyStart, []int64{0, 0, 0, 0, 0})
-
-	// Put some keys in [d, /Max) to ensure that the post-split RHS will have
-	// some data. When we learn about the split through the snapshot, we expect
-	// to delete data in the uncontained key range of [keyD, /Max). Adding some
-	// data here allows us to make this assertion.
-	key := keyD
-	for i := 0; i < 10; i++ {
-		key = key.Next()
-		if _, pErr := kv.SendWrapped(ctx, distSender, incrementArgs(key, 1)); pErr != nil {
-			t.Fatal(pErr)
-		}
-		tc.WaitForValues(t, key, []int64{1, 1, 1, 0, 0})
-	}
-
-	// Start dropping all Raft traffic to store2.
-	aRepl0 := store0.LookupReplica(roachpb.RKey(keyStart))
-	tc.Servers[2].RaftTransport().(*kvserver.RaftTransport).ListenIncomingRaftMessages(store2.Ident.StoreID, &unreliableRaftHandler{
-		rangeID:                    aRepl0.RangeID,
-		IncomingRaftMessageHandler: store2,
-		unreliableRaftHandlerFuncs: unreliableRaftHandlerFuncs{},
-	})
-
-	// Split at keyD: [keyStart, keyD) and [keyD, /Max)
-	if _, pErr := kv.SendWrapped(ctx, distSender, adminSplitArgs(keyD)); pErr != nil {
-		t.Fatal(pErr)
-	}
-
-	// Move the [keyD, /Max) replica from store2 to store4.
-	rhsDesc := store0.LookupReplica(roachpb.RKey(keyD)).Desc()
-	tc.RemoveVotersOrFatal(t, keyD, tc.Target(2))
-	tc.AddVotersOrFatal(t, keyD, tc.Target(4))
-
-	// Transfer the lease for [keyD, /Max) to store4.
-	tc.TransferRangeLeaseOrFatal(t, *rhsDesc, tc.Target(4))
-
-	// Move the [keyD, /Max) replica from store0 to store2. This allows us to
-	// assert store0 and store2 have the same data below, once we've allowed
-	// store2 to catch up via a snapshot.
-	tc.RemoveVotersOrFatal(t, keyD, tc.Target(0))
-	tc.AddVotersOrFatal(t, keyD, tc.Target(3))
-
-	// Truncate the logs of the LHS to ensure store2 needs to be caught up using a
-	// snapshot.
-	index := func() kvpb.RaftIndex {
-		repl := store0.LookupReplica(roachpb.RKey(keyStart))
-		index := repl.GetLastIndex()
-		truncArgs := &kvpb.TruncateLogRequest{
-			RequestHeader: kvpb.RequestHeader{Key: keyStart},
-			Index:         index + 1,
-			RangeID:       repl.RangeID,
-		}
-		if _, err := kv.SendWrapped(ctx, distSender, truncArgs); err != nil {
-			t.Fatal(err)
-		}
-		waitForTruncationForTesting(t, repl, index)
-		return index
-	}()
-
-	beforeRaftSnaps := store2.Metrics().RangeSnapshotsAppliedByVoters.Count()
-
-	tc.Servers[2].RaftTransport().(*kvserver.RaftTransport).ListenIncomingRaftMessages(store2.Ident.StoreID, &unreliableRaftHandler{
-		rangeID:                    aRepl0.RangeID,
-		IncomingRaftMessageHandler: store2,
-		unreliableRaftHandlerFuncs: unreliableRaftHandlerFuncs{
-			dropReq: func(req *kvserverpb.RaftMessageRequest) bool {
-				// Make sure that even going forward no MsgApp for what we just
-				// truncated can make it through. The Raft transport is asynchronous so
-				// this is necessary to make the test pass reliably - otherwise the
-				// follower on store2 may catch up without needing a snapshot, tripping
-				// up the test.
-				//
-				// NB: the Index on the message is the log index that _precedes_ any of
-				// the entries in the MsgApp, so filter where msg.Index < index, not <=
-				// index.
-				return req.Message.Type == raftpb.MsgApp && kvpb.RaftIndex(req.Message.Index) < index
-			},
-			dropHB:   func(*kvserverpb.RaftHeartbeat) bool { return false },
-			dropResp: func(*kvserverpb.RaftMessageResponse) bool { return false },
-		},
-	})
-
-	// Wait for all replicas to catch up. This will require a Raft snapshot to
-	// store2.
-	testutils.SucceedsSoon(t, func() error {
-		afterRaftSnaps := store2.Metrics().RangeSnapshotsAppliedByVoters.Count()
-		if afterRaftSnaps <= beforeRaftSnaps {
-			return errors.New("expected store2 to apply at least 1 additional raft snapshot")
-		}
-		getKeySet := func(engine storage.Engine) map[string]struct{} {
-			kvs, err := storage.Scan(context.Background(), engine, keyStart, keyEnd, 0)
-			require.NoError(t, err)
-			out := map[string]struct{}{}
-			for _, kv := range kvs {
-				out[string(kv.Key.Key)] = struct{}{}
-			}
-			return out
-		}
-		storeKeys0 := getKeySet(store0.StateEngine())
-		storeKeys2 := getKeySet(store2.StateEngine())
-		if !maps.Equal(storeKeys0, storeKeys2) {
-			return fmt.Errorf(
-				"store0 and store2 have different keys: %s != %s", storeKeys0, storeKeys2,
-			)
-		}
-		return nil
-	})
 }

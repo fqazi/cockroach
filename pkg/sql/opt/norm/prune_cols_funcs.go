@@ -68,9 +68,6 @@ func (c *CustomFuncs) neededMutationCols(
 		addCols(private.PartialIndexPutCols)
 		addCols(private.PartialIndexDelCols)
 	}
-	addCols(private.VectorIndexPutPartitionCols)
-	addCols(private.VectorIndexPutQuantizedVecCols)
-	addCols(private.VectorIndexDelPartitionCols)
 	addCols(private.ReturnCols)
 	addCols(opt.OptionalColList(private.PassthroughCols))
 	if private.CanaryCol != 0 {
@@ -123,19 +120,6 @@ func (c *CustomFuncs) NeededMutationFetchCols(
 			if famCols.Intersects(updateCols) {
 				cols.UnionWith(famCols)
 			}
-		}
-	}
-
-	// For swap mutations, include all columns in the primary index.
-	if private.Swap {
-		primaryIndex := tabMeta.Table.Index(cat.PrimaryIndex)
-		for i := 0; i < primaryIndex.ColumnCount(); i++ {
-			col := primaryIndex.Column(i)
-			if col.Kind() == cat.System {
-				continue
-			}
-			ord := col.Ordinal()
-			cols.Add(tabMeta.MetaID.ColumnID(ord))
 		}
 	}
 

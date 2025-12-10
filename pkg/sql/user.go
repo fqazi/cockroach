@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/security/distinguishedname"
 	"github.com/cockroachdb/cockroach/pkg/security/password"
-	"github.com/cockroachdb/cockroach/pkg/security/provisioning"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -22,10 +21,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessioninit"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessionmutator"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -84,7 +83,6 @@ func GetUserSessionInitInfo(
 	isSuperuser bool,
 	defaultSettings []sessioninit.SettingsCacheEntry,
 	subject *ldap.DN,
-	provisioningSource *provisioning.Source,
 	pwRetrieveFn func(ctx context.Context) (expired bool, hashedPassword password.PasswordHash, err error),
 	err error,
 ) {
@@ -113,7 +111,7 @@ func GetUserSessionInitInfo(
 		// Root user cannot have password expiry and must have login.
 		// It also never has default settings applied to it, and it cannot
 		// have its SUBJECT configured.
-		return true, true, true, true, true, nil, nil, nil, rootFn, nil
+		return true, true, true, true, true, nil, nil, rootFn, nil
 	}
 
 	var authInfo sessioninit.AuthInfo
@@ -198,7 +196,7 @@ func GetUserSessionInitInfo(
 			return nil
 		})
 	}); err != nil {
-		log.Dev.Warningf(ctx, "user membership lookup for %q failed: %v", user, err)
+		log.Warningf(ctx, "user membership lookup for %q failed: %v", user, err)
 		err = errors.Wrap(errors.Handled(err), "internal error while retrieving user account memberships")
 	}
 
@@ -209,7 +207,6 @@ func GetUserSessionInitInfo(
 		isSuperuser,
 		settingsEntries,
 		authInfo.Subject,
-		authInfo.ProvisioningSource,
 		func(ctx context.Context) (expired bool, ret password.PasswordHash, err error) {
 			ret = authInfo.HashedPassword
 			if authInfo.ValidUntil != nil {
@@ -280,7 +277,7 @@ func retrieveSessionInitInfoWithCache(
 		return errors.Wrap(retErr, "get default settings error")
 	}(); err != nil {
 		// Failed to retrieve the user account. Report in logs for later investigation.
-		log.Dev.Warningf(ctx, "user lookup for %q failed: %v", userName, err)
+		log.Warningf(ctx, "user lookup for %q failed: %v", userName, err)
 		err = errors.Wrap(errors.Handled(err), "internal error while retrieving user account")
 	}
 	return aInfo, settingsEntries, err
@@ -388,15 +385,6 @@ func retrieveAuthInfo(
 					}
 					aInfo.Subject = dn
 				}
-			case "PROVISIONSRC":
-				if row[1] != tree.DNull {
-					sourceStr := string(tree.MustBeDString(row[1]))
-					source, err := provisioning.ParseProvisioningSource(sourceStr)
-					if err != nil {
-						return err
-					}
-					aInfo.ProvisioningSource = source
-				}
 			}
 		}
 		if loopErr != nil {
@@ -489,6 +477,7 @@ var userLoginTimeout = settings.RegisterDurationSetting(
 	"server.user_login.timeout",
 	"timeout after which client authentication times out if some system range is unavailable (0 = no timeout)",
 	10*time.Second,
+	settings.NonNegativeDuration,
 	settings.WithPublic)
 
 // GetAllRoles returns a "set" (map) of Roles -> true.
@@ -543,27 +532,58 @@ func RoleExists(ctx context.Context, txn isql.Txn, role username.SQLUsername) (b
 	return row != nil, nil
 }
 
-// BumpRoleMembershipTableVersion increases the table version for the role
-// membership table.
+var roleMembersTableName = tree.MakeTableNameWithSchema("system", catconstants.PublicSchemaName, "role_members")
+
+// BumpRoleMembershipTableVersion increases the table version for the
+// role membership table.
 func (p *planner) BumpRoleMembershipTableVersion(ctx context.Context) error {
-	return p.writeVersionBump(ctx, keys.RoleMembersTableID)
+	_, tableDesc, err := p.ResolveMutableTableDescriptor(ctx, &roleMembersTableName, true, tree.ResolveAnyTableKind)
+	if err != nil {
+		return err
+	}
+
+	return p.writeSchemaChange(
+		ctx, tableDesc, descpb.InvalidMutationID, "updating version for role membership table",
+	)
 }
 
-// bumpUsersTableVersion increases the table version for the users table.
+// bumpUsersTableVersion increases the table version for the
+// users table.
 func (p *planner) bumpUsersTableVersion(ctx context.Context) error {
-	return p.writeVersionBump(ctx, keys.UsersTableID)
+	_, tableDesc, err := p.ResolveMutableTableDescriptor(ctx, sessioninit.UsersTableName, true, tree.ResolveAnyTableKind)
+	if err != nil {
+		return err
+	}
+
+	return p.writeSchemaChange(
+		ctx, tableDesc, descpb.InvalidMutationID, "updating version for users table",
+	)
 }
 
 // bumpRoleOptionsTableVersion increases the table version for the
 // role_options table.
 func (p *planner) bumpRoleOptionsTableVersion(ctx context.Context) error {
-	return p.writeVersionBump(ctx, keys.RoleOptionsTableID)
+	_, tableDesc, err := p.ResolveMutableTableDescriptor(ctx, sessioninit.RoleOptionsTableName, true, tree.ResolveAnyTableKind)
+	if err != nil {
+		return err
+	}
+
+	return p.writeSchemaChange(
+		ctx, tableDesc, descpb.InvalidMutationID, "updating version for role options table",
+	)
 }
 
 // bumpDatabaseRoleSettingsTableVersion increases the table version for the
 // database_role_settings table.
 func (p *planner) bumpDatabaseRoleSettingsTableVersion(ctx context.Context) error {
-	return p.writeVersionBump(ctx, keys.DatabaseRoleSettingsTableID)
+	_, tableDesc, err := p.ResolveMutableTableDescriptor(ctx, sessioninit.DatabaseRoleSettingsTableName, true, tree.ResolveAnyTableKind)
+	if err != nil {
+		return err
+	}
+
+	return p.writeSchemaChange(
+		ctx, tableDesc, descpb.InvalidMutationID, "updating version for database_role_settings table",
+	)
 }
 
 // BumpPrivilegesTableVersion increases the table version for the
@@ -574,7 +594,9 @@ func (p *planner) BumpPrivilegesTableVersion(ctx context.Context) error {
 		return err
 	}
 
-	return p.writeVersionBump(ctx, tableDesc.ID)
+	return p.writeSchemaChange(
+		ctx, tableDesc, descpb.InvalidMutationID, "updating version for system.privileges table",
+	)
 }
 
 func (p *planner) setRole(ctx context.Context, local bool, s username.SQLUsername) error {
@@ -607,30 +629,30 @@ func (p *planner) setRole(ctx context.Context, local bool, s username.SQLUsernam
 	return p.applyOnSessionDataMutators(
 		ctx,
 		local,
-		func(m sessionmutator.SessionDataMutator) error {
-			oldIsSuperuser := m.Data.IsSuperuser
-			m.Data.IsSuperuser = willBecomeAdmin
+		func(m sessionDataMutator) error {
+			oldIsSuperuser := m.data.IsSuperuser
+			m.data.IsSuperuser = willBecomeAdmin
 			if oldIsSuperuser != willBecomeAdmin {
-				m.BufferParamStatusUpdate("is_superuser", updateStr)
+				m.bufferParamStatusUpdate("is_superuser", updateStr)
 			}
 
 			// The "none" user does resets the SessionUserProto in a SET ROLE.
 			if becomeUser.IsNoneRole() {
-				if m.Data.SessionUserProto.Decode().Normalized() != "" {
-					m.Data.UserProto = m.Data.SessionUserProto
-					m.Data.SessionUserProto = ""
+				if m.data.SessionUserProto.Decode().Normalized() != "" {
+					m.data.UserProto = m.data.SessionUserProto
+					m.data.SessionUserProto = ""
 				}
-				m.Data.SearchPath = m.Data.SearchPath.WithUserSchemaName(m.Data.User().Normalized())
+				m.data.SearchPath = m.data.SearchPath.WithUserSchemaName(m.data.User().Normalized())
 				return nil
 			}
 
 			// Only update session_user when we are transitioning from the current_user
 			// being the session_user.
-			if m.Data.SessionUserProto == "" {
-				m.Data.SessionUserProto = m.Data.UserProto
+			if m.data.SessionUserProto == "" {
+				m.data.SessionUserProto = m.data.UserProto
 			}
-			m.Data.UserProto = becomeUser.EncodeProto()
-			m.Data.SearchPath = m.Data.SearchPath.WithUserSchemaName(m.Data.User().Normalized())
+			m.data.UserProto = becomeUser.EncodeProto()
+			m.data.SearchPath = m.data.SearchPath.WithUserSchemaName(m.data.User().Normalized())
 			return nil
 		},
 	)
@@ -720,14 +742,14 @@ func MaybeConvertStoredPasswordHash(
 		autoUpgradePasswordHashesBool, autoDowngradePasswordHashesBool, autoRehashOnCostChangeBool,
 		configuredHashMethod, configuredSCRAMCost, cleartext, currentHash,
 		security.GetExpensiveHashComputeSem(ctx),
-		log.Dev.Infof,
+		log.Infof,
 	)
 	if err != nil {
 		// We're not returning an error: clients should not be refused a
 		// session just because a password conversion failed.
 		//
 		// Simply explain what happened in logs for troubleshooting.
-		log.Dev.Warningf(ctx, "password hash conversion failed: %+v", err)
+		log.Warningf(ctx, "password hash conversion failed: %+v", err)
 		return
 	} else if !converted {
 		// No conversion happening. Nothing to do.
@@ -740,7 +762,7 @@ func MaybeConvertStoredPasswordHash(
 		// point authentication succeeded.
 		//
 		// Simply explain what happened in logs for troubleshooting.
-		log.Dev.Warningf(ctx, "storing the new password hash after conversion failed: %+v", err)
+		log.Warningf(ctx, "storing the new password hash after conversion failed: %+v", err)
 	} else {
 		// Inform the security audit log that the hash was upgraded.
 		log.StructuredEvent(ctx, severity.INFO, &eventpb.PasswordHashConverted{
@@ -805,36 +827,4 @@ func updateUserPasswordHash(
 			return d.WriteDesc(ctx, false /* kvTrace */, usersTable, txn.KV())
 		})
 	})
-}
-
-// UpdateLastLoginTime updates the estimated_last_login_time column for the users
-// logging in to the current time in the system.users table.
-func UpdateLastLoginTime(
-	ctx context.Context, execCfg *ExecutorConfig, dbUsers []username.SQLUsername,
-) error {
-	if len(dbUsers) == 0 {
-		return nil
-	}
-
-	now := timeutil.Now()
-	if err := execCfg.InternalDB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
-		// Convert SQLUsername slice to string slice for the SQL query.
-		usernames := make([]string, len(dbUsers))
-		for i, user := range dbUsers {
-			usernames[i] = user.Normalized()
-		}
-
-		if _, err := txn.Exec(
-			ctx, "UpdateLastLoginTime-authsuccess", txn.KV(),
-			"UPDATE system.users SET estimated_last_login_time = $1 WHERE username = ANY($2)",
-			now,
-			usernames,
-		); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
 }
