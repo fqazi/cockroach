@@ -3950,3 +3950,84 @@ func BenchmarkLargeDatabaseWarmPgClass(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkLargeDatabaseWarmPgClass measures the warm performance with concurrency.
+func BenchmarkLargeDatabaseWarmPgClassConcurrent(b *testing.B) {
+	defer leaktest.AfterTest(b)()
+	defer log.Scope(b).Close(b)
+
+	for _, tables := range []int{32, 128, 1024} {
+		for _, useLeasedDescriptors := range []bool{true, false} {
+			for _, usePrefetch := range []bool{true, false} {
+				// There is no concept of prefetching without leased descriptors.
+				if !useLeasedDescriptors && usePrefetch {
+					continue
+				}
+				b.Run(fmt.Sprintf("pg_class/leased_descriptors=%t/use_prefetch=%t/tables=%d", useLeasedDescriptors, usePrefetch, tables), func(b *testing.B) {
+					ctx := context.Background()
+					s, sqlDB, _ := serverutils.StartServer(b, base.TestServerArgs{
+						Knobs: base.TestingKnobs{
+							DialerKnobs: nodedialer.DialerTestingKnobs{
+								// Disable RPC optimizations for the local case so that there is
+								// more round trip overhead.
+								TestingNoLocalClientOptimization: true,
+							},
+							Server: &server.TestingKnobs{
+								ContextTestingKnobs: rpc.ContextTestingKnobs{
+									// Disable RPC optimizations for the local case so that there is
+									// more round trip overhead.
+									NoLoopbackDialer: true,
+								},
+							},
+						},
+					})
+					sqlConn, err := sqlDB.Conn(ctx)
+					require.NoError(b, err)
+					defer s.Stopper().Stop(ctx)
+					b.ResetTimer()
+					b.StopTimer()
+					tdb := sqlutils.MakeSQLRunner(sqlConn)
+					tdb.Exec(b, fmt.Sprintf("SET CLUSTER SETTING sql.catalog.descriptor_lease.use_locked_timestamps.enabled= %t;", useLeasedDescriptors))
+					tdb.Exec(b, fmt.Sprintf("SET CLUSTER SETTING sql.catalog.allow_leased_descriptors.enabled = %t;", useLeasedDescriptors))
+					tdb.Exec(b, fmt.Sprintf("SET CLUSTER SETTING sql.catalog.allow_leased_descriptors.prefetch.enabled = %t;", usePrefetch))
+					tdb.Exec(b, fmt.Sprintf(`SELECT crdb_internal.generate_test_objects('{"names":"gen.public.foo","counts":[1,1,%d], "name_gen": {"noise": false}}'::JSONB);`, tables))
+					tdb.Exec(b, "USE gen_1")
+					tdb.Exec(b, fmt.Sprintf(`SELECT crdb_internal.generate_test_objects('{"names":"gen.public.foo","counts":[1,1,%d], "name_gen": {"noise": false}}'::JSONB);`, tables))
+					tdb.Exec(b, "USE gen_1")
+					// Cold run.
+					const q = `-- JDBC ORM query for types
+        SELECT typinput='pg_catalog.array_in'::regproc as is_array, typtype, typname, pg_type.oid 
+          FROM pg_catalog.pg_type 
+          LEFT JOIN (select ns.oid as nspoid, ns.nspname, r.r 
+                  from pg_namespace as ns 
+         -- go with older way of unnesting array to be compatible with 8.0
+                  join ( select s.r, (current_schemas(false))[s.r] as nspname 
+                           from generate_series(1, array_upper(current_schemas(false), 1)) as s(r) ) as r 
+                 using ( nspname ) 
+               ) as sp
+            ON sp.nspoid = typnamespace 
+         ORDER BY sp.r, pg_type.oid DESC;`
+					tdb.Exec(b, q)
+
+					grp := ctxgroup.WithContext(ctx)
+					numThreads := 128
+					start := make(chan struct{})
+
+					for range numThreads {
+						grp.GoCtx(func(ctx context.Context) error {
+							<-start
+							for range b.N {
+								tdb.Exec(b, q)
+							}
+							return nil
+						})
+					}
+					b.StartTimer()
+					close(start)
+					require.NoError(b, grp.Wait())
+					b.StopTimer()
+				})
+			}
+		}
+	}
+}
