@@ -1067,8 +1067,8 @@ func (m *Manager) upsertDescriptorIntoState(
 		return errors.AssertionFailedf("could not find descriptor state for id %d", id)
 	}
 	t.mu.Lock()
-	t.mu.takenOffline = false
 	defer t.mu.Unlock()
+	t.mu.takenOffline = false
 	err := t.upsertLeaseLocked(ctx, desc, session, m.storage.getRegionPrefix())
 	if err != nil {
 		return err
@@ -1081,7 +1081,7 @@ func (m *Manager) upsertDescriptorIntoState(
 // and false if an acqusition is already fetching it.
 func (m *Manager) maybePrepareDescriptorForBulkAcquisition(
 	id descpb.ID, acquisitionCh chan struct{},
-) bool {
+) *descriptorState {
 	state := m.findDescriptorState(id, true)
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -1089,25 +1089,30 @@ func (m *Manager) maybePrepareDescriptorForBulkAcquisition(
 	// acquisition in progress.
 	if (state.mu.takenOffline || len(state.mu.active.data) > 0) ||
 		state.mu.acquisitionsInProgress > 0 {
-		return false
+		return nil
 	}
 	// Mark the descriptor as having an acquisition in progress, any normal
 	// acquisition will wait for the bulk acquisition to finish.
 	state.mu.acquisitionsInProgress++
 	state.mu.acquisitionChannel = acquisitionCh
-	return true
+	return state
 }
 
 // completeBulkAcquisition clears up the descriptor state after a bulk acquisition.
-func (m *Manager) completeBulkAcquisition(id descpb.ID) {
-	state := m.findDescriptorState(id, false)
-	if state == nil {
-		return
-	}
+func (m *Manager) completeBulkAcquisitionAndUpsert(
+	ctx context.Context, state *descriptorState, session sqlliveness.Session, desc catalog.Descriptor,
+) error {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	state.mu.acquisitionChannel = nil
 	state.mu.acquisitionsInProgress -= 1
+	// Nothing else to do since the descriptor was not acquired.
+	if desc == nil {
+		return nil
+	}
+	// Otherwise, mark as online and upsert the descriptor.
+	state.mu.takenOffline = false
+	return state.upsertLeaseLocked(ctx, desc, session, m.storage.getRegionPrefix())
 }
 
 // EnsureBatch ensures that a set of IDs are already cached by the lease manager
@@ -1115,13 +1120,21 @@ func (m *Manager) completeBulkAcquisition(id descpb.ID) {
 // basis, where missing descriptors, dropped, adding, or validation errors will
 // be ignored.
 func (m *Manager) EnsureBatch(ctx context.Context, ids []descpb.ID) error {
+	// Determine which descriptors are fully missing before
+	// hitting the slow path.
+	ids = m.filterMissingDescriptors(ids).Ordered()
+	if len(ids) == 0 {
+		return nil
+	}
 	maxBatchSize := MaxBatchLeaseCount.Get(&m.storage.settings.SV)
-	idsToFetch := make([]descpb.ID, 0, min(len(ids), int(maxBatchSize)))
-	lastVersion := make([]descpb.DescriptorVersion, cap(idsToFetch))
-	lastSession := make([]sqlliveness.SessionID, cap(idsToFetch))
+	statesToFetch := make([]*descriptorState, 0, min(len(ids), int(maxBatchSize)))
+	idsToFetch := make([]descpb.ID, 0, cap(statesToFetch))
+	lastVersion := make([]descpb.DescriptorVersion, cap(statesToFetch))
+	lastSession := make([]sqlliveness.SessionID, cap(statesToFetch))
 	for len(ids) > 0 {
 		processNextBatch := func() error {
 			// Reset for the next batch.
+			statesToFetch = statesToFetch[:0]
 			idsToFetch = idsToFetch[:0]
 			acquisitionCh := make(chan struct{})
 			defer close(acquisitionCh)
@@ -1129,11 +1142,14 @@ func (m *Manager) EnsureBatch(ctx context.Context, ids []descpb.ID) error {
 			// Figure out which IDs have no state object allocated.
 			batchCompleted := true
 			for idx, id := range ids {
-				if !m.maybePrepareDescriptorForBulkAcquisition(id, acquisitionCh) {
+				// Resolve the state once to minimize lock contetion.
+				state := m.maybePrepareDescriptorForBulkAcquisition(id, acquisitionCh)
+				if state == nil {
 					continue
 				}
+				statesToFetch = append(statesToFetch, state)
 				idsToFetch = append(idsToFetch, id)
-				if len(idsToFetch) == int(maxBatchSize) {
+				if len(statesToFetch) == int(maxBatchSize) {
 					ids = ids[idx+1:]
 					batchCompleted = false
 					break
@@ -1144,19 +1160,22 @@ func (m *Manager) EnsureBatch(ctx context.Context, ids []descpb.ID) error {
 				ids = nil
 			}
 			// Nothing needs to be fetched everything is cached in memory.
-			if len(idsToFetch) == 0 {
+			if len(statesToFetch) == 0 {
 				return nil
 			}
 			// Clean up the acquisition state after-wards.
 			defer func() {
-				for _, id := range idsToFetch {
-					m.completeBulkAcquisition(id)
+				for _, state := range statesToFetch {
+					// Complete out anything that isn't processed yet.
+					if state != nil {
+						_ = m.completeBulkAcquisitionAndUpsert(ctx, state, nil, nil)
+					}
 				}
 			}()
 			// Initial acquisition so version and session ID are blank for any
 			// previous version.
-			lastVersion = lastVersion[:len(idsToFetch)]
-			lastSession = lastSession[:len(idsToFetch)]
+			lastVersion = lastVersion[:len(statesToFetch)]
+			lastSession = lastSession[:len(statesToFetch)]
 			// Execute a batch acquisition at the storage layer.
 			session, err := m.storage.livenessProvider.Session(ctx)
 			if err != nil {
@@ -1167,7 +1186,7 @@ func (m *Manager) EnsureBatch(ctx context.Context, ids []descpb.ID) error {
 				return err
 			}
 			// Upsert the descriptors into the descriptor state.
-			for idx, id := range idsToFetch {
+			for idx, id := range statesToFetch {
 				// If any descriptors in the batch have failed to acquire, we are going
 				// to skip them. This can be due to validation error, being dropped, or
 				// being added, or missing. The caller can surface these when it attempts
@@ -1175,9 +1194,11 @@ func (m *Manager) EnsureBatch(ctx context.Context, ids []descpb.ID) error {
 				if batch.errs[idx] != nil {
 					continue
 				}
-				if err := m.upsertDescriptorIntoState(ctx, id, session, batch.descs[idx]); err != nil {
+				if err := m.completeBulkAcquisitionAndUpsert(ctx, id, session, batch.descs[idx]); err != nil {
 					return err
 				}
+				// Mark as complete.
+				statesToFetch[idx] = nil
 			}
 			return nil
 		}
@@ -1332,6 +1353,21 @@ func (m *Manager) isMaybeSystemPrivilegesTable(ctx context.Context, id descpb.ID
 	}
 
 	return uint32(id) == systemPrivilegesTableDescID.Load()
+}
+
+// filterMissingDescriptors given a set of descriptors, this function returns descriptors
+// that are fully missing.
+func (m *Manager) filterMissingDescriptors(ids []descpb.ID) catalog.DescriptorIDSet {
+	var missing catalog.DescriptorIDSet
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, id := range ids {
+		_, exists := m.mu.descriptors[id]
+		if !exists {
+			missing.Add(id)
+		}
+	}
+	return missing
 }
 
 // releaseLease deletes an entry from system.lease.
