@@ -35,7 +35,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/ipaddr"
 	"github.com/cockroachdb/cockroach/pkg/util/json"
 	jsonpathparser "github.com/cockroachdb/cockroach/pkg/util/jsonpath/parser"
-	"github.com/cockroachdb/cockroach/pkg/util/ltree"
 	"github.com/cockroachdb/cockroach/pkg/util/timeofday"
 	"github.com/cockroachdb/cockroach/pkg/util/timetz"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil/pgdate"
@@ -500,12 +499,6 @@ func DecodeDatum(
 				return nil, err
 			}
 			return &tree.DPGVector{T: ret}, nil
-		case oidext.T_ltree:
-			ret, err := ltree.ParseLTree(bs)
-			if err != nil {
-				return nil, err
-			}
-			return &tree.DLTree{LTree: ret}, nil
 		}
 		switch typ.Family() {
 		case types.ArrayFamily, types.TupleFamily:
@@ -616,13 +609,13 @@ func DecodeDatum(
 					}
 				}
 
-				// We may have missing zeros or, in the case of padding zeros at the end,
-				// may have padded too many of them. This can be determined if the weight
-				// (defined as number of 4 digit groups left of the decimal point - 1) + the
-				// scale (total number of digits on the RHS of the decimal point) is greater
-				// or less than the number of digits given.
+				// In the case of padding zeros at the end, we may have padded too many
+				// digits in the loop. This can be determined if the weight (defined as
+				// number of 4 digit groups left of the decimal point - 1) + the scale
+				// (total number of digits on the RHS of the decimal point) is less
+				// than the number of digits given.
 				//
-				// In Postgres, truncating is handled by the "remove trailing zeros" in
+				// In Postgres, this is handled by the "remove trailing zeros" in
 				// `make_result_opt_error`, as well as `trunc_var`.
 				// Any zeroes are implicitly added back in when operating on the decimal
 				// value.
@@ -643,36 +636,28 @@ func DecodeDatum(
 				// * for "123456.000000000", we may have digits ["12", "3456", "0", "0", "0"]
 				// with scale 5, which would make digit string "0012,3456,0000,0000".
 				// We need to cut it back to "0012,3456,0000,0" for this to be correct.
-				// * for "120000" we have digits ["12"] with weight 1, which would make the
-				// digit string "12". We need to pad it back to "0012,0000" for this
-				// to be correct.
-				// * for "1.23000" we have digits ["1", "2300"] with scale 5, which would
-				// make the digit string "0001,2300". We need to pad it back to "0012,23000"
-				// for this to be correct.
 				//
-				// This is handled by the below code, which truncates or pads the decDigits
+				// This is handled by the below code, which truncates the decDigits
 				// such that it fits into the desired dscale. To do this:
 				// * ndigits [number of digits provided] - (weight+1) gives the number
 				// of digits on the RHS of the decimal place value as determined by
-				// the given input. Note it can be negative, meaning there are implicit zeros
-				// before the decimal point, we need to add to the buffer.
+				// the given input. Note dscale can be negative, meaning we truncated
+				// the leading zeroes at the front, giving a higher exponent (e.g. 0042,0000
+				// can omit the trailing 0000, giving dscale of -4, which makes the exponent 4).
 				// * if the digits we have in the buffer on the RHS, as calculated above,
-				// is larger or smaller than our calculated dscale, truncate or pad our buffer to
-				// match the desired dscale.
-				overScale := (alloc.pgNum.Ndigits-(alloc.pgNum.Weight+1))*PGDecDigits - alloc.pgNum.Dscale
-				if overScale > 0 {
+				// is larger than our calculated dscale, truncate our buffer to match the
+				// desired dscale.
+				dscale := (alloc.pgNum.Ndigits - (alloc.pgNum.Weight + 1)) * PGDecDigits
+				if overScale := dscale - alloc.pgNum.Dscale; overScale > 0 {
+					dscale -= overScale
 					decDigits = decDigits[:len(decDigits)-int(overScale)]
-				} else {
-					for i := int16(0); i < -overScale; i++ {
-						decDigits = append(decDigits, '0')
-					}
 				}
 
 				decString := encoding.UnsafeConvertBytesToString(decDigits)
 				if _, ok := alloc.dd.Coeff.SetString(decString, 10); !ok {
 					return nil, pgerror.Newf(pgcode.Syntax, "could not parse %q as type decimal", decString)
 				}
-				alloc.dd.Exponent = -int32(alloc.pgNum.Dscale)
+				alloc.dd.Exponent = -int32(dscale)
 			}
 
 			switch alloc.pgNum.Sign {
@@ -882,18 +867,6 @@ func DecodeDatum(
 				return nil, err
 			}
 			return da.NewDGeography(tree.DGeography{Geography: v}), nil
-		case oidext.T_ltree:
-			version := b[0]
-			if version != 1 {
-				return nil, pgerror.Newf(pgcode.InvalidParameterValue,
-					"unsupported ltree version %d", version)
-			}
-			// Skip over the version byte when parsing binary LTREE.
-			ret, err := ltree.ParseLTree(bs[1:])
-			if err != nil {
-				return nil, err
-			}
-			return &tree.DLTree{LTree: ret}, nil
 		default:
 			if typ.Family() == types.ArrayFamily {
 				return decodeBinaryArray(ctx, evalCtx, typ.ArrayContents(), b, code, da)
@@ -949,20 +922,14 @@ func DecodeDatum(
 		sv := strings.TrimRight(bs, " ")
 		return da.NewDString(tree.DString(sv)), nil
 	case oid.T_char:
-		var sv string
-		if len(b) == 1 {
-			// Take a single byte as-is, even if it is not a valid UTF-8
-			// character. The null byte represents an empty string.
-			if b[0] != 0 {
+		sv := bs
+		// Always truncate to 1 byte, and handle the null byte specially.
+		if len(b) >= 1 {
+			if b[0] == 0 {
+				sv = ""
+			} else {
 				sv = string(b[:1])
 			}
-		} else if len(b) > 1 {
-			// If there is more than one byte, decode the first UTF-8 character.
-			r, _ := utf8.DecodeRune(b)
-			if r == utf8.RuneError {
-				return nil, invalidUTF8Error
-			}
-			sv = string(r)
 		}
 		return da.NewDString(tree.DString(sv)), nil
 	case oid.T_name:

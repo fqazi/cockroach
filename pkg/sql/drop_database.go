@@ -201,9 +201,6 @@ func (n *dropDatabaseNode) startExec(params runParams) error {
 		p.Descriptors(),
 		&p.ExecCfg().Settings.SV,
 		p.SessionData(),
-		p.ExecCfg().Settings,
-		p.ExecCfg().JobsKnobs(),
-		p.ExecCfg().NodeInfo.LogicalClusterID(),
 	)
 
 	err := metadataUpdater.DeleteDatabaseRoleSettings(ctx, n.dbDesc.GetID())
@@ -296,7 +293,7 @@ func (p *planner) accumulateOwnedSequences(
 				// exist.
 				if errors.Is(err, catalog.ErrDescriptorDropped) ||
 					pgerror.GetPGCode(err) == pgcode.UndefinedTable {
-					log.Dev.Infof(ctx,
+					log.Infof(ctx,
 						"swallowing error for owned sequence that was not found %s", err.Error())
 					continue
 				}

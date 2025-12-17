@@ -15,13 +15,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/internal/catkv"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/internal/validate"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/lease"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemadesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
@@ -31,13 +29,8 @@ func (tc *Collection) GetComment(key catalogkeys.CommentKey) (string, bool) {
 	if cmt, hasCmt, cached := tc.uncommittedComments.getUncommitted(key); cached {
 		return cmt, hasCmt
 	}
-	if tc.cr.IsCommentInCache(descpb.ID(key.ObjectID)) {
+	if tc.cr.IsIDInCache(descpb.ID(key.ObjectID)) {
 		return tc.cr.Cache().LookupComment(key)
-	}
-	if buildutil.CrdbTestBuild &&
-		tc.leased.cache.GetByID(descpb.ID(key.ObjectID)) != nil {
-		panic(errors.AssertionFailedf("a leased descriptor exist's but metadata data was not cached " +
-			"ensure that GetAll* API is being used correctly"))
 	}
 	// TODO(chengxiong): we need to ensure descriptor if it's not in either cache
 	// and it's not a pseudo descriptor.
@@ -194,13 +187,9 @@ func getDescriptorsByID(
 
 	// Read any missing descriptors from storage and add them to the slice.
 	var readIDs catalog.DescriptorIDSet
-	var metadataNeeded catalog.DescriptorIDSet
 	for i, id := range ids {
 		if descs[i] == nil {
 			readIDs.Add(id)
-		} else if flags.layerFilters.withMetadata {
-			// Otherwise, we need to query metadata only.
-			metadataNeeded.Add(id)
 		}
 	}
 	if !readIDs.Empty() {
@@ -218,17 +207,7 @@ func getDescriptorsByID(
 			if descs[i] == nil {
 				descs[i] = read.LookupDescriptor(id)
 				vls[i] = tc.validationLevels[id]
-				if err := tc.ensureLeasedAndKVVersionsMatch(ctx, txn, descs[i], false); err != nil {
-					return err
-				}
 			}
-		}
-	}
-	// If metadata needs to be cached, then execute a read only the metadata.
-	if !metadataNeeded.Empty() {
-		_, err := tc.cr.GetByIDs(ctx, txn, metadataNeeded.Ordered(), false, catalog.Any, catkv.WithMetaData(true))
-		if err != nil {
-			return err
 		}
 	}
 
@@ -248,50 +227,6 @@ func getDescriptorsByID(
 		return err
 	}
 	return nil
-}
-
-// ensureLeasedAndKVVersionsMatch ensures that a KV and leased descriptors/
-// in a given transaction have compatible versions. This impacts transactions
-// that execute catalog queries followed by schema changes, where schema changes
-// always require the freshest copy from the store. If they don't, then retry error
-// is forced, since there is a risk of making decisions on stale data within the
-// application.
-func (tc *Collection) ensureLeasedAndKVVersionsMatch(
-	ctx context.Context, txn *kv.Txn, descriptor catalog.Descriptor, isLeased bool,
-) error {
-	// If we are not using leased descriptors for catalog views, this logic
-	// isn't needed.
-	usingLeasedDescriptorsForCatalogViews := allowLeasedDescriptorsInCatalogViews.Get(&tc.settings.SV)
-	if !usingLeasedDescriptorsForCatalogViews {
-		return nil
-	}
-
-	var otherDescriptor catalog.Descriptor
-	if isLeased {
-		otherDescriptor = tc.cr.Cache().LookupDescriptor(descriptor.GetID())
-	} else {
-		entry := tc.leased.cache.GetByID(descriptor.GetID())
-		if entry != nil {
-			otherDescriptor = entry.(lease.LeasedDescriptor).Underlying()
-		}
-	}
-	// Versions match so everything is good.
-	if otherDescriptor == nil ||
-		descriptor.GetVersion() == otherDescriptor.GetVersion() {
-		return nil
-	}
-	modificationTime := descriptor.GetModificationTime()
-	if isLeased {
-		modificationTime = otherDescriptor.GetModificationTime()
-	}
-	return &retryOnModifiedDescriptor{
-		descID:        descriptor.GetID(),
-		descName:      descriptor.GetName(),
-		expiration:    modificationTime,
-		readTimestamp: txn.ReadTimestamp(),
-		// Force a retry, so that the txn epoch gets bumped for us.
-		forcedErr: txn.GenerateForcedRetryableErr(ctx, "forcing txn to retry due to modified descriptor"),
-	}
 }
 
 func filterDescriptor(desc catalog.Descriptor, flags getterFlags) error {
@@ -331,9 +266,6 @@ func filterDescriptor(desc catalog.Descriptor, flags getterFlags) error {
 		if flags.layerFilters.withoutLeased {
 			return nil
 		}
-	}
-	if flags.layerFilters.withAdding {
-		return nil
 	}
 	return catalog.FilterAddingDescriptor(desc)
 }
@@ -412,9 +344,6 @@ func (q *byIDLookupContext) lookupCached(
 ) (catalog.Descriptor, catalog.ValidationLevel, error) {
 	if q.tc.cr.IsIDInCache(id) {
 		if desc := q.tc.cr.Cache().LookupDescriptor(id); desc != nil {
-			if err := q.tc.ensureLeasedAndKVVersionsMatch(q.ctx, q.txn, desc, false); err != nil {
-				return nil, catalog.NoValidation, err
-			}
 			return desc, q.tc.validationLevels[id], nil
 		}
 	}
@@ -443,14 +372,6 @@ func (q *byIDLookupContext) lookupLeased(
 	}
 	desc, shouldReadFromStore, err := q.tc.leased.getByID(q.ctx, q.tc.deadlineHolder(q.txn), id)
 	if err != nil || shouldReadFromStore {
-		// Leasing does not support leasing adding descriptors, and in certain contexts,
-		// we may want them leased. So, we will fallback to the KV based reads if requested.
-		if q.flags.layerFilters.withAdding && catalog.HasAddingDescriptorError(err) {
-			return nil, catalog.NoValidation, nil
-		}
-		return nil, catalog.NoValidation, err
-	}
-	if err := q.tc.ensureLeasedAndKVVersionsMatch(q.ctx, q.txn, desc, true); err != nil {
 		return nil, catalog.NoValidation, err
 	}
 	return desc, validate.ImmutableRead, nil

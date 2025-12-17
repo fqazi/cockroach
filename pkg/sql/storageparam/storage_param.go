@@ -10,7 +10,6 @@ package storageparam
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/docs"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/paramparse"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -49,7 +48,7 @@ func Set(
 	params tree.StorageParams,
 	setter Setter,
 ) error {
-	if err := StorageParamPreChecks(ctx, evalCtx, setter.IsNewTableObject(), params, nil /* resetParams */); err != nil {
+	if err := storageParamPreChecks(ctx, evalCtx, setter, params, nil /* resetParams */); err != nil {
 		return err
 	}
 	for _, sp := range params {
@@ -96,7 +95,7 @@ func Set(
 func Reset(
 	ctx context.Context, evalCtx *eval.Context, params []string, paramObserver Setter,
 ) error {
-	if err := StorageParamPreChecks(ctx, evalCtx, paramObserver.IsNewTableObject(), nil /* setParam */, params); err != nil {
+	if err := storageParamPreChecks(ctx, evalCtx, paramObserver, nil /* setParam */, params); err != nil {
 		return err
 	}
 	for _, p := range params {
@@ -127,12 +126,12 @@ func SetFillFactor(ctx context.Context, evalCtx *eval.Context, key string, datum
 	return nil
 }
 
-// StorageParamPreChecks is where we specify pre-conditions for setting/resetting
+// storageParamPreChecks is where we specify pre-conditions for setting/resetting
 // storage parameters `param`.
-func StorageParamPreChecks(
+func storageParamPreChecks(
 	ctx context.Context,
 	evalCtx *eval.Context,
-	isNewTableObject bool,
+	setter Setter,
 	setParams tree.StorageParams,
 	resetParams []string,
 ) error {
@@ -151,7 +150,6 @@ func StorageParamPreChecks(
 	}
 	keys = append(keys, resetParams...)
 
-	hasTTLRateLimit := false
 	for _, key := range keys {
 		if key == `schema_locked` {
 			// We only allow setting/resetting `schema_locked` storage parameter in
@@ -165,22 +163,11 @@ func StorageParamPreChecks(
 			// since later operations cannot unset schema_locked (i.e. only implicit single
 			// statement transactions are allowed to manipulate schema_locked, see
 			// checkSchemaChangeIsAllowed).
-			if !isNewTableObject && (len(keys) > 1 || !evalCtx.TxnImplicit || !evalCtx.TxnIsSingleStmt) {
+			if !setter.IsNewTableObject() && (len(keys) > 1 || !evalCtx.TxnImplicit || !evalCtx.TxnIsSingleStmt) {
 				return pgerror.Newf(pgcode.InvalidParameterValue, "%q can only be set/reset on "+
 					"its own without other parameters in a single-statement implicit transaction.", key)
 			}
 		}
-		if key == `ttl_select_rate_limit` || key == `ttl_delete_rate_limit` {
-			hasTTLRateLimit = true
-		}
 	}
-
-	if hasTTLRateLimit {
-		evalCtx.ClientNoticeSender.BufferClientNotice(ctx, errors.WithDetail(
-			pgnotice.Newf("The TTL rate limit is per node per table."),
-			"See the documentation for additional details: "+docs.URL("row-level-ttl#ttl-storage-parameters"),
-		))
-	}
-
 	return nil
 }

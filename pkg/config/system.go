@@ -211,9 +211,9 @@ func (s *SystemConfig) GetLargestObjectID(
 	// Search for the descriptor table entries within the SystemConfig. lowIndex
 	// (in s.Values) is the first and highIndex one past the last KV pair in the
 	// descriptor table.
-	lowBound := keys.SystemSQLCodec.IndexPrefix(keys.DescriptorTableID, keys.DescriptorTablePrimaryKeyIndexID)
+	lowBound := keys.SystemSQLCodec.TablePrefix(keys.DescriptorTableID)
 	lowIndex := s.getIndexBound(lowBound)
-	highBound := keys.SystemSQLCodec.IndexPrefix(keys.DescriptorTableID+1, keys.DescriptorTablePrimaryKeyIndexID)
+	highBound := keys.SystemSQLCodec.TablePrefix(keys.DescriptorTableID + 1)
 	highIndex := s.getIndexBound(highBound)
 	if lowIndex == highIndex {
 		return 0, fmt.Errorf("descriptor table not found in system config of %d values", len(s.Values))
@@ -458,7 +458,6 @@ func (s *SystemConfig) getZoneEntry(codec keys.SQLCodec, id ObjectID) (zoneEntry
 }
 
 var staticSplits = []roachpb.RKey{
-	roachpb.RKey(keys.Meta2Prefix),                  // start of meta2 span
 	roachpb.RKey(keys.NodeLivenessPrefix),           // end of meta records / start of node liveness span
 	roachpb.RKey(keys.NodeLivenessKeyMax),           // end of node liveness span
 	roachpb.RKey(keys.TimeseriesPrefix),             // start of timeseries span
@@ -595,7 +594,7 @@ func (s *SystemConfig) systemTenantTableBoundarySplitKey(
 	if uint32(startID) <= keys.MaxReservedDescID {
 		endID, err := s.GetLargestObjectID(keys.MaxReservedDescID, keys.PseudoTableIDs)
 		if err != nil {
-			log.Dev.Errorf(ctx, "unable to determine largest reserved object ID from system config: %s", err)
+			log.Errorf(ctx, "unable to determine largest reserved object ID from system config: %s", err)
 			return nil
 		}
 		if splitKey := findSplitKey(startID, endID); splitKey != nil {
@@ -607,7 +606,7 @@ func (s *SystemConfig) systemTenantTableBoundarySplitKey(
 	// Find the split key in the system tenant's user space.
 	endID, err := s.GetLargestObjectID(0 /* maxReservedDescID */, keys.PseudoTableIDs)
 	if err != nil {
-		log.Dev.Errorf(ctx, "unable to determine largest object ID from system config: %s", err)
+		log.Errorf(ctx, "unable to determine largest object ID from system config: %s", err)
 		return nil
 	}
 	return findSplitKey(startID, endID)
@@ -635,7 +634,7 @@ func (s *SystemConfig) tenantBoundarySplitKey(
 		// would consider splitting on is the following ID.
 		_, lowTenIDExcl, err := keys.DecodeTenantPrefix(searchSpan.Key)
 		if err != nil {
-			log.Dev.Errorf(ctx, "unable to decode tenant ID from start key: %s", err)
+			log.Errorf(ctx, "unable to decode tenant ID from start key: %s", err)
 			return nil
 		}
 		if lowTenIDExcl.ToUint64() >= roachpb.MaxTenantID.ToUint64() {
@@ -650,7 +649,7 @@ func (s *SystemConfig) tenantBoundarySplitKey(
 	} else {
 		rem, highTenIDExcl, err := keys.DecodeTenantPrefix(searchSpan.EndKey)
 		if err != nil {
-			log.Dev.Errorf(ctx, "unable to decode tenant ID from end key: %s", err)
+			log.Errorf(ctx, "unable to decode tenant ID from end key: %s", err)
 			return nil
 		}
 		if len(rem) == 0 {
@@ -688,7 +687,7 @@ func (s *SystemConfig) tenantBoundarySplitKey(
 	splitKey := s.Values[lowIndex].Key
 	splitTenID, err := keys.SystemSQLCodec.DecodeTenantMetadataID(splitKey)
 	if err != nil {
-		log.Dev.Errorf(ctx, "unable to decode tenant ID from system config: %s", err)
+		log.Errorf(ctx, "unable to decode tenant ID from system config: %s", err)
 		return nil
 	}
 	if splitTenID.ToUint64() > highTenID.ToUint64() {

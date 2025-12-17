@@ -31,7 +31,6 @@ import (
 func parseHTTPURL(uri *url.URL) (cloudpb.ExternalStorage, error) {
 	conf := cloudpb.ExternalStorage{}
 	conf.Provider = cloudpb.ExternalStorageProvider_http
-	conf.URI = uri.String()
 	conf.HttpPath.BaseUri = uri.String()
 	return conf, nil
 }
@@ -42,7 +41,6 @@ type httpStorage struct {
 	hosts    []string
 	settings *cluster.Settings
 	ioConf   base.ExternalIODirConfig
-	uri      string // original URI used to construct this storage
 }
 
 var _ cloud.ExternalStorage = &httpStorage{}
@@ -88,7 +86,6 @@ func MakeHTTPStorage(
 		hosts:    strings.Split(uri.Host, ","),
 		settings: args.Settings,
 		ioConf:   args.IOConf,
-		uri:      dest.URI,
 	}, nil
 }
 
@@ -98,7 +95,6 @@ func (h *httpStorage) Conf() cloudpb.ExternalStorage {
 		HttpPath: cloudpb.ExternalStorage_Http{
 			BaseUri: h.base.String(),
 		},
-		URI: h.uri,
 	}
 }
 
@@ -126,7 +122,7 @@ func (h *httpStorage) openStreamAt(
 			return resp, err
 		}
 
-		log.Dev.Errorf(ctx, "HTTP:Req error: err=%s (attempt %d)", err, attempt)
+		log.Errorf(ctx, "HTTP:Req error: err=%s (attempt %d)", err, attempt)
 
 		if !errors.HasType(err, (*retryableHTTPError)(nil)) {
 			return nil, err

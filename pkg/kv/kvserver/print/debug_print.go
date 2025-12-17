@@ -13,7 +13,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage/wag/wagpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/raftlog"
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -24,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
-	"github.com/kr/text"
 )
 
 // PrintEngineKeyValue attempts to print the given key-value pair to
@@ -99,12 +97,15 @@ func SprintEngineKeyValue(k storage.EngineKey, v []byte) string {
 		if key, err := k.ToMVCCKey(); err == nil {
 			return SprintMVCCKeyValue(storage.MVCCKeyValue{Key: key, Value: v}, true /* printKey */)
 		}
-	} else if k.IsLockTableKey() {
-		if key, err := k.ToLockTableKey(); err == nil {
-			return fmt.Sprintf("%s: %s", key, SprintIntent(v))
-		}
 	}
-	return fmt.Sprintf("%s %x (%#x): %x", k.Key, k.Version, k.Encode(), v)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s %x (%#x): ", k.Key, k.Version, k.Encode())
+	if out, err := tryIntent(storage.MVCCKeyValue{Value: v}); err == nil {
+		sb.WriteString(out)
+	} else {
+		fmt.Fprintf(&sb, "%x", v)
+	}
+	return sb.String()
 }
 
 // SprintEngineRangeKeyValue is like PrintEngineRangeKeyValue, but returns a
@@ -138,8 +139,7 @@ func SprintMVCCKeyValue(kv storage.MVCCKeyValue, printKey bool) string {
 
 	// TODO(pav-kv): some functions here do not check the key, so can accidentally
 	// succeed parsing values that have a different "type", and print them in a
-	// misleading way. Make all these functions key-aware, and use lookups for
-	// efficiency.
+	// misleading way. Make all these functions key-aware.
 	decoders := append(DebugSprintMVCCKeyValueDecoders,
 		tryRangeIDKey,
 		tryRangeDescriptor,
@@ -147,7 +147,6 @@ func SprintMVCCKeyValue(kv storage.MVCCKeyValue, printKey bool) string {
 		tryTxn,
 		tryTimeSeries,
 		tryIntent,
-		tryWAGKey,
 		func(kv storage.MVCCKeyValue) (string, error) {
 			// No better idea, just print raw bytes and hope that folks use `less -S`.
 			return fmt.Sprintf("%q", kv.Value), nil
@@ -239,7 +238,7 @@ func DecodeWriteBatch(writeBatch []byte) (string, error) {
 	// pebble.KeyKindDeleteSized is the most recent key kind, ensuring that
 	// compilation will fail if it's not. Unfortunately, this doesn't protect
 	// against reusing a currently unused RocksDB key kind.
-	const _ = uint(pebble.InternalKeyKindSyntheticKey - pebble.InternalKeyKindMax)
+	const _ = uint(pebble.InternalKeyKindExcise - pebble.InternalKeyKindMax)
 
 	if writeBatch == nil {
 		return "<nil>\n", nil
@@ -397,7 +396,6 @@ func tryTxn(kv storage.MVCCKeyValue) (string, error) {
 	if err := maybeUnmarshalInline(kv.Value, &txn); err != nil {
 		return "", err
 	}
-	// TODO(arul): investigate why we need this new line here.
 	return txn.String() + "\n", nil
 }
 
@@ -468,40 +466,6 @@ func tryRangeIDKey(kv storage.MVCCKeyValue) (string, error) {
 		return "", err
 	}
 	return msg.String(), nil
-}
-
-func tryWAGKey(kv storage.MVCCKeyValue) (string, error) {
-	if !bytes.HasPrefix(kv.Key.Key, keys.StoreWAGPrefix()) {
-		return "", errors.New("not a WAG node key")
-	}
-	var node wagpb.Node
-	if err := node.Unmarshal(kv.Value); err != nil { // nolint:protounmarshal
-		return "", err
-	}
-
-	str := fmt.Appendf(nil, "%v %s", node.Type, node.Addr)
-	if c, d := node.Create, node.Destroy; c != 0 || len(d) != 0 {
-		if c != 0 {
-			str = fmt.Appendf(str, " create:%d", c)
-		}
-		if len(d) != 0 {
-			str = fmt.Appendf(str, " destroy:%v", d)
-		}
-	}
-
-	if b := node.Mutation.Batch; len(b) > 0 {
-		bs, err := DecodeWriteBatch(b)
-		if err != nil {
-			bs = "failed to decode write batch: " + err.Error()
-		}
-		str = fmt.Appendf(str, "\n%s", text.Indent(bs, "> "))
-	}
-	if ing := node.Mutation.Ingestion; ing != nil {
-		// TODO(pav-kv): make this format nicely. Currently, this proto is too big.
-		str = fmt.Appendf(str, "\ningestion: %v", ing)
-	}
-
-	return string(str), nil
 }
 
 func tryMeta(kv storage.MVCCKeyValue) (string, error) {

@@ -7,7 +7,6 @@ package build
 
 import (
 	"bytes"
-	"crypto/fips140"
 	_ "embed"
 	"fmt"
 	"runtime"
@@ -169,10 +168,6 @@ func (b Info) Long() string {
 	fmt.Fprintf(tw, "C Compiler:       %s\n", b.CgoCompiler)
 	fmt.Fprintf(tw, "Build Commit ID:  %s\n", b.Revision)
 	fmt.Fprintf(tw, "Build Type:       %s\n", b.Type)
-	if fips140.Enabled() {
-		fmt.Fprintf(tw, "FIPS enabled:     true\n")
-	}
-
 	fmt.Fprintf(tw, "Enabled Assertions: %t", b.EnabledAssertions) // No final newline: cobra prints one for us.
 	_ = tw.Flush()
 	return buf.String()

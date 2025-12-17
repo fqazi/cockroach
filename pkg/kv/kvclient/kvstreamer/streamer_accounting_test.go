@@ -100,7 +100,6 @@ func TestStreamerMemoryAccounting(t *testing.T) {
 			math.MaxInt64,
 			&acc,
 			nil, /* kvPairsRead */
-			nil, /* kvCPUTime */
 			lock.None,
 			lock.Unreplicated,
 			reverse,

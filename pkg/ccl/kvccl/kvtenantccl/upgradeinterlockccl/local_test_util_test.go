@@ -107,7 +107,7 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 		// extend the TTL by 10x to handle cases where the system is too
 		// overloaded to heartbeat at sub-second intervals.
 		ttlOverride := 250 * time.Millisecond
-		if skip.DevStress() {
+		if skip.Stress() {
 			ttlOverride *= 10
 		}
 		heartbeatOverride := ttlOverride / 10
@@ -207,7 +207,7 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 	// will complete the upgrade.
 	go func() {
 		release := func() {
-			log.Dev.Infof(ctx, "upgrade completed, resuming post-upgrade work")
+			log.Infof(ctx, "upgrade completed, resuming post-upgrade work")
 			completedChannel <- struct{}{}
 		}
 		defer release()
@@ -325,7 +325,7 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 	logf("waiting for upgrade to complete")
 	<-completedChannel
 	logf("upgrade completed")
-	log.Dev.Infof(ctx, "continuing after upgrade completed")
+	log.Infof(ctx, "continuing after upgrade completed")
 
 	// Now that we've resumed the upgrade, process any errors. We must do
 	// that after the upgrade completes because any unexpected errors above

@@ -200,7 +200,7 @@ func (b *Builder) tryBuildFastPathInsert(
 	insInput := ins.Input
 	values, ok := insInput.(*memo.ValuesExpr)
 	// Values expressions containing subqueries or UDFs, or having a size larger
-	// than the max mutation SQL-level batch size are disallowed.
+	// than the max mutation batch size are disallowed.
 	if !ok || !memo.ValuesLegalForInsertFastPath(values) {
 		return execPlan{}, colOrdMap{}, false, nil
 	}
@@ -463,37 +463,19 @@ func (b *Builder) buildUpdate(upd *memo.UpdateExpr) (_ execPlan, outputCols colO
 		}
 	}
 
-	allowAutoCommit := b.allowAutoCommit && len(upd.UniqueChecks) == 0 &&
-		len(upd.FKChecks) == 0 && len(upd.FKCascades) == 0 && upd.AfterTriggers == nil
-	var node exec.Node
-	if upd.Swap {
-		if !checkOrds.Empty() || len(upd.UniqueWithTombstoneIndexes) != 0 {
-			return execPlan{}, colOrdMap{}, errors.AssertionFailedf("update swap does not support checks")
-		}
-		node, err = b.factory.ConstructUpdateSwap(
-			input.root,
-			tab,
-			fetchColOrds,
-			updateColOrds,
-			returnColOrds,
-			passthroughCols,
-			lockedIndexes,
-			allowAutoCommit,
-		)
-	} else {
-		node, err = b.factory.ConstructUpdate(
-			input.root,
-			tab,
-			fetchColOrds,
-			updateColOrds,
-			returnColOrds,
-			checkOrds,
-			passthroughCols,
-			upd.UniqueWithTombstoneIndexes,
-			lockedIndexes,
-			allowAutoCommit,
-		)
-	}
+	node, err := b.factory.ConstructUpdate(
+		input.root,
+		tab,
+		fetchColOrds,
+		updateColOrds,
+		returnColOrds,
+		checkOrds,
+		passthroughCols,
+		upd.UniqueWithTombstoneIndexes,
+		lockedIndexes,
+		b.allowAutoCommit && len(upd.UniqueChecks) == 0 &&
+			len(upd.FKChecks) == 0 && len(upd.FKCascades) == 0 && upd.AfterTriggers == nil,
+	)
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
 	}
@@ -642,30 +624,16 @@ func (b *Builder) buildDelete(del *memo.DeleteExpr) (_ execPlan, outputCols colO
 		}
 	}
 
-	allowAutoCommit := b.allowAutoCommit && len(del.FKChecks) == 0 &&
-		len(del.FKCascades) == 0 && del.AfterTriggers == nil
-	var node exec.Node
-	if del.Swap {
-		node, err = b.factory.ConstructDeleteSwap(
-			input.root,
-			tab,
-			fetchColOrds,
-			returnColOrds,
-			passthroughCols,
-			lockedIndexes,
-			allowAutoCommit,
-		)
-	} else {
-		node, err = b.factory.ConstructDelete(
-			input.root,
-			tab,
-			fetchColOrds,
-			returnColOrds,
-			passthroughCols,
-			lockedIndexes,
-			allowAutoCommit,
-		)
-	}
+	node, err := b.factory.ConstructDelete(
+		input.root,
+		tab,
+		fetchColOrds,
+		returnColOrds,
+		passthroughCols,
+		lockedIndexes,
+		b.allowAutoCommit && len(del.FKChecks) == 0 &&
+			len(del.FKCascades) == 0 && del.AfterTriggers == nil,
+	)
 	if err != nil {
 		return execPlan{}, colOrdMap{}, err
 	}
@@ -774,7 +742,7 @@ func (b *Builder) buildDeleteRange(del *memo.DeleteExpr) (execPlan, error) {
 		// Mutations only allow auto-commit if there are no FK checks or cascades.
 
 		if maxRows, ok := b.indexConstraintMaxResults(&scan.ScanPrivate, scan.Relational()); ok {
-			if maxKeys := maxRows * uint64(tab.FamilyCount()); maxKeys <= uint64(row.DeleteRangeChunkSize(b.evalCtx.TestingKnobs.ForceProductionValues)) {
+			if maxKeys := maxRows * uint64(tab.FamilyCount()); maxKeys <= row.TableTruncateChunkSize {
 				autoCommit = true
 			}
 		}
@@ -1265,7 +1233,7 @@ func shouldApplyImplicitLockingToUpdateOrDeleteInput(
 	var toLockIndexes intsets.Fast
 	// Try to match the mutation's input expression against the pattern:
 	//
-	//   [Project]* [IndexJoin] (Scan | PlaceholderScan | LookupJoin [LookupJoin] Values)
+	//   [Project]* [IndexJoin] (Scan | LookupJoin [LookupJoin] Values)
 	//
 	// The IndexJoin will only be present if the base expression is a Scan, but
 	// making it an optional prefix to the LookupJoins makes the logic simpler.
@@ -1277,9 +1245,6 @@ func shouldApplyImplicitLockingToUpdateOrDeleteInput(
 	var toLock opt.TableID
 	switch t := input.(type) {
 	case *memo.ScanExpr:
-		toLockIndexes.Add(t.Index)
-		toLock = t.Table
-	case *memo.PlaceholderScanExpr:
 		toLockIndexes.Add(t.Index)
 		toLock = t.Table
 	case *memo.LookupJoinExpr:

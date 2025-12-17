@@ -119,9 +119,6 @@ type TestingIntervalOverrides struct {
 
 	// WaitForJobsMaxDelay
 	WaitForJobsMaxDelay *time.Duration
-
-	// ClaimTTLOnFailure overrides the ClaimTTLOnFailureSetting cluster setting.
-	ClaimTTLOnFailure *time.Duration
 }
 
 const defaultShortInterval = 10 * time.Millisecond
@@ -149,7 +146,6 @@ func NewTestingKnobsWithIntervals(
 			Cancel:            &cancel,
 			RetryInitialDelay: &initialDelay,
 			RetryMaxDelay:     &maxDelay,
-			ClaimTTLOnFailure: &adopt,
 		},
 	}
 }

@@ -179,7 +179,7 @@ func (p *planner) waitForDescriptorSchemaChanges(
 			blockingJobIDs = desc.ConcurrentSchemaChangeJobIDs()
 			return nil
 		}); err != nil {
-			log.Dev.Infof(ctx, "done schema change wait on concurrent jobs due"+
+			log.Infof(ctx, "done schema change wait on concurrent jobs due"+
 				" to error on descriptor (%d): %s", descID, err)
 			return err
 		}
@@ -187,7 +187,7 @@ func (p *planner) waitForDescriptorSchemaChanges(
 			break
 		}
 		if logEvery.ShouldLog() {
-			log.Dev.Infof(ctx,
+			log.Infof(ctx,
 				"schema change waiting for %v concurrent schema change job(s) %v on descriptor %d,"+
 					" waited %v so far", len(blockingJobIDs), blockingJobIDs, descID, timeutil.Since(start),
 			)
@@ -197,7 +197,7 @@ func (p *planner) waitForDescriptorSchemaChanges(
 		}
 	}
 
-	log.Dev.Infof(
+	log.Infof(
 		ctx,
 		"done waiting for concurrent schema changes on descriptor %d after %v",
 		descID, timeutil.Since(start),
@@ -296,9 +296,6 @@ func newSchemaChangerTxnRunDependencies(
 		descriptors,
 		&execCfg.Settings.SV,
 		sessionData,
-		execCfg.Settings,
-		execCfg.JobsKnobs(),
-		execCfg.NodeInfo.LogicalClusterID(),
 	)
 	return scdeps.NewExecutorDependencies(
 		execCfg.Settings,
@@ -321,7 +318,6 @@ func newSchemaChangerTxnRunDependencies(
 		metaDataUpdater,
 		evalContext.Planner,
 		execCfg.StatsRefresher,
-		execCfg.TableStatsCache,
 		execCfg.DeclarativeSchemaChangerTestingKnobs,
 		kvTrace,
 		schemaChangerJobID,

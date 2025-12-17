@@ -359,9 +359,10 @@ type zipContext struct {
 	includeRangeInfo bool
 
 	// includeStacks fetches all goroutines running on each targeted node in
-	// nodes/*/stacks.txt. Note that fetching debug=2 stack traces for all
-	// goroutines incurs a temporary "stop the world" operation, which can
-	// momentarily have negative impacts on SQL service latency.
+	// nodes/*/stacks.txt and nodes/*/stacks_with_labels.txt files. Note that
+	// fetching stack traces for all goroutines is a temporary "stop the world"
+	// operation, which can momentarily have negative impacts on SQL service
+	// latency.
 	includeStacks bool
 
 	// includeRunningJobTraces includes the active traces of each running
@@ -469,7 +470,7 @@ func setDebugContextDefaults() {
 	debugCtx.sizes = false
 	debugCtx.replicated = false
 	debugCtx.inputFile = ""
-	debugCtx.ballastSize = storageconfig.BytesSize(1000000000)
+	debugCtx.ballastSize = storageconfig.Size{Bytes: 1000000000}
 	debugCtx.maxResults = 0
 	debugCtx.decodeAsTableDesc = ""
 	debugCtx.verbose = false
@@ -487,8 +488,6 @@ var startCtx struct {
 	serverRootCertDN       string
 	serverNodeCertDN       string
 	serverTLSCipherSuites  []string
-	disallowRootLogin      bool
-	allowDebugUser         bool
 
 	// The TLS auto-handshake parameters.
 	initToken             string
@@ -544,8 +543,6 @@ func setStartContextDefaults() {
 	startCtx.serverCertPrincipalMap = nil
 	startCtx.serverRootCertDN = ""
 	startCtx.serverNodeCertDN = ""
-	startCtx.disallowRootLogin = false
-	startCtx.allowDebugUser = false
 	startCtx.serverListenAddr = ""
 	startCtx.unencryptedLocalhostHTTP = false
 	startCtx.tempDir = ""
@@ -722,4 +719,24 @@ var userfileCtx struct {
 // every test that exercises command-line parsing.
 func setUserfileContextDefaults() {
 	userfileCtx.recursive = false
+}
+
+// GetServerCfgStores provides direct public access to the StoreSpecList inside
+// serverCfg. This is used by CCL code to populate some fields.
+//
+// WARNING: consider very carefully whether you should be using this.
+// If you are not writing CCL code that performs command-line flag
+// parsing, you probably should not be using this.
+func GetServerCfgStores() base.StoreSpecList {
+	return serverCfg.Stores
+}
+
+// GetWALFailoverConfig provides direct public access to the WALFailoverConfig
+// inside serverCfg. This is used by CCL code to populate some fields.
+//
+// WARNING: consider very carefully whether you should be using this.
+// If you are not writing CCL code that performs command-line flag
+// parsing, you probably should not be using this.
+func GetWALFailoverConfig() *storageconfig.WALFailover {
+	return &serverCfg.StorageConfig.WALFailover
 }

@@ -285,14 +285,30 @@ project
  ├── has-placeholder
  ├── stats: [rows=30]
  ├── key: (1)
- └── placeholder-scan t@t_i_idx
+ └── project
       ├── columns: k:1(int!null) i:2(int!null)
       ├── has-placeholder
       ├── stats: [rows=30, distinct(2)=1, null(2)=0]
       ├── key: (1)
       ├── fd: ()-->(2)
-      └── span
-           └── $1 [type=int]
+      └── inner-join (lookup t@t_i_idx)
+           ├── columns: k:1(int!null) i:2(int!null) "$1":6(int!null)
+           ├── flags: disallow merge join
+           ├── key columns: [6] = [2]
+           ├── parameterized columns: (6)
+           ├── has-placeholder
+           ├── stats: [rows=30, distinct(2)=1, null(2)=0, distinct(6)=1, null(6)=0]
+           ├── key: (1)
+           ├── fd: ()-->(2,6), (2)==(6), (6)==(2)
+           ├── values
+           │    ├── columns: "$1":6(int)
+           │    ├── cardinality: [1 - 1]
+           │    ├── has-placeholder
+           │    ├── stats: [rows=1, distinct(6)=1, null(6)=0]
+           │    ├── key: ()
+           │    ├── fd: ()-->(6)
+           │    └── ($1,) [type=tuple{int}]
+           └── filters (true)
 
 # Similar case as above, but with opt to ensure the correct row counts are used
 # for new memo groups.

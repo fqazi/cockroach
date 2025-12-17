@@ -919,16 +919,16 @@ func (f *ExprFmtCtx) formatRelational(e RelExpr, tp treeprinter.Node) {
 		if cost.C != 0 {
 			tp.Childf("cost: %.9g", cost.C)
 		}
-		if cost.Penalties != NoPenalties {
+		if !cost.Flags.Empty() {
 			var b strings.Builder
 			b.WriteString("cost-flags:")
-			if cost.Penalties&FullScanPenalty != 0 {
+			if cost.Flags.FullScanPenalty {
 				b.WriteString(" full-scan-penalty")
 			}
-			if cost.Penalties&HugeCostPenalty != 0 {
+			if cost.Flags.HugeCostPenalty {
 				b.WriteString(" huge-cost-penalty")
 			}
-			if cost.Penalties&UnboundedCardinalityPenalty != 0 {
+			if cost.Flags.UnboundedCardinality {
 				b.WriteString(" unbounded-cardinality")
 			}
 			tp.Child(b.String())
@@ -1918,9 +1918,6 @@ func FormatPrivate(f *ExprFmtCtx, private interface{}, physProps *physical.Requi
 		fmt.Fprintf(f.Buffer, " %s", seq.Name())
 
 	case *MutationPrivate:
-		if t.Swap {
-			fmt.Fprint(f.Buffer, " (swap)")
-		}
 		f.formatIndex(t.Table, cat.PrimaryIndex, false /* reverse */)
 
 	case *LockPrivate:

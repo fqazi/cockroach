@@ -86,7 +86,7 @@ func benchObjstorageCopy(b *testing.B, prefix string, suffixes []string) {
 					b.Fatal(err)
 				}
 
-				readable := objstorageprovider.NewRemoteReadable(r, fileSize, s.IsNotExistError)
+				readable := objstorageprovider.NewRemoteReadable(r, fileSize)
 				rh := readable.NewReadHandle(0 /* readBeforeSize */)
 				if err := objstorage.Copy(ctx, rh, discard{}, 4<<20, uint64(size)); err != nil {
 					b.Fatal(err)
@@ -107,7 +107,6 @@ type discard struct{}
 
 var _ objstorage.Writable = discard{}
 
-func (discard) StartMetadataPortion() error { return nil }
-func (discard) Write(p []byte) error        { return nil }
-func (discard) Finish() error               { return nil }
-func (discard) Abort()                      {}
+func (discard) Write(p []byte) error { return nil }
+func (discard) Finish() error        { return nil }
+func (discard) Abort()               {}

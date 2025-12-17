@@ -99,7 +99,7 @@ func (s *KeyVisualizerServer) getSamplesFromFanOut(
 	}
 
 	errorFn := func(nodeID roachpb.NodeID, err error) {
-		log.Dev.Errorf(ctx, "could not get key visualizer sample for node %d: %v",
+		log.Errorf(ctx, "could not get key visualizer sample for node %d: %v",
 			nodeID, err)
 	}
 
@@ -120,7 +120,7 @@ func (s *KeyVisualizerServer) getSamplesFromFanOut(
 	var samples []keyvispb.Sample
 	for sampleTimeNanos, sampleFragments := range globalSamples {
 		if !verifySampleBoundariesEqual(sampleFragments) {
-			log.Dev.Warningf(ctx, "key visualizer sample boundaries differ between nodes")
+			log.Warningf(ctx, "key visualizer sample boundaries differ between nodes")
 		}
 		samples = append(samples, keyvispb.Sample{
 			SampleTime: timeutil.Unix(0, sampleTimeNanos),

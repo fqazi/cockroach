@@ -438,11 +438,11 @@ func TestDLQJSONQuery(t *testing.T) {
 	targets := changefeedbase.Targets{}
 	targets.Add(changefeedbase.Target{
 		Type:       jobspb.ChangefeedTargetSpecification_EACH_FAMILY,
-		DescID:     tableDesc.GetID(),
+		TableID:    tableDesc.GetID(),
 		FamilyName: "primary",
 	})
 
-	decoder, err := cdcevent.NewEventDecoder(ctx, &execCfg, targets, false, false, cdcevent.DecoderOptions{})
+	decoder, err := cdcevent.NewEventDecoder(ctx, &execCfg, targets, false, false)
 	require.NoError(t, err)
 
 	popRow, cleanup := cdctest.MakeRangeFeedValueReader(t, srv.ExecutorConfig(), tableDesc)

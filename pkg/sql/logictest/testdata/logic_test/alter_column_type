@@ -329,7 +329,7 @@ statement error default for column "x" cannot be cast automatically to type DATE
 ALTER TABLE t7 ALTER COLUMN x TYPE DATE USING x::DATE;
 
 # Ensure a runtime error correctly rolls back and the table is unchanged.
-statement disable-cf-mutator ok
+statement ok
 CREATE TABLE t8 (x STRING)
 
 statement ok
@@ -560,7 +560,7 @@ true
 true
 
 # Ensure ALTER COLUMN TYPE rolls back if is not applicable to value in the column.
-statement disable-cf-mutator ok
+statement ok
 CREATE TABLE t24 (x STRING);
 
 statement ok
@@ -1592,6 +1592,7 @@ ALTER TABLE stored1 ALTER COLUMN comp1 SET DATA TYPE INT2 USING -1;
 statement ok
 INSERT INTO stored1 VALUES (-1000);
 
+skipif config local-mixed-24.3
 onlyif config schema-locked-disabled
 query TT
 SHOW CREATE TABLE stored1;
@@ -1889,7 +1890,7 @@ SELECT value FROM information_schema.session_variables where variable='use_decla
 statement ok
 set use_declarative_schema_changer = 'unsafe_always';
 
-statement disable-cf-mutator ok
+statement ok
 create table t_droppedcol (dropme int);
 
 statement ok
@@ -1919,6 +1920,16 @@ t_droppedcol  CREATE TABLE public.t_droppedcol (
                 rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
                 CONSTRAINT t_droppedcol_pkey PRIMARY KEY (rowid ASC)
               );
+
+onlyif config local-schmea-locked
+query TT
+SHOW CREATE TABLE t_droppedcol;
+----
+t_droppedcol  CREATE TABLE public.t_droppedcol (
+                dropme INT8 NULL,
+                rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
+                CONSTRAINT t_droppedcol_pkey PRIMARY KEY (rowid ASC)
+              ) WITH (schema_locked = true);
 
 statement ok
 DROP TABLE t_droppedcol;
@@ -1969,6 +1980,7 @@ select * from t_multi_alter order by c1;
 10 10 2024-04-22 00:00:00 +0000 +0000
 20 20 2024-04-22 00:00:00 +0000 +0000
 
+skipif config local-mixed-24.3
 onlyif config schema-locked-disabled
 query TT colnames
 show create table t_multi_alter

@@ -29,9 +29,6 @@ var PrometheusNameSpace = "roachtest"
 var DefaultProcessFunction = func(test string, histograms *roachtestutil.HistogramMetric) (roachtestutil.AggregatedPerfMetrics, error) {
 	totalOps := 0.0
 	for _, summary := range histograms.Summaries {
-		if summary.TotalElapsed == 0 {
-			continue
-		}
 		totalOps += float64(summary.TotalCount*1000) / float64(summary.TotalElapsed)
 	}
 
@@ -229,12 +226,6 @@ func (ts *TestSpec) GetPostProcessWorkloadMetricsFunction() func(string, *roacht
 }
 
 // PostValidation is a type of post-validation that runs after a test completes.
-// By default, all validations are run unless TestSpec.SkipPostValidations is set to a bitwise OR
-// of the validations to skip.
-//
-// E.g., SkipPostValidations : PostValidationReplicaDivergence | PostValidationInvalidDescriptors
-// would skip the replica divergence and invalid descriptors validations and run the rest.
-// SkipPostValidations: PostValidationAll would skip _all_ validations.
 type PostValidation int
 
 const (
@@ -250,11 +241,6 @@ const (
 	// In its current state it is no longer functional.
 	// See: https://github.com/cockroachdb/cockroach/issues/137329 for details.
 	PostValidationNoDeadNodes
-	// PostValidationInspect runs INSPECT DATABASE on user databases to verify
-	// consistency.
-	PostValidationInspect
-	// PostValidationAll is a bitwise OR of all post-validations to skip.
-	PostValidationAll = PostValidationReplicaDivergence | PostValidationInvalidDescriptors | PostValidationNoDeadNodes | PostValidationInspect
 )
 
 // PromSub replaces all non prometheus friendly chars with "_". Note,
@@ -315,6 +301,8 @@ func (w WriteOptimizationType) String() string {
 		return "pipelining"
 	case Buffering:
 		return "buffering"
+	case PipeliningBuffering:
+		return "pipelining-buffering"
 	default:
 		return fmt.Sprintf("writeoptimization-%d", w)
 	}
@@ -323,10 +311,12 @@ func (w WriteOptimizationType) String() string {
 const (
 	// DefaultWriteOptimization uses the default cluster settings.
 	DefaultWriteOptimization = WriteOptimizationType(iota)
-	// Pipelining uses write pipelining, and disables buffering.
+	// Pipelining uses write pipelining.
 	Pipelining
-	// Buffering uses client-side write buffering, and disabled pipelining.
+	// Buffering uses client-side write buffering.
 	Buffering
+	// PipeliningBuffering uses both buffering and pipelining.
+	PipeliningBuffering
 )
 
 // CloudSet represents a set of clouds.
@@ -459,13 +449,12 @@ const (
 	Acceptance            = "acceptance"
 	Perturbation          = "perturbation"
 	MixedVersion          = "mixedversion"
-	VecIndex              = "vecindex"
 )
 
 var allSuites = []string{
 	Nightly, Weekly, ReleaseQualification, ORM, Driver, Tool, Quick, Fixtures,
 	Pebble, PebbleNightlyWrite, PebbleNightlyYCSB, PebbleNightlyYCSBRace, Roachtest, Acceptance,
-	Perturbation, MixedVersion, VecIndex,
+	Perturbation, MixedVersion,
 }
 
 // SuiteSet represents a set of suites.

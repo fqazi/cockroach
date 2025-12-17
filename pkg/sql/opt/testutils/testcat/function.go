@@ -34,7 +34,10 @@ func (tc *Catalog) ResolveFunction(
 	}
 
 	// Attempt to resolve to a built-in function first.
-	def := tree.GetBuiltinFuncDefinition(fn, path)
+	def, err := tree.GetBuiltinFuncDefinition(fn, path)
+	if err != nil {
+		return nil, err
+	}
 	if def != nil {
 		return def, nil
 	}

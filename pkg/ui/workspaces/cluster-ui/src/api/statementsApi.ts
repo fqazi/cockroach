@@ -170,7 +170,6 @@ type Statistics = {
   runLat: NumericStat;
   svcLat: NumericStat;
   regions: string[];
-  kvCPUTimeNanos?: NumericStat;
 };
 
 type ExecStats = {
@@ -181,7 +180,6 @@ type ExecStats = {
   networkBytes: NumericStat;
   networkMsgs: NumericStat;
   cpuSQLNanos: NumericStat;
-  admissionWaitTime: NumericStat;
 };
 
 type StatementStatistics = {
@@ -226,8 +224,6 @@ export function convertStatementRawFormatToAggregatedStatistics(
         network_bytes: s.statistics.execution_statistics.networkBytes,
         network_messages: s.statistics.execution_statistics.networkMsgs,
         cpu_sql_nanos: s.statistics.execution_statistics.cpuSQLNanos,
-        admission_wait_time:
-          s.statistics.execution_statistics.admissionWaitTime,
       },
       bytes_read: s.statistics.statistics.bytesRead,
       count: s.statistics.statistics.cnt,
@@ -257,7 +253,6 @@ export function convertStatementRawFormatToAggregatedStatistics(
       service_lat: s.statistics.statistics.svcLat,
       sql_type: s.metadata.stmtType,
       regions: s.statistics.statistics.regions,
-      kv_cpu_time_nanos: s.statistics.statistics.kvCPUTimeNanos,
     },
   };
 }

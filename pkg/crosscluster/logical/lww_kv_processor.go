@@ -13,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/kv/bulk"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -30,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
-	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
@@ -48,8 +46,6 @@ type kvRowProcessor struct {
 
 	dstBySrc map[descpb.ID]descpb.ID
 	writers  map[descpb.ID]*kvTableWriter
-
-	pacer *admission.Pacer
 
 	failureInjector
 }
@@ -83,7 +79,6 @@ func newKVRowProcessor(
 		dstBySrc: dstBySrc,
 		writers:  make(map[descpb.ID]*kvTableWriter, len(procConfigByDestID)),
 		decoder:  decoder,
-		pacer:    bulk.NewCPUPacer(ctx, cfg.DB.KV(), useLowPriority),
 	}
 	return p, nil
 }
@@ -100,7 +95,7 @@ func newCdcEventDecoder(
 		srcTablesBySrcID[s.srcDesc.GetID()] = s.srcDesc
 		cdcEventTargets.Add(changefeedbase.Target{
 			Type:              jobspb.ChangefeedTargetSpecification_EACH_FAMILY,
-			DescID:            s.srcDesc.GetID(),
+			TableID:           s.srcDesc.GetID(),
 			StatementTimeName: changefeedbase.StatementTimeName(s.srcDesc.GetName()),
 		})
 	}
@@ -113,7 +108,7 @@ func newCdcEventDecoder(
 		return nil, err
 	}
 
-	return cdcevent.NewEventDecoderWithCache(ctx, rfCache, false, false, cdcevent.DecoderOptions{}), nil
+	return cdcevent.NewEventDecoderWithCache(ctx, rfCache, false, false), nil
 }
 
 var originID1Options = &kvpb.WriteOptions{OriginID: 1}
@@ -123,10 +118,6 @@ func (p *kvRowProcessor) HandleBatch(
 ) (batchStats, error) {
 	ctx, sp := tracing.ChildSpan(ctx, "kvRowProcessor.HandleBatch")
 	defer sp.Finish()
-
-	if _, err := p.pacer.Pace(ctx); err != nil {
-		return batchStats{}, err
-	}
 
 	if len(batch) == 1 {
 		stats := batchStats{}
@@ -204,11 +195,11 @@ func (p *kvRowProcessor) processRow(
 	return batchStats{}, p.addToBatch(ctx, txn.KV(), b, dstTableID, row, keyValue, prevValue)
 }
 
-func (p *kvRowProcessor) ReportMutations(ctx context.Context, refresher *stats.Refresher) {
+func (p *kvRowProcessor) ReportMutations(refresher *stats.Refresher) {
 	for _, w := range p.writers {
 		if w.unreportedMutations > 0 && w.leased != nil {
 			if desc := w.leased.Underlying(); desc != nil {
-				refresher.NotifyMutation(ctx, desc.(catalog.TableDescriptor), w.unreportedMutations)
+				refresher.NotifyMutation(desc.(catalog.TableDescriptor), w.unreportedMutations)
 				w.unreportedMutations = 0
 			}
 		}
@@ -393,7 +384,7 @@ func (p *kvRowProcessor) getWriter(
 		}
 	}
 
-	l, err := p.cfg.LeaseManager.(*lease.Manager).Acquire(ctx, lease.TimestampToReadTimestamp(ts), id)
+	l, err := p.cfg.LeaseManager.(*lease.Manager).Acquire(ctx, ts, id)
 	if err != nil {
 		return nil, err
 	}

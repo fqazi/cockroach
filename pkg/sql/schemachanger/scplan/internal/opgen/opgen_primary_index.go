@@ -24,20 +24,12 @@ func init() {
 				}),
 				emit(func(this *scpb.PrimaryIndex, md *opGenContext) *scop.MaybeAddSplitForIndex {
 					// Avoid adding splits for tables without any data (i.e. newly created ones).
-					// Non-backfilled indexes will still try and add split points.
 					if checkIfDescriptorIsWithoutData(this.TableID, md) {
 						return nil
 					}
-					var copyIndexID descpb.IndexID
-					// Truncate will not have a temporary index ID since no backfill is
-					// required. It will use the source index to copy splits from.
-					if this.TemporaryIndexID == 0 {
-						copyIndexID = this.SourceIndexID
-					}
 					return &scop.MaybeAddSplitForIndex{
-						TableID:     this.TableID,
-						IndexID:     this.IndexID,
-						CopyIndexID: copyIndexID,
+						TableID: this.TableID,
+						IndexID: this.IndexID,
 					}
 				}),
 			),
@@ -45,7 +37,7 @@ func init() {
 				emit(func(this *scpb.PrimaryIndex, md *opGenContext) *scop.BackfillIndex {
 					// No need to backfill indexes for added descriptors, these will
 					// be empty.
-					if checkIfDescriptorIsWithoutData(this.TableID, md) || this.TemporaryIndexID == 0 {
+					if checkIfDescriptorIsWithoutData(this.TableID, md) {
 						return nil
 					}
 					return &scop.BackfillIndex{
@@ -75,7 +67,7 @@ func init() {
 				emit(func(this *scpb.PrimaryIndex, md *opGenContext) *scop.MergeIndex {
 					// No need to merge indexes for added descriptors, these will
 					// be empty.
-					if checkIfDescriptorIsWithoutData(this.TableID, md) || this.TemporaryIndexID == 0 {
+					if checkIfDescriptorIsWithoutData(this.TableID, md) {
 						return nil
 					}
 					return &scop.MergeIndex{
@@ -103,7 +95,7 @@ func init() {
 				emit(func(this *scpb.PrimaryIndex, md *opGenContext) *scop.ValidateIndex {
 					// No need to backfill validate for added descriptors, these will
 					// be empty.
-					if checkIfDescriptorIsWithoutData(this.TableID, md) || this.TemporaryIndexID == 0 {
+					if checkIfDescriptorIsWithoutData(this.TableID, md) {
 						return nil
 					}
 					return &scop.ValidateIndex{
@@ -120,10 +112,9 @@ func init() {
 					}
 				}),
 				emit(func(this *scpb.PrimaryIndex, md *opGenContext) *scop.MarkRecreatedIndexesAsVisible {
-					// For secondary indexes with a recreate source, we make the index visible
-					// when the original source is hidden. Otherwise, they become public with
-					// the primary key. Older releases without the HideForPrimaryKeyRecreated
-					// flag always wait for the primary key to be public.
+					// While making a primary index swap public, we will also make
+					// any invisible indexes that were created as part of the swap
+					// visible.
 					var indexVisibilities map[descpb.IndexID]float64
 					for _, target := range md.Targets {
 						idx := target.GetSecondaryIndex()
@@ -133,8 +124,7 @@ func init() {
 							idx.TableID != this.TableID ||
 							idx.RecreateTargetIndexID != this.IndexID ||
 							idx.IsNotVisible ||
-							idx.Invisibility == 1.0 ||
-							(idx.HideForPrimaryKeyRecreated && idx.RecreateSourceIndexID != 0) {
+							idx.Invisibility == 1.0 {
 							continue
 						}
 						if indexVisibilities == nil {

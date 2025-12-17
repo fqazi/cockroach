@@ -1,4 +1,3 @@
-# LogicTest: !local-prepared
 statement ok
 CREATE TABLE t (
   a INT PRIMARY KEY,
@@ -161,7 +160,7 @@ sql.schema.hash_sharded_index
 
 subtest create_index_concurrently
 
-statement disable-cf-mutator ok
+statement ok
 CREATE TABLE create_index_concurrently_tbl (a int)
 
 onlyif config weak-iso-level-configs
@@ -269,7 +268,7 @@ subtest names-with-escaped-chars
 
 # Similarly try using special characters making an index for a new table, we
 # will attempt to recreate it and expect the look up to find the old one.
-statement disable-cf-mutator ok
+statement ok
 CREATE TABLE "'t1-esc'"(name int);
 
 statement ok
@@ -654,7 +653,7 @@ subtest end
 
 subtest create_index_expression_with_default_collation
 
-statement disable-cf-mutator ok
+statement ok
 CREATE TABLE tbl_with_collate (c1 int);
 
 statement ok
@@ -703,39 +702,5 @@ CREATE TABLE t_index_name_conflicts_with_primary_key (a INT PRIMARY KEY, b INT);
 
 statement error pgcode 42P07 index with name \"t_index_name_conflicts_with_primary_key_pkey\" already exists
 CREATE INDEX t_index_name_conflicts_with_primary_key_pkey ON t_index_name_conflicts_with_primary_key (a);
-
-subtest end
-
-# Temporary check to ensure the distributed merge setting is wired up. When we
-# implement distributed merge, we probably want to test this by reusing as many
-# existing tests as possible rather than strictly writing new ones.
-subtest distributed_merge_index_backfill_placeholder
-
-statement ok
-CREATE TABLE dist_merge_idx (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL UNIQUE)
-
-statement ok
-INSERT INTO dist_merge_idx VALUES (1,1,1), (2,2,2), (3,3,3)
-
-statement ok
-SET CLUSTER SETTING bulkio.index_backfill.distributed_merge.mode = enabled
-
-# TODO(158378): The end-to-end flow for create index using distributed
-# merge isn't implemented yet, so we get to the validation step and notice
-# we didn't ingest any rows. This is expected until the entire flow is
-# implemented.
-skipif config local-mixed-25.4
-statement error pgcode XX000 pq: .*validation of non-unique index dist_merge_idx_idx failed: expected 3 rows, found 0.*
-CREATE INDEX dist_merge_idx_idx ON dist_merge_idx (b)
-
-onlyif config local-mixed-25.4
-statement error pq: .*distributed merge requires cluster version 26.*
-CREATE INDEX dist_merge_idx_idx ON dist_merge_idx (b)
-
-statement ok
-SET CLUSTER SETTING bulkio.index_backfill.distributed_merge.mode = 'disabled'
-
-statement ok
-DROP TABLE dist_merge_idx
 
 subtest end

@@ -10,7 +10,6 @@ import (
 	gosql "database/sql"
 	"fmt"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 
@@ -32,7 +31,8 @@ func TestConstraintValidationBeforeBuffering(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, db, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
 
 	if _, err := db.Exec(`
@@ -133,20 +133,13 @@ func TestReadCommittedImplicitPartitionUpsert(t *testing.T) {
 		mu.l.Unlock()
 	}
 
-	peekState := func() State {
-		mu.l.Lock()
-		defer mu.l.Unlock()
-		return mu.state
-	}
-
 	ctx := context.Background()
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	// If test is in Ready state, transition to ReadDone and wait for conflict.
 	params.Knobs = base.TestingKnobs{
 		SQLExecutor: &sql.ExecutorTestingKnobs{
-			AfterArbiterRead: func(query string) {
-				// Only wait for arbiter operations on the upsert table.
-				if peekState() != Ready || !strings.Contains(query, "d.upsert") {
+			AfterArbiterRead: func() {
+				if mu.state != Ready {
 					return
 				}
 				setState(ReadDone)

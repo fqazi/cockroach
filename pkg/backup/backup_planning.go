@@ -13,7 +13,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/backup/backupbase"
 	"github.com/cockroachdb/cockroach/pkg/backup/backupresolver"
-	"github.com/cockroachdb/cockroach/pkg/backup/backuputils"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
 	"github.com/cockroachdb/cockroach/pkg/featureflag"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
@@ -38,6 +37,10 @@ import (
 )
 
 const (
+	// backupPartitionDescriptorPrefix is the file name prefix for serialized
+	// BackupPartitionDescriptor protos.
+	backupPartitionDescriptorPrefix = "BACKUP_PART"
+
 	deprecatedPrivilegesBackupPreamble = "The existing privileges are being deprecated " +
 		"in favour of a fine-grained privilege model explained here " +
 		"https://www.cockroachlabs.com/docs/stable/backup.html#required-privileges. In a future release, to run"
@@ -45,8 +48,6 @@ const (
 	deprecatedPrivilegesRestorePreamble = "The existing privileges are being deprecated " +
 		"in favour of a fine-grained privilege model explained here " +
 		"https://www.cockroachlabs.com/docs/stable/restore.html#required-privileges. In a future release, to run"
-
-	deprecatedIncrementalLocationMessage = "the incremental_location option is deprecated and will be removed in a future release"
 )
 
 type tableAndIndex struct {
@@ -75,7 +76,6 @@ func resolveOptionsForBackupJobDescription(
 		Detached:                        opts.Detached,
 		ExecutionLocality:               opts.ExecutionLocality,
 		UpdatesClusterMonitoringMetrics: opts.UpdatesClusterMonitoringMetrics,
-		Strict:                          opts.Strict,
 	}
 
 	if opts.EncryptionPassphrase != nil {
@@ -441,10 +441,6 @@ func backupPlanHook(
 		return nil, nil, false, err
 	}
 
-	if len(incrementalStorage) > 0 {
-		p.BufferClientNotice(ctx, pgnotice.Newf(deprecatedIncrementalLocationMessage))
-	}
-
 	var revisionHistory bool
 	if backupStmt.Options.CaptureRevisionHistory != nil {
 		revisionHistory, err = exprEval.Bool(
@@ -465,9 +461,6 @@ func backupPlanHook(
 			if err := executionLocality.Set(s); err != nil {
 				return nil, nil, false, err
 			}
-		}
-		if backupStmt.Options.Strict {
-			return nil, nil, false, errors.New("STRICT STORAGE LOCALITY option cannot be specified with the EXECUTION LOCALITY option")
 		}
 	}
 
@@ -615,7 +608,6 @@ func backupPlanHook(
 			ApplicationName:                 p.SessionData().ApplicationName,
 			ExecutionLocality:               executionLocality,
 			UpdatesClusterMonitoringMetrics: updatesClusterMonitoringMetrics,
-			StrictLocalityFiltering:         backupStmt.Options.Strict,
 		}
 		if backupStmt.CreatedByInfo != nil {
 			initialDetails.ScheduleID = backupStmt.CreatedByInfo.ScheduleID()
@@ -644,11 +636,7 @@ func backupPlanHook(
 			initialDetails.Destination.Subdir = backupbase.LatestFileName
 			initialDetails.Destination.Exists = true
 		} else if subdir != "" {
-			normalizedSubdir, err := backuputils.NormalizeSubdir(subdir)
-			if err != nil {
-				return err
-			}
-			initialDetails.Destination.Subdir = normalizedSubdir
+			initialDetails.Destination.Subdir = "/" + strings.TrimPrefix(subdir, "/")
 			initialDetails.Destination.Exists = true
 		} else {
 			initialDetails.Destination.Subdir = endTime.GoTime().Format(backupbase.DateBasedIntoFolderName)
@@ -713,7 +701,7 @@ func backupPlanHook(
 					return
 				}
 				if cleanupErr := sj.CleanupOnRollback(ctx); cleanupErr != nil {
-					log.Dev.Errorf(ctx, "failed to cleanup job: %v", cleanupErr)
+					log.Errorf(ctx, "failed to cleanup job: %v", cleanupErr)
 				}
 			}()
 			if err := p.ExecCfg().JobRegistry.CreateStartableJobWithTxn(

@@ -1275,19 +1275,24 @@ func (og *operationGenerator) createTable(ctx context.Context, tx pgx.Tx) (*opSt
 	)
 	stmt.Table = *tableName
 	stmt.IfNotExists = og.randIntn(2) == 0
-
-	// Helper function to check if any column has a type with the given prefix.
-	hasColumnTypeWithPrefix := func(typePrefix string) bool {
+	hasVectorType := func() bool {
+		// Check if any of the indexes have PGVector types involved.
 		for _, def := range stmt.Defs {
-			if col, ok := def.(*tree.ColumnTableDef); ok && strings.HasPrefix(col.Type.SQLString(), typePrefix) {
+			if col, ok := def.(*tree.ColumnTableDef); ok && strings.HasPrefix(col.Type.SQLString(), "VECTOR") {
 				return true
 			}
 		}
 		return false
-	}
-	hasVectorType := hasColumnTypeWithPrefix("VECTOR")
-	hasCitextType := hasColumnTypeWithPrefix("CITEXT")
-	hasLtreeType := hasColumnTypeWithPrefix("LTREE")
+	}()
+	hasCitextType := func() bool {
+		// Check if any of the columns have CITEXT types involved.
+		for _, def := range stmt.Defs {
+			if col, ok := def.(*tree.ColumnTableDef); ok && col.Type.SQLString() == "CITEXT" {
+				return true
+			}
+		}
+		return false
+	}()
 
 	// Randomly create as schema locked table.
 	versionBefore253, err := isClusterVersionLessThan(ctx, tx, clusterversion.V25_3.Version())
@@ -1319,13 +1324,9 @@ func (og *operationGenerator) createTable(ctx context.Context, tx pgx.Tx) (*opSt
 	opStmt.potentialExecErrors.addAll(codesWithConditions{
 		{code: pgcode.Syntax, condition: hasVectorType},
 		{code: pgcode.FeatureNotSupported, condition: hasVectorType},
-		{code: pgcode.UndefinedObject, condition: hasVectorType},
 		{code: pgcode.Syntax, condition: hasCitextType},
 		{code: pgcode.FeatureNotSupported, condition: hasCitextType},
 		{code: pgcode.UndefinedObject, condition: hasCitextType},
-		{code: pgcode.Syntax, condition: hasLtreeType},
-		{code: pgcode.FeatureNotSupported, condition: hasLtreeType},
-		{code: pgcode.UndefinedObject, condition: hasLtreeType},
 	})
 	opStmt.sql = tree.Serialize(stmt)
 	return opStmt, nil
@@ -1359,37 +1360,15 @@ func (og *operationGenerator) createType(
 	})
 
 	const letters = "abcdefghijklmnopqrstuvwxyz"
-	var statement *tree.CreateType
+	var statement tree.Statement
 
 	if isEnum {
 		statement = randgen.RandCreateEnumType(og.params.rng, typName.Object(), letters)
 	} else {
 		statement = randgen.RandCreateCompositeType(og.params.rng, typName.Object(), letters)
-
-		hasTypeWithPrefix := func(typePrefix string) bool {
-			for _, field := range statement.CompositeTypeList {
-				if strings.HasPrefix(field.Type.SQLString(), typePrefix) {
-					return true
-				}
-			}
-			return false
-		}
-
-		// Check for references to any types that are not supported in mixed version
-		// clusters.
-		ltreeNotSupported, err := isClusterVersionLessThan(ctx, tx, clusterversion.V25_4.Version())
-		if err != nil {
-			return nil, err
-		}
-		hasLtreeType := hasTypeWithPrefix("LTREE")
-		opStmt.potentialExecErrors.addAll(codesWithConditions{
-			{code: pgcode.UndefinedObject, condition: hasLtreeType && ltreeNotSupported},
-			{code: pgcode.FeatureNotSupported, condition: hasLtreeType && ltreeNotSupported},
-			{code: pgcode.Syntax, condition: hasLtreeType && ltreeNotSupported},
-		})
 	}
 
-	statement.TypeName = typName.ToUnresolvedObjectName()
+	statement.(*tree.CreateType).TypeName = typName.ToUnresolvedObjectName()
 	opStmt.sql = tree.Serialize(statement)
 	return opStmt, nil
 }
@@ -2532,7 +2511,7 @@ func (og *operationGenerator) setColumnDefault(ctx context.Context, tx pgx.Tx) (
 
 	defaultDatum := randgen.RandDatum(og.params.rng, datumTyp, columnForDefault.nullable)
 	stmt := makeOpStmt(OpStmtDDL)
-	if !datumTyp.Equivalent(columnForDefault.typ) {
+	if (!datumTyp.Equivalent(columnForDefault.typ)) && defaultDatum != tree.DNull {
 		stmt.expectedExecErrors.add(pgcode.DatatypeMismatch)
 	}
 	// Generated columns cannot have default values.
@@ -2540,24 +2519,10 @@ func (og *operationGenerator) setColumnDefault(ctx context.Context, tx pgx.Tx) (
 		stmt.potentialExecErrors.add(pgcode.Syntax)
 		stmt.potentialExecErrors.add(pgcode.InvalidTableDefinition)
 	}
-	// Check for references to any types that are not supported in mixed version
-	// clusters.
-	ltreeNotSupported, err := isClusterVersionLessThan(ctx, tx, clusterversion.V25_4.Version())
-	if err != nil {
-		return nil, err
-	}
-	if ltreeNotSupported &&
-		defaultDatum.ResolvedType().Family() == types.ArrayFamily &&
-		strings.HasPrefix(defaultDatum.ResolvedType().ArrayContents().SQLString(), "LTREE") {
-		stmt.expectedExecErrors.add(pgcode.FeatureNotSupported)
-	}
 
 	strDefault := tree.AsStringWithFlags(defaultDatum, tree.FmtParsable)
-	// Always use explicit type casting to ensure consistent behavior and avoid parse errors.
-	// When the types don't match, this will produce the expected DatatypeMismatch error.
-	// When the types do match, the cast is harmless and makes the intent explicit.
-	stmt.sql = fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN %s SET DEFAULT %s::%s`,
-		tableName.String(), columnForDefault.name.String(), strDefault, datumTyp.SQLString())
+	stmt.sql = fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN %s SET DEFAULT %s`,
+		tableName.String(), columnForDefault.name.String(), strDefault)
 	return stmt, nil
 }
 
@@ -3468,90 +3433,6 @@ func (og *operationGenerator) validate(ctx context.Context, tx pgx.Tx) (*opStmt,
 	return validateStmt, errors.Errorf("Validation FAIL:\n%s", strings.Join(errs, "\n"))
 }
 
-func (og *operationGenerator) inspect(ctx context.Context, tx pgx.Tx) (*opStmt, error) {
-	stmt := makeOpStmt(OpStmtDML)
-
-	var sb strings.Builder
-	sb.WriteString("INSPECT ")
-
-	if og.randIntn(2) == 0 {
-		tableName, err := og.randTable(ctx, tx, og.pctExisting(true), "")
-		if err != nil {
-			return nil, err
-		}
-		tableExists, err := og.tableExists(ctx, tx, tableName)
-		if err != nil {
-			return nil, err
-		}
-		sb.WriteString("TABLE ")
-		sb.WriteString(tableName.String())
-		if !tableExists {
-			stmt.expectedExecErrors.add(pgcode.UndefinedTable)
-		}
-	} else {
-		database, err := og.getDatabase(ctx, tx)
-		if err != nil {
-			return nil, err
-		}
-		useExisting := og.randIntn(100) < og.pctExisting(true)
-		var databaseName string
-		if useExisting {
-			databaseName = database
-		} else {
-			databaseName = fmt.Sprintf("inspect_db_%s", og.newUniqueSeqNumSuffix())
-			stmt.expectedExecErrors.add(pgcode.InvalidCatalogName)
-		}
-		sb.WriteString("DATABASE ")
-		sb.WriteString(databaseName)
-	}
-
-	asof := og.randomInspectAsOfClause()
-	sb.WriteString(asof)
-	// If we use an ASOF time with inspect, chances are it will conflict with
-	// the timestamp chosen for the transaction, and return an "inconsistent AS
-	// OF SYSTEM TIME timestamp" error.
-	stmt.potentialExecErrors.addAll(codesWithConditions{
-		{pgcode.FeatureNotSupported, asof != ""},
-	})
-	// Detached flag was added in 26.1, so we expect errors till the user upgrades.
-	isDetachedUnsupported, err := isClusterVersionLessThan(ctx, tx, clusterversion.V26_1.Version())
-	if err != nil {
-		return nil, err
-	}
-	if isDetachedUnsupported {
-		stmt.potentialExecErrors.add(pgcode.FeatureNotSupported)
-		stmt.potentialExecErrors.add(pgcode.Syntax)
-	}
-	// Always run DETACHED as this allows us to use INSPECT inside of a
-	// transaction. We have post-processing at the end of the run to verify
-	// INSPECT didn't find any issues.
-	sb.WriteString(" WITH OPTIONS DETACHED")
-	stmt.sql = sb.String()
-
-	// If INSPECT is not supported yet, so we expect a syntax error or feature
-	// not supported.
-	isInspectUnsupported, err := isClusterVersionLessThan(ctx, tx, clusterversion.V25_4.Version())
-	if err != nil {
-		return nil, err
-	}
-	if isInspectUnsupported {
-		stmt.expectedExecErrors.add(pgcode.FeatureNotSupported)
-		stmt.expectedExecErrors.add(pgcode.Syntax)
-	}
-
-	return stmt, nil
-}
-
-func (og *operationGenerator) randomInspectAsOfClause() string {
-	// Use AS OF SYSTEM TIME infrequently (~10% of the time) because transactions
-	// are never started with AS OF SYSTEM TIME, and INSPECT with AS OF inside a
-	// transaction without AS OF can cause conflicts.
-	if og.randIntn(10) == 0 {
-		return fmt.Sprintf(" AS OF SYSTEM TIME '-%ds'", og.randIntn(30)+1)
-	}
-	return ""
-}
-
 type column struct {
 	name                tree.Name
 	typ                 *types.T
@@ -4226,19 +4107,9 @@ func (og *operationGenerator) randType(
 		return nil, nil, err
 	}
 
-	// Block LTREE usage until v25.4 is finalized.
-	ltreeNotSupported, err := isClusterVersionLessThan(
-		ctx,
-		tx,
-		clusterversion.V25_4.Version())
-	if err != nil {
-		return nil, nil, err
-	}
-
 	typ := randgen.RandSortingType(og.params.rng)
 	for (pgVectorNotSupported && typ.Family() == types.PGVectorFamily) ||
-		(citextNotSupported && typ.Oid() == oidext.T_citext || typ.Oid() == oidext.T__citext) ||
-		(ltreeNotSupported && (typ.Oid() == oidext.T_ltree || typ.Oid() == oidext.T__ltree)) {
+		(citextNotSupported && typ.Oid() == oidext.T_citext) {
 		typ = randgen.RandSortingType(og.params.rng)
 	}
 
@@ -4426,11 +4297,6 @@ FROM
 		return nil, err
 	}
 
-	ltreeNotSupported, err := isClusterVersionLessThan(ctx, tx, clusterversion.V25_4.Version())
-	if err != nil {
-		return nil, err
-	}
-
 	// Generate random parameters / values for builtin types.
 	for i, typeVal := range randgen.SeedTypes {
 		// If we have types where invalid values can exist then skip over these,
@@ -4444,12 +4310,7 @@ FROM
 			continue
 		}
 
-		if citextNotSupported &&
-			(typeVal.Oid() == oidext.T_citext || typeVal.Oid() == oidext.T__citext) {
-			continue
-		}
-		if ltreeNotSupported &&
-			(typeVal.Oid() == oidext.T_ltree || typeVal.Oid() == oidext.T__ltree) {
+		if citextNotSupported && typeVal.Oid() == oidext.T_citext {
 			continue
 		}
 
@@ -5526,29 +5387,18 @@ func (og *operationGenerator) createTrigger(ctx context.Context, tx pgx.Tx) (*op
 		return nil, err
 	}
 
-	schemaName, err := og.randSchema(ctx, tx, og.alwaysExisting())
-	if err != nil {
-		return nil, err
-	}
 	triggerFunctionName := fmt.Sprintf("trigger_function_%s", og.newUniqueSeqNumSuffix())
-	resolvedTriggerFunctionName := fmt.Sprintf("%s.%s", schemaName, triggerFunctionName)
 
-	// Try to generate a random SELECT statement for more coamplex dependencies
+	// Try to generate a random SELECT statement for more complex dependencies
 	selectStmt, err := og.selectStmt(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
 	// Our trigger function will always return the original value to avoid
 	// breaking inserts.
-	triggerFunction := fmt.Sprintf(`CREATE FUNCTION %s() RETURNS TRIGGER AS $FUNC_BODY$ BEGIN %s;RETURN NEW;END; $FUNC_BODY$ LANGUAGE PLpgSQL`, resolvedTriggerFunctionName, selectStmt.sql)
+	triggerFunction := fmt.Sprintf(`CREATE FUNCTION %s() RETURNS TRIGGER AS $FUNC_BODY$ BEGIN %s;RETURN NEW;END; $FUNC_BODY$ LANGUAGE PLpgSQL`, triggerFunctionName, selectStmt.sql)
 
-	// Check if the routine already exists.
-	routineAlreadyExists, err := og.fnExistsByName(ctx, tx, schemaName, triggerFunctionName)
-	if err != nil {
-		return nil, err
-	}
-
-	og.LogMessage(fmt.Sprintf("Created trigger function %s", resolvedTriggerFunctionName))
+	og.LogMessage(fmt.Sprintf("Created trigger function %s", triggerFunction))
 
 	// Create TRIGGER statement components
 	triggerActionTime := "BEFORE"
@@ -5577,7 +5427,8 @@ func (og *operationGenerator) createTrigger(ctx context.Context, tx pgx.Tx) (*op
 
 	// Build the SQL statement
 	sqlStatement := fmt.Sprintf("%s;CREATE TRIGGER %s %s %s ON %s FOR EACH ROW EXECUTE FUNCTION %s()",
-		triggerFunction, triggerName, triggerActionTime, eventClause, tableName, resolvedTriggerFunctionName)
+		triggerFunction, triggerName, triggerActionTime, eventClause, tableName, triggerFunctionName)
+
 	og.LogMessage(fmt.Sprintf("createTrigger: %s", sqlStatement))
 
 	opStmt := makeOpStmt(OpStmtDDL)
@@ -5589,7 +5440,6 @@ func (og *operationGenerator) createTrigger(ctx context.Context, tx pgx.Tx) (*op
 		// It does not catch cases where the select statement in the trigger function
 		// has a select query on a table that doesn't exist.
 		{code: pgcode.UndefinedTable, condition: !triggerTableExists},
-		{code: pgcode.DuplicateFunction, condition: routineAlreadyExists},
 	})
 
 	opStmt.potentialExecErrors.addAll(codesWithConditions{
@@ -5671,80 +5521,4 @@ func (og *operationGenerator) findExistingTrigger(
 	}
 
 	return &triggerWithInfo, nil
-}
-
-// truncateTable generates a TRUNCATE TABLE statement.
-func (og *operationGenerator) truncateTable(ctx context.Context, tx pgx.Tx) (*opStmt, error) {
-	tbls, err := Collect(ctx, og, tx, pgx.RowTo[string],
-		`SELECT quote_ident(schema_name) || '.' || quote_ident(table_name) FROM [SHOW TABLES] WHERE type = 'table'`)
-	if err != nil {
-		return nil, err
-	}
-
-	const MaxTruncateTables = 8
-	stmt, expectedCode, err := Generate[*tree.Truncate](og.params.rng, og.produceError(), []GenerationCase{
-		{pgcode.SuccessfulCompletion, `TRUNCATE TABLE {MultipleTableNames}`},
-		{pgcode.SuccessfulCompletion, `TRUNCATE TABLE {MultipleTableNames} CASCADE`},
-		{pgcode.UndefinedTable, `TRUNCATE TABLE {TableNameDoesNotExist}`},
-		{pgcode.UndefinedTable, `TRUNCATE TABLE {TableNameDoesNotExist} CASCADE`},
-	}, template.FuncMap{
-		"MultipleTableNames": func() (string, error) {
-			selectedTables, err := PickBetween(og.params.rng, 1, MaxTruncateTables, tbls)
-			if err != nil {
-				return "", err
-			}
-			return strings.Join(selectedTables, ","), nil
-		},
-		"TableNameDoesNotExist": func() (string, error) {
-			return "TableThatDoesNotExist", nil
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	op := newOpStmt(stmt, codesWithConditions{
-		{expectedCode, true},
-	})
-
-	// If the the TRUNCATE is not cascaded, then the operation can fail
-	// if foreign key references exist.
-	if expectedCode == pgcode.SuccessfulCompletion &&
-		stmt.DropBehavior != tree.DropCascade {
-		tableSet := map[string]struct{}{}
-		fkSet := map[string]struct{}{}
-		// Gather the set of tables handled by this statement, and
-		// any foreign keys that reference these tables.
-		for _, table := range stmt.Tables {
-			tableSet[table.FQString()] = struct{}{}
-			fkReferenceTables, err := og.getTableForeignKeyReferences(ctx, tx, &table)
-			if err != nil {
-				return nil, err
-			}
-			for _, fk := range fkReferenceTables {
-				fkSet[fk.FQString()] = struct{}{}
-			}
-		}
-		// Check if any of the foreign keys that reference these
-		// tables are not truncated. If they are, then the TRUNCATE
-		// will fail with an error.
-		for fk := range fkSet {
-			if _, hasTable := tableSet[fk]; !hasTable {
-				// In mixed version workloads, we can see either pgcode.Uncategorized
-				// (pre-v26.1) or pgcode.FeatureNotSupported (v26.1+) depending on which
-				// node handles the TRUNCATE. The pgcode was changed in #154382 (v26.1).
-				versionBefore261, err := isClusterVersionLessThan(ctx, tx, clusterversion.V26_1.Version())
-				if err != nil {
-					return nil, err
-				}
-				if versionBefore261 {
-					op.expectedExecErrors.add(pgcode.Uncategorized)
-					op.potentialExecErrors.add(pgcode.FeatureNotSupported)
-				} else {
-					op.expectedExecErrors.add(pgcode.FeatureNotSupported)
-				}
-				break
-			}
-		}
-	}
-	return op, nil
 }

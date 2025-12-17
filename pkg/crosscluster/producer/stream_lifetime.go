@@ -133,7 +133,7 @@ func StartReplicationProducerJob(
 		return streampb.ReplicationProducerSpec{}, err
 	}
 	if req.TenantID.Equal(roachpb.TenantID{}) && req.ClusterID.Equal(uuid.UUID{}) {
-		log.Dev.Infof(ctx, "started post cutover producer job %d", jr.JobID)
+		log.Infof(ctx, "started post cutover producer job %d", jr.JobID)
 	}
 
 	return streampb.ReplicationProducerSpec{
@@ -288,18 +288,19 @@ func (r *replicationStreamManagerImpl) buildReplicationStreamSpec(
 
 	// Partition the spans with SQLPlanner
 	dsp := jobExecCtx.DistSQLPlanner()
+	noLoc := roachpb.Locality{}
 	var streaks kvfollowerreadsccl.StreakConfig
 	if useStreaks {
 		streaks = kvfollowerreadsccl.StreakConfig{
 			Min: 10, SmallPlanMin: 3, SmallPlanThreshold: 3, MaxSkew: 0.95,
 		}
 	}
-	oracle := kvfollowerreadsccl.NewStreakBulkOracle(
-		dsp.ReplicaOracleConfig(evalCtx.Locality), streaks,
+	oracle := kvfollowerreadsccl.NewBulkOracle(
+		dsp.ReplicaOracleConfig(evalCtx.Locality), noLoc, streaks,
 	)
 
 	planCtx := dsp.NewPlanningCtxWithOracle(
-		ctx, jobExecCtx.ExtendedEvalContext(), nil /* planner */, nil /* txn */, sql.FullDistribution, oracle, []roachpb.Locality{}, sql.NoStrictLocalityFiltering,
+		ctx, jobExecCtx.ExtendedEvalContext(), nil /* planner */, nil /* txn */, sql.FullDistribution, oracle, noLoc,
 	)
 
 	spanPartitions, err := dsp.PartitionSpans(ctx, planCtx, targetSpans, sql.PartitionSpansBoundDefault)

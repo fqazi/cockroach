@@ -28,16 +28,7 @@ type snapshotWorkItem struct {
 	mu             struct {
 		// These fields are updated after creation. The mutex in SnapshotQueue must
 		// be held to read and write to these fields.
-
-		// The granted value transitions at most once from false to true. Granting
-		// can race with context cancellation, so when context cancellation is
-		// processed, it is possible that the grant was already made. In that
-		// case, the grant needs to be returned.
-		granted bool
-		// The cancelled value transitions at most once from false to true. Since
-		// cancelled items are not immediately removed from SnapshotQueue.mu.q,
-		// this bool tells the queue to ignore (and lazily remove) an item that
-		// has been cancelled, when a grant happens.
+		inQueue   bool
 		cancelled bool
 	}
 }
@@ -98,9 +89,6 @@ type snapshotRequester interface {
 type SnapshotQueue struct {
 	snapshotGranter granter
 	mu              struct {
-		// Reminder: this mutex must not be held when calling into
-		// snapshotGranter, as documented near the declaration of requester and
-		// granter.
 		syncutil.Mutex
 		q *queue.Queue[*snapshotWorkItem]
 	}
@@ -123,10 +111,10 @@ func makeSnapshotQueue(snapshotGranter granter, metrics *SnapshotMetrics) *Snaps
 var _ requester = &SnapshotQueue{}
 var _ snapshotRequester = &SnapshotQueue{}
 
-func (s *SnapshotQueue) hasWaitingRequests() (bool, burstQualification) {
+func (s *SnapshotQueue) hasWaitingRequests() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return !s.mu.q.Empty(), canBurst /*arbitrary*/
+	return !s.mu.q.Empty()
 }
 
 func (s *SnapshotQueue) granted(_ grantChainID) int64 {
@@ -147,7 +135,6 @@ func (s *SnapshotQueue) granted(_ grantChainID) int64 {
 		break
 	}
 	count := item.count
-	item.mu.granted = true
 	// After signalling to the channel, we transfer ownership of item back to the
 	// `Admit` goroutine, it should no longer be accessed here.
 	item.admitCh <- true
@@ -173,17 +160,10 @@ func (s *SnapshotQueue) Admit(ctx context.Context, count int64) error {
 		s.snapshotGranter.returnGrant(count)
 		return nil
 	}
-	if s.snapshotGranter.tryGet(canBurst /*arbitrary*/, count) {
+	if s.snapshotGranter.tryGet(count) {
 		return nil
 	}
 	// We were unable to get tokens for admission, so we queue.
-	//
-	// Reminder: there is a race here where a call to hasWaitingRequests after
-	// tryGet and before the mutex is acquired and the item is added to the
-	// queue will not see the waiting request. Such a race would result in an
-	// end state where the granter has resources and the requester has waiting
-	// requests. This is harmless since hasWaitingRequests is called
-	// periodically at a high enough frequency when tokens are limited.
 	shouldRelease := true
 	item := newSnapshotWorkItem(count)
 	defer func() {
@@ -202,15 +182,11 @@ func (s *SnapshotQueue) Admit(ctx context.Context, count int64) error {
 	select {
 	case <-ctx.Done():
 		waitDur := timeutil.Since(item.enqueueingTime).Nanoseconds()
-		// INVARIANT: tokensToReturn >= 0, since item.count >= 0.
-		var tokensToReturn int64
 		func() {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			if item.mu.granted {
-				// NB: we must call snapshotGranter.returnGrant after releasing the
-				// mutex.
-				tokensToReturn = item.count
+			if !item.mu.inQueue {
+				s.snapshotGranter.returnGrant(item.count)
 			}
 			// TODO(aaditya): Ideally, we also remove the item from the actual queue.
 			// Right now, if we cancel the work, it remains in the queue. A call to
@@ -220,9 +196,6 @@ func (s *SnapshotQueue) Admit(ctx context.Context, count int64) error {
 			// non-ideal behavior, but still provides accurate token accounting.
 			item.mu.cancelled = true
 		}()
-		if tokensToReturn != 0 {
-			s.snapshotGranter.returnGrant(tokensToReturn)
-		}
 		shouldRelease = false
 		s.metrics.WaitDurations.RecordValue(waitDur)
 		var deadlineSubstring string
@@ -242,6 +215,7 @@ func (s *SnapshotQueue) Admit(ctx context.Context, count int64) error {
 func (s *SnapshotQueue) addLocked(item *snapshotWorkItem) {
 	item.enqueueingTime = timeutil.Now()
 	s.mu.q.Enqueue(item)
+	item.mu.inQueue = true
 }
 
 func (s *SnapshotQueue) popLocked() *snapshotWorkItem {
@@ -249,6 +223,7 @@ func (s *SnapshotQueue) popLocked() *snapshotWorkItem {
 	if !ok {
 		return nil
 	}
+	item.mu.inQueue = false
 	return item
 }
 
@@ -283,7 +258,7 @@ func newSnapshotWorkItem(count int64) *snapshotWorkItem {
 		count:          count,
 	}
 	item.mu.cancelled = false
-	item.mu.granted = false
+	item.mu.inQueue = false
 	return item
 }
 

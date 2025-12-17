@@ -133,7 +133,7 @@ type Memo struct {
 	// rootExpr is the root expression of the memo expression forest. It is set
 	// via a call to SetRoot. After optimization, it is set to be the root of the
 	// lowest cost tree in the forest.
-	rootExpr RelExpr
+	rootExpr opt.Expr
 
 	// rootProps are the physical properties required of the root memo expression.
 	// It is set via a call to SetRoot.
@@ -210,13 +210,7 @@ type Memo struct {
 	usePre_25_2VariadicBuiltins                bool
 	useExistsFilterHoistRule                   bool
 	disableSlowCascadeFastPathForRBRTables     bool
-	useImprovedHoistJoinProject                bool
-	rowSecurity                                bool
-	clampLowHistogramSelectivity               bool
-	clampInequalitySelectivity                 bool
 	useMaxFrequencySelectivity                 bool
-	usingHintInjection                         bool
-	useSwapMutations                           bool
 	preventUpdateSetColumnDrop                 bool
 	useImprovedRoutineDepsTriggersComputedCols bool
 
@@ -243,10 +237,6 @@ type Memo struct {
 	// set to true for the optsteps test command to prevent CheckExpr from
 	// erring with partially normalized expressions.
 	disableCheckExpr bool
-
-	// optimizationStats tracks decisions made during optimization, for example,
-	// to clamp selectivity estimates to a lower bound.
-	optimizationStats OptimizationStats
 
 	// WARNING: if you add more members, add initialization code in Init (if
 	// reusing allocated data structures is desired).
@@ -329,13 +319,7 @@ func (m *Memo) Init(ctx context.Context, evalCtx *eval.Context) {
 		usePre_25_2VariadicBuiltins:                evalCtx.SessionData().UsePre_25_2VariadicBuiltins,
 		useExistsFilterHoistRule:                   evalCtx.SessionData().OptimizerUseExistsFilterHoistRule,
 		disableSlowCascadeFastPathForRBRTables:     evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables,
-		useImprovedHoistJoinProject:                evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject,
-		rowSecurity:                                evalCtx.SessionData().RowSecurity,
-		clampLowHistogramSelectivity:               evalCtx.SessionData().OptimizerClampLowHistogramSelectivity,
-		clampInequalitySelectivity:                 evalCtx.SessionData().OptimizerClampInequalitySelectivity,
 		useMaxFrequencySelectivity:                 evalCtx.SessionData().OptimizerUseMaxFrequencySelectivity,
-		usingHintInjection:                         evalCtx.Planner != nil && evalCtx.Planner.UsingHintInjection(),
-		useSwapMutations:                           evalCtx.SessionData().UseSwapMutations,
 		preventUpdateSetColumnDrop:                 evalCtx.SessionData().PreventUpdateSetColumnDrop,
 		useImprovedRoutineDepsTriggersComputedCols: evalCtx.SessionData().UseImprovedRoutineDepsTriggersAndComputedCols,
 		txnIsoLevel:                                evalCtx.TxnIsoLevel,
@@ -391,7 +375,7 @@ func (m *Memo) Metadata() *opt.Metadata {
 
 // RootExpr returns the root memo expression previously set via a call to
 // SetRoot.
-func (m *Memo) RootExpr() RelExpr {
+func (m *Memo) RootExpr() opt.Expr {
 	return m.rootExpr
 }
 
@@ -420,7 +404,12 @@ func (m *Memo) SetRoot(e RelExpr, phys *physical.Required) {
 // HasPlaceholders returns true if the memo contains at least one placeholder
 // operator.
 func (m *Memo) HasPlaceholders() bool {
-	return m.rootExpr.Relational().HasPlaceholder
+	rel, ok := m.rootExpr.(RelExpr)
+	if !ok {
+		panic(errors.AssertionFailedf("placeholders only supported when memo root is relational"))
+	}
+
+	return rel.Relational().HasPlaceholder
 }
 
 // IsStale returns true if the memo has been invalidated by changes to any of
@@ -512,13 +501,7 @@ func (m *Memo) IsStale(
 		m.usePre_25_2VariadicBuiltins != evalCtx.SessionData().UsePre_25_2VariadicBuiltins ||
 		m.useExistsFilterHoistRule != evalCtx.SessionData().OptimizerUseExistsFilterHoistRule ||
 		m.disableSlowCascadeFastPathForRBRTables != evalCtx.SessionData().OptimizerDisableCrossRegionCascadeFastPathForRBRTables ||
-		m.useImprovedHoistJoinProject != evalCtx.SessionData().OptimizerUseImprovedHoistJoinProject ||
-		m.rowSecurity != evalCtx.SessionData().RowSecurity ||
-		m.clampLowHistogramSelectivity != evalCtx.SessionData().OptimizerClampLowHistogramSelectivity ||
-		m.clampInequalitySelectivity != evalCtx.SessionData().OptimizerClampInequalitySelectivity ||
 		m.useMaxFrequencySelectivity != evalCtx.SessionData().OptimizerUseMaxFrequencySelectivity ||
-		m.usingHintInjection != (evalCtx.Planner != nil && evalCtx.Planner.UsingHintInjection()) ||
-		m.useSwapMutations != evalCtx.SessionData().UseSwapMutations ||
 		m.preventUpdateSetColumnDrop != evalCtx.SessionData().PreventUpdateSetColumnDrop ||
 		m.useImprovedRoutineDepsTriggersComputedCols != evalCtx.SessionData().UseImprovedRoutineDepsTriggersAndComputedCols ||
 		m.txnIsoLevel != evalCtx.TxnIsoLevel {
@@ -585,7 +568,8 @@ func (m *Memo) ResetCost(e RelExpr, cost Cost) {
 func (m *Memo) IsOptimized() bool {
 	// The memo is optimized once the root expression has its physical properties
 	// assigned.
-	return m.rootExpr != nil && m.rootExpr.RequiredPhysical() != nil
+	rel, ok := m.rootExpr.(RelExpr)
+	return ok && rel.RequiredPhysical() != nil
 }
 
 // OptimizationCost returns a rough estimate of the cost of optimization of the
@@ -718,25 +702,6 @@ func (m *Memo) FormatExpr(expr opt.Expr) string {
 	)
 	f.FormatExpr(expr)
 	return f.Buffer.String()
-}
-
-// OptimizationStats surfaces information about choices made during optimization
-// of a query for top-level observability (e.g. metrics, EXPLAIN output).
-type OptimizationStats struct {
-	// ClampedHistogramSelectivity is true if the selectivity estimate based on a
-	// histogram was prevented from dropping too low. See also the session var
-	// "optimizer_clamp_low_histogram_selectivity".
-	ClampedHistogramSelectivity bool
-	// ClampedInequalitySelectivity is true if the selectivity estimate for an
-	// inequality unbounded on one or both sides was prevented from dropping too
-	// low. See also the session var "optimizer_clamp_inequality_selectivity".
-	ClampedInequalitySelectivity bool
-}
-
-// GetOptimizationStats returns the OptimizationStats collected during a
-// previous optimization pass.
-func (m *Memo) GetOptimizationStats() *OptimizationStats {
-	return &m.optimizationStats
 }
 
 // ValuesContainer lets ValuesExpr and LiteralValuesExpr share code.

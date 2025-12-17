@@ -100,8 +100,6 @@ func planOpaque(ctx context.Context, p *planner, stmt tree.Statement) (planNode,
 		return p.AlterDatabaseSetZoneConfigExtension(ctx, n)
 	case *tree.AlterDefaultPrivileges:
 		return p.alterDefaultPrivileges(ctx, n)
-	case *tree.AlterExternalConnection:
-		return p.AlterExternalConnection(ctx, n)
 	case *tree.AlterFunctionOptions:
 		return p.AlterFunctionOptions(ctx, n)
 	case *tree.AlterRoutineRename:
@@ -236,7 +234,7 @@ func planOpaque(ctx context.Context, p *planner, stmt tree.Statement) (planNode,
 	case *tree.GrantRole:
 		return p.GrantRole(ctx, n)
 	case *tree.MoveCursor:
-		return p.MoveCursor(ctx, &n.CursorStmt)
+		return p.FetchCursor(ctx, &n.CursorStmt)
 	case *tree.ReassignOwnedBy:
 		return p.ReassignOwnedBy(ctx, n)
 	case *tree.RefreshMaterializedView:
@@ -309,21 +307,13 @@ func planOpaque(ctx context.Context, p *planner, stmt tree.Statement) (planNode,
 		return p.Unlisten(ctx, n)
 	case *pgrepltree.IdentifySystem:
 		return p.IdentifySystem(ctx, n)
-	case tree.PlanHookStatement:
+	case tree.CCLOnlyStatement:
 		plan, err := p.maybePlanHook(ctx, stmt)
-		if err != nil {
-			return nil, err
-		} else if plan == nil {
-			if _, ok := n.(tree.CCLOnlyStatement); ok {
-				return nil, pgerror.Newf(pgcode.CCLRequired,
-					"a CCL binary is required to use this statement type: %T", stmt)
-			}
-
-			return nil, pgerror.Newf(pgcode.InvalidSQLStatementName,
-				"unknown plan hook statement: %T", stmt)
+		if plan == nil && err == nil {
+			return nil, pgerror.Newf(pgcode.CCLRequired,
+				"a CCL binary is required to use this statement type: %T", stmt)
 		}
-
-		return plan, nil
+		return plan, err
 	default:
 		return nil, errors.AssertionFailedf("unknown opaque statement %T", stmt)
 	}
@@ -381,7 +371,6 @@ func init() {
 		&tree.CreateDatabase{},
 		&tree.CreateExtension{},
 		&tree.CreateExternalConnection{},
-		&tree.AlterExternalConnection{},
 		&tree.CreateTenant{},
 		&tree.CreateIndex{},
 		&tree.CreatePolicy{},
@@ -435,7 +424,6 @@ func init() {
 		&tree.ShowCreateExternalConnections{},
 		&tree.ShowExternalConnections{},
 		&tree.ShowHistogram{},
-		&tree.ShowInspectErrors{},
 		&tree.ShowTableStats{},
 		&tree.ShowTenant{},
 		&tree.ShowTraceForSession{},
@@ -450,11 +438,7 @@ func init() {
 
 		&pgrepltree.IdentifySystem{},
 
-		// planHook-based statements.
-		&tree.Inspect{},
-
 		// CCL statements (without Export which has an optimizer operator).
-		// These also use the planHook.
 		&tree.AlterBackup{},
 		&tree.AlterBackupSchedule{},
 		&tree.AlterTenantReplication{},

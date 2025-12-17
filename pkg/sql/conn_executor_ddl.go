@@ -82,13 +82,7 @@ func (ex *connExecutor) maybeAdjustTxnForDDL(ctx context.Context, stmt Statement
 					return err
 				}
 				ex.extraTxnState.upgradedToSerializable = true
-				if err := p.SendClientNotice(
-					ctx,
-					pgnotice.Newf("setting transaction isolation level to SERIALIZABLE due to schema change"),
-					false, /* immediateFlush */
-				); err != nil {
-					return err
-				}
+				p.BufferClientNotice(ctx, pgnotice.Newf("setting transaction isolation level to SERIALIZABLE due to schema change"))
 			} else {
 				return txnSchemaChangeErr
 			}
@@ -130,7 +124,7 @@ func (ex *connExecutor) runPreCommitStages(ctx context.Context) error {
 	scs.jobID = jobID
 	if jobID != jobspb.InvalidJobID {
 		ex.extraTxnState.jobs.addCreatedJobID(jobID)
-		log.Dev.Infof(ctx, "queued new schema change job %d using the new schema changer", jobID)
+		log.Infof(ctx, "queued new schema change job %d using the new schema changer", jobID)
 	}
 	return nil
 }

@@ -17,7 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
@@ -35,6 +34,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessionphase"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/sslocal"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/stmtdiagnostics"
 	"github.com/cockroachdb/cockroach/pkg/util"
@@ -46,7 +46,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 	"github.com/cockroachdb/errors"
-	"go.opentelemetry.io/otel/attribute"
 )
 
 var collectTxnStatsSampleRate = settings.RegisterFloatSetting(
@@ -78,14 +77,9 @@ type instrumentationHelper struct {
 	// Query fingerprint (anonymized statement).
 	fingerprint string
 
-	fingerprintId appstatspb.StmtFingerprintID
-
 	// Transaction information.
 	implicitTxn bool
 	txnPriority roachpb.UserPriority
-	// txnBufferedWritesEnabled tracks whether the write buffering was
-	// enabled on the transaction before executing the stmt.
-	txnBufferedWritesEnabled bool
 
 	codec keys.SQLCodec
 
@@ -206,10 +200,6 @@ type instrumentationHelper struct {
 	// future, in which case it will be negative) for any table with forecasted
 	// stats scanned by this query.
 	nanosSinceStatsForecasted time.Duration
-
-	// stmtHintsCount is the number of hints from system.statement_hints applied
-	// to the statement.
-	stmtHintsCount uint64
 
 	// retryCount is the number of times the transaction was retried.
 	retryCount uint64
@@ -417,28 +407,19 @@ func (ih *instrumentationHelper) finalizeSetup(ctx context.Context, cfg *Executo
 // which case Finish() is a no-op).
 func (ih *instrumentationHelper) Setup(
 	ctx context.Context,
-	ex *connExecutor,
+	cfg *ExecutorConfig,
+	statsCollector *sslocal.StatsCollector,
 	p *planner,
+	stmtDiagnosticsRecorder *stmtdiagnostics.Registry,
 	stmt *Statement,
 	implicitTxn bool,
 	txnPriority roachpb.UserPriority,
+	collectTxnExecStats bool,
 	retryCount int32,
 ) (newCtx context.Context) {
-	cfg := ex.server.cfg
-	statsCollector := ex.statsCollector
-	stmtDiagnosticsRecorder := ex.stmtDiagnosticsRecorder
-	collectTxnExecStats := ex.extraTxnState.shouldCollectTxnExecutionStats
-
 	ih.fingerprint = stmt.StmtNoConstants
 	ih.implicitTxn = implicitTxn
 	ih.txnPriority = txnPriority
-	ih.txnBufferedWritesEnabled = p.txn.BufferedWritesEnabled()
-	ih.stmtHintsCount = 0
-	for _, hint := range stmt.Hints {
-		if hint.Enabled && hint.Err == nil {
-			ih.stmtHintsCount += 1
-		}
-	}
 	ih.retryCount = uint64(retryCount)
 	ih.codec = cfg.Codec
 	ih.origCtx = ctx
@@ -446,12 +427,6 @@ func (ih *instrumentationHelper) Setup(
 	ih.isTenant = execinfra.IncludeRUEstimateInExplainAnalyze.Get(cfg.SV()) && cfg.DistSQLSrv != nil &&
 		cfg.DistSQLSrv.TenantCostController != nil
 	ih.topLevelStats = topLevelQueryStats{}
-	stmtFingerprintId := appstatspb.ConstructStatementFingerprintID(
-		stmt.StmtNoConstants, implicitTxn, p.SessionData().Database)
-	ih.fingerprintId = stmtFingerprintId
-	ih.stmtDiagnosticsRecorder = stmtDiagnosticsRecorder
-	ih.withStatementTrace = cfg.TestingKnobs.WithStatementTrace
-	defer func() { ih.finalizeSetup(newCtx, cfg) }()
 
 	switch ih.outputMode {
 	case explainAnalyzeDebugOutput:
@@ -466,27 +441,16 @@ func (ih *instrumentationHelper) Setup(
 		ih.discardRows = true
 
 	default:
-		// Handle transaction-level diagnostics
-		var collectingDiagnostics bool
-		if ctx, collectingDiagnostics = ih.handleTransactionDiagnostics(
-			ctx,
-			&ex.state,
-			ex.transitionCtx.tracer,
-			stmt,
-			stmtFingerprintId,
-		); collectingDiagnostics {
-			// If collectingDiagnostics is true, the instrumentationHelper should
-			// already be set up for tracing, so we can return.
-			return ctx
-		} else {
-			// If no transaction diagnostics are in progress, check for statement-level
-			// diagnostics
-			ih.collectBundle, ih.diagRequestID, ih.diagRequest =
-				stmtDiagnosticsRecorder.ShouldCollectDiagnostics(ctx, stmt.StmtNoConstants, "" /* planGist */)
-			// IsRedacted will be false when ih.collectBundle is false.
-			ih.explainFlags.RedactValues = ih.explainFlags.RedactValues || ih.diagRequest.IsRedacted()
-		}
+		ih.collectBundle, ih.diagRequestID, ih.diagRequest =
+			stmtDiagnosticsRecorder.ShouldCollectDiagnostics(ctx, stmt.StmtNoConstants, "" /* planGist */)
+		// IsRedacted will be false when ih.collectBundle is false.
+		ih.explainFlags.RedactValues = ih.explainFlags.RedactValues || ih.diagRequest.IsRedacted()
 	}
+
+	ih.stmtDiagnosticsRecorder = stmtDiagnosticsRecorder
+	ih.withStatementTrace = cfg.TestingKnobs.WithStatementTrace
+
+	defer func() { ih.finalizeSetup(newCtx, cfg) }()
 
 	if sp := tracing.SpanFromContext(ctx); sp != nil {
 		if sp.IsVerbose() {
@@ -509,7 +473,7 @@ func (ih *instrumentationHelper) Setup(
 	} else {
 		collectTxnExecStats = func() bool {
 			if stmt.AST.StatementType() == tree.TypeTCL {
-				// We don't collect stats for statements, so there's no need
+				// We don't collect stats for  statements so there's no need
 				//to trace them.
 				return false
 			}
@@ -634,7 +598,9 @@ func (ih *instrumentationHelper) setupWithPlanGist(
 }
 
 func (ih *instrumentationHelper) Finish(
-	ex *connExecutor,
+	cfg *ExecutorConfig,
+	statsCollector *sslocal.StatsCollector,
+	txnStats *execstats.QueryLevelStats,
 	collectExecStats bool,
 	p *planner,
 	ast tree.Statement,
@@ -644,10 +610,6 @@ func (ih *instrumentationHelper) Finish(
 	retErr error,
 ) error {
 	ctx := ih.origCtx
-	cfg := ex.server.cfg
-	statsCollector := ex.statsCollector
-	txnStats := &ex.extraTxnState.accumulatedStats
-	txnHelper := &ex.state.txnInstrumentationHelper
 	if _, ok := ih.Tracing(); !ok {
 		return retErr
 	}
@@ -717,7 +679,7 @@ func (ih *instrumentationHelper) Finish(
 				// to proceed with saving the statement bundle. Thus, we
 				// override the canceled context, but first we'll log the error
 				// as a warning.
-				log.Dev.Warningf(
+				log.Warningf(
 					bundleCtx, "context has an error when saving the bundle, proceeding "+
 						"with the background one (with deadline of 10 seconds): %v", bundleCtx.Err(),
 				)
@@ -745,26 +707,15 @@ func (ih *instrumentationHelper) Finish(
 				stmtRawSQL, &p.curPlan, planString, trace, placeholders, res.ErrAllowReleased(),
 				payloadErr, retErr, &p.extendedEvalCtx.Settings.SV, ih.inFlightTraceCollector,
 			)
-
-			if !txnHelper.diagnosticsCollector.InProgress() {
-				// Include all non-critical errors as warnings. Note that these
-				// error strings might contain PII, but the warnings are only shown
-				// to the current user and aren't included into the bundle.
-				warnings = append(warnings, bundle.errorStrings...)
-				bundle.insert(
-					bundleCtx, ih.fingerprint, ast, cfg.StmtDiagnosticsRecorder, ih.diagRequestID, ih.diagRequest,
-				)
-			}
+			// Include all non-critical errors as warnings. Note that these
+			// error strings might contain PII, but the warnings are only shown
+			// to the current user and aren't included into the bundle.
+			warnings = append(warnings, bundle.errorStrings...)
+			bundle.insert(
+				bundleCtx, ih.fingerprint, ast, cfg.StmtDiagnosticsRecorder, ih.diagRequestID, ih.diagRequest,
+			)
 			telemetry.Inc(sqltelemetry.StatementDiagnosticsCollectedCounter)
 		}
-	}
-
-	if txnHelper.diagnosticsCollector.InProgress() {
-		// If we're collecting a transaction bundle, add the statement to the
-		// current txn diagnostic bundle. These will be persisted at the end
-		// of the transaction if the transaction matches the request.
-		// NB: It is safe for bundle to be empty here.
-		txnHelper.AddStatementBundle(ctx, ast, uint64(ih.fingerprintId), ih.fingerprint, bundle)
 	}
 
 	// If there was a communication error already, no point in setting any
@@ -871,7 +822,6 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 	ob.AddDistribution(ih.distribution.String())
 	ob.AddVectorized(ih.vectorized)
 	ob.AddPlanType(ih.generic, ih.optimized)
-	ob.AddStmtHintCount(ih.stmtHintsCount)
 	ob.AddRetryCount("transaction", ih.retryCount)
 	ob.AddRetryTime("transaction", phaseTimes.GetTransactionRetryLatency())
 	ob.AddRetryCount("statement", ih.retryStmtCount)
@@ -893,9 +843,6 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 		if queryStats.LatchWaitTime != 0 {
 			ob.AddLatchWaitTime(queryStats.LatchWaitTime)
 		}
-		if queryStats.AdmissionWaitTime != 0 {
-			ob.AddAdmissionWaitTime(queryStats.AdmissionWaitTime)
-		}
 
 		ob.AddMaxMemUsage(queryStats.MaxMemUsage)
 		ob.AddDistSQLNetworkStats(queryStats.DistSQLNetworkMessages, queryStats.DistSQLNetworkBytesSent)
@@ -907,16 +854,13 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 			ob.AddTopLevelField("used follower read", "")
 		}
 
-		if grunning.Supported {
-			ob.AddKVCPUTime(ih.topLevelStats.kvCPUTimeNanos)
-		}
 		if !ih.containsMutation && ih.vectorized && grunning.Supported {
 			// Currently we cannot separate SQL CPU time from local KV CPU time for
 			// mutations, since they do not collect statistics. Additionally, CPU time
 			// is only collected for vectorized plans since it is gathered by the
 			// vectorizedStatsCollector operator.
 			// TODO(drewk): lift these restrictions.
-			ob.AddSQLCPUTime(queryStats.SQLCPUTime)
+			ob.AddCPUTime(queryStats.CPUTime)
 		}
 		if ih.isTenant && ih.vectorized {
 			// Only output RU estimate if this is a tenant. Additionally, RUs aren't
@@ -939,18 +883,6 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 		asOfSystemTime = ih.evalCtx.AsOfSystemTime
 	}
 	ob.AddTxnInfo(iso, ih.txnPriority, qos, asOfSystemTime)
-	// Highlight that write buffering was enabled on the current txn, unless
-	// we're in "deterministic explain" mode.
-	if ih.txnBufferedWritesEnabled && !flags.Deflake.HasAny(explain.DeflakeAll) {
-		// In order to not pollute the output, we don't include the write
-		// buffering info for read-only implicit txns. However, if we're in an
-		// explicit txn, even if the stmt is read-only, it might still be
-		// helpful to highlight the write buffering being enabled.
-		readOnlyImplicit := !ih.containsMutation && ih.implicitTxn
-		if !readOnlyImplicit {
-			ob.AddTopLevelField("buffered writes enabled", "")
-		}
-	}
 
 	// When building EXPLAIN ANALYZE output we do **not** want to create
 	// post-query plans if they are missing. The fact that they are missing
@@ -994,19 +926,12 @@ func (ih *instrumentationHelper) setExplainAnalyzeResult(
 			} else {
 				buf.WriteString("Diagram: ")
 			}
-			if d.diagram != nil {
-				d.diagram.AddSpans(trace)
-				_, url, err := d.diagram.ToURL()
-				if err != nil {
-					buf.WriteString(err.Error())
-				} else {
-					buf.WriteString(url.String())
-				}
+			d.diagram.AddSpans(trace)
+			_, url, err := d.diagram.ToURL()
+			if err != nil {
+				buf.WriteString(err.Error())
 			} else {
-				if buildutil.CrdbTestBuild {
-					panic(errors.AssertionFailedf("diagram shouldn't be nil in EXPLAIN ANALYZE (DISTSQL)"))
-				}
-				buf.WriteString("<missing>")
+				buf.WriteString(url.String())
 			}
 			rows = append(rows, buf.String())
 		}
@@ -1243,14 +1168,14 @@ func (ih *instrumentationHelper) SetIndexRecommendations(
 				bld := optbuilder.New(ctx, &opc.p.semaCtx, evalCtx, opc.catalog, f, opc.p.stmt.AST)
 				err := bld.Build()
 				if err != nil {
-					log.Dev.Warningf(ctx, "unable to build memo: %s", err)
+					log.Warningf(ctx, "unable to build memo: %s", err)
 					return
 				}
 			}
 			var err error
 			recommendations, err = opc.makeQueryIndexRecommendation(ctx)
 			if err != nil {
-				log.Dev.Warningf(ctx, "unable to generate index recommendations: %s", err)
+				log.Warningf(ctx, "unable to generate index recommendations: %s", err)
 				return
 			}
 		}
@@ -1265,32 +1190,4 @@ func (ih *instrumentationHelper) SetIndexRecommendations(
 		recommendations,
 		reset,
 	)
-}
-
-// handleTransactionDiagnostics manages transaction-level diagnostics
-// collection. If transaction diagnostics are being collected, the
-// instrumentationHelper is set up to collect the bundle for the statement.
-func (ih *instrumentationHelper) handleTransactionDiagnostics(
-	ctx context.Context,
-	txnState *txnState,
-	tracer *tracing.Tracer,
-	stmt *Statement,
-	stmtFingerprintId appstatspb.StmtFingerprintID,
-) (newCtx context.Context, collectingDiagnostics bool) {
-	newCtx, collectingDiagnostics = txnState.shouldCollectTxnDiagnostics(ctx, uint64(stmtFingerprintId), stmt, tracer)
-
-	if collectingDiagnostics {
-		var stmtSp *tracing.Span
-		newCtx, stmtSp = tracing.ChildSpan(newCtx, "txn-diag-sql-query")
-		stmtSp.SetTag("statement", attribute.StringValue(stmt.SQL))
-		ih.collectBundle = true
-		ih.diagRequestID = 0
-		ih.diagRequest = stmtdiagnostics.Request{}
-		ih.explainFlags.RedactValues = txnState.txnInstrumentationHelper.ShouldRedact()
-		ih.shouldFinishSpan = true
-		ih.needFinish = true
-		ih.sp = stmtSp
-	}
-
-	return newCtx, collectingDiagnostics
 }

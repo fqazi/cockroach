@@ -15,7 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/hintpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
@@ -231,11 +230,6 @@ func (ep *DummyEvalPlanner) UpsertDroppedRelationGCTTL(
 // UnsafeDeleteComment is part of the Planner interface.
 func (ep *DummyEvalPlanner) UnsafeDeleteComment(ctx context.Context, objectID int64) error {
 	return errors.WithStack(errEvalPlanner)
-}
-
-// ResetLeaseTimestamp is part of the Planner interface.
-func (ep *DummyEvalPlanner) ResetLeaseTimestamp(ctx context.Context) {
-	panic(errors.WithStack(errEvalPlanner))
 }
 
 // UserHasAdminRole is part of the Planner interface.
@@ -583,39 +577,9 @@ func (ep *DummyEvalPlanner) ClearQueryPlanCache() {}
 // ClearTableStatsCache is part of the eval.Planner interface.
 func (ep *DummyEvalPlanner) ClearTableStatsCache() {}
 
-// ClearStatementHintsCache is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) ClearStatementHintsCache() {}
-
-// AwaitStatementHintsCache is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) AwaitStatementHintsCache(ctx context.Context) {}
-
 // RetryCounter is part of the eval.Planner interface.
 func (ep *DummyEvalPlanner) RetryCounter() int {
 	return 0
-}
-
-// ProcessVectorIndexFixups is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) ProcessVectorIndexFixups(
-	ctx context.Context, tableID descpb.ID, indexID descpb.IndexID,
-) error {
-	return nil
-}
-
-// InsertStatementHint is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) InsertStatementHint(
-	ctx context.Context, statementFingerprint string, hint hintpb.StatementHintUnion,
-) (int64, error) {
-	return 0, nil
-}
-
-// UsingHintInjection is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) UsingHintInjection() bool {
-	return false
-}
-
-// GetHintIDs is part of the eval.Planner interface.
-func (ep *DummyEvalPlanner) GetHintIDs() []int64 {
-	return nil
 }
 
 // DummyPrivilegedAccessor implements the tree.PrivilegedAccessor interface by returning errors.

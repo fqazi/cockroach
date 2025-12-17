@@ -113,16 +113,6 @@ func (r Row) ForEachUDTColumn() Iterator {
 	return iter{r: r, cols: r.udtCols}
 }
 
-// NumKeyColumns returns the number of primary key columns in the row.
-func (r Row) NumKeyColumns() int {
-	return len(r.keyCols)
-}
-
-// NumValueColumns returns the number of value columns in the row.
-func (r Row) NumValueColumns() int {
-	return len(r.valueCols)
-}
-
 // DatumNamed returns the datum with the specified column name, in the form of an Iterator.
 func (r Row) DatumNamed(n string) (Iterator, error) {
 	idx, ok := r.EventDescriptor.colsByName[n]
@@ -490,12 +480,6 @@ type eventDescriptorFactory func(
 	schemaTS hlc.Timestamp,
 ) (*EventDescriptor, error)
 
-// DecoderOptions are options for the event decoder.
-type DecoderOptions struct {
-	// SkipOffline is true if the decoder should skip events from offline tables.
-	SkipOffline bool
-}
-
 type eventDecoder struct {
 	// Cached allocations for *row.Fetcher
 	rfCache *rowFetcherCache
@@ -514,9 +498,6 @@ type eventDecoder struct {
 	desc     catalog.TableDescriptor        // Current descriptor
 	family   *descpb.ColumnFamilyDescriptor // Current family
 	schemaTS hlc.Timestamp                  // Schema timestamp.
-
-	// skipOfflineEvents is true if the decoder should skip events from offline tables.
-	skipOfflineEvents bool
 }
 
 func getEventDescriptorCached(
@@ -556,7 +537,6 @@ func NewEventDecoder(
 	targets changefeedbase.Targets,
 	includeVirtual bool,
 	keyOnly bool,
-	opts DecoderOptions,
 ) (Decoder, error) {
 	rfCache, err := newRowFetcherCache(
 		ctx,
@@ -570,17 +550,13 @@ func NewEventDecoder(
 	if err != nil {
 		return nil, err
 	}
-	return NewEventDecoderWithCache(ctx, rfCache, includeVirtual, keyOnly, opts), nil
 
+	return NewEventDecoderWithCache(ctx, rfCache, includeVirtual, keyOnly), nil
 }
 
 // NewEventDecoderWithCache returns key value decoder.
 func NewEventDecoderWithCache(
-	ctx context.Context,
-	rfCache *rowFetcherCache,
-	includeVirtual bool,
-	keyOnly bool,
-	opts DecoderOptions,
+	ctx context.Context, rfCache *rowFetcherCache, includeVirtual bool, keyOnly bool,
 ) Decoder {
 	eventDescriptorCache := cache.NewUnorderedCache(DefaultCacheConfig)
 	getEventDescriptor := func(
@@ -594,7 +570,6 @@ func NewEventDecoderWithCache(
 	return &eventDecoder{
 		getEventDescriptor: getEventDescriptor,
 		rfCache:            rfCache,
-		skipOfflineEvents:  opts.SkipOffline,
 	}
 }
 
@@ -620,12 +595,6 @@ func (d *eventDecoder) DecodeKV(
 		return Row{}, err
 	}
 
-	// Table offline errors aren't terminal so return early and let caller
-	// decide what to do with it.
-	if errors.Is(err, ErrTableOffline) {
-		return Row{}, err
-	}
-
 	// Failure to decode roachpb.KeyValue we received from rangefeed is pretty bad.
 	// At this point, we only have guesses why this happened (schema change? data corruption?).
 	// Retrying this error however is likely to produce exactly the same result.
@@ -638,7 +607,7 @@ func (d *eventDecoder) DecodeKV(
 	err = changefeedbase.WithTerminalError(errors.Wrapf(err,
 		"error decoding key %s@%s (hex_kv: %x)",
 		keys.PrettyPrint(nil, kv.Key), kv.Value.Timestamp, kvBytes))
-	log.Changefeed.Errorf(ctx, "terminal error decoding KV: %v", err)
+	log.Errorf(ctx, "terminal error decoding KV: %v", err)
 	return Row{}, err
 }
 
@@ -694,10 +663,6 @@ func (d *eventDecoder) initForKey(
 	d.desc = desc
 	d.family = family
 	d.fetcher.Fetcher = fetcher
-
-	if d.skipOfflineEvents && desc.Offline() {
-		return ErrTableOffline
-	}
 	return nil
 }
 
@@ -840,7 +805,7 @@ func TestingMakeEventRowFromDatums(datums tree.Datums) Row {
 	for i, d := range datums {
 		desc.cols = append(desc.cols, ResultColumn{ord: i})
 		desc.valueCols = append(desc.valueCols, i)
-		encRow = append(encRow, rowenc.DatumToEncDatumUnsafe(d.ResolvedType(), d))
+		encRow = append(encRow, rowenc.DatumToEncDatum(d.ResolvedType(), d))
 	}
 	return Row{
 		EventDescriptor: &desc,
@@ -874,7 +839,7 @@ func MakeRowFromTuple(ctx context.Context, evalCtx *eval.Context, t *tree.DTuple
 		r.AddValueColumn(name, d.ResolvedType())
 		if err := r.SetValueDatumAt(i, d); err != nil {
 			if build.IsRelease() {
-				log.Changefeed.Warningf(ctx, "failed to set row value from tuple due to error %v", err)
+				log.Warningf(ctx, "failed to set row value from tuple due to error %v", err)
 				_ = r.SetValueDatumAt(i, tree.DNull)
 			} else {
 				panic(err)

@@ -7,8 +7,6 @@ package prep
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/memo"
@@ -118,7 +116,7 @@ func (p *Statement) MemoryEstimate() int64 {
 
 func (p *Statement) DecRef(ctx context.Context) {
 	if p.refCount <= 0 {
-		log.Dev.Fatal(ctx, "corrupt PreparedStatement refcount")
+		log.Fatal(ctx, "corrupt PreparedStatement refcount")
 	}
 	p.refCount--
 	if p.refCount == 0 {
@@ -128,7 +126,7 @@ func (p *Statement) DecRef(ctx context.Context) {
 
 func (p *Statement) IncRef(ctx context.Context) {
 	if p.refCount <= 0 {
-		log.Dev.Fatal(ctx, "corrupt PreparedStatement refcount")
+		log.Fatal(ctx, "corrupt PreparedStatement refcount")
 	}
 	p.refCount++
 }
@@ -189,10 +187,10 @@ func (p *planCosts) IsGenericOptimal() bool {
 	// Check cost flags and full scan counts.
 	genFullScans := p.generic.FullScanCount()
 	genUnboundedReads := p.generic.UnboundedReadCount()
-	if genFullScans > 0 || genUnboundedReads > 0 || p.generic.Penalties != memo.NoPenalties {
+	if genFullScans > 0 || genUnboundedReads > 0 || !p.generic.Flags.Empty() {
 		for i := 0; i < p.custom.length; i++ {
 			custom := &p.custom.costs[i]
-			if custom.Penalties < p.generic.Penalties ||
+			if custom.Flags.Less(p.generic.Flags) ||
 				genFullScans > custom.FullScanCount() ||
 				genUnboundedReads > custom.UnboundedReadCount() {
 				return false
@@ -217,41 +215,6 @@ func (p *planCosts) avgCustom() memo.Cost {
 		sum += p.custom.costs[i].C
 	}
 	return memo.Cost{C: sum / float64(p.custom.length)}
-}
-
-// Summary returns a single-line string summarizing the custom and generic plan
-// costs and full scan counts. The format for custom costs is:
-//
-//	average_custom_cost_float [<count>]{custom_summary_0 custom_summary_1 ...}
-//
-// The custom costs are follow by the generic cost summary. See
-// (memo.Cost).Summary for details.
-//
-// A full example:
-//
-//	custom costs: 1.5 [3]{1.25:U:0f0u 1.75:U:0f0u 1.50:U:0f0u}, generic cost: 4.56:U:0f0u
-func (p *planCosts) Summary() string {
-	var sb strings.Builder
-	sb.WriteString("custom costs: ")
-	if p.custom.length > 0 {
-		sb.WriteString(fmt.Sprintf("%.9g [%d]{", p.avgCustom().C, p.custom.length))
-		for i := 0; i < p.custom.length; i++ {
-			if i > 0 {
-				sb.WriteByte(' ')
-			}
-			sb.WriteString(p.custom.costs[i].Summary())
-		}
-		sb.WriteByte('}')
-	} else {
-		sb.WriteString("none")
-	}
-	sb.WriteString(", generic cost: ")
-	if p.HasGeneric() {
-		sb.WriteString(p.generic.Summary())
-	} else {
-		sb.WriteString("none")
-	}
-	return sb.String()
 }
 
 // Reset clears any previously set costs.

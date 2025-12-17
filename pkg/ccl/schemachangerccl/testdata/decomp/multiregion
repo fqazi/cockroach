@@ -129,7 +129,7 @@ ElementState:
     columnId: 2
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: false
     pgAttributeNum: 0
@@ -139,7 +139,7 @@ ElementState:
     columnId: 4.294967292e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: true
     pgAttributeNum: 0
@@ -149,7 +149,7 @@ ElementState:
     columnId: 4.294967293e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: true
     pgAttributeNum: 0
@@ -159,7 +159,7 @@ ElementState:
     columnId: 4.294967294e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: true
     pgAttributeNum: 0
@@ -169,7 +169,7 @@ ElementState:
     columnId: 4.294967295e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: true
     pgAttributeNum: 0
@@ -187,26 +187,6 @@ ElementState:
 - ColumnFamily:
     familyId: 0
     name: primary
-    tableId: 110
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 2
-    tableId: 110
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 4.294967292e+09
-    tableId: 110
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 4.294967293e+09
-    tableId: 110
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 4.294967294e+09
-    tableId: 110
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 4.294967295e+09
     tableId: 110
   Status: PUBLIC
 - ColumnName:
@@ -248,9 +228,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 1
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 110
     type:
@@ -275,9 +258,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 2
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: false
     isVirtual: false
     tableId: 110
     type:
@@ -302,9 +288,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967292e+09
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 110
     type:
@@ -329,9 +318,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967293e+09
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 110
     type:
@@ -356,9 +348,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967294e+09
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 110
     type:
@@ -383,9 +378,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967295e+09
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 110
     type:
@@ -531,7 +529,7 @@ ElementState:
     columnId: 2
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: false
     pgAttributeNum: 0
@@ -541,7 +539,7 @@ ElementState:
     columnId: 4.294967292e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: true
     pgAttributeNum: 0
@@ -551,7 +549,7 @@ ElementState:
     columnId: 4.294967293e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: true
     pgAttributeNum: 0
@@ -561,7 +559,7 @@ ElementState:
     columnId: 4.294967294e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: true
     pgAttributeNum: 0
@@ -571,7 +569,7 @@ ElementState:
     columnId: 4.294967295e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: true
     pgAttributeNum: 0
@@ -589,26 +587,6 @@ ElementState:
 - ColumnFamily:
     familyId: 0
     name: primary
-    tableId: 109
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 2
-    tableId: 109
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 4.294967292e+09
-    tableId: 109
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 4.294967293e+09
-    tableId: 109
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 4.294967294e+09
-    tableId: 109
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 4.294967295e+09
     tableId: 109
   Status: PUBLIC
 - ColumnName:
@@ -650,9 +628,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 1
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 109
     type:
@@ -677,9 +658,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 2
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: false
     isVirtual: false
     tableId: 109
     type:
@@ -704,9 +688,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967292e+09
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 109
     type:
@@ -731,9 +718,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967293e+09
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 109
     type:
@@ -758,9 +748,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967294e+09
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 109
     type:
@@ -785,9 +778,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967295e+09
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 109
     type:
@@ -969,7 +965,7 @@ ElementState:
     columnId: 3
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: false
     pgAttributeNum: 0
@@ -979,7 +975,7 @@ ElementState:
     columnId: 4.294967292e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: true
     pgAttributeNum: 0
@@ -989,7 +985,7 @@ ElementState:
     columnId: 4.294967293e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: true
     pgAttributeNum: 0
@@ -999,7 +995,7 @@ ElementState:
     columnId: 4.294967294e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: true
     pgAttributeNum: 0
@@ -1009,7 +1005,7 @@ ElementState:
     columnId: 4.294967295e+09
     generatedAsIdentitySequenceOption: ""
     generatedAsIdentityType: 0
-    isHidden: false
+    isHidden: true
     isInaccessible: false
     isSystemColumn: true
     pgAttributeNum: 0
@@ -1035,26 +1031,6 @@ ElementState:
 - ColumnFamily:
     familyId: 0
     name: primary
-    tableId: 108
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 3
-    tableId: 108
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 4.294967292e+09
-    tableId: 108
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 4.294967293e+09
-    tableId: 108
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 4.294967294e+09
-    tableId: 108
-  Status: PUBLIC
-- ColumnHidden:
-    columnId: 4.294967295e+09
     tableId: 108
   Status: PUBLIC
 - ColumnName:
@@ -1108,9 +1084,12 @@ ElementState:
     - 107
     columnFamilyOrderFollowsColumnId: 0
     columnId: 3
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: false
     isVirtual: false
     tableId: 108
     type:
@@ -1136,9 +1115,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 1
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: false
     isVirtual: false
     tableId: 108
     type:
@@ -1163,9 +1145,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 2
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 108
     type:
@@ -1190,9 +1175,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967292e+09
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 108
     type:
@@ -1217,9 +1205,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967293e+09
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 108
     type:
@@ -1244,9 +1235,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967294e+09
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 108
     type:
@@ -1271,9 +1265,12 @@ ElementState:
     closedTypeIds: []
     columnFamilyOrderFollowsColumnId: 0
     columnId: 4.294967295e+09
+    computeExpr: null
     elementCreationMetadata:
-      in261OrLater: true
+      in231OrLater: true
+      in243OrLater: true
     familyId: 0
+    isNullable: true
     isVirtual: false
     tableId: 108
     type:

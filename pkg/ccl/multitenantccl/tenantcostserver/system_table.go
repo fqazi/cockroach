@@ -67,7 +67,6 @@ func (ts *tenantState) update(now time.Time) {
 			FirstInstance: 0,
 			Bucket: tenanttokenbucket.State{
 				TokenRefillRate: defaultRefillRate,
-				TokenCurrent:    10 * defaultRefillRate,
 			},
 		}
 		return
@@ -462,7 +461,7 @@ func (h *sysTableHelper) checkInvariants(txn isql.Txn) error {
 	)
 	if err != nil {
 		if h.ctx.Err() == nil {
-			log.Dev.Warningf(h.ctx, "checkInvariants query failed: %v", err)
+			log.Warningf(h.ctx, "checkInvariants query failed: %v", err)
 		}
 		// We don't want to cause a panic for a query error (which is expected
 		// during shutdown).

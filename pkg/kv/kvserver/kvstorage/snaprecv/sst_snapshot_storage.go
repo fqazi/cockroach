@@ -14,7 +14,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -29,7 +28,7 @@ import (
 // directory of scratches created. A scratch manages the SSTs created during a
 // specific snapshot.
 type SSTSnapshotStorage struct {
-	env     *fs.Env
+	engine  storage.Engine
 	limiter *rate.Limiter
 	dir     string
 	mu      struct {
@@ -41,7 +40,7 @@ type SSTSnapshotStorage struct {
 // NewSSTSnapshotStorage creates a new SST snapshot storage.
 func NewSSTSnapshotStorage(engine storage.Engine, limiter *rate.Limiter) SSTSnapshotStorage {
 	return SSTSnapshotStorage{
-		env:     engine.Env(),
+		engine:  engine,
 		limiter: limiter,
 		dir:     filepath.Join(engine.GetAuxiliaryDir(), "sstsnapshot"),
 		mu: struct {
@@ -54,7 +53,7 @@ func NewSSTSnapshotStorage(engine storage.Engine, limiter *rate.Limiter) SSTSnap
 // NewScratchSpace creates a new storage scratch space for SSTs for a specific
 // snapshot.
 func (s *SSTSnapshotStorage) NewScratchSpace(
-	rangeID roachpb.RangeID, snapUUID uuid.UUID, st *cluster.Settings,
+	rangeID roachpb.RangeID, snapUUID uuid.UUID,
 ) *SSTSnapshotStorageScratch {
 	s.mu.Lock()
 	s.mu.rangeRefCount[rangeID]++
@@ -62,7 +61,6 @@ func (s *SSTSnapshotStorage) NewScratchSpace(
 	snapDir := filepath.Join(s.dir, strconv.Itoa(int(rangeID)), snapUUID.String())
 	return &SSTSnapshotStorageScratch{
 		storage: s,
-		st:      st,
 		rangeID: rangeID,
 		snapDir: snapDir,
 	}
@@ -70,7 +68,7 @@ func (s *SSTSnapshotStorage) NewScratchSpace(
 
 // Clear removes all created directories and SSTs.
 func (s *SSTSnapshotStorage) Clear() error {
-	return s.env.RemoveAll(s.dir)
+	return s.engine.Env().RemoveAll(s.dir)
 }
 
 // scratchClosed is called when an SSTSnapshotStorageScratch created by this
@@ -91,7 +89,7 @@ func (s *SSTSnapshotStorage) scratchClosed(rangeID roachpb.RangeID) {
 		// Suppressing an error here is okay, as orphaned directories are at worst
 		// a performance issue when we later walk directories in pebble.Capacity()
 		// but not a correctness issue.
-		_ = s.env.RemoveAll(filepath.Join(s.dir, strconv.Itoa(int(rangeID))))
+		_ = s.engine.Env().RemoveAll(filepath.Join(s.dir, strconv.Itoa(int(rangeID))))
 	}
 }
 
@@ -100,7 +98,6 @@ func (s *SSTSnapshotStorage) scratchClosed(rangeID roachpb.RangeID) {
 // snapshot.
 type SSTSnapshotStorageScratch struct {
 	storage    *SSTSnapshotStorage
-	st         *cluster.Settings
 	rangeID    roachpb.RangeID
 	ssts       []string
 	snapDir    string
@@ -113,7 +110,7 @@ func (s *SSTSnapshotStorageScratch) filename(id int) string {
 }
 
 func (s *SSTSnapshotStorageScratch) createDir() error {
-	err := s.storage.env.MkdirAll(s.snapDir, os.ModePerm)
+	err := s.storage.engine.Env().MkdirAll(s.snapDir, os.ModePerm)
 	s.dirCreated = s.dirCreated || err == nil
 	return err
 }
@@ -141,34 +138,21 @@ func (s *SSTSnapshotStorageScratch) NewFile(
 	return f, nil
 }
 
-// WriteSST creates an SST populated with the given write function, and writes
-// it to a file. Does nothing if no data is written.
-func (s *SSTSnapshotStorageScratch) WriteSST(
-	ctx context.Context, write func(context.Context, storage.Writer) error,
-) error {
+// WriteSST writes SST data to a file. The method closes
+// the provided SST when it is finished using it. If the provided SST is empty,
+// then no file will be created and nothing will be written.
+func (s *SSTSnapshotStorageScratch) WriteSST(ctx context.Context, data []byte) error {
 	if s.closed {
 		return errors.AssertionFailedf("SSTSnapshotStorageScratch closed")
 	}
-
-	// TODO(itsbilal): Write to SST directly rather than buffer in a MemObject.
-	sstFile := &storage.MemObject{}
-	w := storage.MakeIngestionSSTWriter(ctx, s.st, sstFile)
-	defer w.Close()
-	if err := write(ctx, &w); err != nil {
-		return err
-	}
-	if err := w.Finish(); err != nil {
-		return err
-	}
-	if w.DataSize == 0 {
+	if len(data) == 0 {
 		return nil
 	}
-
 	f, err := s.NewFile(ctx, 512<<10 /* 512 KB */)
 	if err != nil {
 		return err
 	}
-	if err := f.Write(sstFile.Data()); err != nil {
+	if err := f.Write(data); err != nil {
 		f.Abort()
 		return err
 	}
@@ -187,7 +171,7 @@ func (s *SSTSnapshotStorageScratch) Close() error {
 	}
 	s.closed = true
 	defer s.storage.scratchClosed(s.rangeID)
-	return s.storage.env.RemoveAll(s.snapDir)
+	return s.storage.engine.Env().RemoveAll(s.snapDir)
 }
 
 // SSTSnapshotStorageFile is an SST file managed by a
@@ -220,9 +204,9 @@ func (f *SSTSnapshotStorageFile) ensureFile() error {
 	}
 	var err error
 	if f.bytesPerSync > 0 {
-		f.file, err = fs.CreateWithSync(f.scratch.storage.env, f.filename, int(f.bytesPerSync), fs.RaftSnapshotWriteCategory)
+		f.file, err = fs.CreateWithSync(f.scratch.storage.engine.Env(), f.filename, int(f.bytesPerSync), fs.RaftSnapshotWriteCategory)
 	} else {
-		f.file, err = f.scratch.storage.env.Create(f.filename, fs.RaftSnapshotWriteCategory)
+		f.file, err = f.scratch.storage.engine.Env().Create(f.filename, fs.RaftSnapshotWriteCategory)
 	}
 	if err != nil {
 		return err
@@ -230,8 +214,6 @@ func (f *SSTSnapshotStorageFile) ensureFile() error {
 	f.created = true
 	return nil
 }
-
-func (f *SSTSnapshotStorageFile) StartMetadataPortion() error { return nil }
 
 // Write is part of objstorage.Writable; it writes contents to the file while
 // respecting the limiter passed into SSTSnapshotStorageScratch. Writing empty

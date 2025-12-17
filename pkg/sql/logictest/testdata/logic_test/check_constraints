@@ -310,7 +310,7 @@ CREATE TABLE t8 (
   CHECK (different_database.t8.a > 0)
 )
 
-statement disable-cf-mutator ok
+statement ok
 CREATE TABLE t8 (
   a INT,
   CHECK (a > 0),
@@ -500,6 +500,9 @@ INSERT INTO t_91697 VALUES (321);
 subtest regression_158154
 
 statement ok
+SET use_improved_routine_deps_triggers_and_computed_cols = true;
+
+statement ok
 CREATE TABLE t158154 (a INT, b INT, CONSTRAINT foo CHECK (b > 0));
 
 statement ok
@@ -522,5 +525,8 @@ CALL p158154();
 statement ok
 DROP PROCEDURE p158154;
 DROP TABLE t158154;
+
+statement ok
+RESET use_improved_routine_deps_triggers_and_computed_cols;
 
 subtest end

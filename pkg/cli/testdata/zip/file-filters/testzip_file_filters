@@ -1,11 +1,9 @@
 #include all filters. We are excluding cpu.pprof file to avoid flakiness in tests.
 --include-files=* --exclude-files=cpu.pprof
 ----
-debug/cluster_settings_history.txt
 debug/crdb_internal.cluster_contention_events.txt
 debug/crdb_internal.cluster_database_privileges.txt
 debug/crdb_internal.cluster_distsql_flows.txt
-debug/crdb_internal.cluster_inspect_errors.txt
 debug/crdb_internal.cluster_locks.txt
 debug/crdb_internal.cluster_queries.txt
 debug/crdb_internal.cluster_replication_spans.txt
@@ -76,7 +74,6 @@ debug/nodes/1/heap.pprof
 deterministic.log
 debug/nodes/1/lsm.txt
 debug/nodes/1/ranges.json
-debug/nodes/1/stacks.pprof
 debug/nodes/1/stacks.txt
 debug/nodes/1/stacks_with_labels.txt
 debug/nodes/1/status.json
@@ -147,11 +144,9 @@ debug/tenant_ranges.err.txt
 #include only txt files
 --include-files=*.txt
 ----
-debug/cluster_settings_history.txt
 debug/crdb_internal.cluster_contention_events.txt
 debug/crdb_internal.cluster_database_privileges.txt
 debug/crdb_internal.cluster_distsql_flows.txt
-debug/crdb_internal.cluster_inspect_errors.txt
 debug/crdb_internal.cluster_locks.txt
 debug/crdb_internal.cluster_queries.txt
 debug/crdb_internal.cluster_replication_spans.txt
@@ -299,11 +294,9 @@ debug/tenant_ranges.err.txt
 #exclude only log files. We are excluding cpu.pprof file to avoid flakiness in tests.
 --exclude-files=*.log,cpu.pprof
 ----
-debug/cluster_settings_history.txt
 debug/crdb_internal.cluster_contention_events.txt
 debug/crdb_internal.cluster_database_privileges.txt
 debug/crdb_internal.cluster_distsql_flows.txt
-debug/crdb_internal.cluster_inspect_errors.txt
 debug/crdb_internal.cluster_locks.txt
 debug/crdb_internal.cluster_queries.txt
 debug/crdb_internal.cluster_replication_spans.txt
@@ -373,7 +366,6 @@ debug/nodes/1/gossip.json
 debug/nodes/1/heap.pprof
 debug/nodes/1/lsm.txt
 debug/nodes/1/ranges.json
-debug/nodes/1/stacks.pprof
 debug/nodes/1/stacks.txt
 debug/nodes/1/stacks_with_labels.txt
 debug/nodes/1/status.json
@@ -435,7 +427,6 @@ debug/nodes/1/gossip.json
 debug/nodes/1/heap.pprof
 deterministic.log
 debug/nodes/1/ranges.json
-debug/nodes/1/stacks.pprof
 debug/nodes/1/status.json
 debug/pprof-summary.sh
 debug/rangelog.json
@@ -447,11 +438,9 @@ debug/tenant_ranges.err.txt
 #exclude only json files. We are excluding cpu.pprof file to avoid flakiness in tests.
 --exclude-files=*.json,cpu.pprof
 ----
-debug/cluster_settings_history.txt
 debug/crdb_internal.cluster_contention_events.txt
 debug/crdb_internal.cluster_database_privileges.txt
 debug/crdb_internal.cluster_distsql_flows.txt
-debug/crdb_internal.cluster_inspect_errors.txt
 debug/crdb_internal.cluster_locks.txt
 debug/crdb_internal.cluster_queries.txt
 debug/crdb_internal.cluster_replication_spans.txt
@@ -516,7 +505,6 @@ debug/nodes/1/crdb_internal.node_txn_stats.txt
 debug/nodes/1/heap.pprof
 deterministic.log
 debug/nodes/1/lsm.txt
-debug/nodes/1/stacks.pprof
 debug/nodes/1/stacks.txt
 debug/nodes/1/stacks_with_labels.txt
 debug/pprof-summary.sh
@@ -562,11 +550,9 @@ debug/tenant_ranges.err.txt
 #include only txt files with system table file exclustion
 --include-files=*.txt --exclude-files=system.*.txt
 ----
-debug/cluster_settings_history.txt
 debug/crdb_internal.cluster_contention_events.txt
 debug/crdb_internal.cluster_database_privileges.txt
 debug/crdb_internal.cluster_distsql_flows.txt
-debug/crdb_internal.cluster_inspect_errors.txt
 debug/crdb_internal.cluster_locks.txt
 debug/crdb_internal.cluster_queries.txt
 debug/crdb_internal.cluster_replication_spans.txt

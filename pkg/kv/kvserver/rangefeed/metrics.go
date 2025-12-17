@@ -19,7 +19,6 @@ var (
 		Help:        "Time spent in RangeFeed catchup scan",
 		Measurement: "Nanoseconds",
 		Unit:        metric.Unit_NANOSECONDS,
-		Visibility:  metric.Metadata_SUPPORT,
 	}
 	metaRangeFeedExhausted = metric.Metadata{
 		Name:        "kv.rangefeed.budget_allocation_failed",
@@ -72,9 +71,15 @@ var (
 		Measurement: "Cancellation Count",
 		Unit:        metric.Unit_COUNT,
 	}
-	metaRangeFeedProcessors = metric.Metadata{
-		Name:        "kv.rangefeed.processors",
-		Help:        "Number of active RangeFeed processors",
+	metaRangeFeedProcessorsGO = metric.Metadata{
+		Name:        "kv.rangefeed.processors_goroutine",
+		Help:        "Number of active RangeFeed processors using goroutines",
+		Measurement: "Processors",
+		Unit:        metric.Unit_COUNT,
+	}
+	metaRangeFeedProcessorsScheduler = metric.Metadata{
+		Name:        "kv.rangefeed.processors_scheduler",
+		Help:        "Number of active RangeFeed processors using scheduler",
 		Measurement: "Processors",
 		Unit:        metric.Unit_COUNT,
 	}
@@ -124,7 +129,11 @@ type Metrics struct {
 	// limit, but it's here to limit the effect on stability in case something
 	// unexpected happens.
 	RangeFeedSlowClosedTimestampNudgeSem chan struct{}
-	RangeFeedProcessors                  *metric.Gauge
+	// Metrics exposing rangefeed processor by type. Those metrics are used to
+	// monitor processor switch over. They could be removed when legacy processor
+	// is removed.
+	RangeFeedProcessorsGO        *metric.Gauge
+	RangeFeedProcessorsScheduler *metric.Gauge
 }
 
 // MetricStruct implements the metric.Struct interface.
@@ -143,7 +152,8 @@ func NewMetrics() *Metrics {
 		RangeFeedSlowClosedTimestampRanges:          metric.NewGauge(metaRangefeedSlowClosedTimestampRanges),
 		RangeFeedSlowClosedTimestampLogN:            log.Every(5 * time.Second),
 		RangeFeedSlowClosedTimestampNudgeSem:        make(chan struct{}, 1024),
-		RangeFeedProcessors:                         metric.NewGauge(metaRangeFeedProcessors),
+		RangeFeedProcessorsGO:                       metric.NewGauge(metaRangeFeedProcessorsGO),
+		RangeFeedProcessorsScheduler:                metric.NewGauge(metaRangeFeedProcessorsScheduler),
 		RangeFeedBufferedRegistrations:              metric.NewGauge(metaRangeFeedBufferedRegistrations),
 		RangeFeedUnbufferedRegistrations:            metric.NewGauge(metaRangeFeedUnbufferedRegistrations),
 		RangefeedOutputLoopNanosForUnbufferedReg:    metric.NewCounter(metaRangeFeedOutputLoopNanosUnbufferedRegistration),
@@ -281,6 +291,12 @@ func NewBufferedSenderMetrics() *BufferedSenderMetrics {
 }
 
 var (
+	metaRangeFeedMuxStreamSendLatencyNanos = metric.Metadata{
+		Name:        "kv.rangefeed.mux_stream_send.latency",
+		Help:        "Latency of sending RangeFeed events to the client",
+		Measurement: "Latency",
+		Unit:        metric.Unit_NANOSECONDS,
+	}
 	metaRangeFeedMuxStreamSlowSends = metric.Metadata{
 		Name:        "kv.rangefeed.mux_stream_send.slow_events",
 		Help:        "Number of RangeFeed events that took longer than 10s to send to the client",
@@ -290,14 +306,21 @@ var (
 )
 
 type LockedMuxStreamMetrics struct {
-	SlowSends *metric.Counter
+	SendLatencyNanos metric.IHistogram
+	SlowSends        *metric.Counter
 }
 
 // MetricStruct implements metrics.Struct interface.
 func (*LockedMuxStreamMetrics) MetricStruct() {}
 
-func NewLockedMuxStreamMetrics() *LockedMuxStreamMetrics {
+func NewLockedMuxStreamMetrics(histogramWindow time.Duration) *LockedMuxStreamMetrics {
 	return &LockedMuxStreamMetrics{
+		SendLatencyNanos: metric.NewHistogram(metric.HistogramOptions{
+			Mode:         metric.HistogramModePrometheus,
+			Metadata:     metaRangeFeedMuxStreamSendLatencyNanos,
+			Duration:     histogramWindow,
+			BucketConfig: metric.IOLatencyBuckets,
+		}),
 		SlowSends: metric.NewCounter(metaRangeFeedMuxStreamSlowSends),
 	}
 }

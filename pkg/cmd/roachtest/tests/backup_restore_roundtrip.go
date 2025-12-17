@@ -45,19 +45,6 @@ var (
 	}
 )
 
-func handleSchemaChangeWorkloadError(err error) error {
-	// If the UNEXPECTED ERROR detail appears, the workload likely flaked.
-	// Otherwise, the workload could have failed due to other reasons like a node
-	// crash.
-	if err != nil {
-		flattenedErr := errors.FlattenDetails(err)
-		if strings.Contains(flattenedErr, "workload run error: ***") || strings.Contains(flattenedErr, "UNEXPECTED ERROR") || strings.Contains(flattenedErr, "UNEXPECTED COMMIT ERROR") {
-			return registry.ErrorWithOwner(registry.OwnerSQLFoundations, errors.Wrapf(err, "schema change workload failed"))
-		}
-	}
-	return err
-}
-
 const numFullBackups = 3
 
 type roundTripSpecs struct {
@@ -137,19 +124,13 @@ func backupRestoreRoundTrip(
 ) {
 	pauseProbability := 0.2
 	testRNG, seed := randutil.NewLockedPseudoRand()
-
-	// Workload can only take a positive int as a seed, but seed could be a
-	// negative int. Ensure the seed passed to workload is an int.
-	workloadSeed := testRNG.Int63()
-	t.L().Printf("random seed: %d; workload seed: %d", seed, workloadSeed)
+	t.L().Printf("random seed: %d", seed)
 
 	envOption := install.EnvOption([]string{
 		"COCKROACH_MIN_RANGE_MAX_BYTES=1",
 	})
 
-	startOpts := roachtestutil.MaybeUseMemoryBudget(t, 50)
-	startOpts.RoachprodOpts.ExtraArgs = []string{"--vmodule=split_queue=3,cloud_logging_transport=1"}
-	c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(envOption), c.CRDBNodes())
+	c.Start(ctx, t.L(), roachtestutil.MaybeUseMemoryBudget(t, 50), install.MakeClusterSettings(envOption), c.CRDBNodes())
 	m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
 
 	m.Go(func(ctx context.Context) error {
@@ -164,7 +145,7 @@ func backupRestoreRoundTrip(
 
 		dbs := []string{"bank", "tpcc", schemaChangeDB}
 		d, runBackgroundWorkload, _, err := createDriversForBackupRestore(
-			ctx, t, c, m, testRNG, workloadSeed, testUtils, dbs,
+			ctx, t, c, m, testRNG, testUtils, dbs,
 		)
 		if err != nil {
 			return err
@@ -221,10 +202,7 @@ func backupRestoreRoundTrip(
 
 			t.L().Printf("verifying backup %d", i+1)
 			// Verify content in backups.
-			err = d.verifyBackupCollection(
-				ctx, t.L(), testRNG, collection,
-				true /* checkFiles */, true /* internalSystemJobs */, nil, /* mvHelper */
-			)
+			err = d.verifyBackupCollection(ctx, t.L(), testRNG, collection, true /* checkFiles */, true /* internalSystemJobs */)
 			if err != nil {
 				return err
 			}
@@ -253,7 +231,6 @@ func startBackgroundWorkloads(
 	c cluster.Cluster,
 	m cluster.Monitor,
 	testRNG *rand.Rand,
-	seed int64,
 	roachNodes, workloadNode option.NodeListOption,
 	testUtils *CommonTestUtils,
 	dbs []string,
@@ -265,9 +242,9 @@ func startBackgroundWorkloads(
 	if testUtils.mock {
 		numWarehouses = 10
 	}
-	tpccInit, tpccRun := tpccWorkloadCmd(l, testRNG, seed, numWarehouses, roachNodes)
-	bankInit, bankRun := bankWorkloadCmd(l, testRNG, seed, roachNodes, testUtils.mock)
-	scInit, scRun := schemaChangeWorkloadCmd(l, testRNG, seed, roachNodes, testUtils.mock)
+	tpccInit, tpccRun := tpccWorkloadCmd(l, testRNG, numWarehouses, roachNodes)
+	bankInit, bankRun := bankWorkloadCmd(l, testRNG, roachNodes, testUtils.mock)
+	scInit, scRun := schemaChangeWorkloadCmd(l, testRNG, roachNodes, testUtils.mock)
 	if err := prepSchemaChangeWorkload(ctx, workloadNode, testUtils, testRNG); err != nil {
 		return nil, err
 	}
@@ -282,9 +259,18 @@ func startBackgroundWorkloads(
 		return nil, err
 	}
 
+	handleChemaChangeError := func(err error) error {
+		// If the UNEXPECTED ERROR detail appears, the workload likely flaked.
+		// Otherwise, the workload could have failed due to other reasons like a node
+		// crash.
+		if err != nil && strings.Contains(errors.FlattenDetails(err), "UNEXPECTED ERROR") {
+			return registry.ErrorWithOwner(registry.OwnerSQLFoundations, errors.Wrapf(err, "schema change workload failed"))
+		}
+		return err
+	}
 	err = c.RunE(ctx, option.WithNodes(workloadNode), scInit.String())
 	if err != nil {
-		return nil, handleSchemaChangeWorkloadError(err)
+		return nil, handleChemaChangeError(err)
 	}
 
 	run := func() (func(), error) {
@@ -301,7 +287,7 @@ func startBackgroundWorkloads(
 		})
 		stopSC := workloadWithCancel(m, func(ctx context.Context) error {
 			if err := c.RunE(ctx, option.WithNodes(workloadNode), scRun.String()); err != nil {
-				return handleSchemaChangeWorkloadError(err)
+				return handleChemaChangeError(err)
 			}
 			return nil
 		})
@@ -431,12 +417,11 @@ func createDriversForBackupRestore(
 	c cluster.Cluster,
 	m cluster.Monitor,
 	rng *rand.Rand,
-	workloadSeed int64,
 	testUtils *CommonTestUtils,
 	dbs []string,
 ) (*BackupRestoreTestDriver, func() (func(), error), [][]string, error) {
 	runBackgroundWorkload, err := startBackgroundWorkloads(
-		ctx, t.L(), c, m, rng, workloadSeed, c.CRDBNodes(), c.WorkloadNode(), testUtils, dbs,
+		ctx, t.L(), c, m, rng, c.CRDBNodes(), c.WorkloadNode(), testUtils, dbs,
 	)
 	if err != nil {
 		return nil, nil, nil, err
@@ -454,7 +439,6 @@ func createDriversForBackupRestore(
 
 func testOnlineRestoreRecovery(ctx context.Context, t test.Test, c cluster.Cluster) {
 	testRNG, seed := randutil.NewLockedPseudoRand()
-	workloadSeed := testRNG.Int63()
 	t.L().Printf("random seed: %d", seed)
 
 	c.Start(ctx, t.L(), roachtestutil.MaybeUseMemoryBudget(t, 50), install.MakeClusterSettings(), c.CRDBNodes())
@@ -473,7 +457,7 @@ func testOnlineRestoreRecovery(ctx context.Context, t test.Test, c cluster.Clust
 
 		dbs := []string{"bank", "tpcc", schemaChangeDB}
 		d, runBackgroundWorkload, _, err := createDriversForBackupRestore(
-			ctx, t, c, m, testRNG, workloadSeed, testUtils, dbs,
+			ctx, t, c, m, testRNG, testUtils, dbs,
 		)
 		if err != nil {
 			return err
@@ -541,8 +525,7 @@ func testOnlineRestoreRecovery(ctx context.Context, t test.Test, c cluster.Clust
 
 		t.L().Printf("performing online restore of backup")
 		if _, _, err := d.runRestore(
-			ctx, t.L(), testRNG, collection,
-			false /* checkFiles */, true /* internalSystemJobs */, nil, /* mvHelper */
+			ctx, t.L(), testRNG, collection, false /* checkFiles */, true, /* internalSystemJobs */
 		); err != nil {
 			return err
 		}

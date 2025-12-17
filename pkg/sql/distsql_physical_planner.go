@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
@@ -154,8 +153,6 @@ const (
 	FullDistribution
 )
 
-const NoStrictLocalityFiltering = false
-
 // ReplicaOraclePolicy controls which policy the physical planner uses to choose
 // a replica for a given range. It is exported so that it may be overwritten
 // during initialization by CCL code to enable follower reads.
@@ -281,7 +278,7 @@ func (dsp *DistSQLPlanner) ConstructAndSetSpanResolver(
 	ctx context.Context, nodeID roachpb.NodeID, locality roachpb.Locality,
 ) {
 	if dsp.spanResolver != nil {
-		log.Dev.Fatal(ctx, "trying to construct and set span resolver when one already exists")
+		log.Fatal(ctx, "trying to construct and set span resolver when one already exists")
 	}
 	sr := physicalplan.NewSpanResolver(dsp.st, dsp.distSender, dsp.nodeDescs, nodeID, locality,
 		dsp.clock, dsp.rpcCtx, ReplicaOraclePolicy)
@@ -504,6 +501,19 @@ func (dsp *DistSQLPlanner) mustWrapNode(planCtx *PlanningCtx, node planNode) boo
 		return true
 	}
 	return false
+}
+
+func shouldWrapPlanNodeForExecStats(planCtx *PlanningCtx, node planNode) bool {
+	if !planCtx.collectExecStats {
+		// If execution stats aren't being collected, there is no point in
+		// having the overhead of wrappers.
+		return false
+	}
+	// Wrapping batchedPlanNodes breaks some assumptions (namely that Start is
+	// called on the processor-adapter) because it's executed in a special "fast
+	// path" way, so we exempt these from wrapping.
+	_, ok := node.(batchedPlanNode)
+	return !ok
 }
 
 // wrapValuesNode returns whether a valuesNode can and should be wrapped into
@@ -735,7 +745,7 @@ func checkSupportForPlanNode(
 			var suffix string
 			estimate := n.estimatedRowCount
 			if n.softLimit != 0 && sd.UseSoftLimitForDistributeScan {
-				estimate = n.softLimit
+				estimate = uint64(n.softLimit)
 				suffix = " (using soft limit)"
 			}
 			if estimate >= sd.DistributeScanRowCountThreshold {
@@ -963,15 +973,7 @@ func (p *spanPartitionState) update(
 type PlanningCtx struct {
 	ExtendedEvalCtx *extendedEvalContext
 
-	// localityFilters indicate that the sqlInstance resolver should attempt to
-	// map the passed in kv node to a sql instance that matches any of the
-	// locality filters.
-	localityFilters []roachpb.Locality
-
-	// strictFiltering, if specified, will fail planning if the instanceResolver
-	// cannot find a sql instance that matches the localityFilters. Further, the
-	// passed in kv node must also match the locality filters.
-	strictFiltering bool
+	localityFilter roachpb.Locality
 
 	// spanPartitionState captures information about the current state of the
 	// partitioning that has occurred during the planning process.
@@ -1324,14 +1326,18 @@ const (
 	// SpanPartitionReason_ROUND_ROBIN is reported when there is no locality info
 	// on any of the instances and so we default to a naive round-robin strategy.
 	SpanPartitionReason_ROUND_ROBIN
+	// SpanPartitionReason_GOSSIP_GATEWAY_TARGET_UNHEALTHY is reported when the
+	// target node retrieved via gossip is deemed unhealthy. In this case we
+	// default to the gateway node.
+	SpanPartitionReason_GOSSIP_GATEWAY_TARGET_UNHEALTHY
+	// SpanPartitionReason_GOSSIP_TARGET_HEALTHY is reported when the
+	// target node retrieved via gossip is deemed healthy.
+	SpanPartitionReason_GOSSIP_TARGET_HEALTHY
 	// SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED is reported
 	// when there is no match to the provided locality filter and the gateway is
 	// eligible but overloaded with other partitions. In this case we pick a
 	// random instance apart from the gateway.
 	SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED
-	// SpanPartitionReason_NO_VALID_INSTANCE is reported if no valid instance
-	// could be found.
-	SpanPartitionReason_NO_VALID_INSTANCE
 	// SpanPartitionReasonMax tracks the number of SpanPartitionReason objects.
 	SpanPartitionReasonMax
 )
@@ -1356,10 +1362,12 @@ func (r SpanPartitionReason) String() string {
 		return "locality-filtered-random"
 	case SpanPartitionReason_ROUND_ROBIN:
 		return "round-robin"
+	case SpanPartitionReason_GOSSIP_GATEWAY_TARGET_UNHEALTHY:
+		return "gossip-gateway-target-unhealthy"
+	case SpanPartitionReason_GOSSIP_TARGET_HEALTHY:
+		return "gossip-target-healthy"
 	case SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED:
 		return "locality-filtered-random-gateway-overloaded"
-	case SpanPartitionReason_NO_VALID_INSTANCE:
-		return "no-valid-instance"
 	default:
 		return "unknown"
 	}
@@ -1531,6 +1539,9 @@ func (dsp *DistSQLPlanner) partitionSpansEx(
 		return []SpanPartition{{SQLInstanceID: dsp.gatewaySQLInstanceID, Spans: spans}},
 			true /* ignoreMisplannedRanges */, nil
 	}
+	if dsp.useGossipPlanning(ctx, planCtx) {
+		return dsp.deprecatedPartitionSpansSystem(ctx, planCtx, spans)
+	}
 	return dsp.partitionSpans(ctx, planCtx, spans, bound)
 }
 
@@ -1568,7 +1579,7 @@ func (dsp *DistSQLPlanner) partitionSpan(
 	// lastKey maintains the EndKey of the last piece of `span`.
 	lastKey := rSpan.Key
 	if log.V(1) {
-		log.Dev.Infof(ctx, "partitioning span %s", span)
+		log.Infof(ctx, "partitioning span %s", span)
 	}
 	// We break up rSpan into its individual ranges (which may or may not be on
 	// separate nodes). We then create "partitioned spans" using the end keys of
@@ -1585,37 +1596,18 @@ func (dsp *DistSQLPlanner) partitionSpan(
 		desc := it.Desc()
 		if log.V(1) {
 			descCpy := desc // don't let desc escape
-			log.Dev.Infof(ctx, "lastKey: %s desc: %s", lastKey, &descCpy)
+			log.Infof(ctx, "lastKey: %s desc: %s", lastKey, &descCpy)
 		}
 
 		if !desc.ContainsKey(lastKey) {
 			// This range must contain the last range's EndKey.
-			log.Dev.Fatalf(
+			log.Fatalf(
 				ctx, "next range %v doesn't cover last end key %v. Partitions: %#v",
 				desc.RSpan(), lastKey, partitions,
 			)
 		}
 
 		sqlInstanceID, reason := getSQLInstanceIDForKVNodeID(replDesc.NodeID)
-		if reason == SpanPartitionReason_NO_VALID_INSTANCE {
-			return nil, 0, errors.Errorf("no valid SQL instance for KV node %d", replDesc.NodeID)
-		}
-		if planCtx.strictFiltering && !(reason == SpanPartitionReason_CLOSEST_LOCALITY_MATCH || reason == SpanPartitionReason_TARGET_HEALTHY) {
-			// TODO(msbutler): ideally we would error when
-			// SpanPartitionReason_CLOSEST_LOCALITY_MATCH is not returned, but the
-			// mixedProcessSameNodeResolver can return
-			// SpanPartitionReason_TARGET_HEALTHY on a valid match.
-			//
-			// As a follow up, we should remove the conditional use of the
-			// mixedProcessSameNodeResolver by either teaching the
-			// mixedProcessSameNodeResolver about locality filtering, or getting rid
-			// of it. To do this cleanly, I will need to grok
-			// https://github.com/cockroachdb/cockroach/pull/124986
-			return nil, 0, errors.Errorf(
-				"sql instance %d does not match locality filters %v, given partition reason %s",
-				sqlInstanceID, planCtx.localityFilters, reason,
-			)
-		}
 		planCtx.spanPartitionState.update(sqlInstanceID, reason)
 		partitionIdx, inNodeMap := nodeMap[sqlInstanceID]
 		if !inNodeMap {
@@ -1671,6 +1663,27 @@ func (dsp *DistSQLPlanner) partitionSpan(
 	return partitions, lastPartitionIdx, nil
 }
 
+// deprecatedPartitionSpansSystem finds node owners for ranges touching the given spans
+// for a system tenant.
+func (dsp *DistSQLPlanner) deprecatedPartitionSpansSystem(
+	ctx context.Context, planCtx *PlanningCtx, spans roachpb.Spans,
+) (partitions []SpanPartition, ignoreMisplannedRanges bool, _ error) {
+	nodeMap := make(map[base.SQLInstanceID]int)
+	resolver := func(nodeID roachpb.NodeID) (base.SQLInstanceID, SpanPartitionReason) {
+		return dsp.deprecatedHealthySQLInstanceIDForKVNodeIDSystem(ctx, planCtx, nodeID)
+	}
+	for _, span := range spans {
+		var err error
+		partitions, _, err = dsp.partitionSpan(
+			ctx, planCtx, span, partitions, nodeMap, resolver, &ignoreMisplannedRanges,
+		)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	return partitions, ignoreMisplannedRanges, nil
+}
+
 // partitionSpans assigns SQL instances to spans. In mixed sql and KV mode it
 // generally assigns each span to the instance hosted on the KV node chosen by
 // the configured replica oracle, while in clusters operating with standalone
@@ -1704,7 +1717,7 @@ func (dsp *DistSQLPlanner) partitionSpans(
 			if safeKey, err := keys.EnsureSafeSplitKey(span.Key); err == nil && len(safeKey) > 0 {
 				if safeKey.Equal(lastKey) {
 					if log.V(1) {
-						log.Dev.Infof(ctx, "stitching span %s into the previous span partition", span)
+						log.Infof(ctx, "stitching span %s into the previous span partition", span)
 					}
 					// TODO(yuzefovich): we're not updating
 					// SpanPartition.numRanges as well as spanPartitionState
@@ -1727,6 +1740,26 @@ func (dsp *DistSQLPlanner) partitionSpans(
 		}
 	}
 	return partitions, ignoreMisplannedRanges, nil
+}
+
+// deprecatedHealthySQLInstanceIDForKVNodeIDSystem returns the SQL instance that
+// should handle the range with the given node ID when planning is done on
+// behalf of the system tenant. It ensures that the chosen SQL instance is
+// healthy and of the compatible DistSQL version.
+func (dsp *DistSQLPlanner) deprecatedHealthySQLInstanceIDForKVNodeIDSystem(
+	ctx context.Context, planCtx *PlanningCtx, nodeID roachpb.NodeID,
+) (base.SQLInstanceID, SpanPartitionReason) {
+	sqlInstanceID := base.SQLInstanceID(nodeID)
+	status := dsp.checkInstanceHealthAndVersionSystem(ctx, planCtx, sqlInstanceID)
+	// If the node is unhealthy, use the gateway to process this span instead of
+	// the unhealthy host. An empty address indicates an unhealthy host.
+	reason := SpanPartitionReason_GOSSIP_TARGET_HEALTHY
+	if status != NodeOK {
+		log.VEventf(ctx, 2, "not planning on node %d: %s", sqlInstanceID, status)
+		sqlInstanceID = dsp.gatewaySQLInstanceID
+		reason = SpanPartitionReason_GOSSIP_GATEWAY_TARGET_UNHEALTHY
+	}
+	return sqlInstanceID, reason
 }
 
 // checkInstanceHealth returns the instance health status by dialing the node.
@@ -1777,7 +1810,7 @@ func (dsp *DistSQLPlanner) healthySQLInstanceIDForKVNodeHostedInstanceResolver(
 ) func(nodeID roachpb.NodeID) (base.SQLInstanceID, SpanPartitionReason) {
 	allInstances, err := dsp.sqlAddressResolver.GetAllInstances(ctx)
 	if err != nil {
-		log.Dev.Warningf(ctx, "could not get all instances: %v", err)
+		log.Warningf(ctx, "could not get all instances: %v", err)
 		return dsp.alwaysUseGatewayWithReason(SpanPartitionReason_GATEWAY_ON_ERROR)
 	}
 
@@ -1798,7 +1831,7 @@ func (dsp *DistSQLPlanner) healthySQLInstanceIDForKVNodeHostedInstanceResolver(
 				return sqlInstance, SpanPartitionReason_TARGET_HEALTHY
 			}
 		}
-		log.Dev.VWarningf(ctx, 1, "not planning on node %d", sqlInstance)
+		log.VWarningf(ctx, 1, "not planning on node %d", sqlInstance)
 		return dsp.gatewaySQLInstanceID, SpanPartitionReason_GATEWAY_TARGET_UNHEALTHY
 	}
 }
@@ -1875,14 +1908,14 @@ func (dsp *DistSQLPlanner) makeInstanceResolver(
 	ctx context.Context, planCtx *PlanningCtx,
 ) (func(roachpb.NodeID) (base.SQLInstanceID, SpanPartitionReason), error) {
 	_, mixedProcessMode := dsp.distSQLSrv.NodeID.OptionalNodeID()
-	locFilters := planCtx.localityFilters
+	locFilter := planCtx.localityFilter
 
 	var mixedProcessSameNodeResolver func(nodeID roachpb.NodeID) (base.SQLInstanceID, SpanPartitionReason)
 	if mixedProcessMode {
 		mixedProcessSameNodeResolver = dsp.healthySQLInstanceIDForKVNodeHostedInstanceResolver(ctx, planCtx)
 	}
 
-	if mixedProcessMode && len(locFilters) == 0 {
+	if mixedProcessMode && locFilter.Empty() {
 		return mixedProcessSameNodeResolver, nil
 	}
 
@@ -1899,26 +1932,25 @@ func (dsp *DistSQLPlanner) makeInstanceResolver(
 		// instances (one example is someone explicitly removing the rows from
 		// the sql_instances table), but we always have the gateway pod to
 		// execute on, so we'll use it (unless we have a locality filter).
-		if len(locFilters) > 0 {
+		if locFilter.NonEmpty() {
 			return nil, noInstancesMatchingLocalityFilterErr
 		}
-		log.Dev.Warningf(ctx, "no healthy sql instances available for planning, only using the gateway")
+		log.Warningf(ctx, "no healthy sql instances available for planning, only using the gateway")
 		return dsp.alwaysUseGatewayWithReason(SpanPartitionReason_GATEWAY_NO_HEALTHY_INSTANCES), nil
 	}
+
+	rng, _ := randutil.NewPseudoRand()
 
 	instancesHaveLocality := false
 
 	var gatewayIsEligible bool
-	if len(locFilters) > 0 {
+	if locFilter.NonEmpty() {
 		eligible := make([]sqlinstance.InstanceInfo, 0, len(instances))
 		for i := range instances {
-			for _, filter := range locFilters {
-				if ok, _ := instances[i].Locality.Matches(filter); ok {
-					eligible = append(eligible, instances[i])
-					if instances[i].InstanceID == dsp.gatewaySQLInstanceID {
-						gatewayIsEligible = true
-					}
-					break
+			if ok, _ := instances[i].Locality.Matches(locFilter); ok {
+				eligible = append(eligible, instances[i])
+				if instances[i].InstanceID == dsp.gatewaySQLInstanceID {
+					gatewayIsEligible = true
 				}
 			}
 		}
@@ -1970,58 +2002,27 @@ func (dsp *DistSQLPlanner) makeInstanceResolver(
 			// If we're in mixed-mode, check if the picked node already matches the
 			// locality filter in which case we can just use it.
 			if mixedProcessMode {
-				for _, filter := range locFilters {
-					if ok, _ := nodeDesc.Locality.Matches(filter); ok {
-						return mixedProcessSameNodeResolver(nodeID)
-					}
-				}
-				log.VEventf(ctx, 2,
-					"node %d locality %s does not match locality filter %s, finding alternative placement...",
-					nodeID, nodeDesc.Locality, locFilters)
-			}
-
-			// For strict mode to work, the nodeDesc must match the locality filter.
-			// This may have been checked earlier by certain oracles. Without this
-			// check, the ClosestInstances call below could return an instance that
-			// violates the locality filter. More specifically, if the locality filter
-			// contains a suffix and the current nodeDesc does not have an exact match
-			// to this suffix, it will match to a node with a common prefix.
-			//
-			// For example, suppose you want to filter on y=a and the eligible sql
-			// instances are 1:x=1,y=a and 2:x=2,y=a. If the picked kv node is
-			// x=1,y=b, ClosestInstances will choose node 1. Instead, in strict mode,
-			// this plan should fail, because we cannot have data in the kv node in
-			// x=1,y=b, get processed in by a sql instance with x=1,y=a. We need an
-			// exact match.
-			if planCtx.strictFiltering {
-				matched := false
-				for _, filter := range locFilters {
-					if ok, _ := nodeDesc.Locality.Matches(filter); ok {
-						matched = true
-						break
-					}
-				}
-				if !matched {
-					// The passed in node, which contains a replica for the span we are
-					// attempting to partition, does not satisfy the locality filters, so
-					// this plan should return an error. Return the gatewaySQLInstanceID, as
-					// opposed to 0, just in case some downstream caller does not handle
-					// NO_VALID_INSTANCE properly. We'd rather have a bad plan than a node
-					// panic.
-					return dsp.gatewaySQLInstanceID, SpanPartitionReason_NO_VALID_INSTANCE
+				if ok, _ := nodeDesc.Locality.Matches(locFilter); ok {
+					return mixedProcessSameNodeResolver(nodeID)
+				} else {
+					log.VEventf(ctx, 2,
+						"node %d locality %s does not match locality filter %s, finding alternative placement...",
+						nodeID, nodeDesc.Locality, locFilter,
+					)
 				}
 			}
 
 			// TODO(dt): Pre-compute / cache this result, e.g. in the instance reader.
-			if closest, _ := ClosestInstances(instances, nodeDesc.Locality); len(closest) > 0 {
-				return closest[randutil.FastUint32n(uint32(len(closest)))], SpanPartitionReason_CLOSEST_LOCALITY_MATCH
+			if closest, _ := ClosestInstances(instances,
+				nodeDesc.Locality); len(closest) > 0 {
+				return closest[rng.Intn(len(closest))], SpanPartitionReason_CLOSEST_LOCALITY_MATCH
 			}
 
 			// No instances had any locality tiers in common with the node locality.
 			// At this point we pick the gateway if it is eligible, otherwise we pick
 			// a random instance from the eligible instances.
 			if !gatewayIsEligible {
-				return instances[randutil.FastUint32n(uint32(len(instances)))].InstanceID, SpanPartitionReason_LOCALITY_FILTERED_RANDOM
+				return instances[rng.Intn(len(instances))].InstanceID, SpanPartitionReason_LOCALITY_FILTERED_RANDOM
 			}
 			if dsp.shouldPickGateway(planCtx, instances) {
 				return dsp.gatewaySQLInstanceID, SpanPartitionReason_GATEWAY_NO_LOCALITY_MATCH
@@ -2035,7 +2036,7 @@ func (dsp *DistSQLPlanner) makeInstanceResolver(
 				// NB: This random selection may still pick the gateway but that is
 				// alright as we are more interested in a uniform distribution rather
 				// than avoiding the gateway.
-				id := instances[randutil.FastUint32n(uint32(len(instances)))].InstanceID
+				id := instances[rng.Intn(len(instances))].InstanceID
 				return id, SpanPartitionReason_LOCALITY_FILTERED_RANDOM_GATEWAY_OVERLOADED
 			}
 		}
@@ -2046,7 +2047,7 @@ func (dsp *DistSQLPlanner) makeInstanceResolver(
 	// round-robin strategy that is completely locality-ignorant. Randomize the
 	// order in which we choose instances so that work is allocated fairly across
 	// queries.
-	randutil.FastShuffle(uint32(len(instances)), func(i, j uint32) {
+	rng.Shuffle(len(instances), func(i, j int) {
 		instances[i], instances[j] = instances[j], instances[i]
 	})
 	var i int
@@ -2140,16 +2141,34 @@ func (dsp *DistSQLPlanner) getInstanceIDForScan(
 		return 0, err
 	}
 
+	if dsp.useGossipPlanning(ctx, planCtx) {
+		sqlInstanceID, _ := dsp.deprecatedHealthySQLInstanceIDForKVNodeIDSystem(ctx, planCtx, replDesc.NodeID)
+		return sqlInstanceID, nil
+	}
 	resolver, err := dsp.makeInstanceResolver(ctx, planCtx)
 	if err != nil {
 		return 0, err
 	}
 	sqlInstanceID, reason := resolver(replDesc.NodeID)
-	if reason == SpanPartitionReason_NO_VALID_INSTANCE {
-		return 0, errors.Errorf("no valid SQL instance for KV node %d", replDesc.NodeID)
-	}
 	planCtx.spanPartitionState.update(sqlInstanceID, reason)
 	return sqlInstanceID, nil
+}
+
+// TODO(yuzefovich): retire this setting altogether in 25.3 release.
+var useGossipPlanning = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"sql.distsql_planning.use_gossip.enabled",
+	"if enabled, the DistSQL physical planner falls back to gossip-based planning",
+	false,
+)
+
+func (dsp *DistSQLPlanner) useGossipPlanning(_ context.Context, planCtx *PlanningCtx) bool {
+	var gossipPlanningEnabled bool
+	// Some of the planCtx fields can be left unset in tests.
+	if planCtx.ExtendedEvalCtx != nil && planCtx.ExtendedEvalCtx.Settings != nil {
+		gossipPlanningEnabled = useGossipPlanning.Get(&planCtx.ExtendedEvalCtx.Settings.SV)
+	}
+	return dsp.codec.ForSystemTenant() && planCtx.localityFilter.Empty() && gossipPlanningEnabled
 }
 
 // convertOrdering maps the columns in props.ordering to the output columns of a
@@ -2211,8 +2230,8 @@ func initTableReaderSpecTemplate(
 	var post execinfrapb.PostProcessSpec
 	if n.hardLimit != 0 {
 		post.Limit = uint64(n.hardLimit)
-	} else if softLimit := int64(n.softLimit); softLimit > 0 {
-		s.LimitHint = softLimit
+	} else if n.softLimit != 0 {
+		s.LimitHint = n.softLimit
 	}
 	return s, post, nil
 }
@@ -2240,7 +2259,6 @@ func (dsp *DistSQLPlanner) createTableReaders(
 			reverse:             n.reverse,
 			parallelize:         n.parallelize,
 			estimatedRowCount:   n.estimatedRowCount,
-			statsCreatedAt:      n.statsCreatedAt,
 			reqOrdering:         n.reqOrdering,
 			finalizeLastStageCb: planCtx.associateWithPlanNode(n),
 		},
@@ -2259,7 +2277,6 @@ type tableReaderPlanningInfo struct {
 	reverse             bool
 	parallelize         bool
 	estimatedRowCount   uint64
-	statsCreatedAt      time.Time
 	reqOrdering         ReqOrdering
 	finalizeLastStageCb func(*physicalplan.PhysicalPlan) // will be nil in the spec factory
 }
@@ -2495,7 +2512,6 @@ func (dsp *DistSQLPlanner) planTableReaders(
 
 		corePlacement[i].SQLInstanceID = sp.SQLInstanceID
 		corePlacement[i].EstimatedRowCount = info.estimatedRowCount
-		corePlacement[i].StatsCreatedAt = info.statsCreatedAt
 		corePlacement[i].Core.TableReader = tr
 	}
 
@@ -4187,6 +4203,18 @@ func (dsp *DistSQLPlanner) createPhysPlanForPlanNode(
 			return nil, err
 		}
 
+	case *rowCountNode:
+		isVectorInsert := false
+		if in, ok := n.source.(*insertNode); ok {
+			isVectorInsert = in.vectorInsert
+		}
+
+		if isVectorInsert {
+			plan, err = dsp.createPlanForRowCount(ctx, planCtx, n)
+		} else {
+			plan, err = dsp.wrapPlan(ctx, planCtx, n, false /* allowPartialDistribution */)
+		}
+
 	case *scanNode:
 		plan, err = dsp.createTableReaders(ctx, planCtx, n)
 
@@ -4283,6 +4311,8 @@ func (dsp *DistSQLPlanner) createPhysPlanForPlanNode(
 func (dsp *DistSQLPlanner) wrapPlan(
 	ctx context.Context, planCtx *PlanningCtx, n planNode, allowPartialDistribution bool,
 ) (*PhysicalPlan, error) {
+	useFastPath := planCtx.planDepth == 1 && planCtx.stmtType == tree.RowsAffected
+
 	// First, we search the planNode tree we're trying to wrap for the first
 	// DistSQL-enabled planNode in the tree. If we find one, we ask the planner to
 	// continue the DistSQL planning recursion on that planNode.
@@ -4297,7 +4327,7 @@ func (dsp *DistSQLPlanner) wrapPlan(
 		}
 		if !seenTop {
 			seenTop = true
-		} else if !dsp.mustWrapNode(planCtx, plan) || planCtx.collectExecStats {
+		} else if !dsp.mustWrapNode(planCtx, plan) || shouldWrapPlanNodeForExecStats(planCtx, plan) {
 			p, err := dsp.createPhysPlanForPlanNode(ctx, planCtx, plan)
 			if err != nil {
 				return nil, nil, err
@@ -4337,21 +4367,22 @@ func (dsp *DistSQLPlanner) wrapPlan(
 
 	// Copy the evalCtx.
 	evalCtx := *planCtx.ExtendedEvalCtx
+	// We permit the planNodeToRowSource to trigger the wrapped planNode's fast
+	// path if its the very first node in the flow, and if the statement type we're
+	// expecting is in fact RowsAffected. RowsAffected statements return a single
+	// row with the number of rows affected by the statement, and are the only
+	// types of statement where it's valid to invoke a plan's fast path.
 	wrapper, err := newPlanNodeToRowSource(
 		n,
 		runParams{
 			extendedEvalCtx: &evalCtx,
 			p:               planCtx.planner,
 		},
+		useFastPath,
 		firstNotWrapped,
 	)
 	if err != nil {
 		return nil, err
-	}
-	if !wrapper.rowsAffected && planCtx.planDepth == 1 && planCtx.stmtType == tree.RowsAffected {
-		// Return an error if the receiver expects to get the number of rows
-		// affected, but the planNode returns something else.
-		return nil, errors.AssertionFailedf("planNode %T should return rows affected", n)
 	}
 
 	localProcIdx := p.AddLocalProcessor(wrapper)
@@ -4479,10 +4510,7 @@ func (dsp *DistSQLPlanner) createValuesSpecFromTuples(
 			if err != nil {
 				return nil, err
 			}
-			encDatum, err := rowenc.DatumToEncDatum(resultTypes[colIdx], datum)
-			if err != nil {
-				return nil, err
-			}
+			encDatum := rowenc.DatumToEncDatum(resultTypes[colIdx], datum)
 			buf, err = encDatum.Encode(resultTypes[colIdx], &a, catenumpb.DatumEncoding_VALUE, buf)
 			if err != nil {
 				return nil, err
@@ -5309,7 +5337,6 @@ func (dsp *DistSQLPlanner) planExport(
 		ChunkRows:   int64(planInfo.chunkRows),
 		ChunkSize:   planInfo.chunkSize,
 		ColNames:    planInfo.colNames,
-		HeaderRow:   planInfo.headerRow,
 		UserProto:   planCtx.planner.User().EncodeProto(),
 	}
 
@@ -5447,7 +5474,7 @@ func (dsp *DistSQLPlanner) NewPlanningCtx(
 	distributionType DistributionType,
 ) *PlanningCtx {
 	return dsp.NewPlanningCtxWithOracle(
-		ctx, evalCtx, planner, txn, distributionType, physicalplan.DefaultReplicaChooser, []roachpb.Locality{}, NoStrictLocalityFiltering,
+		ctx, evalCtx, planner, txn, distributionType, physicalplan.DefaultReplicaChooser, roachpb.Locality{},
 	)
 }
 
@@ -5460,8 +5487,7 @@ func (dsp *DistSQLPlanner) NewPlanningCtxWithOracle(
 	txn *kv.Txn,
 	distributionType DistributionType,
 	oracle replicaoracle.Oracle,
-	localityFilters []roachpb.Locality,
-	strictFiltering bool,
+	localityFiler roachpb.Locality,
 ) *PlanningCtx {
 	distribute := distributionType == FullDistribution
 	// Note: infra.Release is not added to the planCtx's onFlowCleanup
@@ -5470,11 +5496,10 @@ func (dsp *DistSQLPlanner) NewPlanningCtxWithOracle(
 	infra := physicalplan.NewPhysicalInfrastructure(uuid.MakeV4(), dsp.gatewaySQLInstanceID)
 	planCtx := &PlanningCtx{
 		ExtendedEvalCtx: evalCtx,
-		localityFilters: localityFilters,
+		localityFilter:  localityFiler,
 		infra:           infra,
 		isLocal:         !distribute,
 		planner:         planner,
-		strictFiltering: strictFiltering,
 	}
 	if !distribute {
 		if planner == nil ||
@@ -5647,6 +5672,33 @@ func finalizePlanWithRowCount(
 	}
 }
 
+// TODO(cucaroach): this doesn't work, get it working as part of effort to make
+// distsql inserts handle general inserts.
+func (dsp *DistSQLPlanner) createPlanForRowCount(
+	ctx context.Context, planCtx *PlanningCtx, n *rowCountNode,
+) (*PhysicalPlan, error) {
+	plan, err := dsp.createPhysPlanForPlanNode(ctx, planCtx, n.source)
+	plan.PlanToStreamColMap = identityMap(nil, 1)
+	// fn := newAggregateFuncHolder(
+	// 	execinfrapb.AggregatorSpec_Func_name[int32(execinfrapb.AggregatorSpec_COUNT_ROWS)],
+	// 	[]int{0},
+	// 	nil,   /* arguments */
+	// 	false, /* isDistinct */
+	// )
+	// gn := groupNode{
+	// 	columns:   []colinfo.ResultColumn{{Name: "rowCount", Typ: types.Int}},
+	// 	plan:      n,
+	// 	groupCols: []int{0},
+	// 	isScalar:  true,
+	// 	funcs:     []*aggregateFuncHolder{fn},
+	// }
+	// // This errors:  no builtin aggregate for COUNT_ROWS on [int]
+	// if err := dsp.addAggregators(ctx, planCtx, plan, &gn); err != nil {
+	// 	return nil, err
+	// }
+	return plan, err
+}
+
 func (dsp *DistSQLPlanner) createPlanForInsert(
 	ctx context.Context, planCtx *PlanningCtx, n *insertNode,
 ) (*PhysicalPlan, error) {
@@ -5683,17 +5735,9 @@ func (dsp *DistSQLPlanner) createPlanForInsert(
 		execinfrapb.Ordering{},
 		planCtx.associateWithPlanNode(n),
 	)
-	plan.PlanToStreamColMap = []int{0}
 	return plan, nil
 }
 
 func (dsp *DistSQLPlanner) NodeDescStore() kvclient.NodeDescStore {
 	return dsp.nodeDescs
-}
-
-func SingleLocalityFilter(l roachpb.Locality) []roachpb.Locality {
-	if l.Empty() {
-		return nil
-	}
-	return []roachpb.Locality{l}
 }

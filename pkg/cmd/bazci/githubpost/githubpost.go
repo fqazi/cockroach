@@ -412,7 +412,7 @@ func listFailuresFromJSON(
 		}
 	} else {
 		// If we haven't received a final event for the last test, then a
-		// panic/log.Dev.Fatal must have happened. Consider it failed.
+		// panic/log.Fatal must have happened. Consider it failed.
 		// Note that because of https://github.com/golang/go/issues/27582 there
 		// might be other outstanding tests; we ignore those.
 		if _, ok := outstandingOutput[last]; ok {
@@ -523,10 +523,6 @@ func listFailuresFromTestXML(
 	failures := make(map[scopedTest][]testEvent)
 	for _, suite := range suites.Suites {
 		pkg := suite.Name
-		dotIdx := strings.LastIndexByte(pkg, '.')
-		if dotIdx > 0 {
-			pkg = pkg[:dotIdx]
-		}
 		for _, testCase := range suite.TestCases {
 			var result *buildutil.XMLMessage
 			if testCase.Failure != nil {

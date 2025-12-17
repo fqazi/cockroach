@@ -59,7 +59,7 @@ func TestAddNewStoresToExistingNodes(t *testing.T) {
 			ReplicationMode:   base.ReplicationAuto,
 			ServerArgsPerNode: map[int]base.TestServerArgs{},
 			ServerArgs: base.TestServerArgs{
-				DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
+				DefaultTestTenant: base.TODOTestTenantDisabled,
 			},
 		}
 		for srvIdx := 0; srvIdx < numNodes; srvIdx++ {

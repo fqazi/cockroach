@@ -32,8 +32,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -42,7 +40,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/cockroachkvs"
@@ -1305,50 +1302,20 @@ func TestIncompatibleVersion(t *testing.T) {
 	p.Close()
 
 	// Overwrite the min version file with an unsupported version.
-	ver := roachpb.Version{Major: 21, Minor: 1}
-	b, err := protoutil.Marshal(&ver)
+	version := roachpb.Version{Major: 21, Minor: 1}
+	b, err := protoutil.Marshal(&version)
 	require.NoError(t, err)
-	require.NoError(t, fs.SafeWriteToUnencryptedFile(memFS, "", fs.MinVersionFilename, b, fs.UnspecifiedWriteCategory))
+	require.NoError(t, safeWriteToUnencryptedFile(memFS, "", MinVersionFilename, b, fs.UnspecifiedWriteCategory))
 
-	settings := cluster.MakeTestingClusterSettings()
-	_, err = fs.InitEnv(context.Background(), memFS, "", fs.EnvConfig{
-		Version: settings.Version,
-	}, nil /* statsCollector */)
+	env = mustInitTestEnv(t, memFS, "")
+	_, err = Open(ctx, env, cluster.MakeTestingClusterSettings())
+	require.Error(t, err)
 	msg := err.Error()
 	if !strings.Contains(msg, "is too old for running version") &&
 		!strings.Contains(msg, "cannot be opened by development version") {
 		t.Fatalf("unexpected error %v", err)
 	}
-}
-
-func TestPebbleClusterVersionTooNew(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	ctx := context.Background()
-
-	memFS := vfs.NewMem()
-	env := mustInitTestEnv(t, memFS, "")
-
-	p, err := Open(ctx, env, cluster.MakeTestingClusterSettings())
-	require.NoError(t, err)
-	p.Close()
-
-	// Overwrite the min version file with a future version that's newer than the
-	// latest supported version. Use a development version higher than the current
-	// running version to ensure it will be considered "too new". We use a very
-	// high development version to avoid conflicts with the current version.
-	ver := roachpb.Version{Major: 1000030, Minor: 0}
-	b, err := protoutil.Marshal(&ver)
-	require.NoError(t, err)
-	require.NoError(t, fs.SafeWriteToUnencryptedFile(memFS, "", fs.MinVersionFilename, b, fs.UnspecifiedWriteCategory))
-
-	settings := cluster.MakeTestingClusterSettings()
-	_, err = fs.InitEnv(context.Background(), memFS, "", fs.EnvConfig{
-		Version: settings.Version,
-	}, nil /* statsCollector */)
-	require.Error(t, err)
-	msg := err.Error()
-	require.Contains(t, msg, "is too high for running version")
+	env.Close()
 }
 
 func TestNoMinVerFile(t *testing.T) {
@@ -1364,7 +1331,7 @@ func TestNoMinVerFile(t *testing.T) {
 	p.Close()
 
 	// Remove the min version filename.
-	require.NoError(t, memFS.Remove(fs.MinVersionFilename))
+	require.NoError(t, memFS.Remove(MinVersionFilename))
 
 	// We are still allowed the open the store if we haven't written anything to it.
 	// This is useful in case the initial Open crashes right before writinng the
@@ -1380,7 +1347,7 @@ func TestNoMinVerFile(t *testing.T) {
 	p.Close()
 
 	// Remove the min version filename.
-	require.NoError(t, memFS.Remove(fs.MinVersionFilename))
+	require.NoError(t, memFS.Remove(MinVersionFilename))
 
 	env = mustInitTestEnv(t, memFS, "")
 	_, err = Open(ctx, env, st)
@@ -1430,7 +1397,7 @@ func TestApproximateDiskBytes(t *testing.T) {
 	}
 }
 
-func TestIngestAndExciseFilesToWriter(t *testing.T) {
+func TestConvertFilesToBatchAndCommit(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
@@ -1499,16 +1466,11 @@ func TestIngestAndExciseFilesToWriter(t *testing.T) {
 	require.NoError(t, w2.Finish())
 	w2.Close()
 
-	b := engs[batchEngine].NewWriteBatch()
-	defer b.Close()
-	require.NoError(t, engs[batchEngine].IngestLocalFilesToWriter(
+	require.NoError(t, engs[batchEngine].ConvertFilesToBatchAndCommit(
 		ctx, []string{fileName1, fileName2}, []roachpb.Span{
 			{Key: lkStart, EndKey: lkEnd}, {Key: startKey, EndKey: endKey},
-		}, b))
-	require.NoError(t, b.Commit(true /* sync */))
-
+		}))
 	require.NoError(t, engs[ingestEngine].IngestLocalFiles(ctx, []string{fileName1, fileName2}))
-
 	outputState := func(eng Engine) []string {
 		it, err := eng.NewEngineIterator(context.Background(), IterOptions{
 			UpperBound: roachpb.KeyMax,
@@ -1639,60 +1601,6 @@ func TestMinimumSupportedFormatVersion(t *testing.T) {
 		"MinimumSupportedFormatVersion must match the format version for %s", clusterversion.MinSupported)
 }
 
-func TestPebbleFormatVersion(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	if len(pebbleFormatVersionMap) == 1 {
-		skip.IgnoreLint(t, "test requires multiple entries in pebbleFormatVersionMap")
-	}
-
-	latestKey := pebbleFormatVersionKeys[0]
-	latestVersion := latestKey.Version()
-	latestFmv := pebbleFormatVersionMap[latestKey]
-
-	require.Equal(t, pebbleFormatVersion(latestVersion), latestFmv)
-	require.Equal(t, minPebbleFormatVersionInCluster(latestVersion), latestFmv)
-
-	// We upgrade the pebble format as soon as we reach the fence version.
-	require.Equal(t, pebbleFormatVersion(latestVersion.FenceVersion()), latestFmv)
-	// But at the fence version, we don't have a guarantee that all nodes have
-	// upgraded.
-	require.Less(t, minPebbleFormatVersionInCluster(latestVersion.FenceVersion()), latestFmv)
-
-	require.Less(t, pebbleFormatVersion((latestKey - 1).Version()), latestFmv)
-	require.Less(t, minPebbleFormatVersionInCluster((latestKey - 1).Version()), latestFmv)
-
-	v := latestVersion
-	v.Minor++
-	require.Equal(t, pebbleFormatVersion(latestVersion), latestFmv)
-	require.Equal(t, minPebbleFormatVersionInCluster(latestVersion), latestFmv)
-
-	require.Equal(t, pebbleFormatVersion(clusterversion.MinSupported.Version()), MinimumSupportedFormatVersion)
-	require.Equal(t, minPebbleFormatVersionInCluster(clusterversion.MinSupported.Version()), MinimumSupportedFormatVersion)
-
-	// Gather all possible versions since MinSupported.
-	var versions []roachpb.Version
-	for k := clusterversion.MinSupported + 1; k <= clusterversion.Latest; k++ {
-		versions = append(versions, k.Version().FenceVersion(), k.Version())
-	}
-
-	prevFMV := MinimumSupportedFormatVersion
-	for i, v := range versions {
-		fmv := pebbleFormatVersion(v)
-		if fmv != prevFMV {
-			require.True(t, v.IsFence())
-			// minPebbleFormatVersionInCluster() should return the previous format.
-			require.Equal(t, prevFMV, minPebbleFormatVersionInCluster(v))
-			// For the next version, minPebbleFormatVersionInCluster() should return
-			// the new format.
-			require.Equal(t, fmv, minPebbleFormatVersionInCluster(versions[i+1]))
-		} else {
-			require.Equal(t, fmv, minPebbleFormatVersionInCluster(v))
-		}
-		prevFMV = fmv
-	}
-}
-
 // delayFS injects a delay on each read.
 type delayFS struct {
 	vfs.FS
@@ -1720,7 +1628,9 @@ func TestPebbleLoggingSlowReads(t *testing.T) {
 
 	testFunc := func(t *testing.T, fileStr string) int {
 		s := log.ScopeWithoutShowLogs(t)
-		testutils.SetVModule(t, fileStr+"=2")
+		prevVModule := log.GetVModule()
+		_ = log.SetVModule(fileStr + "=2")
+		defer func() { _ = log.SetVModule(prevVModule) }()
 		defer s.Close(t)
 
 		ctx := context.Background()
@@ -1728,10 +1638,7 @@ func TestPebbleLoggingSlowReads(t *testing.T) {
 
 		memFS := vfs.NewMem()
 		dFS := delayFS{FS: memFS}
-		settings := cluster.MakeTestingClusterSettings()
-		e, err := fs.InitEnv(context.Background(), dFS, "" /* dir */, fs.EnvConfig{
-			Version: settings.Version,
-		}, nil /* statsCollector */)
+		e, err := fs.InitEnv(context.Background(), dFS, "" /* dir */, fs.EnvConfig{}, nil /* statsCollector */)
 		require.NoError(t, err)
 		// Tiny block cache, so all reads go to FS.
 		db, err := Open(ctx, e, cluster.MakeClusterSettings(), CacheSize(1024))
@@ -1806,10 +1713,7 @@ func TestPebbleCompactCancellation(t *testing.T) {
 	ctx := context.Background()
 	mem := vfs.NewMem()
 	bfs := &fs.BlockingWriteFSForTesting{FS: mem}
-	settings := cluster.MakeTestingClusterSettings()
-	e, err := fs.InitEnv(ctx, bfs, "" /* dir */, fs.EnvConfig{
-		Version: settings.Version,
-	}, nil /* statsCollector */)
+	e, err := fs.InitEnv(ctx, bfs, "" /* dir */, fs.EnvConfig{}, nil /* statsCollector */)
 	require.NoError(t, err)
 	db, err := Open(
 		ctx, e, cluster.MakeClusterSettings(), CacheSize(1024), MaxConcurrentCompactions(1),
@@ -1857,130 +1761,4 @@ func TestPebbleCompactCancellation(t *testing.T) {
 	// Unblock the first compaction and wait for it to complete.
 	bfs.WaitForBlockAndUnblock()
 	wg.Wait()
-}
-
-func TestPebbleSpanPolicyFunc(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	type testCase struct {
-		startKey   roachpb.Key
-		wantPolicy pebble.SpanPolicy
-		wantEndKey []byte
-	}
-	cases := []testCase{
-		{
-			startKey: keys.RaftHardStateKey(1),
-			wantPolicy: pebble.SpanPolicy{
-				PreferFastCompression: true,
-				ValueStoragePolicy:    pebble.ValueStorageLatencyTolerant,
-			},
-			wantEndKey: spanPolicyLocalRangeIDEndKey,
-		},
-		{
-			startKey: keys.RaftLogKey(9, 2),
-			wantPolicy: pebble.SpanPolicy{
-				PreferFastCompression: true,
-				ValueStoragePolicy:    pebble.ValueStorageLatencyTolerant,
-			},
-			wantEndKey: spanPolicyLocalRangeIDEndKey,
-		},
-		{
-			startKey: keys.RangeDescriptorKey(roachpb.RKey("a")),
-			wantPolicy: pebble.SpanPolicy{
-				PreferFastCompression: true,
-			},
-			wantEndKey: spanPolicyLockTableStartKey,
-		},
-		{
-			startKey: func() roachpb.Key {
-				k, _ := keys.LockTableSingleKey(roachpb.Key("a"), nil)
-				return k
-			}(),
-			wantPolicy: pebble.SpanPolicy{
-				PreferFastCompression: true,
-				ValueStoragePolicy:    pebble.ValueStorageLowReadLatency,
-			},
-			wantEndKey: spanPolicyLockTableEndKey,
-		},
-		{
-			startKey:   keys.SystemSQLCodec.IndexPrefix(1, 2),
-			wantPolicy: pebble.SpanPolicy{},
-			wantEndKey: nil,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(fmt.Sprintf("%x", tc.startKey), func(t *testing.T) {
-			ek := EngineKey{Key: tc.startKey}.Encode()
-			policy, endKey, err := spanPolicyFuncFactory(nil /* sv */)(ek)
-			require.NoError(t, err)
-			require.Equal(t, tc.wantPolicy, policy)
-			require.Equal(t, tc.wantEndKey, endKey)
-		})
-	}
-}
-
-func TestDiskUnhealthyTracker(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	var b strings.Builder
-	builderStr := func() string {
-		str := b.String()
-		b.Reset()
-		return str
-	}
-	var isClosed atomic.Bool
-	ts := timeutil.NewManualTime(time.Unix(0, 0))
-	st := cluster.MakeTestingClusterSettings()
-	UnhealthyWriteDuration.Override(t.Context(), &st.SV, 5*time.Second)
-	tickReceivedCh := make(chan time.Time, 1)
-	tracker := &diskUnhealthyTracker{
-		st: st,
-		isClosed: func() bool {
-			closed := isClosed.Load()
-			fmt.Fprintf(&b, "asyncRunner.Closed(): %t\n", closed)
-			return closed
-		},
-		runAsync: func(fn func()) {
-			fmt.Fprintf(&b, "asyncRunner.async\n")
-			go fn()
-		},
-		ts:                    ts,
-		testingTickReceivedCh: tickReceivedCh,
-	}
-	datadriven.RunTest(t, datapathutils.TestDataPath(t, "disk_unhealthy_tracker"),
-		func(t *testing.T, d *datadriven.TestData) string {
-			switch d.Cmd {
-			case "slow-event":
-				var durationSec int
-				d.ScanArgs(t, "dur", &durationSec)
-				tracker.onDiskSlow(vfs.DiskSlowInfo{Duration: time.Duration(durationSec) * time.Second})
-				return builderStr()
-
-			case "advance-time":
-				var durationSec int
-				d.ScanArgs(t, "sec", &durationSec)
-				ts.Advance(time.Duration(durationSec) * time.Second)
-				return ""
-
-			case "receive-runner-tick":
-				tickTime := <-tickReceivedCh
-				fmt.Fprintf(&b, "tickTime: %ds\n", tickTime.Unix())
-				return builderStr()
-
-			case "get-state":
-				fmt.Fprintf(&b, "unhealthy: %t, unhealthy-duration: %v\n",
-					tracker.getUnhealthy(), tracker.getUnhealthyDuration())
-				return builderStr()
-
-			case "close":
-				isClosed.Store(true)
-				return ""
-
-			default:
-				return fmt.Sprintf("unknown command: %s", d.Cmd)
-			}
-		})
 }

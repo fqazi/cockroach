@@ -17,15 +17,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cli/clisqlexec"
 	"github.com/cockroachdb/cockroach/pkg/server/authserver"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	isatty "github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
-
-const authSessionAppName = catconstants.InternalAppNamePrefix + " cockroach auth-session"
 
 var loginCmd = &cobra.Command{
 	Use:   "login [options] <session-username>",
@@ -92,7 +89,7 @@ func createAuthSessionToken(
 	username string,
 ) (sessionID int64, httpCookie *http.Cookie, resErr error) {
 	ctx := context.Background()
-	sqlConn, err := makeSQLClient(ctx, authSessionAppName+" login", useSystemDb)
+	sqlConn, err := makeSQLClient(ctx, "cockroach auth-session login", useSystemDb)
 	if err != nil {
 		return -1, nil, err
 	}
@@ -180,7 +177,7 @@ The user for which the HTTP sessions are revoked can be arbitrary.
 func runLogout(cmd *cobra.Command, args []string) (resErr error) {
 	username := tree.Name(args[0]).Normalize()
 	ctx := context.Background()
-	sqlConn, err := makeSQLClient(ctx, authSessionAppName+" logout", useSystemDb)
+	sqlConn, err := makeSQLClient(ctx, "cockroach auth-session logout", useSystemDb)
 	if err != nil {
 		return err
 	}
@@ -212,7 +209,7 @@ The user invoking the 'list' CLI command must be an admin on the cluster.
 
 func runAuthList(cmd *cobra.Command, args []string) (resErr error) {
 	ctx := context.Background()
-	sqlConn, err := makeSQLClient(ctx, authSessionAppName+" list", useSystemDb)
+	sqlConn, err := makeSQLClient(ctx, "cockroach auth-session list", useSystemDb)
 	if err != nil {
 		return err
 	}

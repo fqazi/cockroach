@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/allocatorimpl"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/asim/config"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/asim/gossip"
@@ -95,7 +96,7 @@ func TestLeaseTransferOp(t *testing.T) {
 			results := make([]map[state.RangeID]state.StoreID, len(tc.ticks))
 			pending := []DispatchedTicket{}
 			for i, tick := range tc.ticks {
-				changer.Tick(ctx, state.OffsetTick(start, tick), s)
+				changer.Tick(state.OffsetTick(start, tick), s)
 				controller.Tick(ctx, state.OffsetTick(start, tick), s)
 
 				for _, transfers := range tc.transfers[tick] {
@@ -105,6 +106,7 @@ func TestLeaseTransferOp(t *testing.T) {
 						roachpb.RangeID(rangeID),
 						0,
 						roachpb.StoreID(target),
+						allocator.RangeUsageInfo{},
 					)
 					ticket := controller.Dispatch(ctx, state.OffsetTick(start, tick), s, op)
 					pending = append(pending, ticket)
@@ -139,7 +141,7 @@ func TestLeaseTransferOp(t *testing.T) {
 func TestRelocateRangeOp(t *testing.T) {
 	settings := config.DefaultSimulationSettings()
 	start := settings.StartTime
-	settings.RebalancingSnapshotRate = 1 << 20
+	settings.ReplicaAddRate = 1
 	settings.ReplicaChangeBaseDelay = 5 * time.Second
 	settings.StateExchangeInterval = 1 * time.Second
 	settings.StateExchangeDelay = 0
@@ -281,7 +283,7 @@ func TestRelocateRangeOp(t *testing.T) {
 				settings,
 			)
 			changer := state.NewReplicaChanger()
-			allocator := s.Allocator(state.StoreID(1))
+			allocator := s.MakeAllocator(state.StoreID(1))
 			storePool := s.StorePool(state.StoreID(1))
 			controller := NewController(changer, allocator, storePool, settings, 1 /* storeID */)
 
@@ -305,7 +307,7 @@ func TestRelocateRangeOp(t *testing.T) {
 				// range rebalancer will fail if any pending changes that were
 				// set to complete at tick t, still exist at tick t. So we tick
 				// it first here.
-				changer.Tick(ctx, state.OffsetTick(start, tick), s)
+				changer.Tick(state.OffsetTick(start, tick), s)
 				controller.Tick(ctx, state.OffsetTick(start, tick), s)
 
 				relocations := tc.relocations[tick]

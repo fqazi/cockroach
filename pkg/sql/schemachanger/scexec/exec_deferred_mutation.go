@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 type deferredState struct {
@@ -28,9 +27,6 @@ type deferredState struct {
 	scheduleIDsToDelete          []jobspb.ScheduleID
 	statsToRefresh               catalog.DescriptorIDSet
 	indexesToSplitAndScatter     []indexesToSplitAndScatter
-	ttlScheduleMetadataUpdates   []ttlScheduleMetadataUpdate
-	ttlScheduleCronUpdates       []ttlScheduleCronUpdate
-	ttlSchedulesToCreate         []ttlScheduleToCreate
 	gcJobs
 }
 
@@ -39,28 +35,13 @@ type databaseRoleSettingToDelete struct {
 }
 
 type indexesToSplitAndScatter struct {
-	tableID     catid.DescID
-	indexID     catid.IndexID
-	copyIndexID catid.IndexID
-}
-
-type ttlScheduleMetadataUpdate struct {
-	tableID descpb.ID
-	newName string
-}
-
-type ttlScheduleCronUpdate struct {
-	scheduleID  jobspb.ScheduleID
-	newCronExpr string
-}
-
-type ttlScheduleToCreate struct {
-	tableID descpb.ID
+	tableID catid.DescID
+	indexID catid.IndexID
 }
 
 type schemaChangerJobUpdate struct {
 	isNonCancelable       bool
-	runningStatus         redact.RedactableString
+	runningStatus         string
 	descriptorIDsToRemove catalog.DescriptorIDSet
 }
 
@@ -75,13 +56,12 @@ func (s *deferredState) DeleteDatabaseRoleSettings(ctx context.Context, dbID des
 }
 
 func (s *deferredState) AddIndexForMaybeSplitAndScatter(
-	tableID catid.DescID, indexID catid.IndexID, copyIndexID catid.IndexID,
+	tableID catid.DescID, indexID catid.IndexID,
 ) {
 	s.indexesToSplitAndScatter = append(s.indexesToSplitAndScatter,
 		indexesToSplitAndScatter{
-			tableID:     tableID,
-			indexID:     indexID,
-			copyIndexID: copyIndexID,
+			tableID: tableID,
+			indexID: indexID,
 		})
 }
 
@@ -93,41 +73,13 @@ func (s *deferredState) RefreshStats(descriptorID descpb.ID) {
 	s.statsToRefresh.Add(descriptorID)
 }
 
-func (s *deferredState) UpdateTTLScheduleMetadata(
-	ctx context.Context, tableID descpb.ID, newName string,
-) error {
-	s.ttlScheduleMetadataUpdates = append(s.ttlScheduleMetadataUpdates, ttlScheduleMetadataUpdate{
-		tableID: tableID,
-		newName: newName,
-	})
-	return nil
-}
-
-func (s *deferredState) UpdateTTLScheduleCron(
-	ctx context.Context, scheduleID jobspb.ScheduleID, cronExpr string,
-) error {
-	s.ttlScheduleCronUpdates = append(s.ttlScheduleCronUpdates, ttlScheduleCronUpdate{
-		scheduleID:  scheduleID,
-		newCronExpr: cronExpr,
-	})
-	return nil
-}
-
-func (s *deferredState) CreateRowLevelTTLSchedule(ctx context.Context, tableID descpb.ID) error {
-	s.ttlSchedulesToCreate = append(s.ttlSchedulesToCreate, ttlScheduleToCreate{
-		tableID: tableID,
-	})
-	return nil
-}
-
 func (s *deferredState) AddNewSchemaChangerJob(
 	jobID jobspb.JobID,
 	stmts []scpb.Statement,
 	isNonCancelable bool,
 	auth scpb.Authorization,
 	descriptorIDs catalog.DescriptorIDSet,
-	runningStatus redact.RedactableString,
-	distributedMergeMode jobspb.IndexBackfillDistributedMergeMode,
+	runningStatus string,
 ) error {
 	if s.schemaChangerJob != nil {
 		return errors.AssertionFailedf("cannot create more than one new schema change job")
@@ -139,7 +91,6 @@ func (s *deferredState) AddNewSchemaChangerJob(
 		auth,
 		descriptorIDs,
 		runningStatus,
-		distributedMergeMode,
 	)
 	return nil
 }
@@ -159,8 +110,7 @@ func MakeDeclarativeSchemaChangeJobRecord(
 	isNonCancelable bool,
 	auth scpb.Authorization,
 	descriptorIDs catalog.DescriptorIDSet,
-	runningStatus redact.RedactableString,
-	distributedMergeMode jobspb.IndexBackfillDistributedMergeMode,
+	runningStatus string,
 ) *jobs.Record {
 	stmtStrs := make([]string, len(stmts))
 	for i, stmt := range stmts {
@@ -180,9 +130,7 @@ func MakeDeclarativeSchemaChangeJobRecord(
 		Statements:    stmtStrs,
 		Username:      username.MakeSQLUsernameFromPreNormalizedString(auth.UserName),
 		DescriptorIDs: descriptorIDs.Ordered(),
-		Details: jobspb.NewSchemaChangeDetails{
-			DistributedMergeMode: distributedMergeMode,
-		},
+		Details:       jobspb.NewSchemaChangeDetails{},
 		Progress:      jobspb.NewSchemaChangeProgress{},
 		StatusMessage: jobs.StatusMessage(runningStatus),
 		NonCancelable: isNonCancelable,
@@ -193,7 +141,7 @@ func MakeDeclarativeSchemaChangeJobRecord(
 func (s *deferredState) UpdateSchemaChangerJob(
 	jobID jobspb.JobID,
 	isNonCancelable bool,
-	runningStatus redact.RedactableString,
+	runningStatus string,
 	descriptorIDsToRemove catalog.DescriptorIDSet,
 ) error {
 	if s.schemaChangerJobUpdates == nil {
@@ -239,40 +187,6 @@ func (s *deferredState) exec(
 			return err
 		}
 	}
-	for _, ttlUpdate := range s.ttlScheduleMetadataUpdates {
-		descs, err := c.MustReadImmutableDescriptors(ctx, ttlUpdate.tableID)
-		if err != nil {
-			return err
-		}
-		desc := descs[0]
-		// Skip if this isn't a table descriptor
-		tableDesc, ok := desc.(catalog.TableDescriptor)
-		if !ok {
-			continue
-		}
-		if err := m.UpdateTTLScheduleLabel(ctx, tableDesc); err != nil {
-			return err
-		}
-	}
-	for _, cronUpdate := range s.ttlScheduleCronUpdates {
-		if err := m.UpdateTTLScheduleCron(ctx, cronUpdate.scheduleID, cronUpdate.newCronExpr); err != nil {
-			return err
-		}
-	}
-	for _, ttlCreate := range s.ttlSchedulesToCreate {
-		descs, err := c.MustReadImmutableDescriptors(ctx, ttlCreate.tableID)
-		if err != nil {
-			return err
-		}
-		desc := descs[0]
-		tableDesc, ok := desc.(catalog.TableDescriptor)
-		if !ok {
-			continue
-		}
-		if err := m.CreateRowLevelTTLSchedule(ctx, tableDesc); err != nil {
-			return err
-		}
-	}
 	for _, idx := range s.indexesToSplitAndScatter {
 		descs, err := c.MustReadImmutableDescriptors(ctx, idx.tableID)
 		if err != nil {
@@ -283,14 +197,7 @@ func (s *deferredState) exec(
 		if err != nil {
 			return err
 		}
-		var copyIndexSource catalog.Index
-		if idx.copyIndexID != 0 {
-			copyIndexSource, err = catalog.MustFindIndexByID(tableDesc, idx.copyIndexID)
-			if err != nil {
-				return err
-			}
-		}
-		if err := iss.MaybeSplitIndexSpans(ctx, tableDesc, idxDesc, copyIndexSource); err != nil {
+		if err := iss.MaybeSplitIndexSpans(ctx, tableDesc, idxDesc); err != nil {
 			return err
 		}
 	}
@@ -336,7 +243,7 @@ func manageJobs(
 		) error {
 			s := schemaChangeJobUpdateState{md: md}
 			defer s.doUpdate(updateProgress, updatePayload)
-			s.updatedProgress().StatusMessage = update.runningStatus.StripMarkers() // TODO(150233): should use RedactableString
+			s.updatedProgress().StatusMessage = update.runningStatus
 			if !md.Payload.Noncancelable && update.isNonCancelable {
 				s.updatedPayload().Noncancelable = true
 			}

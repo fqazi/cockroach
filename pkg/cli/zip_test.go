@@ -84,8 +84,8 @@ table_name NOT IN (
 	'forward_dependencies',
 	'gossip_network',
 	'index_columns',
-	'index_spans',
-	'kv_builtin_function_comments',
+  'index_spans',
+  'kv_builtin_function_comments',
 	'kv_catalog_comments',
 	'kv_catalog_descriptor',
 	'kv_catalog_namespace',
@@ -135,7 +135,6 @@ ORDER BY name ASC`)
 		tables = append(tables, table)
 	}
 	tables = append(tables, "crdb_internal.probe_ranges_1s_read_limit_100")
-	tables = append(tables, "cluster_settings_history")
 	sort.Strings(tables)
 
 	var exp []string
@@ -698,10 +697,6 @@ func eraseNonDeterministicZipOutput(out string) string {
 	re = regexp.MustCompile(`(?m)^\[node \d+\] \d+ execution traces found$`)
 	out = re.ReplaceAllString(out, `[node ?] ? execution traces found`)
 
-	// Remove license-related NOTICE messages that may appear intermittently.
-	re = regexp.MustCompile(`(?m)^NOTICE: No license is installed.*\n?`)
-	out = re.ReplaceAllString(out, ``)
-
 	return out
 }
 
@@ -942,63 +937,6 @@ test/generate_series(1,15000) as t(x).4.json
 test/generate_series(1,15000) as t(x).4.json.err.txt
 `
 	assert.Equal(t, expected, fileList.String())
-}
-
-// TestZipNonRootUser verifies that debug zip works with non-root users.
-func TestZipNonRootUser(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	skip.UnderShort(t)
-	skip.UnderRace(t)
-
-	ctx := context.Background()
-	s := serverutils.StartServerOnly(t, base.TestServerArgs{Insecure: true})
-	defer s.Stopper().Stop(ctx)
-
-	sqlDB := s.SQLConn(t, serverutils.DBName("system"))
-	defer sqlDB.Close()
-
-	// Create a test user with ADMIN privileges
-	_, err := sqlDB.Exec(`CREATE USER testuser`)
-	require.NoError(t, err)
-	_, err = sqlDB.Exec(`GRANT ADMIN TO testuser`)
-	require.NoError(t, err)
-
-	dir, cleanupFn := testutils.TempDir(t)
-	defer cleanupFn()
-
-	// Test with non-root user
-	c := TestCLI{
-		t:        t,
-		Server:   s,
-		Insecure: true,
-	}
-
-	zipName := filepath.Join(dir, "test.zip")
-	out, err := c.RunWithCapture(fmt.Sprintf(
-		"debug zip --user=testuser --concurrency=1 --cpu-profile-duration=0s --validate-zip-file=false %s",
-		zipName,
-	))
-	require.NoError(t, err)
-	require.NotEmpty(t, out)
-
-	// Verify the zip file was created
-	_, err = os.Stat(zipName)
-	require.NoError(t, err)
-
-	// Test that root user still works (regression test)
-	zipNameRoot := filepath.Join(dir, "test_root.zip")
-	out, err = c.RunWithCapture(fmt.Sprintf(
-		"debug zip --concurrency=1 --cpu-profile-duration=0s --validate-zip-file=false %s",
-		zipNameRoot,
-	))
-	require.NoError(t, err)
-	require.NotEmpty(t, out)
-
-	// Verify the zip file was created
-	_, err = os.Stat(zipNameRoot)
-	require.NoError(t, err)
 }
 
 // This checks that SQL retry errors are properly handled.
@@ -1349,7 +1287,7 @@ func TestCommandFlags(t *testing.T) {
 	}
 
 	for _, f := range r.File {
-		if f.Name == "debug/"+debugZipCommandFlagsFileName {
+		if f.Name == "debug/debug_zip_command_flags.txt" {
 			rc, err := f.Open()
 			if err != nil {
 				t.Fatal(err)
@@ -1366,7 +1304,7 @@ func TestCommandFlags(t *testing.T) {
 			return
 		}
 	}
-	assert.Fail(t, "debug/"+debugZipCommandFlagsFileName+" is not generated")
+	assert.Fail(t, "debug/debug_zip_command_flags.txt is not generated")
 
 	if err = r.Close(); err != nil {
 		t.Fatal(err)

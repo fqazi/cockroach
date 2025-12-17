@@ -25,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/dd"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -46,21 +45,24 @@ type transportControl struct {
 }
 
 func parseNodeID(t *testing.T, d *datadriven.TestData, key string) roachpb.NodeID {
-	arg := dd.ScanArg[string](t, d, key)
+	var arg string
+	d.ScanArgs(t, key, &arg)
 	ni, err := strconv.Atoi(strings.TrimPrefix(arg, "n"))
 	require.NoError(t, err)
 	return roachpb.NodeID(ni)
 }
 
 func parseStoreID(t *testing.T, d *datadriven.TestData, key string) roachpb.StoreID {
-	arg := dd.ScanArg[string](t, d, key)
+	var arg string
+	d.ScanArgs(t, key, &arg)
 	si, err := strconv.Atoi(strings.TrimPrefix(arg, "s"))
 	require.NoError(t, err)
 	return roachpb.StoreID(si)
 }
 
 func parseRangeID(t *testing.T, d *datadriven.TestData, key string) roachpb.RangeID {
-	arg := dd.ScanArg[string](t, d, key)
+	var arg string
+	d.ScanArgs(t, key, &arg)
 	si, err := strconv.Atoi(strings.TrimPrefix(arg, "r"))
 	require.NoError(t, err)
 	return roachpb.RangeID(si)
@@ -69,8 +71,9 @@ func parseRangeID(t *testing.T, d *datadriven.TestData, key string) roachpb.Rang
 func parseReplicaDescriptor(
 	t *testing.T, d *datadriven.TestData, key string,
 ) roachpb.ReplicaDescriptor {
-	arg := dd.ScanArg[string](t, d, key)
+	var arg string
 	var desc roachpb.ReplicaDescriptor
+	d.ScanArgs(t, key, &arg)
 	parts := strings.Split(arg, "/")
 	require.Len(t, parts, 3)
 	ni, err := strconv.Atoi(strings.TrimPrefix(parts[0], "n"))
@@ -197,12 +200,19 @@ func TestFlowControlRaftTransportV2(t *testing.T) {
 
 					case "send":
 						// Parse range=r<int>.
-						rangeID := parseRangeID(t, d, "range")
+						var arg string
+						d.ScanArgs(t, "range", &arg)
+						ri, err := strconv.Atoi(strings.TrimPrefix(arg, "r"))
+						require.NoError(t, err)
+						rangeID := roachpb.RangeID(ri)
+
 						from := parseReplicaDescriptor(t, d, "from") // parse from=n<int>/s<int>/<int>
 						to := parseReplicaDescriptor(t, d, "to")     // parse to=n<int>/s<int>/<int>
 
 						// Parse commit=<int>.
-						c := dd.ScanArg[int](t, d, "commit")
+						d.ScanArgs(t, "commit", &arg)
+						c, err := strconv.Atoi(arg)
+						require.NoError(t, err)
 
 						testutils.SucceedsSoon(t, func() error {
 							if !rttc.Send(from, to, rangeID, raftpb.Message{Commit: uint64(c)}) {

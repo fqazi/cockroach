@@ -44,9 +44,15 @@ import (
 
 // CreateIndex implements CREATE INDEX.
 func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
-	// Ensure that the cluster is fully upgraded to 25.2 before creating a vector index.
-	if n.Type == idxtype.VECTOR && !b.EvalCtx().Settings.Version.ActiveVersion(b).AtLeast(clusterversion.V25_2.Version()) {
-		panic(pgerror.Newf(pgcode.FeatureNotSupported, "cannot create a vector index until finalizing on 25.2"))
+	// Check if sql_safe_updates is enabled and this is a vector index
+	if n.Type == idxtype.VECTOR {
+		if !b.EvalCtx().Settings.Version.ActiveVersion(b).AtLeast(clusterversion.V25_2.Version()) {
+			panic(pgerror.Newf(pgcode.FeatureNotSupported, "cannot create a vector index until finalizing on 25.2"))
+		} else if b.EvalCtx().SessionData().SafeUpdates {
+			panic(pgerror.DangerousStatementf("CREATE VECTOR INDEX will disable writes to the table while the index is being built"))
+		} else {
+			b.EvalCtx().ClientNoticeSender.BufferClientNotice(b, pgnotice.Newf("CREATE VECTOR INDEX will disable writes to the table while the index is being built"))
+		}
 	}
 
 	b.IncrementSchemaChangeCreateCounter("index")
@@ -263,9 +269,8 @@ func CreateIndex(b BuildCtx, n *tree.CreateIndex) {
 	})
 	// Construct the temporary objects from the index spec, since these will
 	// be transient.
-	tempIdxSpec := makeTempIndexSpec(b, idxSpec)
+	tempIdxSpec := makeTempIndexSpec(idxSpec)
 	tempIdxSpec.apply(b.AddTransient)
-
 	// If the concurrent option is added emit a warning.
 	if n.Concurrently {
 		b.EvalCtx().ClientNoticeSender.BufferClientNotice(b,
@@ -748,60 +753,6 @@ func addColumnsForSecondaryIndex(
 	}
 }
 
-func fixupColumnsForTempVectorIndex(b BuildCtx, tempIdxSpec *indexSpec) {
-	// For vector indexes, the temporary index should only be keyed by the primary
-	// key columns. Get the actual primary key columns from the source index.
-
-	// Get the source index ID (which should be the primary index)
-	sourceIndexID := tempIdxSpec.temporary.SourceIndexID
-
-	// Query for the primary key columns from the source index
-	tableElts := b.QueryByID(tempIdxSpec.temporary.TableID)
-	primaryKeyColumns := getIndexColumns(tableElts, sourceIndexID, scpb.IndexColumn_KEY)
-
-	// Create new index columns for the temporary index based on primary key columns
-	var newTempColumns []*scpb.IndexColumn
-	for i, pkCol := range primaryKeyColumns {
-		newCol := &scpb.IndexColumn{
-			TableID:       tempIdxSpec.temporary.TableID,
-			IndexID:       tempIdxSpec.temporary.IndexID,
-			ColumnID:      pkCol.ColumnID,
-			OrdinalInKind: uint32(i),
-			Kind:          scpb.IndexColumn_KEY,
-			Direction:     pkCol.Direction,
-			Implicit:      pkCol.Implicit,
-		}
-		newTempColumns = append(newTempColumns, newCol)
-	}
-	// Replace the entire column set with just the primary key columns
-	tempIdxSpec.columns = newTempColumns
-}
-
-// fixupPartitioningForTempVectorIndex updates the partitioning for a temporary
-// vector index to inherit from the primary key instead of the vector index.
-func fixupPartitioningForTempVectorIndex(b BuildCtx, tempIdxSpec *indexSpec, tempID catid.IndexID) {
-	// Get the source index ID (which should be the primary index)
-	sourceIndexID := tempIdxSpec.temporary.SourceIndexID
-
-	// Query for the primary key's partitioning
-	tableElts := b.QueryByID(tempIdxSpec.temporary.TableID)
-	var primaryPartitioning *scpb.IndexPartitioning
-	scpb.ForEachIndexPartitioning(tableElts, func(_ scpb.Status, target scpb.TargetStatus, e *scpb.IndexPartitioning) {
-		if target == scpb.ToPublic && e.IndexID == sourceIndexID {
-			primaryPartitioning = e
-		}
-	})
-
-	if primaryPartitioning != nil {
-		// Clone the primary key's partitioning and update it for the temporary index
-		tempIdxSpec.partitioning = protoutil.Clone(primaryPartitioning).(*scpb.IndexPartitioning)
-		tempIdxSpec.partitioning.IndexID = tempID
-	} else {
-		// No partitioning on primary key, so temporary index shouldn't have partitioning either
-		tempIdxSpec.partitioning = nil
-	}
-}
-
 // maybeCreateAndAddShardCol adds a new hidden computed shard column (or its mutation) to
 // `desc`, if one doesn't already exist for the given index column set and number of shard
 // buckets.
@@ -820,7 +771,7 @@ func maybeCreateAndAddShardCol(
 		}
 	})
 	scpb.ForEachColumn(elts, func(_ scpb.Status, _ scpb.TargetStatus, col *scpb.Column) {
-		if col.ColumnID == existingShardColID && !(col.IsHidden || retrieveColumnHidden(b, tbl.TableID, col.ColumnID) != nil) {
+		if col.ColumnID == existingShardColID && !col.IsHidden {
 			// The user managed to reverse-engineer our crazy shard column name, so
 			// we'll return an error here rather than try to be tricky.
 			panic(pgerror.Newf(pgcode.DuplicateColumn,
@@ -841,6 +792,7 @@ func maybeCreateAndAddShardCol(
 		col: &scpb.Column{
 			TableID:  tbl.TableID,
 			ColumnID: shardColID,
+			IsHidden: true,
 		},
 		name: &scpb.ColumnName{
 			TableID:  tbl.TableID,
@@ -852,21 +804,20 @@ func maybeCreateAndAddShardCol(
 			ColumnID:                shardColID,
 			TypeT:                   newTypeT(types.Int),
 			IsVirtual:               true,
+			IsNullable:              false,
 			ElementCreationMetadata: scdecomp.NewElementCreationMetadata(b.EvalCtx().Settings.Version.ActiveVersion(b)),
 		},
 		notNull: true,
 	}
 	wexpr := b.WrapExpression(tbl.TableID, parsedExpr)
-	spec.compute = &scpb.ColumnComputeExpression{
-		TableID:    tbl.TableID,
-		ColumnID:   shardColID,
-		Expression: *wexpr,
-	}
-
-	if spec.colType.ElementCreationMetadata.In_26_1OrLater {
-		spec.hidden = true
+	if spec.colType.ElementCreationMetadata.In_24_3OrLater {
+		spec.compute = &scpb.ColumnComputeExpression{
+			TableID:    tbl.TableID,
+			ColumnID:   shardColID,
+			Expression: *wexpr,
+		}
 	} else {
-		spec.col.IsHidden = true
+		spec.colType.ComputeExpr = wexpr
 	}
 
 	backing := addColumn(b, spec, n)
@@ -979,15 +930,7 @@ func maybeCreateVirtualColumnForIndex(
 	d.Nullable.Nullability = tree.Null
 	// Infer column type from expression.
 	{
-		_, columnType := b.ComputedColumnExpression(
-			tbl, d, tree.ExpressionIndexElementExpr,
-			func() colinfo.ResultColumns {
-				return getNonDropResultColumns(b, tbl.TableID)
-			},
-			func(columnName tree.Name) (exists, accessible, computed bool, id catid.ColumnID, typ *types.T) {
-				return columnLookupFn(b, tbl.TableID, columnName)
-			},
-		)
+		_, columnType := b.ComputedColumnExpression(tbl, d, tree.ExpressionIndexElementExpr)
 		d.Type = columnType
 		validateColumnIndexableType(columnType)
 	}

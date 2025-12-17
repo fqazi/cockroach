@@ -19,10 +19,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/multiregion"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemaexpr"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
-	"github.com/cockroachdb/cockroach/pkg/sql/parserutils"
+	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
+	plpgsqlparser "github.com/cockroachdb/cockroach/pkg/sql/plpgsql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/semenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -94,7 +95,7 @@ func (desc *wrapper) GetReferencedDescIDs(
 			// Skip trigger function bodies - they are handled below.
 			return nil
 		}
-		if parsedExpr, err := parserutils.ParseExpr(*expr); err == nil {
+		if parsedExpr, err := parser.ParseExpr(*expr); err == nil {
 			// ignore errors
 			tree.WalkExpr(visitor, parsedExpr)
 		}
@@ -281,11 +282,11 @@ func (desc *wrapper) ValidateBackReferences(
 	_ = ForEachExprStringInTableDesc(desc, func(expr *string, typ catalog.DescExprType) (err error) {
 		switch typ {
 		case catalog.SQLExpr:
-			_, err = parserutils.ParseExpr(*expr)
+			_, err = parser.ParseExpr(*expr)
 		case catalog.SQLStmt:
-			_, err = parserutils.Parse(*expr)
+			_, err = parser.Parse(*expr)
 		case catalog.PLpgSQLStmt:
-			_, err = parserutils.PLpgSQLParse(*expr)
+			_, err = plpgsqlparser.Parse(*expr)
 		}
 		vea.Report(err)
 		return nil
@@ -360,6 +361,8 @@ func (desc *wrapper) ValidateBackReferences(
 		}
 		switch depDesc.DescriptorType() {
 		case catalog.Table:
+			// If this is a table, it may be referenced by a view, otherwise if this
+			// is a sequence, then it may be also be referenced by a table.
 			vea.Report(desc.validateInboundTableRef(by, vdg))
 		case catalog.Function:
 			// This relation may be referenced by a function.
@@ -501,76 +504,49 @@ func (desc *wrapper) validateInboundTableRef(
 			backReferencedTable.GetName(), backReferencedTable.GetID())
 	}
 	if desc.IsSequence() {
-		if err := validateSequenceColumnBackrefs(desc, backReferencedTable, by); err != nil {
-			return err
+		// The ColumnIDs field takes a different meaning when the validated
+		// descriptor is for a sequence. In this case, they refer to the columns
+		// in the referenced descriptor instead.
+		for _, colID := range by.ColumnIDs {
+			// Skip this check if the column ID is zero. This can happen due to
+			// bugs in 20.2.
+			//
+			// TODO(ajwerner): Make sure that a migration in 22.2 fixes this issue.
+			if colID == 0 {
+				continue
+			}
+			col := catalog.FindColumnByID(backReferencedTable, colID)
+			if col == nil {
+				return errors.AssertionFailedf("depended-on-by relation %q (%d) does not have a column with ID %d",
+					backReferencedTable.GetName(), by.ID, colID)
+			}
+			var found bool
+			for i := 0; i < col.NumUsesSequences(); i++ {
+				if col.GetUsesSequenceID(i) == desc.GetID() {
+					found = true
+					break
+				}
+			}
+			if found {
+				continue
+			}
+			return errors.AssertionFailedf(
+				"depended-on-by relation %q (%d) has no reference to this sequence in column %q (%d)",
+				backReferencedTable.GetName(), by.ID, col.GetName(), col.GetID())
 		}
 	}
 
 	// View back-references need corresponding forward reference.
-	if backReferencedTable.IsView() {
-		for _, id := range backReferencedTable.TableDesc().DependsOn {
-			if id == desc.GetID() {
-				return nil
-			}
-		}
-		return errors.AssertionFailedf("depended-on-by view %q (%d) has no corresponding depends-on forward reference",
-			backReferencedTable.GetName(), by.ID)
+	if !backReferencedTable.IsView() {
+		return nil
 	}
-
-	// Table to table back-references must have a trigger reference.
-	if backReferencedTable.IsTable() && desc.IsTable() {
-		for _, trigger := range backReferencedTable.TableDesc().Triggers {
-			for _, id := range trigger.DependsOn {
-				if id == desc.GetID() {
-					return nil
-				}
-			}
+	for _, id := range backReferencedTable.TableDesc().DependsOn {
+		if id == desc.GetID() {
+			return nil
 		}
-
-		// No valid forward reference found to justify the backref.
-		return errors.AssertionFailedf(
-			"table %q (%d) does not have a forward reference to descriptor %q (%d)",
-			backReferencedTable.GetName(), by.ID, desc.GetName(), desc.GetID())
 	}
-	return nil
-}
-
-func validateSequenceColumnBackrefs(
-	seq catalog.Descriptor,
-	backReferencedTable catalog.TableDescriptor,
-	by descpb.TableDescriptor_Reference,
-) error {
-	// The ColumnIDs field takes a different meaning when the validated
-	// descriptor is for a sequence. In this case, they refer to the columns
-	// in the referenced descriptor instead.
-	for _, colID := range by.ColumnIDs {
-		// Skip this check if the column ID is zero. This can happen due to
-		// bugs in 20.2.
-		//
-		// TODO(ajwerner): Make sure that a migration in 22.2 fixes this issue.
-		if colID == 0 {
-			continue
-		}
-		col := catalog.FindColumnByID(backReferencedTable, colID)
-		if col == nil {
-			return errors.AssertionFailedf("depended-on-by relation %q (%d) does not have a column with ID %d",
-				backReferencedTable.GetName(), by.ID, colID)
-		}
-		var found bool
-		for i := 0; i < col.NumUsesSequences(); i++ {
-			if col.GetUsesSequenceID(i) == seq.GetID() {
-				found = true
-				break
-			}
-		}
-		if found {
-			continue
-		}
-		return errors.AssertionFailedf(
-			"depended-on-by relation %q (%d) has no reference to this sequence in column %q (%d)",
-			backReferencedTable.GetName(), by.ID, col.GetName(), col.GetID())
-	}
-	return nil
+	return errors.AssertionFailedf("depended-on-by view %q (%d) has no corresponding depends-on forward reference",
+		backReferencedTable.GetName(), by.ID)
 }
 
 // validateFK asserts that references to desc from inbound and outbound FKs are
@@ -1262,7 +1238,7 @@ func (desc *wrapper) validateColumns() error {
 
 		if column.IsComputed() {
 			// Verify that the computed column expression is valid.
-			expr, err := parserutils.ParseExpr(column.GetComputeExpr())
+			expr, err := parser.ParseExpr(column.GetComputeExpr())
 			if err != nil {
 				return err
 			}
@@ -1478,12 +1454,12 @@ func (desc *wrapper) validateTriggers() error {
 
 		// Verify that the WHEN expression and function body statements are valid.
 		if trigger.WhenExpr != "" {
-			_, err := parserutils.ParseExpr(trigger.WhenExpr)
+			_, err := parser.ParseExpr(trigger.WhenExpr)
 			if err != nil {
 				return err
 			}
 		}
-		_, err := parserutils.PLpgSQLParse(trigger.FuncBody)
+		_, err := plpgsqlparser.Parse(trigger.FuncBody)
 		if err != nil {
 			return err
 		}
@@ -1550,7 +1526,7 @@ func (desc *wrapper) validateCheckConstraints(
 		}
 
 		// Verify that the check's expression is valid.
-		expr, err := parserutils.ParseExpr(chk.GetExpr())
+		expr, err := parser.ParseExpr(chk.GetExpr())
 		if err != nil {
 			return err
 		}
@@ -1604,7 +1580,7 @@ func (desc *wrapper) validateUniqueWithoutIndexConstraints(
 		}
 
 		if c.IsPartial() {
-			expr, err := parserutils.ParseExpr(c.GetPredicate())
+			expr, err := parser.ParseExpr(c.GetPredicate())
 			if err != nil {
 				return err
 			}
@@ -1772,7 +1748,7 @@ func (desc *wrapper) validateTableIndexes(
 			}
 		}
 		if idx.IsPartial() {
-			expr, err := parserutils.ParseExpr(idx.GetPredicate())
+			expr, err := parser.ParseExpr(idx.GetPredicate())
 			if err != nil {
 				return err
 			}
@@ -1895,15 +1871,7 @@ func (desc *wrapper) validateTableIndexes(
 					idx.GetName(), idx.IndexDesc().EncodingType, catenumpb.SecondaryIndexEncoding)
 			}
 		}
-		// Validate that HideForPrimaryKeyRecreate is only true if a schema
-		// change is active. At the end of a schema change, all public indexes
-		// should be visible.
-		if idx.IndexDesc().HideForPrimaryKeyRecreate &&
-			desc.GetDeclarativeSchemaChangerState() == nil &&
-			len(desc.GetMutations()) == 0 {
-			return errors.AssertionFailedf("index %q (%d) is hidden for a primary key"+
-				" recreate without a schema change", idx.GetName(), idx.GetID())
-		}
+
 		// Ensure that an index column ID shows up at most once in `keyColumnIDs`,
 		// `keySuffixColumnIDs`, and `storeColumnIDs`.
 		if idx.GetVersion() < descpb.StrictIndexColumnIDGuaranteesVersion {
@@ -2242,13 +2210,13 @@ func (desc *wrapper) validatePolicyRoles(p *descpb.PolicyDescriptor) error {
 // validatePolicyExprs will validate the expressions within the policy.
 func (desc *wrapper) validatePolicyExprs(p *descpb.PolicyDescriptor) error {
 	if p.WithCheckExpr != "" {
-		_, err := parserutils.ParseExpr(p.WithCheckExpr)
+		_, err := parser.ParseExpr(p.WithCheckExpr)
 		if err != nil {
 			return errors.Wrapf(err, "WITH CHECK expression %q is invalid", p.WithCheckExpr)
 		}
 	}
 	if p.UsingExpr != "" {
-		_, err := parserutils.ParseExpr(p.UsingExpr)
+		_, err := parser.ParseExpr(p.UsingExpr)
 		if err != nil {
 			return errors.Wrapf(err, "USING expression %q is invalid", p.UsingExpr)
 		}
@@ -2400,7 +2368,7 @@ func ValidateRBRTableUsingConstraint(
 		if !col.IsComputed() {
 			continue
 		}
-		expr, err := parserutils.ParseExpr(col.GetComputeExpr())
+		expr, err := parser.ParseExpr(col.GetComputeExpr())
 		if err != nil {
 			// At this point, we should be able to parse the computed expression.
 			return errors.WithAssertionFailure(err)

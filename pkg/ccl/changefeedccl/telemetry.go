@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -18,7 +17,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/severity"
-	"github.com/cockroachdb/crlib/crtime"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 )
 
 type sinkTelemetryData struct {
@@ -56,11 +55,10 @@ func makePeriodicTelemetryLogger(
 	description string,
 	jobID jobspb.JobID,
 	s *cluster.Settings,
-	numTargets uint,
 ) (*periodicTelemetryLogger, error) {
 	return &periodicTelemetryLogger{
 		ctx:               ctx,
-		changefeedDetails: makeCommonChangefeedEventDetails(ctx, details, description, jobID, numTargets),
+		changefeedDetails: makeCommonChangefeedEventDetails(ctx, details, description, jobID),
 		sinkTelemetryData: sinkTelemetryData{},
 		settings:          s,
 	}, nil
@@ -87,13 +85,13 @@ func (ptl *periodicTelemetryLogger) maybeFlushLogs() {
 		return
 	}
 
-	currentTime := time.Duration(crtime.NowMono()).Nanoseconds()
+	currentTime := timeutil.Now().UnixNano()
 	// This is a barrier to ensure that only one goroutine writes logs in
 	// case multiple goroutines call this function at the same time.
 	// This prevents a burst of telemetry events from being needlessly
 	// logging the same data.
 	lastEmit := ptl.lastEmitTime.Load()
-	if lastEmit > 0 && currentTime < lastEmit+loggingInterval {
+	if currentTime < lastEmit+loggingInterval {
 		return
 	}
 	if !ptl.lastEmitTime.CompareAndSwap(lastEmit, currentTime) {
@@ -106,9 +104,7 @@ func (ptl *periodicTelemetryLogger) maybeFlushLogs() {
 		EmittedMessages:              ptl.resetEmittedMessages(),
 		LoggingInterval:              loggingInterval,
 	}
-
-	shouldMigrate := log.ShouldMigrateEvent(&ptl.settings.SV)
-	getChangefeedEventMigrator(shouldMigrate).StructuredEvent(ptl.ctx, severity.INFO, continuousTelemetryEvent)
+	log.StructuredEvent(ptl.ctx, severity.INFO, continuousTelemetryEvent)
 }
 
 func (ptl *periodicTelemetryLogger) close() {
@@ -124,9 +120,7 @@ func (ptl *periodicTelemetryLogger) close() {
 		LoggingInterval:              loggingInterval,
 		Closing:                      true,
 	}
-
-	shouldMigrate := log.ShouldMigrateEvent(&ptl.settings.SV)
-	getChangefeedEventMigrator(shouldMigrate).StructuredEvent(ptl.ctx, severity.INFO, continuousTelemetryEvent)
+	log.StructuredEvent(ptl.ctx, severity.INFO, continuousTelemetryEvent)
 }
 
 func wrapMetricsRecorderWithTelemetry(
@@ -137,10 +131,9 @@ func wrapMetricsRecorderWithTelemetry(
 	s *cluster.Settings,
 	mb metricsRecorder,
 	knobs TestingKnobs,
-	targets changefeedbase.Targets,
 ) (*telemetryMetricsRecorder, error) {
 	var logger telemetryLogger
-	logger, err := makePeriodicTelemetryLogger(ctx, details, description, jobID, s, targets.Size)
+	logger, err := makePeriodicTelemetryLogger(ctx, details, description, jobID, s)
 	if err != nil {
 		return &telemetryMetricsRecorder{}, err
 	}
@@ -173,7 +166,7 @@ func (r *telemetryMetricsRecorder) recordOneMessage() recordOneMessageCallback {
 }
 
 func (r *telemetryMetricsRecorder) recordEmittedBatch(
-	startTime crtime.Mono, numMessages int, mvcc hlc.Timestamp, bytes int, compressedBytes int,
+	startTime time.Time, numMessages int, mvcc hlc.Timestamp, bytes int, compressedBytes int,
 ) {
 	r.metricsRecorder.recordEmittedBatch(startTime, numMessages, mvcc, bytes, compressedBytes)
 	r.telemetryLogger.incEmittedCounters(numMessages, bytes)

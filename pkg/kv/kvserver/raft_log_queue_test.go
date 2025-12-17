@@ -587,7 +587,7 @@ func TestProactiveRaftLogTruncate(t *testing.T) {
 			testutils.SucceedsSoon(t, func() error {
 				if looselyCoupled {
 					// Flush the engine to advance durability, which triggers truncation.
-					require.NoError(t, store.StateEngine().Flush())
+					require.NoError(t, store.TODOEngine().Flush())
 				}
 				if newCompIndex := r.GetCompactedIndex(); newCompIndex <= oldCompIndex {
 					return errors.Errorf("log was not correctly truncated, old compacted index:%d, current:%d",
@@ -884,9 +884,8 @@ func waitForTruncationForTesting(
 ) {
 	testutils.SucceedsSoon(t, func() error {
 		if looselyCoupled {
-			// Flush the state machine engine to advance durability, which triggers
-			// truncation.
-			require.NoError(t, r.store.StateEngine().Flush())
+			// Flush the engine to advance durability, which triggers truncation.
+			require.NoError(t, r.store.TODOEngine().Flush())
 		}
 		// First index should have changed.
 		if firstIndex := r.GetCompactedIndex() + 1; firstIndex != newFirstIndex {

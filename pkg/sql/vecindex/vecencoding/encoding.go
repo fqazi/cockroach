@@ -57,7 +57,7 @@ Vector KV Value:
 func EncodeMetadataKey(
 	indexPrefix []byte, encodedPrefixCols []byte, partitionKey cspann.PartitionKey,
 ) roachpb.Key {
-	capacity := len(indexPrefix) + len(encodedPrefixCols) + EncodedPartitionKeyLen(partitionKey) + EncodedPartitionLevelLen(cspann.InvalidLevel)
+	capacity := len(indexPrefix) + len(encodedPrefixCols) + EncodedPartitionKeyLen(partitionKey) + 1
 	keyBuffer := make([]byte, 0, capacity)
 	keyBuffer = append(keyBuffer, indexPrefix...)
 	keyBuffer = append(keyBuffer, encodedPrefixCols...)
@@ -132,16 +132,13 @@ func DecodeVectorKey(
 		keyBytes = keyBytes[prefixLen:]
 	}
 
-	// Decode the partition key and level.
-	var partitionKey cspann.PartitionKey
-	partitionKey, keyBytes, err = DecodePartitionKey(keyBytes)
+	partitionKey, keyBytes, err := DecodePartitionKey(keyBytes)
 	if err != nil {
 		return vecIndexKey, err
 	}
 	vecIndexKey.PartitionKey = partitionKey
 
-	var level cspann.Level
-	level, keyBytes, err = DecodePartitionLevel(keyBytes)
+	level, keyBytes, err := DecodePartitionLevel(keyBytes)
 	if err != nil {
 		return vecIndexKey, err
 	}
@@ -190,7 +187,7 @@ func EncodeMetadataValue(metadata cspann.PartitionMetadata) []byte {
 	// - 0-20 bytes for timestamp (variable encoding)
 	// - 4 bytes count of dimensions
 	// - 4 bytes for each dimension in the vector
-	encMetadataSize := 4 + 4 + 8 + 8 + 8 + binary.MaxVarintLen64*2 + 4 + 4*len(metadata.Centroid)
+	encMetadataSize := 4 + 8 + 8 + 8 + binary.MaxVarintLen64*2 + 4 + 4*len(metadata.Centroid)
 	buf := make([]byte, 0, encMetadataSize)
 	buf = encoding.EncodeUint32Ascending(buf, uint32(metadata.Level))
 	buf = encoding.EncodeUint32Ascending(buf, uint32(metadata.StateDetails.State))
@@ -199,7 +196,9 @@ func EncodeMetadataValue(metadata cspann.PartitionMetadata) []byte {
 	buf = encoding.EncodeUint64Ascending(buf, uint64(metadata.StateDetails.Source))
 	buf = encoding.EncodeUntaggedTimeValue(buf, metadata.StateDetails.Timestamp)
 
-	return vector.Encode(buf, metadata.Centroid)
+	// vector.Encode never returns a non-nil error, so suppress return value.
+	buf, _ = vector.Encode(buf, metadata.Centroid)
+	return buf
 }
 
 // EncodeRaBitQVector encodes a RaBitQ vector into the given byte slice.
@@ -220,7 +219,7 @@ func EncodeRaBitQVectorFromSet(
 
 // EncodeUnquantizerVector encodes an Unquantizer vector into the given byte
 // slice.
-func EncodeUnquantizerVector(appendTo []byte, v vector.T) []byte {
+func EncodeUnquantizerVector(appendTo []byte, v vector.T) ([]byte, error) {
 	// For backwards compatibility, encode a zero float32. Previously, the
 	// distance of the vector to the centroid was encoded, but that is no longer
 	// necessary.

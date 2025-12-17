@@ -39,9 +39,9 @@ func registerTPCHConcurrency(r registry.Registry) {
 			}
 		}
 
-		if err := importTPCHDataset(
-			ctx, t, c, "" /* virtualClusterName */, conn, 1 /* sf */, c.NewDeprecatedMonitor(ctx, c.CRDBNodes()),
-			c.CRDBNodes(), true /* disableMergeQueue */, true, /* smallRanges */
+		if err := loadTPCHDataset(
+			ctx, t, c, conn, 1 /* sf */, c.NewDeprecatedMonitor(ctx, c.CRDBNodes()),
+			c.CRDBNodes(), true, /* disableMergeQueue */
 		); err != nil {
 			t.Fatal(err)
 		}

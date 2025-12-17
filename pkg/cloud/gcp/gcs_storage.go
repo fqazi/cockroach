@@ -76,7 +76,6 @@ func parseGSURL(uri *url.URL) (cloudpb.ExternalStorage, error) {
 	gsURL := cloud.ConsumeURL{URL: uri}
 	conf := cloudpb.ExternalStorage{}
 	conf.Provider = cloudpb.ExternalStorageProvider_gs
-	conf.URI = uri.String()
 	assumeRole, delegateRoles := cloud.ParseRoleString(gsURL.ConsumeParam(AssumeRoleParam))
 	conf.GoogleCloudConfig = &cloudpb.ExternalStorage_GCS{
 		Bucket:              uri.Host,
@@ -106,7 +105,6 @@ type gcsStorage struct {
 	ioConf   base.ExternalIODirConfig
 	prefix   string
 	settings *cluster.Settings
-	uri      string // original URI used to construct this storage
 }
 
 var _ cloud.ExternalStorage = &gcsStorage{}
@@ -115,7 +113,6 @@ func (g *gcsStorage) Conf() cloudpb.ExternalStorage {
 	return cloudpb.ExternalStorage{
 		Provider:          cloudpb.ExternalStorageProvider_gs,
 		GoogleCloudConfig: g.conf,
-		URI:               g.uri,
 	}
 }
 
@@ -190,10 +187,9 @@ func makeGCSStorage(
 
 	clientName := args.ExternalStorageOptions().ClientName
 	baseTransport, err := cloud.MakeTransport(args.Settings, args.MetricsRecorder, cloud.HTTPClientConfig{
-		Bucket:         conf.Bucket,
-		Client:         clientName,
-		Cloud:          "gcs",
-		HttpMiddleware: args.HttpMiddleware,
+		Bucket: conf.Bucket,
+		Client: clientName,
+		Cloud:  "gcs",
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create http transport")
@@ -226,7 +222,6 @@ func makeGCSStorage(
 		ioConf:   args.IOConf,
 		prefix:   conf.Prefix,
 		settings: args.Settings,
-		uri:      dest.URI,
 	}, nil
 }
 

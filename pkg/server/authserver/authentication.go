@@ -24,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/security/password"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"github.com/cockroachdb/cockroach/pkg/server/apiutil"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/srverrors"
 	"github.com/cockroachdb/cockroach/pkg/settings"
@@ -48,6 +47,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"storj.io/drpc"
 )
 
 const (
@@ -102,7 +102,6 @@ var ConfigureOIDC = func(
 	userLoginFromSSO func(ctx context.Context, username string) (*http.Cookie, error),
 	ambientCtx log.AmbientContext,
 	cluster uuid.UUID,
-	execCfg *sql.ExecutorConfig,
 ) (OIDC, error) {
 	return &noOIDCConfigured{}, nil
 }
@@ -134,6 +133,15 @@ type authenticationServer struct {
 func (s *authenticationServer) RegisterService(g *grpc.Server) {
 	serverpb.RegisterLogInServer(g, s)
 	serverpb.RegisterLogOutServer(g, s)
+
+}
+
+// RegisterService registers the LogIn and LogOut services with DRPC.
+func (s *authenticationServer) RegisterDRPCService(d drpc.Mux) error {
+	if err := serverpb.DRPCRegisterLogIn(d, s); err != nil {
+		return err
+	}
+	return serverpb.DRPCRegisterLogOut(d, s)
 }
 
 // RegisterGateway starts the gateway (i.e. reverse proxy) that proxies HTTP requests
@@ -160,23 +168,6 @@ var ldapManager = struct {
 func (s *authenticationServer) UserLogin(
 	ctx context.Context, req *serverpb.UserLoginRequest,
 ) (*serverpb.UserLoginResponse, error) {
-	cookie, err := s.userLogin(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	// Set the cookie header on the outgoing response.
-	if err := grpc.SetHeader(ctx, metadata.Pairs("set-cookie", cookie.String())); err != nil {
-		return nil, srverrors.APIInternalError(ctx, err)
-	}
-
-	return &serverpb.UserLoginResponse{}, nil
-}
-
-// userLogin returns an HTTP cookie upon successful authentication.
-// This is an internal helper used by both the gRPC and HTTP login handlers.
-func (s *authenticationServer) userLogin(
-	ctx context.Context, req *serverpb.UserLoginRequest,
-) (*http.Cookie, error) {
 	if req.Username == "" {
 		return nil, status.Errorf(
 			codes.Unauthenticated,
@@ -205,11 +196,11 @@ func (s *authenticationServer) userLogin(
 	authMethod, hbaEntry, err := s.lookupAuthenticationMethodUsingRules(hba.ConnHostSSL, hbaConf, username, originIP)
 	if err != nil {
 		if log.V(1) {
-			log.Dev.Infof(ctx, "invalid retrieval of HBA entry: error: %v", err)
+			log.Infof(ctx, "invalid retrieval of HBA entry: error: %v", err)
 		}
 	} else if authMethod.String() == "ldap" {
 		if log.V(1) {
-			log.Dev.Infof(ctx, "retrieved LDAP HBA entry successfully: authMethod: %s, hbaEntry: %v", authMethod.String(), hbaEntry)
+			log.Infof(ctx, "retrieved LDAP HBA entry successfully: authMethod: %s, hbaEntry: %v", authMethod.String(), hbaEntry)
 		}
 		execCfg := s.sqlServer.ExecutorConfig()
 		ldapManager.Do(func() {
@@ -220,13 +211,13 @@ func (s *authenticationServer) userLogin(
 		ldapUserDN, detailedErrors, authError := ldapManager.m.FetchLDAPUserDN(ctx, execCfg.Settings, username, hbaEntry, identMap)
 		if authError != nil {
 			if log.V(1) {
-				log.Dev.Infof(ctx, "ldap search response error: ldapUserDN %v, authError %v, detailedErrors %v", ldapUserDN, authError, detailedErrors)
+				log.Infof(ctx, "ldap search response error: ldapUserDN %v, authError %v, detailedErrors %v", ldapUserDN, authError, detailedErrors)
 			}
 		} else {
 			detailedErrors, authError = ldapManager.m.ValidateLDAPLogin(ctx, execCfg.Settings, ldapUserDN, username, req.Password, hbaEntry, identMap)
 			if authError != nil {
 				if log.V(1) {
-					log.Dev.Infof(ctx, "ldap bind response error: ldapUserDN %v, authError %v, detailedErrors %v", ldapUserDN, authError, detailedErrors)
+					log.Infof(ctx, "ldap bind response error: ldapUserDN %v, authError %v, detailedErrors %v", ldapUserDN, authError, detailedErrors)
 				}
 			} else {
 				ldapAuthSuccess = true
@@ -256,16 +247,21 @@ func (s *authenticationServer) userLogin(
 	if err != nil {
 		return nil, srverrors.APIInternalError(ctx, err)
 	}
-	return cookie, err
+
+	// Set the cookie header on the outgoing response.
+	if err := grpc.SetHeader(ctx, metadata.Pairs("set-cookie", cookie.String())); err != nil {
+		return nil, srverrors.APIInternalError(ctx, err)
+	}
+
+	return &serverpb.UserLoginResponse{}, nil
 }
 
 // DemoLogin is the same as UserLogin but using the GET method.
 // It is only available for 'cockroach demo' and test clusters.
 func (s *authenticationServer) DemoLogin(w http.ResponseWriter, req *http.Request) {
-	tags := logtags.BuildBuffer()
-	tags.Add("client", log.SafeOperational(req.RemoteAddr))
-	tags.Add("demologin", nil)
-	ctx := logtags.WithTags(context.Background(), tags.Finish())
+	ctx := context.Background()
+	ctx = logtags.AddTag(ctx, "client", log.SafeOperational(req.RemoteAddr))
+	ctx = logtags.AddTag(ctx, "demologin", nil)
 
 	fail := func(err error) {
 		w.WriteHeader(500)
@@ -392,7 +388,6 @@ func (s *authenticationServer) createSessionFor(
 func (s *authenticationServer) UserLogout(
 	ctx context.Context, req *serverpb.UserLogoutRequest,
 ) (*serverpb.UserLogoutResponse, error) {
-	// Extract session ID from gRPC metadata
 	md, ok := grpcutil.FastFromIncomingContext(ctx)
 	if !ok {
 		return nil, srverrors.APIInternalError(ctx, fmt.Errorf("couldn't get incoming context"))
@@ -408,22 +403,7 @@ func (s *authenticationServer) UserLogout(
 			codes.InvalidArgument,
 			"invalid session id: %d", sessionID)
 	}
-	cookie, err := s.userLogout(ctx, req, int64(sessionID))
-	if err != nil {
-		return nil, err
-	}
 
-	// Set the cookie header on the outgoing response.
-	if err := grpc.SetHeader(ctx, metadata.Pairs("set-cookie", cookie.String())); err != nil {
-		return nil, srverrors.APIInternalError(ctx, err)
-	}
-	return &serverpb.UserLogoutResponse{}, nil
-}
-
-// userLogout is an internal helper used by both the gRPC and HTTP logout handlers.
-func (s *authenticationServer) userLogout(
-	ctx context.Context, req *serverpb.UserLogoutRequest, sessionID int64,
-) (*http.Cookie, error) {
 	// Revoke the session.
 	if n, err := s.sqlServer.InternalExecutor().ExecEx(
 		ctx,
@@ -438,7 +418,7 @@ func (s *authenticationServer) userLogout(
 		err := status.Errorf(
 			codes.InvalidArgument,
 			"session with id %d nonexistent", sessionID)
-		log.Dev.Infof(ctx, "%v", err)
+		log.Infof(ctx, "%v", err)
 		return nil, err
 	}
 
@@ -447,54 +427,12 @@ func (s *authenticationServer) userLogout(
 	cookie := CreateSessionCookie("", false /* forHTTPSOnly */)
 	cookie.MaxAge = -1
 
-	return cookie, nil
-}
-
-// LoginHandler handles user login requests.
-// It extracts credentials from the request, validates them, and sets a session cookie.
-func (s *authenticationServer) LoginHandler(w http.ResponseWriter, req *http.Request) {
-	ctx := req.Context()
-	var loginReq serverpb.UserLoginRequest
-
-	if err := apiutil.DecodeRequest(req, &loginReq); err != nil {
-		apiutil.WriteHTTPError(ctx, w, req, status.Errorf(codes.InvalidArgument, "failed to decode request body: %v", err))
-		return
-	}
-	cookie, err := s.userLogin(ctx, &loginReq)
-	if err != nil {
-		apiutil.WriteHTTPError(ctx, w, req, err)
-		return
-	}
-	http.SetCookie(w, cookie)
-
-	if err := apiutil.WriteResponse(ctx, w, req, http.StatusOK, &serverpb.UserLoginResponse{}); err != nil {
-		log.Dev.Errorf(ctx, "failed to write login response: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-	}
-}
-
-// LogoutHandler handles user logout requests.
-// It extracts the session from context, revokes it, and clears the cookie.
-func (s *authenticationServer) LogoutHandler(w http.ResponseWriter, req *http.Request) {
-	ctx := req.Context()
-	sessionID, ok := getWebSessionID(ctx)
-	if !ok {
-		apiutil.WriteHTTPError(ctx, w, req, status.Errorf(codes.InvalidArgument, "invalid session id: %d", sessionID))
-		return
+	// Set the cookie header on the outgoing response.
+	if err := grpc.SetHeader(ctx, metadata.Pairs("set-cookie", cookie.String())); err != nil {
+		return nil, srverrors.APIInternalError(ctx, err)
 	}
 
-	cookie, err := s.userLogout(ctx, &serverpb.UserLogoutRequest{}, sessionID)
-	if err != nil {
-		apiutil.WriteHTTPError(ctx, w, req, err)
-		return
-	}
-	http.SetCookie(w, cookie)
-
-	if err := apiutil.WriteResponse(ctx, w, req, http.StatusOK, &serverpb.UserLogoutResponse{}); err != nil {
-		log.Dev.Errorf(ctx, "failed to write logout response: %v", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-	}
-
+	return &serverpb.UserLogoutResponse{}, nil
 }
 
 // VerifySession is part of the Server interface.
@@ -637,7 +575,6 @@ func (s *authenticationServer) VerifyJWT(
 	inputUser, _ := username.MakeSQLUsernameFromUserInput(usernameOptional, username.PurposeValidation)
 	retrievedUser, err := jwtVerifier.j.RetrieveIdentity(
 		ctx,
-		execCfg.Settings,
 		inputUser,
 		[]byte(jwtStr),
 		identMap,
@@ -836,7 +773,7 @@ func (am *authenticationMux) ServeHTTP(w http.ResponseWriter, req *http.Request)
 
 	if !am.allowAnonymous && (werr != nil && jerr != nil) {
 		if log.V(1) {
-			log.Dev.Infof(req.Context(), "session error: %v; jwt error: %v", werr, jerr)
+			log.Infof(req.Context(), "session error: %v; jwt error: %v", werr, jerr)
 		}
 		http.Error(w, "a valid authentication cookie or JWT is required", http.StatusUnauthorized)
 		return

@@ -180,7 +180,7 @@ func doCreateBackupSchedules(
 		}
 	}
 
-	env := jobs.JobSchedulerEnv(p.ExecCfg().JobsKnobs())
+	env := sql.JobSchedulerEnv(p.ExecCfg().JobsKnobs())
 
 	// Evaluate incremental and full recurrence.
 	incRecurrence, err := schedulebase.ComputeScheduleRecurrence(env.Now(), eval.recurrence)
@@ -339,7 +339,6 @@ func doCreateBackupSchedules(
 
 		var incDests []string
 		if eval.incrementalStorage != nil {
-			p.BufferClientNotice(ctx, pgnotice.Newf(deprecatedIncrementalLocationMessage))
 			incDests = eval.incrementalStorage
 			for _, incDest := range incDests {
 				backupNode.Options.IncrementalStorage = append(backupNode.Options.IncrementalStorage, tree.NewStrVal(incDest))

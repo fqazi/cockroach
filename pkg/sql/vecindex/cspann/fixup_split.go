@@ -22,8 +22,8 @@ import (
 // splitPartition starts or continues a split of the given partition. This is
 // performed as a series of atomic steps that incrementally update the index.
 // After each step, the overall index is in a well-defined state that still
-// allows searches, inserts, and deletes. However, depending on their state,
-// individual partitions can disallow inserts and deletes.
+// updateMetadata searches, inserts, and deletes. However, depending on their
+// state, individual partitions can disallow inserts and deletes.
 //
 // Here is the flow for splitting a non-root partition:
 //
@@ -418,7 +418,7 @@ func (fw *fixupWorker) reassignToSiblings(
 	getSiblingMetadata := func() ([]PartitionMetadataToGet, error) {
 		if len(fw.tempMetadataToGet) == 0 {
 			fw.tempMetadataToGet = utils.EnsureSliceLen(fw.tempMetadataToGet, parentPartition.Count())
-			for i := range fw.tempMetadataToGet {
+			for i := range len(fw.tempMetadataToGet) {
 				fw.tempMetadataToGet[i].Key = parentPartition.ChildKeys()[i].PartitionKey
 			}
 			err = fw.index.store.TryGetPartitionMetadata(ctx, fw.treeKey, fw.tempMetadataToGet)
@@ -522,25 +522,28 @@ func (fw *fixupWorker) reassignFromSameLevel(
 	sourcePartitionKey, leftPartitionKey, rightPartitionKey PartitionKey,
 	leftMetadata, rightMetadata PartitionMetadata,
 ) error {
-	// No siblings if this is the root.
-	if sourcePartitionKey == RootKey {
-		return nil
-	}
-
 	doReassign := func(partitionKey PartitionKey, metadata PartitionMetadata) error {
 		// Start transaction to search for vectors at the same level as the
-		// splitting partition.
+		// splitting centroid.
 		var results []SearchResult
 		err := fw.index.store.RunTransaction(ctx, func(txn Txn) error {
+			// Cosine and InnerProduct need a spherical centroid (normalized).
+			centroid := metadata.Centroid
+			if fw.index.quantizer.GetDistanceMetric() != vecpb.L2SquaredDistance {
+				tempCentroid := fw.workspace.AllocVector(len(centroid))
+				defer fw.workspace.FreeVector(tempCentroid)
+				copy(tempCentroid, centroid)
+				num32.Normalize(tempCentroid)
+				centroid = tempCentroid
+			}
+
 			// Setup the search context. Use a larger beam size for the search for
-			// a higher chance of finding vectors that need to move. The centroid
-			// has already been randomized, but is not yet normalized.
+			// a higher chance of finding vectors that need to move.
 			fw.tempIndexCtx.Init(txn)
-			fw.index.setupContext(&fw.tempIndexCtx, fw.treeKey, metadata.Level, SearchOptions{
+			fw.index.setupContext(&fw.tempIndexCtx, fw.treeKey, SearchOptions{
 				BaseBeamSize: fw.index.options.BaseBeamSize * 2,
 				SkipRerank:   true,
-			})
-			fw.tempIndexCtx.query.InitCentroid(fw.index.quantizer.GetDistanceMetric(), metadata.Centroid)
+			}, metadata.Level, centroid, true /* transformed */)
 
 			// Limit the max number of results to something reasonable.
 			fw.tempIndexCtx.tempSearchSet.Init()
@@ -776,12 +779,12 @@ func (fw *fixupWorker) clearPartition(
 	// Remove all children in the partition.
 	count, err := fw.index.store.TryClearPartition(ctx, fw.treeKey, partitionKey, metadata)
 	if err != nil {
-		updated, err := suppressRaceErrors(err)
+		metadata, err = suppressRaceErrors(err)
 		if err == nil {
 			// Another worker raced to update the metadata, so abort.
 			return errors.Wrapf(errFixupAborted,
 				"clearing vectors from partition %d, expected %s, found %s",
-				partitionKey, metadata.StateDetails.String(), updated.StateDetails.String())
+				partitionKey, metadata.StateDetails.String(), metadata.StateDetails.String())
 		}
 		return errors.Wrap(err, "clearing vectors")
 	}

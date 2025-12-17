@@ -16,11 +16,11 @@ import (
 
 const (
 	// rulesVersion version of elements that can be appended to rel rule names.
-	rulesVersion = "-26.1"
+	rulesVersion = "-25.3"
 )
 
 // rulesVersionKey version of elements used by this rule set.
-var rulesVersionKey = clusterversion.V26_1
+var rulesVersionKey = clusterversion.V25_3
 
 // descriptorIsNotBeingDropped creates a clause which leads to the outer clause
 // failing to unify if the passed element is part of a descriptor and
@@ -146,21 +146,13 @@ func isWithTypeT(element scpb.Element) bool {
 	return err == nil
 }
 
-// isWithExpressionOrHasReferences returns true if `element` has an embedded
-// type or has references to types inside.
-func isWithTypeTOrHasReferences(element scpb.Element) bool {
-	if isWithTypeT(element) {
-		return true
-	}
-	switch element.(type) {
-	case *scpb.TriggerDeps:
-		return true
-	}
-	return false
-}
-
 func getExpression(element scpb.Element) (*scpb.Expression, error) {
 	switch e := element.(type) {
+	case *scpb.ColumnType:
+		if e == nil {
+			return nil, nil
+		}
+		return e.ComputeExpr, nil
 	case *scpb.ColumnComputeExpression:
 		if e == nil {
 			return nil, nil
@@ -201,16 +193,6 @@ func getExpression(element scpb.Element) (*scpb.Expression, error) {
 			return nil, nil
 		}
 		return &e.Expression, nil
-	case *scpb.UniqueWithoutIndexConstraintUnvalidated:
-		if e == nil {
-			return nil, nil
-		}
-		return e.Predicate, nil
-	case *scpb.UniqueWithoutIndexConstraint:
-		if e == nil {
-			return nil, nil
-		}
-		return e.Predicate, nil
 	}
 	return nil, errors.AssertionFailedf("element %T does not have an embedded scpb.Expression", element)
 }
@@ -218,19 +200,6 @@ func getExpression(element scpb.Element) (*scpb.Expression, error) {
 func isWithExpression(element scpb.Element) bool {
 	_, err := getExpression(element)
 	return err == nil
-}
-
-// isWithExpressionOrHasReferences returns true if `element` has an embedded
-// expression or has references to either types, functions or relations.
-func isWithExpressionOrHasReferences(element scpb.Element) bool {
-	if isWithExpression(element) {
-		return true
-	}
-	switch element.(type) {
-	case *scpb.TriggerDeps:
-		return true
-	}
-	return false
 }
 
 func isTypeDescriptor(element scpb.Element) bool {
@@ -246,9 +215,7 @@ func isColumnDependent(e scpb.Element) bool {
 	switch e.(type) {
 	case *scpb.ColumnType, *scpb.ColumnNotNull:
 		return true
-	case *scpb.ColumnName, *scpb.ColumnComment, *scpb.IndexColumn, *scpb.ColumnHidden:
-		return true
-	case *scpb.ColumnGeneratedAsIdentity:
+	case *scpb.ColumnName, *scpb.ColumnComment, *scpb.IndexColumn:
 		return true
 	}
 	return isColumnTypeDependent(e)
@@ -269,7 +236,6 @@ func isColumnNotNull(e scpb.Element) bool {
 	}
 	return false
 }
-
 func isColumnTypeDependent(e scpb.Element) bool {
 	switch e.(type) {
 	case *scpb.SequenceOwner, *scpb.ColumnDefaultExpression, *scpb.ColumnOnUpdateExpression, *scpb.ColumnComputeExpression:

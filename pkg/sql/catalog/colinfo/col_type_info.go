@@ -127,14 +127,6 @@ func ValidateColumnDefType(ctx context.Context, st *cluster.Settings, t *types.T
 		return unimplemented.NewWithIssueDetailf(144910, t.String(),
 			"jsonpath unsupported as column type")
 
-	case types.LTreeFamily:
-		if !st.Version.IsActive(ctx, clusterversion.V25_4) {
-			return pgerror.Newf(
-				pgcode.FeatureNotSupported,
-				"ltree not supported until version 25.4",
-			)
-		}
-
 	case types.TupleFamily:
 		if !t.UserDefined() {
 			return pgerror.New(pgcode.InvalidTableDefinition, "cannot use anonymous record type as table column")
@@ -241,8 +233,6 @@ func MustBeValueEncoded(semanticType *types.T) bool {
 		return true
 	case types.PGVectorFamily:
 		return true
-		// NB: if you're adding a new type here, you probably also want to
-		// include it into rowenc.mustUseValueEncodingForFingerprinting.
 	}
 	return false
 }

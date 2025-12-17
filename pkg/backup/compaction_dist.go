@@ -43,7 +43,7 @@ func runCompactionPlan(
 	kmsEnv cloud.KMSEnv,
 	progCh chan *execinfrapb.RemoteProducerMetadata_BulkProcessorProgress,
 ) error {
-	log.Dev.Infof(
+	log.Infof(
 		ctx, "planning compaction of %d backups: %s",
 		len(compactChain.chainToCompact),
 		util.Map(compactChain.chainToCompact, func(m backuppb.BackupManifest) string {
@@ -155,7 +155,7 @@ func createCompactionPlan(
 	// TODO (kev-cao): Add support for execution locality.
 	planCtx, sqlInstanceIDs, err := dsp.SetupAllNodesPlanningWithOracle(
 		ctx, execCtx.ExtendedEvalContext(), execCtx.ExecCfg(),
-		physicalplan.DefaultReplicaChooser, []roachpb.Locality{}, sql.NoStrictLocalityFiltering,
+		physicalplan.DefaultReplicaChooser, roachpb.Locality{},
 	)
 	if err != nil {
 		return nil, nil, err

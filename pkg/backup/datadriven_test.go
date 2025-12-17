@@ -27,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/kv/bulk"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
@@ -46,7 +45,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
-	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/errors"
@@ -196,12 +194,6 @@ func (d *datadrivenTestState) addCluster(t *testing.T, cfg clusterCfg) error {
 	closedts.SideTransportCloseInterval.Override(context.Background(), &settings.SV, 10*time.Millisecond)
 	kvserver.RangeFeedRefreshInterval.Override(context.Background(), &settings.SV, 10*time.Millisecond)
 	sql.TempObjectWaitInterval.Override(context.Background(), &settings.SV, time.Millisecond)
-	// Disable AC yielding as these tests can run many in-process clusters at once
-	// and overload the host. Generally overload would mean bulk work, which only
-	// uses strictly spare capacitym gets starved, but these tests expect it to
-	// still run (just slowly, along with everything else).
-	bulk.YieldIfNoPacer.Override(context.Background(), &settings.SV, false)
-	admission.YieldInPacer.Override(context.Background(), &settings.SV, false)
 	params.ServerArgs.Settings = settings
 
 	clusterSize := cfg.nodes
@@ -300,11 +292,6 @@ func (d *datadrivenTestState) getSQLDBForVC(
 		t.Fatal(err)
 	}
 	connector := pq.ConnectorWithNoticeHandler(base, func(notice *pq.Error) {
-		// Skip all "waiting for job(s) to complete" notices, since they include
-		// non-deterministic jobIDs.
-		if strings.HasPrefix(notice.Message, "waiting for job") {
-			return
-		}
 		d.noticeBuffer = append(d.noticeBuffer, notice.Severity+": "+notice.Message)
 		if notice.Detail != "" {
 			d.noticeBuffer = append(d.noticeBuffer, "DETAIL: "+notice.Detail)
@@ -352,8 +339,7 @@ func (d *datadrivenTestState) getSQLDBForVC(
 //   - testingKnobCfg: specifies a key to a hardcoded testingKnob configuration
 //
 //   - disable-tenant : ensures the test is never run in a multitenant environment by
-//     setting testserverargs.DefaultTestTenant to
-//     base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798).
+//     setting testserverargs.DefaultTestTenant to base.TODOTestTenantDisabled.
 //
 //   - "upgrade-cluster version=<version>"
 //     Upgrade the cluster version of the active cluster to the passed in
@@ -617,7 +603,7 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 				d.ScanArgs(t, "testingKnobCfg", &testingKnobCfg)
 			}
 			if d.HasArg("disable-tenant") {
-				defaultTestTenant = base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798)
+				defaultTestTenant = base.TODOTestTenantDisabled
 			}
 
 			// TODO(ssd): Once TestServer starts up reliably enough:

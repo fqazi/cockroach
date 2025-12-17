@@ -29,9 +29,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
+	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logflags"
 	"github.com/cockroachdb/cockroach/pkg/util/netutil/addr"
 	"github.com/cockroachdb/errors"
+	"github.com/dustin/go-humanize"
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -62,7 +64,7 @@ var storeSpecs base.StoreSpecList
 var goMemLimit int64
 var tenantIDFile string
 var localityFile string
-var encryptionSpecs encryptionSpecList
+var encryptionSpecs storageconfig.EncryptionSpecList
 
 // initPreFlagsDefaults initializes the values of the global variables
 // defined above.
@@ -431,11 +433,7 @@ func init() {
 
 		// Add a new pre-run command to match encryption specs to store specs.
 		AddPersistentPreRunE(cmd, func(cmd *cobra.Command, _ []string) error {
-			return populateWithEncryptionOpts(
-				serverCfg.Stores,
-				&serverCfg.StorageConfig.WALFailover,
-				encryptionSpecs,
-			)
+			return populateStoreSpecsEncryption()
 		})
 	}
 
@@ -463,9 +461,6 @@ func init() {
 		cliflagcfg.VarFlag(f, addr.NewAddrSetter(&serverHTTPAdvertiseAddr, &serverHTTPAdvertisePort), cliflags.HTTPAdvertiseAddr)
 
 		cliflagcfg.BoolFlag(f, &serverCfg.AcceptProxyProtocolHeaders, cliflags.AcceptProxyProtocolHeaders)
-
-		cliflagcfg.BoolFlag(f, &baseCfg.UseDRPC, cliflags.UseNewRPC)
-		_ = f.MarkHidden(cliflags.UseNewRPC.Name)
 
 		// Certificates directory. Use a server-specific flag and value to ignore environment
 		// variables, but share the same default.
@@ -532,7 +527,7 @@ func init() {
 		cliflagcfg.StringFlag(f, &deprecatedStorageEngine, cliflags.StorageEngine)
 		_ = pf.MarkHidden(cliflags.StorageEngine.Name)
 
-		cliflagcfg.VarFlag(f, &walFailoverWrapper{cfg: &serverCfg.StorageConfig.WALFailover}, cliflags.WALFailover)
+		cliflagcfg.VarFlag(f, &serverCfg.StorageConfig.WALFailover, cliflags.WALFailover)
 		// TODO(storage): Consider combining the uri and cache manual settings.
 		// Alternatively remove the ability to configure shared storage without
 		// passing a bootstrap configuration file.
@@ -561,22 +556,6 @@ func init() {
 
 		// Node cert distinguished name
 		cliflagcfg.StringFlag(f, &startCtx.serverNodeCertDN, cliflags.NodeCertDistinguishedName)
-
-		// We add the disallow root login flag for disabling the root user from rpc
-		// and sql access for compliance reasons. We currently mark it as hidden
-		// since the flag behavior is experimental and subject to change.
-		//
-		// NB: a user needs to be configured for collecting debug zips if this
-		// flag is enabled, which we currently do not validate.
-		cliflagcfg.BoolFlag(f, &startCtx.disallowRootLogin, cliflags.DisallowRootLogin)
-		_ = f.MarkHidden(cliflags.DisallowRootLogin.Name)
-
-		// We add the allow debug user flag for enabling the debuguser from rpc
-		// and sql access for debugging and troubleshooting purposes. We currently
-		// mark it as hidden since the flag behavior is experimental and subject to
-		// change. By default, debuguser is not allowed to authenticate.
-		cliflagcfg.BoolFlag(f, &startCtx.allowDebugUser, cliflags.AllowDebugUser)
-		_ = f.MarkHidden(cliflags.AllowDebugUser.Name)
 
 		// TLS Cipher Suites configured
 		cliflagcfg.StringSliceFlag(f, &startCtx.serverTLSCipherSuites, cliflags.TLSCipherSuites)
@@ -1167,8 +1146,6 @@ func extraServerFlagInit(cmd *cobra.Command) error {
 	if err := security.SetNodeSubject(startCtx.serverNodeCertDN); err != nil {
 		return err
 	}
-	security.SetDisallowRootLogin(startCtx.disallowRootLogin)
-	security.SetAllowDebugUser(startCtx.allowDebugUser)
 	// Currently we don't handle the case where we are setting the --insecure flag
 	// as well as providing the --tls-cipher-suites, we should probably error out
 	// if both are set, issue: #144935.
@@ -1178,8 +1155,6 @@ func extraServerFlagInit(cmd *cobra.Command) error {
 	serverCfg.User = username.NodeUserName()
 	serverCfg.Insecure = startCtx.serverInsecure
 	serverCfg.SSLCertsDir = startCtx.serverSSLCertsDir
-	serverCfg.DisallowRootLogin = startCtx.disallowRootLogin
-	serverCfg.AllowDebugUser = startCtx.allowDebugUser
 
 	fs := cliflagcfg.FlagSetForCmd(cmd)
 
@@ -1503,13 +1478,25 @@ func mtStartSQLFlagsInit(cmd *cobra.Command) error {
 	// unless a ballast size was specified explicitly by the user.
 	for i := range serverCfg.Stores.Specs {
 		spec := &serverCfg.Stores.Specs[i]
-		if !spec.BallastSize.IsSet() {
+		if spec.BallastSize == nil {
 			// Only override if there was no ballast size specified to start
 			// with.
-			spec.BallastSize = storageconfig.BytesSize(0)
+			zero := storageconfig.Size{Bytes: 0, Percent: 0}
+			spec.BallastSize = &zero
 		}
 	}
 	return nil
+}
+
+// populateStoreSpecsEncryption is a PreRun hook that matches store encryption
+// specs with the parsed stores and populates some fields in the StoreSpec and
+// WAL failover config.
+func populateStoreSpecsEncryption() error {
+	return base.PopulateWithEncryptionOpts(
+		GetServerCfgStores(),
+		GetWALFailoverConfig(),
+		encryptionSpecs,
+	)
 }
 
 // sizeFlagVal is a pflag.Value wrapper for storageconfig.Size. It can be
@@ -1527,7 +1514,10 @@ func newSizeFlagVal(spec *storageconfig.Size) *sizeFlagVal {
 // String returns a string representation of the Size. It is part of the
 // pflag.Value interface.
 func (sv *sizeFlagVal) String() string {
-	return sv.spec.String()
+	if sv.spec.Percent != 0 {
+		return humanize.Ftoa(sv.spec.Percent) + "%"
+	}
+	return string(humanizeutil.IBytes(sv.spec.Bytes))
 }
 
 // Type returns the underlying type in string form.  It is part of the
@@ -1539,7 +1529,7 @@ func (sv *sizeFlagVal) Type() string {
 // Set adds a new value to the StoreSpecValue. It is part of the pflag.Value
 // interface.
 func (sv *sizeFlagVal) Set(value string) error {
-	spec, err := storageconfig.ParseSizeSpec(value)
+	spec, err := storageconfig.ParseSizeSpec(value, storageconfig.SizeSpecConstraints{})
 	if err != nil {
 		return err
 	}

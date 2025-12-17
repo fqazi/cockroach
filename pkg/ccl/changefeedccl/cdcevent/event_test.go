@@ -531,12 +531,12 @@ CREATE TABLE foo (
 			targets := changefeedbase.Targets{}
 			targets.Add(changefeedbase.Target{
 				Type:       targetType,
-				DescID:     tableDesc.GetID(),
+				TableID:    tableDesc.GetID(),
 				FamilyName: tc.familyName,
 			})
 			execCfg := s.ExecutorConfig().(sql.ExecutorConfig)
 			ctx := context.Background()
-			decoder, err := NewEventDecoder(ctx, &execCfg, targets, tc.includeVirtual, tc.keyOnly, DecoderOptions{})
+			decoder, err := NewEventDecoder(ctx, &execCfg, targets, tc.includeVirtual, tc.keyOnly)
 			require.NoError(t, err)
 			expectedEvents := len(tc.expectMainFamily) + len(tc.expectOnlyCFamily)
 			for i := 0; i < expectedEvents; i++ {
@@ -775,19 +775,19 @@ func TestEventColumnOrderingWithSchemaChanges(t *testing.T) {
 			targets := changefeedbase.Targets{}
 			targets.Add(changefeedbase.Target{
 				Type:       targetType,
-				DescID:     tableDesc.GetID(),
+				TableID:    tableDesc.GetID(),
 				FamilyName: tc.familyName,
 			})
 			execCfg := s.ExecutorConfig().(sql.ExecutorConfig)
 			ctx := context.Background()
-			decoder, err := NewEventDecoder(ctx, &execCfg, targets, tc.includeVirtual, false, DecoderOptions{})
+			decoder, err := NewEventDecoder(ctx, &execCfg, targets, tc.includeVirtual, false)
 			require.NoError(t, err)
 
 			expectedEvents := len(tc.expectMainFamily) + len(tc.expectECFamily)
-			log.Changefeed.Infof(ctx, "expectedEvents: %d\n", expectedEvents)
+			log.Infof(ctx, "expectedEvents: %d\n", expectedEvents)
 			for i := 0; i < expectedEvents; i++ {
 				v, deleteRange := popRow(t)
-				log.Changefeed.Infof(ctx, "event[%d]: v=%+v, deleteRange=%+v", i, v, deleteRange)
+				log.Infof(ctx, "event[%d]: v=%+v, deleteRange=%+v", i, v, deleteRange)
 
 				if deleteRange != nil {
 					// Should not see a RangeFeedValue and a RangeFeedDeleteRange
@@ -1094,11 +1094,11 @@ CREATE TABLE foo (
 
 	targets := changefeedbase.Targets{}
 	targets.Add(changefeedbase.Target{
-		DescID: tableDesc.GetID(),
+		TableID: tableDesc.GetID(),
 	})
 	execCfg := s.ExecutorConfig().(sql.ExecutorConfig)
 	ctx := context.Background()
-	decoder, err := NewEventDecoder(ctx, &execCfg, targets, false, false, DecoderOptions{})
+	decoder, err := NewEventDecoder(ctx, &execCfg, targets, false, false)
 	if err != nil {
 		b.Fatal(err)
 	}

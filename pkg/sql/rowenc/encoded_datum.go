@@ -180,7 +180,19 @@ func EncDatumValueFromBufferWithOffsetsAndType(
 }
 
 // DatumToEncDatum initializes an EncDatum with the given Datum.
-func DatumToEncDatum(ctyp *types.T, d tree.Datum) (EncDatum, error) {
+func DatumToEncDatum(ctyp *types.T, d tree.Datum) EncDatum {
+	ed, err := DatumToEncDatumEx(ctyp, d)
+	if err != nil {
+		panic(err)
+	}
+	return ed
+}
+
+// DatumToEncDatumEx is the same as DatumToEncDatum that returns an error
+// instead of panicking under unexpected circumstances.
+// TODO(yuzefovich): we should probably get rid of DatumToEncDatum in favor of
+// this method altogether.
+func DatumToEncDatumEx(ctyp *types.T, d tree.Datum) (EncDatum, error) {
 	if d == nil {
 		return EncDatum{}, errors.AssertionFailedf("cannot convert nil datum to EncDatum")
 	}
@@ -190,21 +202,6 @@ func DatumToEncDatum(ctyp *types.T, d tree.Datum) (EncDatum, error) {
 		return EncDatum{}, errors.AssertionFailedf("invalid datum type given: %s, expected %s", dTyp.SQLStringForError(), ctyp.SQLStringForError())
 	}
 	return EncDatum{Datum: d}, nil
-}
-
-// DatumToEncDatumUnsafe initializes an EncDatum with the given Datum.
-//
-// NB: the method will panic if the datum's resolved type is not equivalent to
-// the passed-in type. Consider using safer DatumToEncDatum.
-//
-// An example valid use case of this method is when the datum is explicitly
-// constructed by the caller, so the types are guaranteed to match.
-func DatumToEncDatumUnsafe(ctyp *types.T, d tree.Datum) EncDatum {
-	ed, err := DatumToEncDatum(ctyp, d)
-	if err != nil {
-		panic(err)
-	}
-	return ed
 }
 
 // NullEncDatum initializes an EncDatum with the NULL value.
@@ -219,7 +216,7 @@ func (ed *EncDatum) UnsetDatum() {
 	ed.encoding = 0
 }
 
-// IsUnset returns true if EncDatumFromEncoded or DatumToEncDatumUnsafe were not called.
+// IsUnset returns true if EncDatumFromEncoded or DatumToEncDatum were not called.
 func (ed *EncDatum) IsUnset() bool {
 	return ed.encoded == nil && ed.Datum == nil
 }
@@ -322,9 +319,6 @@ func (ed *EncDatum) Encode(
 	}
 }
 
-// TODO(yuzefovich): evaluate whether this method can call
-// colinfo.MustBeValueEncoded for most types. We need to be careful with
-// mixed-version clusters since Fingerprint is used by row-by-row hash routers.
 func mustUseValueEncodingForFingerprinting(t *types.T) bool {
 	switch t.Family() {
 	// Both TSQuery and TSVector types don't have key-encoding, so we must use
@@ -354,7 +348,7 @@ func mustUseValueEncodingForFingerprinting(t *types.T) bool {
 
 // Fingerprint appends a unique hash of ed to the given slice. If datums are intended
 // to be deduplicated or grouped with hashes, this function should be used
-// instead of Encode. Additionally, Fingerprint has the property that if the
+// instead of encode. Additionally, Fingerprint has the property that if the
 // fingerprints of a set of datums are appended together, the resulting
 // fingerprint will uniquely identify the set.
 // It takes an optional (can be nil) memory account that should be updated if

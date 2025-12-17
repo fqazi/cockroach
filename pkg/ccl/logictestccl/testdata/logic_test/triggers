@@ -1,5 +1,4 @@
-# LogicTest: !local-legacy-schema-changer !local-prepared
-# knob-opt: allow-unsafe
+# LogicTest: !local-legacy-schema-changer
 
 # Include some hidden columns that won't be visible to triggers.
 statement ok
@@ -125,16 +124,12 @@ SELECT 1::TRIGGER;
 statement error pgcode 0A000 pq: cannot accept a value of type trigger
 SELECT NULL:::TRIGGER;
 
-# The builtin type-conversion function should not be usable.
-statement error pgcode 0A000 pq: cannot accept a value of type trigger
-SELECT trigger_in(1);
+# Triggers should not have a builtin type-conversion function.
+statement error pgcode 42883 pq: unknown function: triggerin\(\)
+SELECT triggerin(1);
 
-# Builtin type conversion function with NULL argument.
-# NOTE: this case succeeds because the function is not actually called
-# or fully type-checked when it is supplied NULL arguments.
-# statement error pgcode 0A000 pq: cannot accept a value of type trigger
-statement ok
-SELECT trigger_in(NULL);
+statement error pgcode 42883 pq: unknown function: triggerin\(\)
+SELECT triggerin(NULL);
 
 # ==============================================================================
 # Test invalid usage of the TRIGGER datatype in CREATE statements.
@@ -163,7 +158,7 @@ statement error pgcode 0A000 pq: cannot accept a value of type trigger
 CREATE TYPE udt AS (x INT, y TRIGGER, z TEXT);
 
 # Trigger array UDT field.
-statement error pgcode 42704 pq: at or near ",": syntax error: type trigger\[\] does not exist
+statement error pgcode 42601 pq: at or near "\[": syntax error
 CREATE TYPE udt AS (x INT, y TRIGGER[], z TEXT);
 
 # ==============================================================================
@@ -930,12 +925,7 @@ statement ok
 CREATE TRIGGER foo AFTER INSERT ON xy FOR EACH ROW EXECUTE FUNCTION trigger_func();
 
 # Relations are referenced by name, so renaming the table is not allowed.
-onlyif config local-legacy-schema-changer
 statement error pgcode 2BP01 cannot rename relation "t" because trigger "foo" on table "xy" depends on it
-ALTER TABLE t RENAME TO t2;
-
-skipif config local-legacy-schema-changer
-statement error pgcode 2BP01 cannot rename relation "test.public.t" because trigger "foo" on table "xy" depends on it
 ALTER TABLE t RENAME TO t2;
 
 # Sequences are remapped to their IDs, so renaming is allowed.
@@ -5126,6 +5116,9 @@ subtest end
 subtest regression_158154
 
 statement ok
+SET use_improved_routine_deps_triggers_and_computed_cols = true;
+
+statement ok
 CREATE TABLE xy_158154 (x INT, y INT);
 
 statement ok
@@ -5173,6 +5166,9 @@ DROP PROCEDURE p
 
 statement ok
 DROP TABLE xy_158154
+
+statement ok
+RESET use_improved_routine_deps_triggers_and_computed_cols;
 
 subtest end
 

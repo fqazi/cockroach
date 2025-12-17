@@ -251,30 +251,15 @@ func (p *planner) maybeLogStatementInternal(
 	(slowLogFullTableScans && (execDetails.FullTableScan || execDetails.FullIndexScan)) ||
 		// Is the query actually slow?
 		queryDuration > slowLogThreshold) {
-		commonSQLEventDetails := p.getCommonSQLEventDetails()
 		switch {
 		case execType == executorTypeExec:
 			// Non-internal queries are always logged to the slow query log.
-			event := &eventpb.SlowQuery{
-				CommonSQLEventDetails: commonSQLEventDetails,
-				CommonSQLExecDetails:  execDetails,
-			}
-			migrator := log.NewStructuredEventMigrator(func() bool {
-				return log.ShouldMigrateEvent(p.ExecCfg().SV())
-			}, logpb.Channel_SQL_PERF)
-			migrator.StructuredEvent(ctx, severity.INFO, event)
+			p.logEventsOnlyExternally(ctx, &eventpb.SlowQuery{CommonSQLExecDetails: execDetails})
+
 		case execType == executorTypeInternal && slowInternalQueryLogEnabled:
 			// Internal queries that surpass the slow query log threshold should only
 			// be logged to the slow-internal-only log if the cluster setting dictates.
-			event := &eventpb.SlowQueryInternal{
-				CommonSQLEventDetails: commonSQLEventDetails,
-				CommonSQLExecDetails:  execDetails,
-			}
-			migrator := log.NewStructuredEventMigrator(func() bool {
-				return log.ShouldMigrateEvent(p.ExecCfg().SV())
-			}, logpb.Channel_SQL_INTERNAL_PERF)
-			migrator.StructuredEvent(ctx, severity.INFO,
-				event)
+			p.logEventsOnlyExternally(ctx, &eventpb.SlowQueryInternal{CommonSQLExecDetails: execDetails})
 		}
 	}
 
@@ -350,14 +335,29 @@ func (p *planner) maybeLogStatementInternal(
 		// overhead latency: txn/retry management, error checking, etc
 		execOverheadNanos := svcLatNanos - processingLatNanos
 
-		stmtFingerprintID := p.instrumentation.fingerprintId
+		// If the statement was recorded by the stats collector, we can extract
+		// the statement fingerprint ID. Otherwise, we'll need to compute it from the AST.
+		stmtFingerprintID := statsCollector.StatementFingerprintID()
+		if stmtFingerprintID == 0 {
+			repQuery := p.stmt.StmtNoConstants
+			if repQuery == "" {
+				flags := tree.FmtFlags(queryFormattingForFingerprintsMask.Get(&p.execCfg.Settings.SV))
+				f := tree.NewFmtCtx(flags)
+				f.FormatNode(p.stmt.AST)
+				repQuery = f.CloseAndGetString()
+			}
+			stmtFingerprintID = appstatspb.ConstructStatementFingerprintID(
+				repQuery,
+				implicitTxn,
+				p.CurrentDatabase(),
+			)
+		}
 
 		sampledQuery := getSampledQuery()
 		defer releaseSampledQuery(sampledQuery)
 
 		*sampledQuery = eventpb.SampledQuery{
 			CommonSQLExecDetails:     execDetails,
-			CommonSQLEventDetails:    p.getCommonSQLEventDetails(),
 			SkippedQueries:           skippedQueries,
 			CostEstimate:             p.curPlan.instrumentation.costEstimate,
 			Distribution:             p.curPlan.instrumentation.distribution.String(),
@@ -404,7 +404,7 @@ func (p *planner) maybeLogStatementInternal(
 			KvTimeNanos:              queryLevelStats.KVTime.Nanoseconds(),
 			KvGrpcCalls:              queryLevelStats.KVBatchRequestsIssued,
 			NetworkMessages:          queryLevelStats.DistSQLNetworkMessages,
-			CpuTimeNanos:             queryLevelStats.SQLCPUTime.Nanoseconds(),
+			CpuTimeNanos:             queryLevelStats.CPUTime.Nanoseconds(),
 			IndexRecommendations:     indexRecs,
 			// TODO(mgartner): Use a slice of struct{uint64, uint64} instead of
 			// converting to strings.
@@ -436,11 +436,7 @@ func (p *planner) maybeLogStatementInternal(
 			SchemaChangerMode:                     p.curPlan.instrumentation.schemaChangerMode.String(),
 		}
 
-		migrator := log.NewStructuredEventMigrator(func() bool {
-			return log.ShouldMigrateEvent(p.ExecCfg().SV())
-		}, logpb.Channel_TELEMETRY)
-
-		migrator.StructuredEvent(ctx, severity.INFO, sampledQuery)
+		p.logEventsOnlyExternally(ctx, sampledQuery)
 	}
 }
 
@@ -506,7 +502,7 @@ func (p *planner) logTransaction(
 			ContentionTime:  int64(txnStats.ExecStats.ContentionTime.Seconds()),
 			NetworkMessages: txnStats.ExecStats.DistSQLNetworkMessages,
 			MaxDiskUsage:    txnStats.ExecStats.MaxDiskUsage,
-			CPUSQLNanos:     txnStats.ExecStats.SQLCPUTime.Nanoseconds(),
+			CPUSQLNanos:     txnStats.ExecStats.CPUTime.Nanoseconds(),
 			MVCCIteratorStats: eventpb.MVCCIteratorStats{
 				StepCount:                      txnStats.ExecStats.MvccSteps,
 				StepCountInternal:              txnStats.ExecStats.MvccStepsInternal,
@@ -525,11 +521,7 @@ func (p *planner) logTransaction(
 		}
 	}
 
-	migrator := log.NewStructuredEventMigrator(func() bool {
-		return log.ShouldMigrateEvent(p.ExecCfg().SV())
-	}, logpb.Channel_TELEMETRY)
-
-	migrator.StructuredEvent(ctx, severity.INFO, sampledTxn)
+	log.StructuredEvent(ctx, severity.INFO, sampledTxn)
 }
 
 func (p *planner) logEventsOnlyExternally(ctx context.Context, entries ...logpb.EventPayload) {

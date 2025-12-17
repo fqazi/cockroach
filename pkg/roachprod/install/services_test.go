@@ -15,7 +15,7 @@ import (
 	"testing"
 	"testing/quick"
 
-	cloudcluster "github.com/cockroachdb/cockroach/pkg/roachprod/cloud/types"
+	"github.com/cockroachdb/cockroach/pkg/roachprod/cloud"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
@@ -26,13 +26,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type testProvider struct {
+	vm.Provider
+	vm.DNSProvider
+}
+
 func TestServicePorts(t *testing.T) {
 	ctx := context.Background()
 	clusterName := "tc"
 	z1NS := local.NewDNSProvider(t.TempDir(), "z1")
-	vm.DNSProviders["p1"] = z1NS
+	vm.Providers["p1"] = &testProvider{DNSProvider: z1NS}
 	z2NS := local.NewDNSProvider(t.TempDir(), "z2")
-	vm.DNSProviders["p2"] = z2NS
+	vm.Providers["p2"] = &testProvider{DNSProvider: z2NS}
 
 	err := z1NS.CreateRecords(ctx,
 		vm.CreateSRVRecord(serviceDNSName(z1NS, "t1", ServiceTypeSQL, clusterName), net.SRV{
@@ -51,7 +56,7 @@ func TestServicePorts(t *testing.T) {
 	require.NoError(t, err)
 
 	c := &SyncedCluster{
-		Cluster: cloudcluster.Cluster{
+		Cluster: cloud.Cluster{
 			Name: clusterName,
 			VMs: vm.List{
 				vm.VM{
@@ -133,9 +138,9 @@ func (t *serviceRegistryTest) makeVM(clusterName string, i int) vm.VM {
 }
 
 func (t *serviceRegistryTest) newCluster(nodeCount int) *SyncedCluster {
-	clusterName := fmt.Sprintf("cluster-%s", randutil.RandString(t.rng, 10, randutil.PrintableKeyAlphabet))
+	clusterName := fmt.Sprintf("cluster-%d", t.rng.Uint32())
 	c := &SyncedCluster{
-		Cluster: cloudcluster.Cluster{
+		Cluster: cloud.Cluster{
 			Name: clusterName,
 		},
 	}
@@ -329,7 +334,7 @@ func TestMultipleRegistrations(t *testing.T) {
 	verify := func(c *SyncedCluster, servicesToRegister [][]ServiceDesc) bool {
 		for _, services := range servicesToRegister {
 			if len(services) == 0 {
-				err := testDNS.DeleteSRVRecordsBySubdomain(ctx, c.Name)
+				err := testDNS.DeleteRecordsBySubdomain(ctx, c.Name)
 				require.NoError(t, err)
 				continue
 			}

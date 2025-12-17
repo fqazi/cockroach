@@ -247,7 +247,7 @@ func makeSQLProcessorFromQuerier(
 		}
 		cdcEventTargets.Add(changefeedbase.Target{
 			Type:              jobspb.ChangefeedTargetSpecification_EACH_FAMILY,
-			DescID:            srcDesc.GetID(),
+			TableID:           srcDesc.GetID(),
 			StatementTimeName: changefeedbase.StatementTimeName(srcDesc.GetName()),
 		})
 	}
@@ -260,7 +260,7 @@ func makeSQLProcessorFromQuerier(
 
 	return &sqlRowProcessor{
 		querier:  querier,
-		decoder:  cdcevent.NewEventDecoderWithCache(ctx, rfCache, false, false, cdcevent.DecoderOptions{}),
+		decoder:  cdcevent.NewEventDecoderWithCache(ctx, rfCache, false, false),
 		settings: settings,
 		db:       db,
 		ie:       ie,
@@ -272,7 +272,7 @@ func makeSQLProcessorFromQuerier(
 // ReportMutations implements the BatchHandler interface, but is a no-op for
 // sqlRowProcessor because its mutations are already reported by the queries it
 // runs when they are run.
-func (sqlRowProcessor) ReportMutations(context.Context, *stats.Refresher) {}
+func (sqlRowProcessor) ReportMutations(_ *stats.Refresher) {}
 
 // ReleaseLeases implements the BatchHandler interface but is a no-op since each
 // query does this itself.
@@ -407,6 +407,10 @@ var (
 		// Use generic query plans since our queries are extremely simple and
 		// won't benefit from custom plans.
 		PlanCacheMode: &forceGenericPlan,
+		// We've observed in the CPU profiles that the default goroutine stack
+		// of the connExecutor goroutine is insufficient for evaluation of the
+		// ingestion queries, so we grow the stack right away to 32KiB.
+		GrowStackSize: true,
 		// We don't get any benefits from generating plan gists for internal
 		// queries, so we disable them.
 		DisablePlanGists:      true,
@@ -648,7 +652,7 @@ func (lww *lwwQuerier) InsertRow(
 			// fall back to the pessimistic path. If we got a different error,
 			// then we bail completely.
 			if pgerror.GetPGCode(err) != pgcode.UniqueViolation {
-				log.Dev.Warningf(ctx, "replicated optimistic insert failed (query: %s): %s", stmt.SQL, err.Error())
+				log.Warningf(ctx, "replicated optimistic insert failed (query: %s): %s", stmt.SQL, err.Error())
 				return batchStats{}, err
 			}
 			optimisticInsertConflicts++
@@ -675,7 +679,7 @@ func (lww *lwwQuerier) InsertRow(
 		return batchStats{}, nil
 	}
 	if err != nil {
-		log.Dev.Warningf(ctx, "replicated insert failed (query: %s): %s", stmt.SQL, err.Error())
+		log.Warningf(ctx, "replicated insert failed (query: %s): %s", stmt.SQL, err.Error())
 		return batchStats{}, err
 	}
 	return batchStats{optimisticInsertConflicts: optimisticInsertConflicts}, nil
@@ -709,7 +713,7 @@ func (lww *lwwQuerier) DeleteRow(
 	sess.OriginTimestampForLogicalDataReplication = row.MvccTimestamp
 	rowCount, err := ie.ExecParsed(ctx, replicatedDeleteOpName, kvTxn, sess, stmt, datums...)
 	if err != nil {
-		log.Dev.Warningf(ctx, "replicated delete failed (query: %s): %s", stmt.SQL, err.Error())
+		log.Warningf(ctx, "replicated delete failed (query: %s): %s", stmt.SQL, err.Error())
 		return batchStats{}, err
 	}
 	if rowCount != 1 {

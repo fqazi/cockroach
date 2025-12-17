@@ -13,7 +13,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/storage/mvccencoding"
 	"github.com/cockroachdb/cockroach/pkg/storage/pebbleiter"
 	"github.com/cockroachdb/cockroach/pkg/util"
@@ -22,7 +21,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/cockroachkvs"
-	"github.com/cockroachdb/pebble/objstorage"
+	"github.com/cockroachdb/pebble/sstable"
 )
 
 // pebbleIterator is a wrapper around a pebble.Iterator that implements the
@@ -127,7 +126,7 @@ func newPebbleIteratorByCloning(
 
 // newPebbleSSTIterator creates a new Pebble iterator for the given SSTs.
 func newPebbleSSTIterator(
-	files [][]objstorage.ReadableFile, opts IterOptions,
+	files [][]sstable.ReadableFile, opts IterOptions,
 ) (*pebbleIterator, error) {
 	p := pebbleIterPool.Get().(*pebbleIterator)
 	p.reusable = false // defensive
@@ -187,6 +186,7 @@ func (p *pebbleIterator) initReuseOrCreate(
 
 	p.init(ctx, nil, opts, durability, statsReporter)
 	if iter == nil {
+		// TODO(sumeer): fix after bumping to latest Pebble.
 		innerIter, err := handle.NewIterWithContext(ctx, &p.options)
 		if err != nil {
 			return err
@@ -212,19 +212,22 @@ func (p *pebbleIterator) setOptions(
 	ctx context.Context, opts IterOptions, durability DurabilityRequirement,
 ) {
 	if !opts.Prefix && len(opts.UpperBound) == 0 && len(opts.LowerBound) == 0 {
-		panic(errors.AssertionFailedf("iterator must set prefix or upper bound or lower bound"))
+		panic("iterator must set prefix or upper bound or lower bound")
 	}
 	if opts.MinTimestamp.IsSet() && opts.MaxTimestamp.IsEmpty() {
-		panic(errors.AssertionFailedf("min timestamp hint set without max timestamp hint"))
+		panic("min timestamp hint set without max timestamp hint")
 	}
 	if opts.Prefix && opts.RangeKeyMaskingBelow.IsSet() {
-		panic(errors.AssertionFailedf("can't use range key masking with prefix iterators")) // very high overhead
+		panic("can't use range key masking with prefix iterators") // very high overhead
 	}
 
 	// Generate new Pebble iterator options.
-	p.options = makeIterOptions(opts.ReadCategory, durability)
-	p.options.KeyTypes = opts.KeyTypes
-	p.options.UseL6Filters = opts.useL6Filters
+	p.options = pebble.IterOptions{
+		OnlyReadGuaranteedDurable: durability == GuaranteedDurability,
+		KeyTypes:                  opts.KeyTypes,
+		UseL6Filters:              opts.useL6Filters,
+		Category:                  opts.ReadCategory.PebbleCategory(),
+	}
 	p.prefix = opts.Prefix
 
 	if opts.LowerBound != nil {
@@ -311,7 +314,7 @@ func (p *pebbleIterator) setOptions(
 // Close implements the MVCCIterator interface.
 func (p *pebbleIterator) Close() {
 	if !p.inuse {
-		panic(errors.AssertionFailedf("closing idle iterator"))
+		panic("closing idle iterator")
 	}
 	p.inuse = false
 
@@ -366,7 +369,7 @@ func (p *pebbleIterator) SeekEngineKeyGEWithLimit(
 	p.keyBuf = key.EncodeToBuf(p.keyBuf[:0])
 	if limit != nil {
 		if p.prefix {
-			panic(errors.AssertionFailedf("prefix iteration does not permit a limit"))
+			panic("prefix iteration does not permit a limit")
 		}
 		// Append the sentinel byte to make an EngineKey that has an empty
 		// version.
@@ -976,7 +979,7 @@ func (p *pebbleIterator) skipPointIfOutsideTimeBounds(key []byte) (skip bool) {
 
 func (p *pebbleIterator) destroy() {
 	if p.inuse {
-		panic(errors.AssertionFailedf("iterator still in use"))
+		panic("iterator still in use")
 	}
 	if p.iter != nil {
 		// If an error is encountered during iteration, it'll already have been
@@ -1039,21 +1042,4 @@ func (p *pebbleIterator) assertMVCCInvariants() error {
 	}
 
 	return nil
-}
-
-// We avoid tracking iterators with read categories that indicate very hot
-// paths.
-const exemptFromTracking = (uint32(1) << fs.BatchEvalReadCategory) |
-	(uint32(1) << fs.ScanRegularBatchEvalReadCategory) |
-	(uint32(1) << fs.IntentResolutionReadCategory) |
-	(uint32(1) << fs.AbortSpanReadCategory)
-
-func makeIterOptions(
-	readCategory fs.ReadCategory, durability DurabilityRequirement,
-) pebble.IterOptions {
-	return pebble.IterOptions{
-		OnlyReadGuaranteedDurable: durability == GuaranteedDurability,
-		Category:                  readCategory.PebbleCategory(),
-		ExemptFromTracking:        (exemptFromTracking>>readCategory)&1 == 1,
-	}
 }

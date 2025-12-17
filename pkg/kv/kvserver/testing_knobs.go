@@ -89,7 +89,7 @@ type StoreTestingKnobs struct {
 	//
 	// TODO(pavelkalinnikov): have a more stable and less nuanced way of blocking
 	// the commands application flow for the entire store.
-	TestingAfterRaftLogSync func(roachpb.FullReplicaID)
+	TestingAfterRaftLogSync func(storage.FullReplicaID)
 
 	// TestingApplyCalledTwiceFilter is called before applying the results of a command on
 	// each replica assuming the command was cleared for application (i.e. no
@@ -379,9 +379,6 @@ type StoreTestingKnobs struct {
 	// BeforeSnapshotSSTIngestion is run just before the SSTs are ingested when
 	// applying a snapshot.
 	BeforeSnapshotSSTIngestion func(IncomingSnapshot, []string) error
-	// AfterSplitApplication is called on the newly created replica's state after
-	// a split is applied. Called iff the RHS replica is not already destroyed.
-	AfterSplitApplication func(roachpb.ReplicaDescriptor, kvserverpb.ReplicaState)
 	// AfterSnapshotApplication is run after a snapshot is applied, before
 	// releasing the replica mutex.
 	AfterSnapshotApplication func(roachpb.ReplicaDescriptor, kvserverpb.ReplicaState, IncomingSnapshot)
@@ -537,10 +534,6 @@ type StoreTestingKnobs struct {
 	// BaseQueueDisabledBypassFilter checks whether the replica for the given
 	// rangeID should ignore the queue being disabled, and be processed anyway.
 	BaseQueueDisabledBypassFilter func(rangeID roachpb.RangeID) bool
-
-	// BaseQueuePostEnqueueInterceptor is called with the storeID and rangeID of
-	// the replica right after a replica is enqueued (before it is processed)
-	BaseQueuePostEnqueueInterceptor func(storeID roachpb.StoreID, rangeID roachpb.RangeID)
 
 	// InjectReproposalError injects an error in tryReproposeWithNewLeaseIndexRaftMuLocked.
 	// If nil is returned, reproposal will be attempted.

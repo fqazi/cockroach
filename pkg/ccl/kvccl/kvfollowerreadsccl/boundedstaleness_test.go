@@ -45,10 +45,6 @@ var (
 	)
 )
 
-// fullTraceDebug is a flag that controls whether full traces are printed in the
-// case of some errors.
-const fullTraceDebug = false
-
 func TestBoundedStalenessEnterpriseLicense(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -152,10 +148,8 @@ type boundedStalenessEvents struct {
 	// A mutex is needed as the event handlers (onStmtTrace) can race.
 	mu struct {
 		syncutil.Mutex
-		stmt string
-		// Only populated if fullTraceDebug constant is true.
-		traceForDebugging string
-		events            []boundedStalenessDataDrivenEvent
+		stmt   string
+		events []boundedStalenessDataDrivenEvent
 	}
 }
 
@@ -171,13 +165,6 @@ func (bse *boundedStalenessEvents) clearEvents() {
 	bse.mu.Lock()
 	defer bse.mu.Unlock()
 	bse.mu.events = nil
-}
-
-func (bse *boundedStalenessEvents) fullTrace() string {
-	bse.mu.Lock()
-	defer bse.mu.Unlock()
-
-	return bse.mu.traceForDebugging
 }
 
 func (bse *boundedStalenessEvents) setStmt(s string) {
@@ -253,23 +240,17 @@ func (bse *boundedStalenessEvents) onStmtTrace(nodeIdx int, rec tracingpb.Record
 	defer bse.mu.Unlock()
 
 	if bse.mu.stmt != "" && bse.mu.stmt == stmt {
-		if fullTraceDebug {
-			bse.mu.traceForDebugging = rec.String()
-		}
-
 		spans := make(map[tracingpb.SpanID]tracingpb.RecordedSpan)
 		for _, sp := range rec {
 			spans[sp.SpanID] = sp
-			notLeaseHolderError := tracing.LogsContainMsg(sp, "[NotLeaseHolderError] lease held by different store;")
-			notLeaseHolderError = notLeaseHolderError || tracing.LogsContainMsg(sp, "[NotLeaseHolderError] leader lease is not held locally, cannot determine validity;")
-
 			if sp.Operation == "dist sender send" && spans[sp.ParentSpanID].Operation == "colbatchscan" {
 				bse.mu.events = append(bse.mu.events, &boundedStalenessTraceEvent{
-					operation:             spans[sp.ParentSpanID].Operation,
-					nodeIdx:               nodeIdx,
-					localRead:             tracing.LogsContainMsg(sp, kvbase.RoutingRequestLocallyMsg),
-					followerRead:          kvtestutils.OnlyFollowerReads(rec),
-					remoteLeaseholderRead: notLeaseHolderError && tracing.LogsContainMsg(sp, "trying next peer"),
+					operation:    spans[sp.ParentSpanID].Operation,
+					nodeIdx:      nodeIdx,
+					localRead:    tracing.LogsContainMsg(sp, kvbase.RoutingRequestLocallyMsg),
+					followerRead: kvtestutils.OnlyFollowerReads(rec),
+					remoteLeaseholderRead: tracing.LogsContainMsg(sp, "[NotLeaseHolderError] lease held by different store;") &&
+						tracing.LogsContainMsg(sp, "trying next peer"),
 				})
 			}
 		}
@@ -280,12 +261,18 @@ func TestBoundedStalenessDataDriven(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderDuress(t, "1μs staleness reads may actually succeed due to the slow environment")
+	const msg = "1μs staleness reads may actually succeed due to the slow environment"
+	skip.UnderStress(t, msg)
+	skip.UnderRace(t, msg)
+	skip.UnderDeadlock(t, msg)
 	defer ccl.TestingEnableEnterprise()()
 
 	ctx := context.Background()
 
 	clusterArgs := base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			DefaultTestTenant: base.TODOTestTenantDisabled,
+		},
 		ServerArgsPerNode: map[int]base.TestServerArgs{},
 	}
 	const numNodes = 3
@@ -319,19 +306,6 @@ func TestBoundedStalenessDataDriven(t *testing.T) {
 		tc := testcluster.StartTestCluster(t, 3, clusterArgs)
 		defer tc.Stopper().Stop(ctx)
 
-		if tc.DefaultTenantDeploymentMode().IsExternal() {
-			// This test wants to make assertions about local requests (requests to a
-			// local replica) which is a concept that only applies to single-tenant
-			// and shared-process deployment modes. Skip for external-process
-			// multi-tenancy.
-			skip.IgnoreLint(t, "test doesn't apply to external process multi-tenancy")
-		}
-
-		require.NoError(t, tc.WaitForFullReplication())
-		tc.ToggleLeaseQueues(false)
-		tc.ToggleSplitQueues(false)
-		tc.ToggleReplicateQueues(false)
-
 		savedTraceStmt := ""
 		datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
 			// Early exit non-query execution related commands.
@@ -347,7 +321,7 @@ func TestBoundedStalenessDataDriven(t *testing.T) {
 				return ""
 			}
 
-			var showEvents *bool
+			var showEvents bool
 			var waitUntilFollowerReads bool
 			var waitUntilMatch bool
 			defer func() {
@@ -374,9 +348,6 @@ func TestBoundedStalenessDataDriven(t *testing.T) {
 					serverNum, err := strconv.ParseInt(arg.Vals[0], 10, 64)
 					require.NoError(t, err)
 					dbConn = tc.ServerConn(int(serverNum))
-				case "ignore-events":
-					f := false
-					showEvents = &f
 				default:
 					t.Fatalf("unknown arg: %s", arg.Key)
 				}
@@ -393,19 +364,10 @@ func TestBoundedStalenessDataDriven(t *testing.T) {
 						return err.Error()
 					}
 					return ""
-				case "exec-system-tenant":
-					_, err := tc.SystemLayer(0).SQLConn(t).Exec(d.Input)
-					if err != nil {
-						return err.Error()
-					}
-					return ""
 				case "query":
-					// Default to showing events
-					if showEvents == nil {
-						t := true
-						showEvents = &t
-					}
+					// Always show events.
 					bse.setStmt(traceStmt)
+					showEvents = true
 					rows, err := dbConn.Query(d.Input)
 					if err != nil {
 						return err.Error()
@@ -421,7 +383,7 @@ func TestBoundedStalenessDataDriven(t *testing.T) {
 			testutils.SucceedsSoon(t, func() error {
 				ret = executeCmd()
 				// Append events to the output if desired.
-				if showEvents != nil && *showEvents {
+				if showEvents {
 					if !strings.HasSuffix(ret, "\n") {
 						ret += "\n"
 					}
@@ -442,22 +404,14 @@ func TestBoundedStalenessDataDriven(t *testing.T) {
 						}
 					}()
 					if !followerRead {
-						var trace string
-						if fullTraceDebug {
-							trace = fmt.Sprintf("\nfull_trace:\n%s", bse.fullTrace())
-						}
 						bse.clearEvents()
-						return errors.AssertionFailedf("not follower reads found:\n%s%s", bse.String(), trace)
+						return errors.AssertionFailedf("not follower reads found:\n%s", bse.String())
 					}
 				}
 				if waitUntilMatch {
 					if d.Expected != ret {
-						var trace string
-						if fullTraceDebug {
-							trace = fmt.Sprintf("\nfull_trace:\n%s", bse.fullTrace())
-						}
 						bse.clearEvents()
-						return errors.AssertionFailedf("not yet a match, output:\n%s%s", ret, trace)
+						return errors.AssertionFailedf("not yet a match, output:\n%s\n", ret)
 					}
 				}
 				return nil

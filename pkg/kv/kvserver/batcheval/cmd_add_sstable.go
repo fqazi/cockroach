@@ -337,7 +337,7 @@ func EvalAddSSTable(
 	// addition, and instead just use this key-only iterator. If a caller actually
 	// needs to know what data is there, it must issue its own real Scan.
 	if args.ReturnFollowingLikelyNonEmptySpanStart {
-		existingIter, err := spanset.DisableUndeclaredSpanAssertions(readWriter).NewMVCCIterator(
+		existingIter, err := spanset.DisableReaderAssertions(readWriter).NewMVCCIterator(
 			ctx,
 			storage.MVCCKeyIterKind, // don't care if it is committed or not, just that it isn't empty.
 			storage.IterOptions{
@@ -468,17 +468,18 @@ func EvalAddSSTable(
 func computeSSTStatsDiffWithFallback(
 	ctx context.Context,
 	sst []byte,
-	reader storage.Reader,
+	readWriter storage.ReadWriter,
 	nowNanos int64,
 	start, end storage.MVCCKey,
 ) (enginepb.MVCCStats, error) {
 	stats, err := storage.ComputeSSTStatsDiff(
-		ctx, sst, reader, nowNanos, start, end)
-	if errors.IsAny(err, storage.ComputeSSTStatsDiffReaderHasRangeKeys, storage.ComputeStatsDiffViolation) {
-		log.KvExec.Warningf(ctx, "computing SST stats as estimates because of ComputeSSTStatsDiff error: %s", err)
+		ctx, sst, readWriter, nowNanos, start, end)
+	if errors.Is(err, storage.ComputeSSTStatsDiffReaderHasRangeKeys) {
+		// Fall back to stats estimates if there are range keys in the engine.
+		log.VEventf(ctx, 2, "computing SST stats as estimates after detecting range keys in engine")
 		sstStats, err := computeSSTStats(ctx, sst, nowNanos)
 		if err != nil {
-			return enginepb.MVCCStats{}, errors.Wrap(err, "error computing SST stats during fallback")
+			return enginepb.MVCCStats{}, errors.Wrap(err, "computing SST stats after detecting range keys in engine")
 		}
 		sstStats.ContainsEstimates = 1
 		return sstStats, nil

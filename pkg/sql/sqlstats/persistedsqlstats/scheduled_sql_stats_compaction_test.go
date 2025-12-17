@@ -36,7 +36,7 @@ import (
 )
 
 type testHelper struct {
-	server           serverutils.ApplicationLayerInterface
+	server           serverutils.TestServerInterface
 	sqlDB            *sqlutils.SQLRunner
 	env              *jobstest.JobSchedulerTestEnv
 	cfg              *scheduledjobs.JobExecutionConfig
@@ -90,7 +90,7 @@ func newTestHelper(
 	require.NotNil(t, helper.cfg)
 
 	helper.sqlDB = sqlutils.MakeSQLRunner(db)
-	helper.server = srv.ApplicationLayer()
+	helper.server = srv
 
 	return helper, func() {
 		srv.Stopper().Stop(context.Background())
@@ -137,7 +137,7 @@ func TestScheduledSQLStatsCompaction(t *testing.T) {
 	helper.sqlDB.Exec(t, "SELECT 1; SELECT 1, 1")
 	sqlstatstestutil.WaitForStatementEntriesAtLeast(t, helper.sqlDB, 2)
 
-	helper.server.SQLServer().(*sql.Server).GetSQLStatsProvider().MaybeFlush(ctx, helper.server.AppStopper())
+	helper.server.ApplicationLayer().SQLServer().(*sql.Server).GetSQLStatsProvider().MaybeFlush(ctx, helper.server.AppStopper())
 	helper.sqlDB.Exec(t, "SET CLUSTER SETTING sql.stats.persisted_rows.max = 1")
 
 	stmtStatsCnt, txnStatsCnt := getPersistedStatsEntry(t, helper.sqlDB)

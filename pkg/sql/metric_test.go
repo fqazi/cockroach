@@ -14,11 +14,9 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/lease"
-	"github.com/cockroachdb/cockroach/pkg/sql/tests"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -61,7 +59,7 @@ func TestQueryCounts(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var params base.TestServerArgs
+	params, _ := createTestServerParamsAllowTenants()
 	params.Knobs = base.TestingKnobs{
 		SQLLeaseManager: &lease.ManagerTestingKnobs{
 			// Disable SELECT called for delete orphaned leases to keep
@@ -214,7 +212,8 @@ func TestStatementMetrics(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	srv, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	srv, sqlDB, _ := serverutils.StartServer(t, params)
 	defer srv.Stopper().Stop(context.Background())
 	runner := sqlutils.MakeSQLRunner(sqlDB)
 	s := srv.ApplicationLayer()
@@ -240,10 +239,9 @@ func TestStatementMetrics(t *testing.T) {
 			// joiner batch size can affect number of rows read.
 			skipMetamorphic: true,
 		},
-		{query: `SELECT * FROM db.t ORDER BY v <-> '[2, 2]' LIMIT 1`, rowsRead: 3},
 
 		// Mutation statements.
-		{query: `INSERT INTO db.t VALUES (4, 40, ARRAY['orange', 'cherry'], '[7, 8]')`, indexRowsWritten: 5},
+		{query: `INSERT INTO db.t VALUES (4, 40, ARRAY['orange', 'cherry'], '[7, 8]')`, indexRowsWritten: 4},
 		{
 			query:            `INSERT INTO db.t VALUES (5, 50, ARRAY['orange', 'cherry']), (6, 60, NULL)`,
 			indexRowsWritten: 6,
@@ -259,18 +257,18 @@ func TestStatementMetrics(t *testing.T) {
 		{
 			query:            `UPSERT INTO db.t VALUES (6, 60, ARRAY['date'], '[100, 110]')`,
 			rowsRead:         1,
-			indexRowsWritten: 3,
+			indexRowsWritten: 2,
 		},
 		{
 			query:            `INSERT INTO db.t VALUES (6, 600) ON CONFLICT (x) DO UPDATE SET a = ARRAY['strawberry']`,
 			rowsRead:         1,
 			indexRowsWritten: 3,
 		},
-		{query: `DELETE FROM db.t WHERE x = 2`, rowsRead: 1, indexRowsWritten: 4, isDelete: true},
+		{query: `DELETE FROM db.t WHERE x = 2`, rowsRead: 1, indexRowsWritten: 3, isDelete: true},
 		{
 			query:            `DELETE FROM db.t WHERE a @> ARRAY['apple']`,
 			rowsRead:         4,
-			indexRowsWritten: 11,
+			indexRowsWritten: 9,
 			isDelete:         true,
 		},
 		// CREATE TABLE does not count rows or bytes written.
@@ -285,7 +283,6 @@ func TestStatementMetrics(t *testing.T) {
 			runner.Exec(t, `CREATE TABLE db.t (x INT PRIMARY KEY, y INT, a STRING[], v VECTOR(2))`)
 			runner.Exec(t, `CREATE INDEX ON db.t (y)`)
 			runner.Exec(t, `CREATE INVERTED INDEX ON db.t (a)`)
-			runner.Exec(t, `CREATE VECTOR INDEX ON db.t (v)`)
 			runner.Exec(t, `INSERT INTO db.t VALUES (1, 10, ARRAY['apple', 'orange'], '[1, 2]')`)
 			runner.Exec(t, `INSERT INTO db.t VALUES (2, 20, ARRAY['banana'], '[3, 4]')`)
 			runner.Exec(t, `INSERT INTO db.t VALUES (3, 30, ARRAY['apple', 'pear', 'mango'], '[5, 6]')`)
@@ -345,13 +342,7 @@ func TestAbortCountConflictingWrites(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	testutils.RunTrueAndFalse(t, "retry loop", func(t *testing.T, retry bool) {
-		var cmdFilters tests.CommandFilters
-		params := base.TestServerArgs{}
-		params.Knobs.Store = &kvserver.StoreTestingKnobs{
-			EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
-				TestingEvalFilter: cmdFilters.RunFilters,
-			},
-		}
+		params, cmdFilters := createTestServerParamsAllowTenants()
 		s, sqlDB, _ := serverutils.StartServer(t, params)
 		defer s.Stopper().Stop(context.Background())
 
@@ -462,8 +453,8 @@ func TestAbortCountConflictingWrites(t *testing.T) {
 func TestAbortCountErrorDuringTransaction(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
 
 	accum := initializeQueryCounter(s)
@@ -497,7 +488,8 @@ func TestSavepointMetrics(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	params, _ := createTestServerParamsAllowTenants()
+	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
 
 	accum := initializeQueryCounter(s)

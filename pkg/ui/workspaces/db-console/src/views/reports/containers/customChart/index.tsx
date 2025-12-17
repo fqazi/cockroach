@@ -316,7 +316,7 @@ export class CustomChart extends React.Component<
     return (
       <MetricsDataProvider
         id={`debug-custom-chart.${index}`}
-        key={`${index}-${units}`}
+        key={index}
         setMetricsFixedWindow={this.props.setMetricsFixedWindow}
         setTimeScale={this.props.setTimeScale}
         history={this.props.history}

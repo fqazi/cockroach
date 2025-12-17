@@ -9,7 +9,6 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/sql/hints"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgwirebase"
@@ -73,15 +72,8 @@ func (ex *connExecutor) execPrepare(
 		ex.deletePreparedStmt(ctx, "")
 	}
 
-	var statementHintsCache *hints.StatementHintsCache
-	if ex.executorType != executorTypeInternal {
-		statementHintsCache = ex.server.cfg.StatementHintsCache
-	}
-	stmt := makeStatement(
-		ctx, parseCmd.Statement, ex.server.cfg.GenerateID(),
-		tree.FmtFlags(tree.QueryFormattingForFingerprintsMask.Get(ex.server.cfg.SV())),
-		statementHintsCache,
-	)
+	stmt := makeStatement(parseCmd.Statement, ex.server.cfg.GenerateID(),
+		tree.FmtFlags(queryFormattingForFingerprintsMask.Get(ex.server.cfg.SV())))
 	_, err := ex.addPreparedStmt(
 		ctx,
 		parseCmd.Name,
@@ -244,10 +236,6 @@ func (ex *connExecutor) prepare(
 		prepared.Statement.NumPlaceholders = origNumPlaceholders
 		prepared.StatementNoConstants = stmt.StmtNoConstants
 		prepared.StatementSummary = stmt.StmtSummary
-		prepared.Hints = stmt.Hints
-		prepared.HintIDs = stmt.HintIDs
-		prepared.HintsGeneration = stmt.HintsGeneration
-		prepared.ASTWithInjectedHints = stmt.ASTWithInjectedHints
 
 		// Point to the prepared state, which can be further populated during query
 		// preparation.
@@ -274,7 +262,7 @@ func (ex *connExecutor) prepare(
 			f := tree.NewFmtCtx(tree.FmtMarkRedactionNode | tree.FmtOmitNameRedaction | tree.FmtSimple)
 			f.FormatNode(stmt.AST)
 			redactableStmt := redact.RedactableString(f.CloseAndGetString())
-			log.Dev.Warningf(ctx, "could not prepare statement during session migration (%s): %v", redactableStmt, err)
+			log.Warningf(ctx, "could not prepare statement during session migration (%s): %v", redactableStmt, err)
 		}
 	}
 
@@ -346,7 +334,7 @@ func (ex *connExecutor) execBind(
 		if ps != nil && ps.StatementSummary != "" {
 			err = errors.WithDetailf(err, "statement summary %q", ps.StatementSummary)
 		}
-		return eventNonRetryableErr{IsCommit: fsm.False}, eventNonRetryableErrPayload{err: err}
+		return eventNonRetriableErr{IsCommit: fsm.False}, eventNonRetriableErrPayload{err: err}
 	}
 
 	var ok bool
@@ -400,13 +388,13 @@ func (ex *connExecutor) execBind(
 	// Decode the arguments, except for internal queries for which we just verify
 	// that the arguments match what's expected.
 	qargs := make(tree.QueryArguments, numQArgs)
-	if bindCmd.InternalArgs != nil {
-		if len(bindCmd.InternalArgs) != int(numQArgs) {
+	if bindCmd.internalArgs != nil {
+		if len(bindCmd.internalArgs) != int(numQArgs) {
 			return retErr(
 				pgwirebase.NewProtocolViolationErrorf(
-					"expected %d arguments, got %d", numQArgs, len(bindCmd.InternalArgs)))
+					"expected %d arguments, got %d", numQArgs, len(bindCmd.internalArgs)))
 		}
-		for i, datum := range bindCmd.InternalArgs {
+		for i, datum := range bindCmd.internalArgs {
 			t := ps.InferredTypes[i]
 			if oid := datum.ResolvedType().Oid(); datum != tree.DNull && oid != t {
 				return retErr(
@@ -509,7 +497,7 @@ func (ex *connExecutor) execBind(
 			numCols, len(bindCmd.OutFormats))
 		// A user is hitting this error unexpectedly and rarely, dump extra info,
 		// should be okay since this should be a very rare error.
-		log.Dev.Infof(ctx, "%s outformats: %v, AST: %T, prepared statements: %s", err.Error(),
+		log.Infof(ctx, "%s outformats: %v, AST: %T, prepared statements: %s", err.Error(),
 			bindCmd.OutFormats, ps.AST, ex.extraTxnState.prepStmtsNamespace.String())
 		return retErr(err)
 	}
@@ -529,7 +517,7 @@ func (ex *connExecutor) execBind(
 	}
 
 	if log.V(2) {
-		log.Dev.Infof(ctx, "portal: %q for %q, args %q, formats %q",
+		log.Infof(ctx, "portal: %q for %q, args %q, formats %q",
 			portalName, ps.Statement, qargs, columnFormatCodes)
 	}
 
@@ -617,7 +605,7 @@ func (ex *connExecutor) execDescribe(
 ) (fsm.Event, fsm.EventPayload) {
 
 	retErr := func(err error) (fsm.Event, fsm.EventPayload) {
-		return eventNonRetryableErr{IsCommit: fsm.False}, eventNonRetryableErrPayload{err: err}
+		return eventNonRetriableErr{IsCommit: fsm.False}, eventNonRetriableErrPayload{err: err}
 	}
 	_, isAbortedTxn := ex.machine.CurState().(stateAborted)
 
@@ -644,7 +632,7 @@ func (ex *connExecutor) execDescribe(
 			return retErr(sqlerrors.NewTransactionAbortedError("" /* customMsg */))
 		}
 		res.SetInferredTypes(ps.InferredTypes)
-		if stmtHasNoData(ast, ps.Columns) {
+		if stmtHasNoData(ast) {
 			res.SetNoDataRowDescription()
 		} else {
 			res.SetPrepStmtOutput(ctx, ps.Columns)
@@ -673,7 +661,7 @@ func (ex *connExecutor) execDescribe(
 		if isAbortedTxn && !ex.isAllowedInAbortedTxn(ast) {
 			return retErr(sqlerrors.NewTransactionAbortedError("" /* customMsg */))
 		}
-		if stmtHasNoData(ast, portal.Stmt.Columns) {
+		if stmtHasNoData(ast) {
 			res.SetNoDataRowDescription()
 		} else {
 			res.SetPortalOutput(ctx, portal.Stmt.Columns, portal.OutFormats)

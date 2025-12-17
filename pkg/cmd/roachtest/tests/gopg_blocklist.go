@@ -33,7 +33,6 @@ var gopgBlockList = blocklist{
 }
 
 var gopgIgnoreList = blocklist{
-	`pg | BeforeQuery and AfterQuery CopyFrom | is called for CopyFrom with model`: "unknown",
 	// These "fetching" tests assume a particular order when ORDER BY clause is
 	// omitted from the query by the ORM itself.
 	"pg | ORM slice model | fetches Book relations":       "41690",
@@ -55,7 +54,4 @@ var gopgIgnoreList = blocklist{
 	`v10.TestColumnReuse`: "unknown",
 	// This test is flaky sometimes due to the use of temp tables.
 	`pg | soft delete with int column nil model ForceDelete | deletes the model`: "unknown",
-	// This test is sometimes flaky due to a small delta in the expected soft
-	// deletion timestamp (i.e. the test allows up to one seconds worth of difference).
-	`pg | soft delete with int column model | ForceDelete deletes the model`: "unknown",
 }

@@ -208,12 +208,20 @@ func testMultiRegionDataDriven(t *testing.T, testPath string) {
 				tc := testcluster.StartTestCluster(t, numServers, base.TestClusterArgs{
 					ServerArgsPerNode: serverArgs,
 					ServerArgs: base.TestServerArgs{
-						DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(156305),
+						// We need to disable the default test tenant here
+						// because it appears as though operations like
+						// "wait-for-zone-config-changes" only work correctly
+						// when called from the system tenant. More
+						// investigation is required (tracked with #76378).
+						DefaultTestTenant: base.TODOTestTenantDisabled,
 					},
 				})
 				ds.tc = tc
 
-				sysConn := tc.SystemLayer(0).SQLConn(t)
+				sqlConn, err := ds.getSQLConn(0)
+				if err != nil {
+					return err.Error()
+				}
 				// Speed up closing of timestamps, in order to sleep less below before
 				// we can use follower_read_timestamp(). follower_read_timestamp() uses
 				// sum of the following settings. Also, disable all kvserver lease
@@ -229,7 +237,7 @@ SET CLUSTER SETTING kv.allocator.load_based_lease_rebalancing.enabled = false;
 SET CLUSTER SETTING kv.allocator.min_lease_transfer_interval = '5m'
 `,
 					";") {
-					_, err := sysConn.Exec(stmt)
+					_, err = sqlConn.Exec(stmt)
 					if err != nil {
 						return err.Error()
 					}
@@ -261,13 +269,10 @@ SET CLUSTER SETTING kv.allocator.min_lease_transfer_interval = '5m'
 
 			case "trace-sql":
 				mustHaveArgOrFatal(t, d, serverIdx)
-				var idx int
-				d.ScanArgs(t, serverIdx, &idx)
-				shouldRetry := d.HasArg(traceSQLRetryArg)
-				retryTimeout := testutils.DefaultSucceedsSoonDuration
-
 				var rec tracingpb.Recording
 				queryFunc := func() (localRead bool, followerRead bool, err error) {
+					var idx int
+					d.ScanArgs(t, serverIdx, &idx)
 					sqlDB, err := ds.getSQLConn(idx)
 					if err != nil {
 						return false, false, err
@@ -294,41 +299,22 @@ SET CLUSTER SETTING kv.allocator.min_lease_transfer_interval = '5m'
 					}
 					return localRead, followerRead, nil
 				}
-
-				runOnce := func() (string, error) {
-					localRead, followerRead, err := queryFunc()
-					if err != nil {
-						return "", err
-					}
-					var output strings.Builder
-					output.WriteString(
-						fmt.Sprintf("served locally: %s\n", strconv.FormatBool(localRead)))
-					// Only print follower read information if the query was served locally.
-					if localRead {
-						output.WriteString(
-							fmt.Sprintf("served via follower read: %s\n", strconv.FormatBool(followerRead)))
-					}
-					if d.Expected != output.String() {
-						return "", errors.AssertionFailedf("not a match, trace:\n%s\n", rec)
-					}
-					return output.String(), nil
-				}
-
-				var output string
-				var err error
-				if shouldRetry {
-					err = testutils.SucceedsWithinError(func() error {
-						var attemptErr error
-						output, attemptErr = runOnce()
-						return attemptErr
-					}, retryTimeout)
-				} else {
-					output, err = runOnce()
-				}
+				localRead, followerRead, err := queryFunc()
 				if err != nil {
 					return err.Error()
 				}
-				return output
+				var output strings.Builder
+				output.WriteString(
+					fmt.Sprintf("served locally: %s\n", strconv.FormatBool(localRead)))
+				// Only print follower read information if the query was served locally.
+				if localRead {
+					output.WriteString(
+						fmt.Sprintf("served via follower read: %s\n", strconv.FormatBool(followerRead)))
+				}
+				if d.Expected != output.String() {
+					return errors.AssertionFailedf("not a match, trace:\n%s\n", rec).Error()
+				}
+				return output.String()
 
 			case "refresh-range-descriptor-cache":
 				mustHaveArgOrFatal(t, d, tableName)
@@ -355,9 +341,8 @@ SET CLUSTER SETTING kv.allocator.min_lease_transfer_interval = '5m'
 				if err != nil {
 					return err.Error()
 				}
-				s := ds.tc.ApplicationLayer(idx)
-				cache := s.DistSenderI().(*kvcoord.DistSender).RangeDescriptorCache()
-				tablePrefix := keys.MustAddr(s.Codec().TablePrefix(tableID))
+				cache := ds.tc.Server(idx).DistSenderI().(*kvcoord.DistSender).RangeDescriptorCache()
+				tablePrefix := keys.MustAddr(keys.SystemSQLCodec.TablePrefix(tableID))
 				entry, err := cache.TestingGetCached(ctx, tablePrefix, false, roachpb.LAG_BY_CLUSTER_SETTING)
 				if err != nil {
 					return err.Error()
@@ -506,7 +491,6 @@ const (
 	partitionName    = "partition-name"
 	numVoters        = "num-voters"
 	numNonVoters     = "num-non-voters"
-	traceSQLRetryArg = "retry"
 )
 
 type replicaType int
@@ -754,7 +738,7 @@ func (r *replicaPlacement) satisfiesExpectedPlacement(expected *replicaPlacement
 				continue
 			} else {
 				return errors.Newf(
-					"expected node %d to not be present but had replica type %s",
+					"expected node %s to not be present but had replica type %s",
 					node,
 					actualRt.String())
 			}
@@ -762,14 +746,14 @@ func (r *replicaPlacement) satisfiesExpectedPlacement(expected *replicaPlacement
 
 		if !found {
 			return errors.Newf(
-				"expected node %d to have replica type %s but was not found",
+				"expected node %s to have replica type %s but was not found",
 				node,
 				expectedRt.String())
 		}
 
 		if expectedRt != actualRt {
 			return errors.Newf(
-				"expected node %d to have replica type %s but was %s",
+				"expected node %s to have replica type %s but was %s",
 				node,
 				expectedRt.String(),
 				actualRt.String())
@@ -809,8 +793,7 @@ func getRangeKeyForInput(
 	var db string
 	d.ScanArgs(t, dbName, &db)
 
-	s := tc.ApplicationLayer(0)
-	execCfg := s.ExecutorConfig().(sql.ExecutorConfig)
+	execCfg := tc.Server(0).ExecutorConfig().(sql.ExecutorConfig)
 
 	tableDesc, err := lookupTable(&execCfg, db, tbName)
 	if err != nil {
@@ -818,7 +801,7 @@ func getRangeKeyForInput(
 	}
 
 	if !d.HasArg(partitionName) {
-		return tableDesc.TableSpan(s.Codec()).Key, nil
+		return tableDesc.TableSpan(keys.SystemSQLCodec).Key, nil
 	}
 
 	var partition string
@@ -848,7 +831,7 @@ func getRangeKeyForInput(
 
 	_, keyPrefix, err := rowenc.DecodePartitionTuple(
 		&tree.DatumAlloc{},
-		s.Codec(),
+		keys.SystemSQLCodec,
 		tableDesc,
 		primaryInd,
 		part,

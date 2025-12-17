@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
-	"github.com/cockroachdb/errors"
 )
 
 // GenericRulesEnabled returns true if rules for optimizing generic query plans
@@ -23,23 +22,10 @@ func (c *CustomFuncs) GenericRulesEnabled() bool {
 	return c.e.evalCtx.SessionData().PlanCacheMode != sessiondatapb.PlanCacheModeForceCustom
 }
 
-// HasPlaceholders returns true if the given relational expression's subtree has
+// HasPlaceholdersOrStableExprs returns true if the given relational expression's subtree has
 // at least one placeholder.
-func (c *CustomFuncs) HasPlaceholders(e memo.RelExpr) bool {
-	return e.Relational().HasPlaceholder
-}
-
-// HasPlaceholdersOrStableExprs returns true if the given relational
-// expression's subtree has at least one placeholder or stable expression.
 func (c *CustomFuncs) HasPlaceholdersOrStableExprs(e memo.RelExpr) bool {
 	return e.Relational().HasPlaceholder || e.Relational().VolatilitySet.HasStable()
-}
-
-// IsConstantsAndPlaceholders returns true if all scalar expressions in the list
-// are constants, placeholders or tuples containing constants or placeholders.
-// If a tuple nested within a tuple is found, false is returned.
-func (c *CustomFuncs) IsConstantsAndPlaceholders(scalars memo.ScalarListExpr) bool {
-	return scalars.IsConstantsAndPlaceholders()
 }
 
 // GenerateParameterizedJoinValuesAndFilters returns a single-row Values
@@ -140,65 +126,4 @@ func (c *CustomFuncs) ParameterizedJoinPrivate(parameterizedCols opt.ColSet) *me
 		ParameterizedCols: parameterizedCols,
 		SkipReorderJoins:  true,
 	}
-}
-
-// PlaceholderScanSpanAndPrivate returns a span and scan private for a
-// PlaceholderScan expression that is semantically equivalent to the given
-// lookup join with input values. See
-// ConvertParameterizedLookupJoinToPlaceholderScan for more details.
-func (c *CustomFuncs) PlaceholderScanSpanAndPrivate(
-	lookupPrivate *memo.LookupJoinPrivate,
-	values *memo.ValuesExpr,
-	row memo.ScalarListExpr,
-	outputCols opt.ColSet,
-) (span memo.ScalarListExpr, scanPrivate *memo.ScanPrivate, ok bool) {
-	// The lookup join must be an inner join.
-	if lookupPrivate.JoinType != opt.InnerJoinOp {
-		return nil, nil, false
-	}
-	// The lookup join must only have key columns, no lookup expressions.
-	if len(lookupPrivate.KeyCols) == 0 ||
-		lookupPrivate.LookupExpr != nil ||
-		lookupPrivate.RemoteLookupExpr != nil {
-		return nil, nil, false
-	}
-	// The lookup join must not be part of a paired join.
-	if lookupPrivate.IsFirstJoinInPairedJoiner || lookupPrivate.IsSecondJoinInPairedJoiner {
-		return nil, nil, false
-	}
-	// The index must be able to produce all the output columns.
-	md := c.e.f.Metadata()
-	indexCols := md.TableMeta(lookupPrivate.Table).IndexColumns(lookupPrivate.Index)
-	if !outputCols.SubsetOf(indexCols) {
-		return nil, nil, false
-	}
-
-	// Map columns in the input Values expression to the key columns.
-	span = make(memo.ScalarListExpr, len(lookupPrivate.KeyCols))
-	for i, keyCol := range lookupPrivate.KeyCols {
-		for j, valCol := range values.Cols {
-			if keyCol == valCol {
-				if !verifyType(md, keyCol, row[j].DataType()) {
-					// TODO(mgartner): This was added to copy the same check
-					// made while planning the the placeholder fast-path, but it
-					// may not be necessary here because the lookup join may
-					// have already checked this.
-					return nil, nil, false
-				}
-				span[i] = row[j]
-				break
-			}
-		}
-		if span[i] == nil {
-			panic(errors.AssertionFailedf("no value found for key column %d", keyCol))
-		}
-	}
-
-	scanPrivate = &memo.ScanPrivate{
-		Table:   lookupPrivate.Table,
-		Index:   lookupPrivate.Index,
-		Cols:    outputCols.Copy(),
-		Locking: lookupPrivate.Locking,
-	}
-	return span, scanPrivate, true
 }

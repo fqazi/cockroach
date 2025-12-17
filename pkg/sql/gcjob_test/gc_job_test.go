@@ -10,7 +10,6 @@ import (
 	gosql "database/sql"
 	"fmt"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -92,19 +91,16 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 			return nil
 		},
 	}
-	srv, db, kvDB := serverutils.StartServer(t, params)
+	s, db, kvDB := serverutils.StartServer(t, params)
 	ctx := context.Background()
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
+	defer s.Stopper().Stop(ctx)
 	// The deferred call to unblock the GC job needs to run before the deferred
 	// call to stop the TestServer. Otherwise, the quiesce step of shutting down
 	// can hang forever waiting for the GC job.
 	defer close(blockGC)
-
-	sysDB := sqlutils.MakeSQLRunner(srv.SystemLayer().SQLConn(t))
-	sysDB.Exec(t, `SET CLUSTER SETTING sql.gc_job.wait_for_gc.interval = '1s';`)
-
 	sqlDB := sqlutils.MakeSQLRunner(db)
+
+	sqlDB.Exec(t, `SET CLUSTER SETTING sql.gc_job.wait_for_gc.interval = '1s';`)
 	// Refresh protected timestamp cache immediately to make MVCC GC queue to
 	// process GC immediately.
 	sqlDB.Exec(t, `SET CLUSTER SETTING kv.protectedts.poll_interval = '1s';`)
@@ -197,10 +193,10 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 
 	if err := kvDB.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
 		b := txn.NewBatch()
-		descKey := catalogkeys.MakeDescMetadataKey(s.Codec(), myTableID)
+		descKey := catalogkeys.MakeDescMetadataKey(keys.SystemSQLCodec, myTableID)
 		descDesc := myTableDesc.DescriptorProto()
 		b.Put(descKey, descDesc)
-		descKey2 := catalogkeys.MakeDescMetadataKey(s.Codec(), myOtherTableID)
+		descKey2 := catalogkeys.MakeDescMetadataKey(keys.SystemSQLCodec, myOtherTableID)
 		descDesc2 := myOtherTableDesc.DescriptorProto()
 		b.Put(descKey2, descDesc2)
 		return txn.Run(ctx, b)
@@ -356,7 +352,7 @@ WHERE job_id = %s`, jobID)).Scan(&state, &statusMessage, &jobErr)
 	})
 }
 
-// TestGCResumer is lightweight test that tests the branching logic in Resume
+// TestGCTenant is lightweight test that tests the branching logic in Resume
 // depending on if the job is GC for tenant or tables/indexes.
 func TestGCResumer(t *testing.T) {
 	defer leaktest.AfterTest(t)()
@@ -365,12 +361,7 @@ func TestGCResumer(t *testing.T) {
 	defer gcjob.SetSmallMaxGCIntervalForTest()()
 
 	ctx := context.Background()
-	args := base.TestServerArgs{
-		Knobs: base.TestingKnobs{
-			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
-		},
-		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-	}
+	args := base.TestServerArgs{Knobs: base.TestingKnobs{JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals()}}
 	srv, sqlDB, _ := serverutils.StartServer(t, args)
 	execCfg := srv.ExecutorConfig().(sql.ExecutorConfig)
 	jobRegistry := execCfg.JobRegistry
@@ -468,9 +459,7 @@ func TestGCTenant(t *testing.T) {
 	defer jobs.ResetConstructors()()
 
 	ctx := context.Background()
-	srv, _, kvDB := serverutils.StartServer(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-	})
+	srv, _, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
 	execCfg := srv.ExecutorConfig().(sql.ExecutorConfig)
 	defer srv.Stopper().Stop(ctx)
 
@@ -610,8 +599,6 @@ func TestDropWithDeletedDescriptor(t *testing.T) {
 	runTest := func(t *testing.T, dropIndex bool, beforeDelRange bool) {
 		ctx, cancel := context.WithCancel(context.Background())
 		gcJobID := make(chan jobspb.JobID)
-		var hookShouldExecuteOnce sync.Once
-
 		knobs := base.TestingKnobs{
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			GCJob: &sql.GCJobTestingKnobs{
@@ -648,28 +635,23 @@ func TestDropWithDeletedDescriptor(t *testing.T) {
 					if len(k) == 0 {
 						return nil
 					}
-					// Disable the channel logic after the first execution in case
-					// any retries happen in the KV dist sender.
-					hookShouldExecuteOnce.Do(func() {
-						ch := make(chan struct{})
-						select {
-						case delRangeChan <- ch:
-						case <-ctx.Done():
-						}
-						select {
-						case <-ch:
-						case <-ctx.Done():
-						}
-					})
+					ch := make(chan struct{})
+					select {
+					case delRangeChan <- ch:
+					case <-ctx.Done():
+					}
+					select {
+					case <-ch:
+					case <-ctx.Done():
+					}
 					return nil
 				},
 			}
 		}
-		srv, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{
+		s, sqlDB, kvDB := serverutils.StartServer(t, base.TestServerArgs{
 			Knobs: knobs,
 		})
-		defer srv.Stopper().Stop(ctx)
-		s := srv.ApplicationLayer()
+		defer s.Stopper().Stop(ctx)
 		defer cancel()
 		tdb := sqlutils.MakeSQLRunner(sqlDB)
 

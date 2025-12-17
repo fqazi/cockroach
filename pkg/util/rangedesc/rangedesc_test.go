@@ -58,7 +58,6 @@ var scopes = []roachpb.Span{
 
 func TestEverythingScanner(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
 	for _, s := range splits {
@@ -181,7 +180,6 @@ func TestDataDriven(t *testing.T) {
 
 func TestIterator(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
 	for _, s := range splits {

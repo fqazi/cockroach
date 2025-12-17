@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/semenumpb"
-	"github.com/cockroachdb/redact"
 )
 
 //go:generate go run ./generate_visitor.go scop ImmediateMutation immediate_mutation.go immediate_mutation_visitor_generated.go
@@ -25,10 +24,6 @@ type immediateMutationOp struct{ baseOp }
 var _ = immediateMutationOp{baseOp: baseOp{}}
 
 func (immediateMutationOp) Type() Type { return MutationType }
-
-func (immediateMutationOp) Description() redact.RedactableString {
-	return "Updating schema metadata"
-}
 
 // NotImplemented is a placeholder for operations which haven't been defined yet.
 // TODO(postamar): remove all of these
@@ -242,33 +237,6 @@ type AddColumnComputeExpression struct {
 
 // RemoveColumnComputeExpression will remove the compute expression from a column.
 type RemoveColumnComputeExpression struct {
-	immediateMutationOp
-	TableID  descpb.ID
-	ColumnID descpb.ColumnID
-}
-
-// AddColumnGeneratedAsIdentity will add a new generated as identity to a column.
-type AddColumnGeneratedAsIdentity struct {
-	immediateMutationOp
-	GeneratedAsIdentity scpb.ColumnGeneratedAsIdentity
-}
-
-// RemoveColumnGeneratedAsIdentity will remove the generated as identity from a column.
-type RemoveColumnGeneratedAsIdentity struct {
-	immediateMutationOp
-	TableID  descpb.ID
-	ColumnID descpb.ColumnID
-}
-
-// MakeColumnHidden will add the hidden attribute to a column.
-type MakeColumnHidden struct {
-	immediateMutationOp
-	TableID  descpb.ID
-	ColumnID descpb.ColumnID
-}
-
-// MakeColumnHidden will remove the hidden attribute from a column.
-type MakeColumnVisible struct {
 	immediateMutationOp
 	TableID  descpb.ID
 	ColumnID descpb.ColumnID
@@ -1099,30 +1067,11 @@ type CreateSequenceDescriptor struct {
 	Temporary  bool
 }
 
-type SetSequenceOption struct {
+type SetSequenceOptions struct {
 	immediateMutationOp
 	SequenceID descpb.ID
 	Key        string
 	Value      string
-}
-
-type UnsetSequenceOption struct {
-	immediateMutationOp
-	SequenceID descpb.ID
-	Key        string
-}
-
-type MaybeUpdateSequenceValue struct {
-	immediateMutationOp
-	SequenceID       descpb.ID
-	PrevIncrement    int64
-	UpdatedIncrement int64
-	PrevMinValue     int64
-	UpdatedMinValue  int64
-	PrevMaxValue     int64
-	UpdatedMaxValue  int64
-	PrevStart        int64
-	UpdatedStart     int64
 }
 
 type InitSequence struct {
@@ -1231,7 +1180,6 @@ type MarkRecreatedIndexAsInvisible struct {
 	TableID              descpb.ID
 	IndexID              descpb.IndexID
 	TargetPrimaryIndexID descpb.IndexID
-	SetHideIndexFlag     bool
 }
 
 // MarkRecreatedIndexesAsVisible is used to mark secondary indexes recreated
@@ -1243,39 +1191,9 @@ type MarkRecreatedIndexesAsVisible struct {
 	IndexVisibilities map[descpb.IndexID]float64
 }
 
-// MarkRecreatedIndexAsVisible is used to mark secondary index recreated
-// after a primary key swap as visible. This is to allow their use after
-// primary key swap is complete.
-type MarkRecreatedIndexAsVisible struct {
-	immediateMutationOp
-	TableID         descpb.ID
-	IndexID         descpb.IndexID
-	IndexVisibility float64
-}
-
 // SetTableSchemaLocked is used to toggle a table schema as locked.
 type SetTableSchemaLocked struct {
 	immediateMutationOp
 	TableID descpb.ID
 	Locked  bool
-}
-
-// SetTableStorageParam sets a storage parameter on a table.
-type SetTableStorageParam struct {
-	immediateMutationOp
-	Param scpb.TableStorageParam
-}
-
-// ResetTableStorageParam resets a storage parameter on a table to its default.
-type ResetTableStorageParam struct {
-	immediateMutationOp
-	Param scpb.TableStorageParam
-}
-
-// UpsertRowLevelTTL sets the RowLevelTTL on a table descriptor.
-type UpsertRowLevelTTL struct {
-	immediateMutationOp
-	TableID     descpb.ID
-	RowLevelTTL catpb.RowLevelTTL
-	TTLExpr     *scpb.Expression
 }

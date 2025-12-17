@@ -12,7 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/featureflag"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
-	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -91,13 +90,33 @@ var errorOnConcurrentCreateStats = settings.RegisterBoolSetting(
 	false,
 	settings.WithPublic)
 
-var automaticStatsJobAutoCleanup = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"sql.stats.automatic_stats_job_auto_cleanup.enabled",
-	"set to true to enable automatic cleanup of completed AUTO CREATE STATISTICS jobs",
-	true)
-
 const nonIndexColHistogramBuckets = 2
+
+// StubTableStats generates "stub" statistics for a table which are missing
+// statistics on virtual computed columns, multi-column stats, and histograms,
+// and have 0 for all values.
+func StubTableStats(
+	desc catalog.TableDescriptor, name string,
+) ([]*stats.TableStatisticProto, error) {
+	colStats, err := createStatsDefaultColumns(
+		context.Background(), desc,
+		false /* virtColEnabled */, false, /* multiColEnabled */
+		false /* nonIndexJSONHistograms */, false, /* partialStats */
+		nonIndexColHistogramBuckets, nil, /* evalCtx */
+	)
+	if err != nil {
+		return nil, err
+	}
+	statistics := make([]*stats.TableStatisticProto, len(colStats))
+	for i, colStat := range colStats {
+		statistics[i] = &stats.TableStatisticProto{
+			TableID:   desc.GetID(),
+			Name:      name,
+			ColumnIDs: colStat.ColumnIDs,
+		}
+	}
+	return statistics, nil
+}
 
 // createStatsNode is a planNode implemented in terms of a function. The
 // runJob function starts a Job during Start, and the remainder of the
@@ -120,12 +139,6 @@ type createStatsNode struct {
 	// If it is false, the flow for create statistics is planned directly; this
 	// is used when the statement is under EXPLAIN or EXPLAIN ANALYZE.
 	runAsJob bool
-
-	// whereSpans are the spans corresponding to the WHERE clause, if any.
-	whereSpans roachpb.Spans
-
-	// whereIndexID is the index to use to collect statistics with a WHERE clause.
-	whereIndexID descpb.IndexID
 }
 
 func (n *createStatsNode) startExec(params runParams) error {
@@ -161,7 +174,7 @@ func (n *createStatsNode) runJob(ctx context.Context) error {
 				details.Table.ID,
 			); err != nil {
 				if !errorOnConcurrentCreateStats.Get(n.p.ExecCfg().SV()) && errors.Is(err, stats.ConcurrentCreateStatsError) {
-					log.Dev.Infof(ctx, "concurrent create stats job found, skipping")
+					log.Infof(ctx, "concurrent create stats job found, skipping")
 					return nil
 				}
 				return err
@@ -186,12 +199,12 @@ func (n *createStatsNode) runJob(ctx context.Context) error {
 		return n.p.ExecCfg().JobRegistry.CreateStartableJobWithTxn(ctx, &job, jobID, txn, *record)
 	}); err != nil {
 		if !errorOnConcurrentCreateStats.Get(n.p.ExecCfg().SV()) && errors.Is(err, stats.ConcurrentCreateStatsError) {
-			log.Dev.Infof(ctx, "concurrent create stats job found, skipping")
+			log.Infof(ctx, "concurrent create stats job found, skipping")
 			return nil
 		}
 		if job != nil {
 			if cleanupErr := job.CleanupOnRollback(ctx); cleanupErr != nil {
-				log.Dev.Warningf(ctx, "failed to cleanup StartableJob: %v", cleanupErr)
+				log.Warningf(ctx, "failed to cleanup StartableJob: %v", cleanupErr)
 			}
 		}
 		return err
@@ -203,16 +216,10 @@ func (n *createStatsNode) runJob(ctx context.Context) error {
 		if errors.Is(err, stats.ConcurrentCreateStatsError) {
 			// Delete the job so users don't see it and get confused by the error.
 			if delErr := n.p.ExecCfg().JobRegistry.DeleteTerminalJobByID(ctx, job.ID()); delErr != nil {
-				log.Dev.Warningf(ctx, "failed to delete job: %v", delErr)
+				log.Warningf(ctx, "failed to delete job: %v", delErr)
 			}
 			if !errorOnConcurrentCreateStats.Get(n.p.ExecCfg().SV()) {
 				return nil
-			}
-		}
-	} else if automaticStatsJobAutoCleanup.Get(n.p.ExecCfg().SV()) {
-		if name := job.Details().(jobspb.CreateStatsDetails).Name; name == jobspb.AutoStatsName || name == jobspb.AutoPartialStatsName {
-			if err := n.p.ExecCfg().JobRegistry.DeleteTerminalJobByID(ctx, job.ID()); err != nil {
-				log.Dev.Warningf(ctx, "failed to auto-delete terminal automatic stats job: %v", err)
 			}
 		}
 	}
@@ -222,12 +229,6 @@ func (n *createStatsNode) runJob(ctx context.Context) error {
 // makeJobRecord creates a CreateStats job record which can be used to plan and
 // execute statistics creation.
 func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, error) {
-	// Check tenant-level read-only status first (applies to all tables in tenant).
-	if n.p.ExecCfg().TenantReadOnly {
-		return nil, pgerror.Newf(
-			pgcode.WrongObjectType, "cannot create statistics in read-only tenant")
-	}
-
 	var tableDesc catalog.TableDescriptor
 	var fqTableName string
 	var err error
@@ -263,7 +264,7 @@ func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, erro
 		)
 	}
 
-	if n.p.execCfg.TableStatsCache.DisallowedOnSystemTable(tableDesc.GetID()) {
+	if stats.DisallowedOnSystemTable(tableDesc.GetID()) {
 		return nil, pgerror.Newf(
 			pgcode.WrongObjectType, "cannot create statistics on system.%s", tableDesc.GetName(),
 		)
@@ -273,15 +274,11 @@ func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, erro
 		return nil, errors.Errorf(`creating partial statistics at extremes is disabled`)
 	}
 
-	var whereClause string
+	// TODO(93998): Add support for WHERE.
 	if n.Options.Where != nil {
-		if n.whereSpans == nil {
-			return nil, errors.AssertionFailedf(
-				"expected whereSpans to be set for statistics with a WHERE clause")
-		}
-		// Safe to use AsString since whereClause is only used to populate the
-		// predicate in system.table_statistics.
-		whereClause = tree.AsString(n.Options.Where.Expr)
+		return nil, pgerror.New(pgcode.FeatureNotSupported,
+			"creating partial statistics with a WHERE clause is not yet supported",
+		)
 	}
 
 	if err := n.p.CheckPrivilege(ctx, tableDesc, privilege.SELECT); err != nil {
@@ -294,7 +291,7 @@ func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, erro
 		virtColEnabled := statsOnVirtualCols.Get(n.p.ExecCfg().SV())
 		// Disable multi-column stats and deleting stats if partial statistics at
 		// the extremes are requested.
-		// TODO(#94076): add support for creating multi-column stats.
+		// TODO(faizaanmadhani): Add support for multi-column stats.
 		var multiColEnabled bool
 		if !n.Options.UsingExtremes {
 			multiColEnabled = stats.MultiColumnStatisticsClusterMode.Get(n.p.ExecCfg().SV())
@@ -406,9 +403,6 @@ func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, erro
 			MaxFractionIdle:  n.Options.Throttling,
 			DeleteOtherStats: deleteOtherStats,
 			UsingExtremes:    n.Options.UsingExtremes,
-			WhereClause:      whereClause,
-			WhereSpans:       n.whereSpans,
-			WhereIndexID:     n.whereIndexID,
 		},
 		Progress: jobspb.CreateStatsProgress{},
 	}, nil

@@ -120,16 +120,6 @@ func (e *explainPlanNode) startExec(params runParams) error {
 			}
 		}
 
-		if len(params.p.stmt.Hints) > 0 {
-			var hintCount uint64
-			for _, hint := range params.p.stmt.Hints {
-				if hint.Enabled && hint.Err == nil {
-					hintCount += 1
-				}
-			}
-			ob.AddStmtHintCount(hintCount)
-		}
-
 		if e.options.Flags[tree.ExplainFlagJSON] {
 			// For the JSON flag, we only want to emit the diagram JSON.
 			rows = []string{diagramJSON}
@@ -196,15 +186,25 @@ func emitExplain(
 	codec keys.SQLCodec,
 	explainPlan *explain.Plan,
 	createPostQueryPlanIfMissing bool,
-) (retErr error) {
+) (err error) {
 	// Guard against bugs in the explain code.
-	defer errorutil.MaybeCatchPanic(&retErr, func(caughtErr error) {
-		if buildutil.CrdbTestBuild && caughtErr != nil {
-			// Don't catch anything in debug builds, so that failures are more
-			// visible.
-			panic(caughtErr)
+	defer func() {
+		if r := recover(); r != nil {
+			// This code allows us to propagate internal and runtime errors without
+			// having to add error checks everywhere throughout the code. This is only
+			// possible because the code does not update shared state and does not
+			// manipulate locks.
+			// Note that we don't catch anything in debug builds, so that failures are
+			// more visible.
+			if ok, e := errorutil.ShouldCatch(r); ok && !buildutil.CrdbTestBuild {
+				err = e
+			} else {
+				// Other panic objects can't be considered "safe" and thus are
+				// propagated as crashes that terminate the session.
+				panic(r)
+			}
 		}
-	})
+	}()
 
 	if explainPlan == nil {
 		return errors.AssertionFailedf("no plan")

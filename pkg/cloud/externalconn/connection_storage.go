@@ -43,7 +43,6 @@ func parseExternalConnectionURL(
 ) (cloudpb.ExternalStorage, error) {
 	conf := cloudpb.ExternalStorage{}
 	conf.Provider = cloudpb.ExternalStorageProvider_external
-	conf.URI = uri.String()
 	var err error
 	conf.ExternalConnectionConfig, err = makeExternalConnectionConfig(uri, args)
 	return conf, err
@@ -80,33 +79,15 @@ func makeExternalConnectionStorage(
 	switch d := ec.ConnectionProto().Details.(type) {
 	case *connectionpb.ConnectionDetails_SimpleURI:
 		// Append the subdirectory that was passed in with the `external` URI to the
-		// underlying storage URI.
+		// underlying `nodelocal` URI.
 		uri, err := url.Parse(d.SimpleURI.URI)
 		if err != nil {
-			return nil, errors.Wrap(err, "failed to parse underlying storage URI")
+			return nil, errors.Wrap(err, "failed to parse `nodelocal` URI")
 		}
 		uri.Path = path.Join(uri.Path, cfg.Path)
-
-		// Parse the resolved URI to get the underlying storage configuration.
-		resolvedConf, err := cloud.ExternalStorageConfFromURI(
-			uri.String(),
-			username.MakeSQLUsernameFromPreNormalizedString(cfg.User),
-		)
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to create config for resolved URI")
-		}
-
-		// Override the URI field to preserve the original external:// URI.
-		// This ensures that the underlying storage returns the external:// URI
-		// from its Conf() method rather than the resolved storage URI.
-		resolvedConf.URI = dest.URI
-
-		// Create the storage using the modified config.
-		return cloud.MakeExternalStorage(
-			ctx, resolvedConf, args.IOConf, args.Settings,
-			args.BlobClientFactory, args.DB, args.Limiters,
-			args.MetricsRecorder, args.Options...,
-		)
+		return cloud.ExternalStorageFromURI(ctx, uri.String(), args.IOConf, args.Settings,
+			args.BlobClientFactory, username.MakeSQLUsernameFromPreNormalizedString(cfg.User),
+			args.DB, args.Limiters, args.MetricsRecorder, args.Options...)
 	default:
 		return nil, errors.Newf("cannot connect to %T; unsupported resource for an ExternalStorage connection", d)
 	}

@@ -17,8 +17,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/clusterupgrade"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
-	"github.com/cockroachdb/cockroach/pkg/roachprod"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/failureinjection/failures"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
@@ -60,7 +58,7 @@ type installFixturesStep struct {
 
 func (s installFixturesStep) Background() shouldStop { return nil }
 
-func (s installFixturesStep) Description(debug bool) string {
+func (s installFixturesStep) Description() string {
 	return fmt.Sprintf("install fixtures for version %q", s.version.String())
 }
 
@@ -88,13 +86,12 @@ type startStep struct {
 
 func (s startStep) Background() shouldStop { return nil }
 
-func (s startStep) Description(debug bool) string {
+func (s startStep) Description() string {
 	return fmt.Sprintf("start cluster at version %q", s.version)
 }
 
-// Run implements the Step interface for startStep. It stages the cockroach
-// binary of the current cluster version on all nodes and starts the cockroach
-// binary on the cluster nodes.
+// Run uploads the binary associated with the given version and starts
+// the cockroach binary on the nodes.
 func (s startStep) Run(ctx context.Context, l *logger.Logger, _ *rand.Rand, h *Helper) error {
 	systemNodes := h.System.Descriptor.Nodes
 	binaryPath, err := clusterupgrade.UploadCockroach(
@@ -103,6 +100,7 @@ func (s startStep) Run(ctx context.Context, l *logger.Logger, _ *rand.Rand, h *H
 	if err != nil {
 		return err
 	}
+
 	clusterSettings := append(
 		append([]install.ClusterSettingOption{}, s.settings...),
 		install.BinaryOption(binaryPath),
@@ -136,7 +134,7 @@ type startSharedProcessVirtualClusterStep struct {
 
 func (s startSharedProcessVirtualClusterStep) Background() shouldStop { return nil }
 
-func (s startSharedProcessVirtualClusterStep) Description(debug bool) string {
+func (s startSharedProcessVirtualClusterStep) Description() string {
 	return fmt.Sprintf("start shared-process tenant %q", s.name)
 }
 
@@ -173,7 +171,7 @@ type startSeparateProcessVirtualClusterStep struct {
 
 func (s startSeparateProcessVirtualClusterStep) Background() shouldStop { return nil }
 
-func (s startSeparateProcessVirtualClusterStep) Description(debug bool) string {
+func (s startSeparateProcessVirtualClusterStep) Description() string {
 	return fmt.Sprintf(
 		"start separate process virtual cluster %s with binary version %s",
 		s.name, s.version,
@@ -215,7 +213,7 @@ type restartVirtualClusterStep struct {
 
 func (s restartVirtualClusterStep) Background() shouldStop { return nil }
 
-func (s restartVirtualClusterStep) Description(debug bool) string {
+func (s restartVirtualClusterStep) Description() string {
 	return fmt.Sprintf(
 		"restart %s server on node %d with binary version %s",
 		s.virtualCluster, s.node, s.version,
@@ -265,7 +263,7 @@ type waitForStableClusterVersionStep struct {
 
 func (s waitForStableClusterVersionStep) Background() shouldStop { return nil }
 
-func (s waitForStableClusterVersionStep) Description(debug bool) string {
+func (s waitForStableClusterVersionStep) Description() string {
 	return fmt.Sprintf(
 		"wait for all nodes (%v) to acknowledge cluster version %s on %s tenant",
 		s.nodes, quoteVersionForPresentation(s.desiredVersion), s.virtualClusterName,
@@ -293,7 +291,7 @@ type preserveDowngradeOptionStep struct {
 
 func (s preserveDowngradeOptionStep) Background() shouldStop { return nil }
 
-func (s preserveDowngradeOptionStep) Description(debug bool) string {
+func (s preserveDowngradeOptionStep) Description() string {
 	return fmt.Sprintf(
 		"prevent auto-upgrades on %s tenant by setting `preserve_downgrade_option`",
 		s.virtualClusterName,
@@ -339,7 +337,7 @@ type restartWithNewBinaryStep struct {
 
 func (s restartWithNewBinaryStep) Background() shouldStop { return nil }
 
-func (s restartWithNewBinaryStep) Description(debug bool) string {
+func (s restartWithNewBinaryStep) Description() string {
 	var systemDesc string
 	if s.deploymentMode == SeparateProcessDeployment {
 		systemDesc = " system server on"
@@ -400,7 +398,7 @@ type allowUpgradeStep struct {
 
 func (s allowUpgradeStep) Background() shouldStop { return nil }
 
-func (s allowUpgradeStep) Description(debug bool) string {
+func (s allowUpgradeStep) Description() string {
 	return fmt.Sprintf(
 		"allow upgrade to happen on %s tenant by resetting `preserve_downgrade_option`",
 		s.virtualClusterName,
@@ -430,7 +428,7 @@ type waitStep struct {
 
 func (s waitStep) Background() shouldStop { return nil }
 
-func (s waitStep) Description(debug bool) string {
+func (s waitStep) Description() string {
 	return fmt.Sprintf("wait for %s", s.dur)
 }
 
@@ -457,10 +455,7 @@ type runHookStep struct {
 
 func (s runHookStep) Background() shouldStop { return s.stopChan }
 
-func (s runHookStep) Description(debug bool) string {
-	if debug {
-		return fmt.Sprintf("run %q hookId=%q", s.hook.name, s.hook.id)
-	}
+func (s runHookStep) Description() string {
 	return fmt.Sprintf("run %q", s.hook.name)
 }
 
@@ -483,7 +478,7 @@ type setClusterSettingStep struct {
 
 func (s setClusterSettingStep) Background() shouldStop { return nil }
 
-func (s setClusterSettingStep) Description(debug bool) string {
+func (s setClusterSettingStep) Description() string {
 	return fmt.Sprintf(
 		"set cluster setting %q to '%v' on %s tenant",
 		s.name, s.value, s.virtualClusterName,
@@ -540,7 +535,7 @@ type setClusterVersionStep struct {
 
 func (s setClusterVersionStep) Background() shouldStop { return nil }
 
-func (s setClusterVersionStep) Description(debug bool) string {
+func (s setClusterVersionStep) Description() string {
 	value := versionToClusterVersion(s.v)
 	if !s.v.IsCurrent() {
 		value = fmt.Sprintf("'%s'", value)
@@ -588,7 +583,7 @@ type resetClusterSettingStep struct {
 
 func (s resetClusterSettingStep) Background() shouldStop { return nil }
 
-func (s resetClusterSettingStep) Description(debug bool) string {
+func (s resetClusterSettingStep) Description() string {
 	return fmt.Sprintf("reset cluster setting %q on %s tenant", s.name, s.virtualClusterName)
 }
 
@@ -616,7 +611,7 @@ type deleteAllTenantsVersionOverrideStep struct{}
 
 func (s deleteAllTenantsVersionOverrideStep) Background() shouldStop { return nil }
 
-func (s deleteAllTenantsVersionOverrideStep) Description(debug bool) string {
+func (s deleteAllTenantsVersionOverrideStep) Description() string {
 	return "delete all-tenants override for the `version` key"
 }
 
@@ -647,7 +642,7 @@ type disableRateLimitersStep struct {
 
 func (s disableRateLimitersStep) Background() shouldStop { return nil }
 
-func (s disableRateLimitersStep) Description(debug bool) string {
+func (s disableRateLimitersStep) Description() string {
 	return fmt.Sprintf("disable KV and tenant(SQL) rate limiter on %s tenant", s.virtualClusterName)
 }
 
@@ -785,12 +780,9 @@ func quoteVersionForPresentation(v string) string {
 // we should change the default and add an API for tests to opt-out of
 // the default scheduled backup if necessary.
 func startOpts(opts ...option.StartStopOption) option.StartOpts {
-	startOpts := option.NewStartOpts(
+	return option.NewStartOpts(
 		startStopOpts(opts...)...,
 	)
-	// Enable verbose logging for auto_upgrade to help debug upgrade-related issues.
-	startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs, "--vmodule=auto_upgrade=2")
-	return startOpts
 }
 
 // startStopOpts does the same as `startOpts` but returns StartStopOptions
@@ -802,62 +794,22 @@ func startStopOpts(opts ...option.StartStopOption) []option.StartStopOption {
 }
 
 // TODO(kyleli): This step currently only affects the system tenant, should support panicking secondary tenants as well.
+// TODO(kyleli): Current mixedversion cannot support separating this into two steps (panic and restart) because during
+// each step the framework checks each node to ensure they are all alive and healthy. Ideally there should be a state
+// that allows the framework to skip this check, so that we can panic a node and then restart it in a separate step.
 type panicNodeStep struct {
 	initTarget int
 	targetNode option.NodeListOption
+	rt         test.Test
 }
 
 func (s panicNodeStep) Background() shouldStop { return nil }
 
-func (s panicNodeStep) Description(debug bool) string {
+func (s panicNodeStep) Description() string {
 	return fmt.Sprintf("panicking system interface on node %d", s.targetNode[0])
 }
 
 func (s panicNodeStep) Run(ctx context.Context, l *logger.Logger, rng *rand.Rand, h *Helper) error {
-
-	h.runner.monitor.ExpectProcessDead(s.targetNode)
-
-	// ExecWithGateway cannot be used here because the monitor marks the target node as expected
-	// dead, and it will be filtered out of the list of available nodes. This a unique case, so
-	// we manually log the SQL statement and execute it directly on the target node.
-	const query = "SELECT crdb_internal.force_panic('expected panic from panicNodeMutator')"
-	db := h.System.Connect(s.targetNode[0])
-
-	v, err := h.System.NodeVersion(s.targetNode[0])
-	if err != nil {
-		return errors.Wrapf(err, "failed to get node version for %d", s.targetNode[0])
-	}
-	logSQL(
-		h.System.stepLogger, s.targetNode[0], v, h.System.Descriptor.Name, query,
-	)
-
-	if _, err = db.ExecContext(h.System.ctx, query); err == nil {
-		return errors.Errorf("expected panic statement to fail, but it succeeded on %s", s.targetNode)
-	}
-
-	return nil
-}
-
-func (s panicNodeStep) ConcurrencyDisabled() bool {
-	return true
-}
-
-// Restarts a dead node on the same binary version it was running, unlike
-// `restartWithNewBinaryStep` which restarts an alive node with a new binary.
-type restartNodeStep struct {
-	initTarget  int
-	targetNode  option.NodeListOption
-	rt          test.Test
-	description string
-}
-
-func (restartNodeStep) Background() shouldStop { return nil }
-
-func (s restartNodeStep) Description(debug bool) string {
-	return s.description
-}
-
-func (s restartNodeStep) Run(ctx context.Context, l *logger.Logger, _ *rand.Rand, h *Helper) error {
 	nodeVersion, err := h.System.NodeVersion(s.targetNode[0])
 	if err != nil {
 		return errors.Wrapf(err, "failed to get node version for %s", s.targetNode)
@@ -869,194 +821,31 @@ func (s restartNodeStep) Run(ctx context.Context, l *logger.Logger, _ *rand.Rand
 	)
 	customStartOpts := restartSystemSettings(true, s.initTarget)
 
+	h.runner.monitor.ExpectProcessDead(s.targetNode)
+
+	const stmt = "SELECT crdb_internal.force_panic('expected panic from panicNodeMutator')"
+	err = h.System.ExecWithGateway(
+		rng,
+		s.targetNode,
+		stmt,
+	)
+
+	if err == nil {
+		return errors.Errorf("expected panic statement to fail, but it succeeded on %s", s.targetNode)
+	}
+
 	startCtx, cancel := context.WithTimeout(ctx, startTimeout)
 	defer cancel()
 
-	err = h.runner.cluster.StartE(
+	return h.runner.cluster.StartE(
 		startCtx,
 		l,
 		startOpts(customStartOpts...),
 		settings,
 		s.targetNode,
 	)
-	if err != nil {
-		return errors.Wrapf(
-			err, "failed to restart node %d with binary %s", s.targetNode[0], binary,
-		)
-	}
-	return nil
-
 }
 
-func (s restartNodeStep) ConcurrencyDisabled() bool {
-	return true
-}
-
-type networkPartitionInjectStep struct {
-	f          *failures.Failer
-	partition  failures.NetworkPartition
-	targetNode option.NodeListOption
-}
-
-func (s networkPartitionInjectStep) Background() shouldStop { return nil }
-
-func (s networkPartitionInjectStep) Description(debug bool) string {
-	var desc string
-	switch s.partition.Type {
-	case failures.Bidirectional:
-		desc = fmt.Sprintf("setting up bidirectional network partition: dropping connections between nodes %d and %v", s.partition.Source, s.partition.Destination)
-	case failures.Incoming:
-		desc = fmt.Sprintf("setting up incoming network partition: dropping connections from nodes %v to %d", s.partition.Destination, s.partition.Source)
-	case failures.Outgoing:
-		desc = fmt.Sprintf("setting up outgoing network partition: dropping connections from nodes %d to %v", s.partition.Source, s.partition.Destination)
-	}
-	return desc
-}
-
-func (s networkPartitionInjectStep) Run(
-	ctx context.Context, l *logger.Logger, _ *rand.Rand, h *Helper,
-) error {
-	h.runner.monitor.ExpectProcessDead(s.targetNode)
-	if h.DeploymentMode() == SeparateProcessDeployment {
-		opt := option.VirtualClusterName(h.Tenant.Descriptor.Name)
-		h.runner.monitor.ExpectProcessDead(s.targetNode, opt)
-	}
-
-	args := failures.NetworkPartitionArgs{Partitions: []failures.NetworkPartition{s.partition}}
-
-	if err := s.f.Setup(ctx, l, args); err != nil {
-		return errors.Wrapf(err, "failed to setup failure %s", failures.IPTablesNetworkPartitionName)
-	}
-
-	if err := s.f.Inject(ctx, l, args); err != nil {
-		return errors.Wrapf(err, "failed to inject failure %s", failures.IPTablesNetworkPartitionName)
-	}
-
-	return s.f.WaitForFailureToPropagate(ctx, l)
-}
-
-func (s networkPartitionInjectStep) ConcurrencyDisabled() bool {
-	return true
-}
-
-type networkPartitionRecoveryStep struct {
-	f          *failures.Failer
-	partition  failures.NetworkPartition
-	targetNode option.NodeListOption
-}
-
-func (s networkPartitionRecoveryStep) Background() shouldStop { return nil }
-
-func (s networkPartitionRecoveryStep) Description(debug bool) string {
-	var desc string
-	switch s.partition.Type {
-	case failures.Bidirectional:
-		desc = fmt.Sprintf("recovering from bidirectional network partition: allowing connections between nodes %d and %v", s.partition.Source, s.partition.Destination)
-	case failures.Incoming:
-		desc = fmt.Sprintf("recovering from incoming network partition: allowing connections from nodes %v to %d", s.partition.Destination, s.partition.Source)
-	case failures.Outgoing:
-		desc = fmt.Sprintf("recovering from outgoing network partition: allowing connections from nodes %d to %v", s.partition.Source, s.partition.Destination)
-	}
-	return desc
-}
-
-func (s networkPartitionRecoveryStep) Run(
-	ctx context.Context, l *logger.Logger, _ *rand.Rand, h *Helper,
-) error {
-	if err := s.f.Recover(ctx, l); err != nil {
-		return errors.Wrapf(err, "failed to recover failure %s", failures.IPTablesNetworkPartitionName)
-	}
-
-	if err := s.f.WaitForFailureToRecover(ctx, l); err != nil {
-		return errors.Wrapf(err, "failed to wait for recovery of failure %s", failures.IPTablesNetworkPartitionName)
-	}
-
-	h.runner.monitor.ExpectProcessAlive(s.targetNode)
-	if h.DeploymentMode() == SeparateProcessDeployment {
-		opt := option.VirtualClusterName(h.Tenant.Descriptor.Name)
-		h.runner.monitor.ExpectProcessAlive(s.targetNode, opt)
-	}
-	return s.f.Cleanup(ctx, l)
-
-}
-
-func (s networkPartitionRecoveryStep) ConcurrencyDisabled() bool {
-	return false
-}
-
-type alterReplicationFactorStep struct {
-	replicationFactor int
-	targetNode        option.NodeListOption
-}
-
-func (s alterReplicationFactorStep) Background() shouldStop { return nil }
-
-func (s alterReplicationFactorStep) Description(debug bool) string {
-	return fmt.Sprintf("alter replication factor to %d", s.replicationFactor)
-}
-
-func (s alterReplicationFactorStep) Run(
-	ctx context.Context, l *logger.Logger, rng *rand.Rand, h *Helper,
-) error {
-	stmt := fmt.Sprintf("ALTER RANGE default CONFIGURE ZONE USING num_replicas = %d", s.replicationFactor)
-	if err := h.System.Exec(
-		rng,
-		stmt,
-	); err != nil {
-		return errors.Wrap(err, "failed to change replication factor")
-	}
-
-	replicationLogger, loggerName, err := roachtestutil.LoggerForCmd(l, s.targetNode, "range-replication")
-	if err != nil {
-		return errors.Wrapf(err, "failed to create logger %s", loggerName)
-	}
-
-	l.Printf("waiting to reach replication factor of %dX; details in %s.log", s.replicationFactor, loggerName)
-	db := h.System.Connect(s.targetNode[0])
-	if err := roachtestutil.WaitForReplication(ctx, replicationLogger, db, s.replicationFactor, roachprod.AtLeastReplicationFactor); err != nil {
-		return errors.Wrapf(err, "failed to reach replication factor of %dX", s.replicationFactor)
-	}
-	return nil
-}
-
-func (s alterReplicationFactorStep) ConcurrencyDisabled() bool {
-	return false
-}
-
-// stageAllWorkloadBinariesStep stages new binaries on workload node(s)
-type stageAllWorkloadBinariesStep struct {
-	versions      []*clusterupgrade.Version
-	rt            test.Test
-	workloadNodes option.NodeListOption
-}
-
-func (s stageAllWorkloadBinariesStep) Background() shouldStop { return nil }
-func (s stageAllWorkloadBinariesStep) Description(debug bool) string {
-	versionStrings := make([]string, len(s.versions))
-	for i, v := range s.versions {
-		versionStrings[i] = v.String()
-	}
-	return fmt.Sprintf("stage workload binary on workload node(s) %s for version(s) %s",
-		s.workloadNodes.String(), strings.Join(versionStrings, ", "))
-}
-
-// Run stages all the cockroach binaries needed for workload for this test
-// on the workload node(s) to keep the workload binary version in sync with the
-// cluster version because the workload binary is no longer backwards
-// compatible with certain workloads.
-func (s stageAllWorkloadBinariesStep) Run(
-	ctx context.Context, l *logger.Logger, _ *rand.Rand, h *Helper,
-) error {
-
-	for _, version := range s.versions {
-		_, err := clusterupgrade.UploadCockroach(
-			ctx, s.rt, l, h.runner.cluster, s.workloadNodes, version)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-func (s stageAllWorkloadBinariesStep) ConcurrencyDisabled() bool {
+func (s panicNodeStep) ConcurrencyDisabled() bool {
 	return true
 }

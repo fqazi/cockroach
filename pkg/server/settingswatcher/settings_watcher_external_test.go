@@ -8,7 +8,6 @@ package settingswatcher_test
 import (
 	"bytes"
 	"context"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -49,7 +48,6 @@ func TestSettingWatcherOnTenant(t *testing.T) {
 	ctx := context.Background()
 	srv, sqlDB, db := serverutils.StartServer(t, base.TestServerArgs{
 		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-		DefaultDRPCOption: base.TestDRPCDisabled,
 	})
 	defer srv.Stopper().Stop(ctx)
 	s0 := srv.ApplicationLayer()
@@ -399,7 +397,6 @@ func TestOverflowRestart(t *testing.T) {
 	ctx := context.Background()
 	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
 		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-		DefaultDRPCOption: base.TestDRPCDisabled,
 	})
 	defer s.Stopper().Stop(ctx)
 
@@ -459,10 +456,6 @@ func CheckSettingsValuesMatch(t *testing.T, a, b *cluster.Settings) error {
 		s, ok := settings.LookupForLocalAccessByKey(k, false /* forSystemTenant */)
 		require.True(t, ok)
 		if s.Class() == settings.SystemOnly {
-			continue
-		}
-		if strings.Contains(string(s.Name()), "yield") {
-			// Testserver sets the pacer-yield settings automatically.
 			continue
 		}
 		if av, bv := s.String(&a.SV), s.String(&b.SV); av != bv {

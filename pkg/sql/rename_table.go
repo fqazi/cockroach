@@ -236,9 +236,6 @@ func (n *renameTableNode) startExec(params runParams) error {
 		p.Descriptors(),
 		&p.ExecCfg().Settings.SV,
 		p.SessionData(),
-		p.ExecCfg().Settings,
-		p.ExecCfg().JobsKnobs(),
-		p.ExecCfg().NodeInfo.LogicalClusterID(),
 	)
 
 	// If this table has row level ttl enabled, update the schedule_name of all
@@ -330,7 +327,7 @@ func (p *planner) dependentRelationError(
 	if desc.GetParentID() != parentID {
 		viewFQName, err := p.getQualifiedTableName(ctx, desc)
 		if err != nil {
-			log.Dev.Warningf(ctx, "unable to retrieve name of relation %d: %v", desc.GetID(), err)
+			log.Warningf(ctx, "unable to retrieve name of relation %d: %v", desc.GetID(), err)
 			return sqlerrors.NewDependentObjectErrorf(
 				"cannot %s %s %q because a %s depends on it",
 				op, typeName, objName, redact.SafeString(desc.GetObjectTypeString()))

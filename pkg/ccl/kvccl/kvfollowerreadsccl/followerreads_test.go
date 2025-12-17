@@ -27,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvtestutils"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilitiespb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
@@ -691,35 +690,32 @@ func TestOracle(t *testing.T) {
 		}
 
 		t.Run("no-followers", func(t *testing.T) {
-			br := NewStreakBulkOracle(cfg(stNoFollowers), sk)
+			br := NewBulkOracle(cfg(stNoFollowers), roachpb.Locality{}, sk)
 			leaseholder := &roachpb.ReplicaDescriptor{NodeID: 99}
 			picked, _, err := br.ChoosePreferredReplica(ctx, noTxn, desc, leaseholder, noCTPolicy, noQueryState)
 			require.NoError(t, err)
 			require.Equal(t, leaseholder.NodeID, picked.NodeID, "no follower reads means we pick the leaseholder")
 		})
 		t.Run("no-filter", func(t *testing.T) {
-			br := NewStreakBulkOracle(cfg(st), sk)
+			br := NewBulkOracle(cfg(st), roachpb.Locality{}, sk)
 			picked, _, err := br.ChoosePreferredReplica(ctx, noTxn, desc, noLeaseholder, noCTPolicy, noQueryState)
 			require.NoError(t, err)
 			require.NotNil(t, picked, "no filter picks some node but could be any node")
 		})
 		t.Run("filter", func(t *testing.T) {
-			localites := []roachpb.Locality{region("z"), region("b"), region("y")}
-			br, err := NewLocalityFilteringBulkOracle(cfg(st), localites)
-			require.NoError(t, err)
+			br := NewBulkOracle(cfg(st), region("b"), sk)
 			picked, _, err := br.ChoosePreferredReplica(ctx, noTxn, desc, noLeaseholder, noCTPolicy, noQueryState)
 			require.NoError(t, err)
 			require.Equal(t, roachpb.NodeID(2), picked.NodeID, "filter means we pick the node that matches the filter")
 		})
 		t.Run("filter-no-match", func(t *testing.T) {
-			br, err := NewLocalityFilteringBulkOracle(cfg(st), sql.SingleLocalityFilter(region("z")))
-			require.NoError(t, err)
+			br := NewBulkOracle(cfg(st), region("z"), sk)
 			picked, _, err := br.ChoosePreferredReplica(ctx, noTxn, desc, noLeaseholder, noCTPolicy, noQueryState)
 			require.NoError(t, err)
 			require.NotNil(t, picked, "no match still picks some non-zero node")
 		})
 		t.Run("streak-short", func(t *testing.T) {
-			br := NewStreakBulkOracle(cfg(st), sk)
+			br := NewBulkOracle(cfg(st), roachpb.Locality{}, sk)
 			for _, r := range replicas { // Check for each to show it isn't random.
 				picked, _, err := br.ChoosePreferredReplica(ctx, noTxn, desc, noLeaseholder, noCTPolicy, replicaoracle.QueryState{
 					NodeStreak:     1,
@@ -730,7 +726,7 @@ func TestOracle(t *testing.T) {
 			}
 		})
 		t.Run("streak-medium", func(t *testing.T) {
-			br := NewStreakBulkOracle(cfg(st), sk)
+			br := NewBulkOracle(cfg(st), roachpb.Locality{}, sk)
 			for _, r := range replicas { // Check for each to show it isn't random.
 				picked, _, err := br.ChoosePreferredReplica(ctx, noTxn, desc, noLeaseholder, noCTPolicy, replicaoracle.QueryState{
 					NodeStreak:     9,
@@ -742,7 +738,7 @@ func TestOracle(t *testing.T) {
 			}
 		})
 		t.Run("streak-long-even", func(t *testing.T) {
-			br := NewStreakBulkOracle(cfg(st), sk)
+			br := NewBulkOracle(cfg(st), roachpb.Locality{}, sk)
 			for _, r := range replicas { // Check for each to show it isn't random.
 				picked, _, err := br.ChoosePreferredReplica(ctx, noTxn, desc, noLeaseholder, noCTPolicy, replicaoracle.QueryState{
 					NodeStreak:     50,
@@ -754,7 +750,7 @@ func TestOracle(t *testing.T) {
 			}
 		})
 		t.Run("streak-long-skewed-to-other", func(t *testing.T) {
-			br := NewStreakBulkOracle(cfg(st), sk)
+			br := NewBulkOracle(cfg(st), roachpb.Locality{}, sk)
 			for i := 0; i < 10; i++ { // Prove it isn't just randomly picking n2.
 				qs := replicaoracle.QueryState{
 					NodeStreak:     50,
@@ -767,7 +763,7 @@ func TestOracle(t *testing.T) {
 			}
 		})
 		t.Run("streak-long-skewed-randomizes", func(t *testing.T) {
-			br := NewStreakBulkOracle(cfg(st), sk)
+			br := NewBulkOracle(cfg(st), roachpb.Locality{}, sk)
 			qs := replicaoracle.QueryState{
 				NodeStreak:     50,
 				RangesPerNode:  intMap(1, 10, 2, 10, 3, 1005),
@@ -808,8 +804,9 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 		base.TestClusterArgs{
 			ReplicationMode: base.ReplicationManual,
 			ServerArgs: base.TestServerArgs{
-				Settings:    settings,
-				UseDatabase: "t",
+				Settings:          settings,
+				DefaultTestTenant: base.TODOTestTenantDisabled,
+				UseDatabase:       "t",
 			},
 			// n4 pretends to have low latency to n2 and n3, so that it tries to use
 			// them for follower reads.
@@ -848,16 +845,7 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 
 	// Further down, we'll set up the test to pin the lease to store 1. Turn off
 	// load based rebalancing to make sure it doesn't move.
-	kvserverbase.LoadBasedRebalancingMode.Override(ctx, &settings.SV, kvserverbase.LBRebalancingOff)
-
-	// NB: Tenants need capabilities to be able to relocate ranges.
-	if !tc.Server(0).DeploymentMode().IsSingleTenant() {
-		require.NoError(t, tc.Server(0).GrantTenantCapabilities(
-			context.Background(), serverutils.TestTenantID(),
-			map[tenantcapabilitiespb.ID]string{
-				tenantcapabilitiespb.CanAdminRelocateRange: "true",
-			}))
-	}
+	kvserver.LoadBasedRebalancingMode.Override(ctx, &settings.SV, kvserver.LBRebalancingOff)
 
 	n1 := sqlutils.MakeSQLRunner(tc.Conns[0])
 	n1.Exec(t, `CREATE DATABASE t`)
@@ -866,27 +854,22 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 	// Speed up closing of timestamps, in order to sleep less below before we can
 	// use follower_read_timestamp(). follower_read_timestamp() uses the sum of
 	// the following settings.
-	closedts.TargetDuration.Override(ctx, &settings.SV, 100*time.Millisecond)
-	closedts.SideTransportCloseInterval.Override(ctx, &settings.SV, 100*time.Millisecond)
+	n1.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.target_duration = '0.1s'`)
+	n1.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.side_transport_interval = '0.1s'`)
 
 	// Sleep so that we can perform follower reads. The read timestamp needs to be
 	// above the timestamp when the table was created.
-	log.Dev.Infof(ctx, "test sleeping for the follower read timestamps to pass the table creation timestamp...")
+	log.Infof(ctx, "test sleeping for the follower read timestamps to pass the table creation timestamp...")
 	n1.Exec(t, `SELECT pg_sleep((now() - follower_read_timestamp())::FLOAT)`)
-	log.Dev.Infof(ctx, "test sleeping... done")
+	log.Infof(ctx, "test sleeping... done")
 
 	// Run a query on n4 to populate its cache.
 	n4 := sqlutils.MakeSQLRunner(tc.Conns[3])
+	n4.Exec(t, "SELECT * from test WHERE k=1")
 	// Check that the cache was indeed populated.
 	var tableID uint32
 	n1.QueryRow(t, `SELECT id from system.namespace WHERE name='test'`).Scan(&tableID)
-	tablePrefix := keys.MustAddr(tc.Server(0).Codec().TablePrefix(tableID))
-	// NB: Splitting a range helps prevent tenants from getting an out of band
-	// RangeDescriptor update to the RangeCache. Unclear about the exact mechanics
-	// at play here, but they don't matter for our test.
-	_, _, err := tc.SplitRange(roachpb.Key(tablePrefix))
-	require.NoError(t, err)
-	n4.Exec(t, "SELECT * from test WHERE k=1")
+	tablePrefix := keys.MustAddr(keys.SystemSQLCodec.TablePrefix(tableID))
 	n4Cache := tc.Server(3).DistSenderI().(*kvcoord.DistSender).RangeDescriptorCache()
 	entry, err := n4Cache.TestingGetCached(ctx, tablePrefix, false, roachpb.LAG_BY_CLUSTER_SETTING)
 	require.NoError(t, err)
@@ -981,18 +964,8 @@ func TestFollowerReadsWithStaleDescriptor(t *testing.T) {
 
 	// Sanity check that the plan was distributed.
 	require.True(t, strings.Contains(rec.String(), "creating DistSQL plan with isLocal=false"))
-	// NB: We're distributing the plan here, and it (the DistSender) is running on
-	// n3. Note that we've only injected latencies on n4, so any replica is fair
-	// game for n3. When run in normal or shared-process multi-tenancy
-	// deployments, n3 will route to its local replica (which is a follower), as
-	// that guy always sorts first. However, for external process multi-tenancy,
-	// there's no such concept of a local replica. Requests can therefore be
-	// routed to either n1 or n3, so we can't make any assertions about whether
-	// there'll be a follower read or not.
-	if !tc.Server(0).DeploymentMode().IsExternal() {
-		// Look at the trace and check that we've served a follower read.
-		require.True(t, kvtestutils.OnlyFollowerReads(rec), "query was not served through follower reads: %s", rec)
-	}
+	// Look at the trace and check that we've served a follower read.
+	require.True(t, kvtestutils.OnlyFollowerReads(rec), "query was not served through follower reads: %s", rec)
 	// Verify that we didn't produce the "misplanned ranges" metadata that would
 	// purge the non-stale entries from the range cache on n4.
 	require.False(t, strings.Contains(rec.String(), "clearing entries overlapping"))
@@ -1210,9 +1183,9 @@ func TestSecondaryTenantFollowerReadsRouting(t *testing.T) {
 
 			// Sleep so that we can perform follower reads. The read timestamp
 			// needs to be above the timestamp when the table was created.
-			log.Dev.Infof(ctx, "test sleeping for the follower read timestamps to pass the table creation timestamp...")
+			log.Infof(ctx, "test sleeping for the follower read timestamps to pass the table creation timestamp...")
 			tenantSQL.Exec(t, `SELECT pg_sleep((now() - follower_read_timestamp())::FLOAT)`)
-			log.Dev.Infof(ctx, "test sleeping... done")
+			log.Infof(ctx, "test sleeping... done")
 
 			// Check that the cache was indeed populated.
 			tenantSQL.Exec(t, `SELECT * FROM t.test WHERE k = 1`)

@@ -457,67 +457,77 @@ func registerKVContention(r registry.Registry) {
 	})
 }
 
-func registerKVLongRunningTxn(r registry.Registry) {
-	const nodes = 4
+func registerKVQuiescenceDead(r registry.Registry) {
 	r.Add(registry.TestSpec{
-		Name:             fmt.Sprintf("kv/long-running-writer/nodes=%d", nodes),
-		Owner:            registry.OwnerKV,
-		Benchmark:        true,
-		Cluster:          r.MakeClusterSpec(nodes+1, spec.WorkloadNode()),
-		CompatibleClouds: registry.AllExceptAWS,
-		Suites:           registry.Suites(registry.Nightly),
-		Leases:           registry.MetamorphicLeases,
+		Name:                "kv/quiescence/nodes=3",
+		Skip:                "https://github.com/cockroachdb/cockroach/issues/156357",
+		Owner:               registry.OwnerKV,
+		Cluster:             r.MakeClusterSpec(4, spec.WorkloadNode()),
+		CompatibleClouds:    registry.AllExceptAWS,
+		Suites:              registry.Suites(registry.Nightly),
+		Leases:              registry.EpochLeases,
+		SkipPostValidations: registry.PostValidationNoDeadNodes,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.CRDBNodes())
-
-			conn := c.Conn(ctx, t.L(), 1)
-			// Disable buffered writes, so the long-running transactions can write
-			// some intents, and we can see the effect of intent resolution.
-			if _, err := conn.Exec(`
-				SET CLUSTER SETTING kv.transaction.write_buffering.enabled = false
-			`); err != nil {
-				t.Fatal(err)
-			}
-			// Enable tracing.
-			if _, err := conn.Exec(`
-				SET CLUSTER SETTING trace.debug.enable = true;
-			`); err != nil {
-				t.Fatal(err)
-			}
-
-			t.Status("running workload")
-			const duration = time.Hour
+			settings := install.MakeClusterSettings(install.ClusterSettingsOption{
+				"sql.stats.automatic_collection.enabled": "false",
+			})
+			c.Start(ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule), settings, c.CRDBNodes())
 			m := c.NewDeprecatedMonitor(ctx, c.CRDBNodes())
-			// Run two concurrent KV workloads, both selecting keys from a smaller
-			// keyspace (cycle-length=100), using small batches (batch=1) and a
-			// zipfian distribution to increase contention. The test measures the
-			// latency of the reads to validate their blocking behavior.
-			//
-			// 1. Long-running low-priority write-only transactions. Each transaction
-			// writes 100 keys. Use concurrency of 1 to avoid write-write conflict.
-			//
-			// 2. Read-only requests at normal priority. When each read encounters the
-			// intents of the write-only transactions, it will push based on priority
-			// and resolve (rewrite) the intent. The reads also run at concurrency of
-			// 1 because otherwise the pushes of concurrent reads may conflict with
-			// each other for latches.
-			m.Go(func(ctx context.Context) error {
-				cmd := fmt.Sprintf("./cockroach workload run kv --init --duration=%s --read-percent=0 "+
-					"--long-running-txn --long-running-txn-num-writes=100 --long-running-txn-priority=low "+
-					"--cycle-length=100 --concurrency=1 --batch=1 --zipfian=true {pgurl%s}",
-					duration, c.CRDBNodes())
-				c.Run(ctx, option.WithNodes(c.WorkloadNode()), cmd)
-				return nil
+
+			db := c.Conn(ctx, t.L(), 1)
+			defer db.Close()
+
+			err := roachtestutil.WaitFor3XReplication(ctx, t.L(), db)
+			require.NoError(t, err)
+
+			qps := func(f func()) float64 {
+
+				numInserts := func() float64 {
+					var v float64
+					if err = db.QueryRowContext(
+						ctx, `SELECT value FROM crdb_internal.node_metrics WHERE name = 'sql.insert.count'`,
+					).Scan(&v); err != nil {
+						t.Fatal(err)
+					}
+					return v
+				}
+
+				tBegin := timeutil.Now()
+				before := numInserts()
+				f()
+				after := numInserts()
+				return (after - before) / timeutil.Since(tBegin).Seconds()
+			}
+
+			const kv = "./cockroach workload run kv --duration=10m --read-percent=0"
+
+			// Initialize the database with ~10k ranges so that the absence of
+			// quiescence hits hard once a node goes down.
+			c.Run(ctx, option.WithNodes(c.WorkloadNode()), "./cockroach workload run kv --init --max-ops=1 --splits 10000 --concurrency 100 {pgurl:1}")
+			c.Run(ctx, option.WithNodes(c.WorkloadNode()), kv+" --seed 0 {pgurl:1}")
+			// Measure qps with all nodes up (i.e. with quiescence).
+			qpsAllUp := qps(func() {
+				c.Run(ctx, option.WithNodes(c.WorkloadNode()), kv+" --seed 1 {pgurl:1}")
 			})
-			m.Go(func(ctx context.Context) error {
-				histograms := " " + roachtestutil.GetWorkloadHistogramArgs(t, c, nil)
-				cmd := fmt.Sprintf("./cockroach workload run kv --init %s --duration=%s --batch=1 "+
-					"--always-inc-key-seq=true --read-percent=100 --cycle-length=100 --batch=1 "+
-					"--zipfian=true --concurrency=1 {pgurl%s}", histograms, duration, c.CRDBNodes())
-				c.Run(ctx, option.WithNodes(c.WorkloadNode()), cmd)
-				return nil
+			// Graceful shut down third node.
+			m.ExpectDeath()
+			c.Stop(
+				ctx, t.L(), option.NewStopOpts(option.Graceful(30)), c.Node(len(c.CRDBNodes())),
+			)
+			// Measure qps with node down (i.e. without quiescence).
+			qpsOneDown := qps(func() {
+				// Use a different seed to make sure it's not just stepping into the
+				// other earlier kv invocation's footsteps.
+				c.Run(ctx, option.WithNodes(c.WorkloadNode()), kv+" --seed 2 {pgurl:1}")
 			})
-			m.Wait()
+
+			if minFrac, actFrac := 0.8, qpsOneDown/qpsAllUp; actFrac < minFrac {
+				t.Fatalf(
+					"QPS dropped from %.2f to %.2f (factor of %.2f, min allowed %.2f)",
+					qpsAllUp, qpsOneDown, actFrac, minFrac,
+				)
+			}
+			t.L().Printf("QPS went from %.2f to %2.f with one node down\n", qpsAllUp, qpsOneDown)
 		},
 	})
 }

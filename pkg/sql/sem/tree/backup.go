@@ -43,7 +43,6 @@ type BackupOptions struct {
 	IncrementalStorage              StringOrPlaceholderOptList
 	ExecutionLocality               Expr
 	UpdatesClusterMonitoringMetrics Expr
-	Strict                          bool
 }
 
 var _ NodeFormatter = &BackupOptions{}
@@ -303,10 +302,6 @@ func (o *BackupOptions) Format(ctx *FmtCtx) {
 		ctx.WriteString("updates_cluster_monitoring_metrics = ")
 		ctx.FormatNode(o.UpdatesClusterMonitoringMetrics)
 	}
-	if o.Strict {
-		maybeAddSep()
-		ctx.WriteString("strict storage locality")
-	}
 }
 
 // CombineWith merges other backup options into this backup options struct.
@@ -367,13 +362,6 @@ func (o *BackupOptions) CombineWith(other *BackupOptions) error {
 	} else {
 		o.UpdatesClusterMonitoringMetrics = other.UpdatesClusterMonitoringMetrics
 	}
-	if o.Strict {
-		if other.Strict {
-			return errors.New("strict storage locality option specified multiple times")
-		}
-	} else {
-		o.Strict = other.Strict
-	}
 	return nil
 }
 
@@ -387,8 +375,7 @@ func (o BackupOptions) IsDefault() bool {
 		cmp.Equal(o.IncrementalStorage, options.IncrementalStorage) &&
 		o.ExecutionLocality == options.ExecutionLocality &&
 		o.IncludeAllSecondaryTenants == options.IncludeAllSecondaryTenants &&
-		o.UpdatesClusterMonitoringMetrics == options.UpdatesClusterMonitoringMetrics &&
-		o.Strict == options.Strict
+		o.UpdatesClusterMonitoringMetrics == options.UpdatesClusterMonitoringMetrics
 }
 
 // Format implements the NodeFormatter interface.
@@ -705,6 +692,7 @@ func (o RestoreOptions) IsDefault() bool {
 // Only one field may be non-nil.
 type BackupTargetList struct {
 	Databases NameList
+	Schemas   ObjectNamePrefixList
 	Tables    TableAttrs
 	TenantID  TenantID
 }
@@ -714,6 +702,9 @@ func (tl *BackupTargetList) Format(ctx *FmtCtx) {
 	if tl.Databases != nil {
 		ctx.WriteString("DATABASE ")
 		ctx.FormatNode(&tl.Databases)
+	} else if tl.Schemas != nil {
+		ctx.WriteString("SCHEMA ")
+		ctx.FormatNode(&tl.Schemas)
 	} else if tl.TenantID.Specified {
 		ctx.WriteString("VIRTUAL CLUSTER ")
 		ctx.FormatNode(&tl.TenantID)

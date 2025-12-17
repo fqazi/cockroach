@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	cloudcluster "github.com/cockroachdb/cockroach/pkg/roachprod/cloud/types"
+	"github.com/cockroachdb/cockroach/pkg/roachprod/cloud"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
@@ -52,19 +52,17 @@ func VMDir(clusterName string, nodeIdx int) string {
 
 // Init initializes the Local provider and registers it into vm.Providers.
 func Init(storage VMStorage) error {
-	p := &Provider{
-		clusters:    make(cloudcluster.Clusters),
+	vm.Providers[ProviderName] = &Provider{
+		clusters:    make(cloud.Clusters),
 		storage:     storage,
-		dnsProvider: NewDNSProvider(config.DNSDir, "local-zone"),
+		DNSProvider: NewDNSProvider(config.DNSDir, "local-zone"),
 	}
-	vm.Providers[ProviderName] = p
-	vm.DNSProviders[ProviderName] = p.dnsProvider
 	return nil
 }
 
 // AddCluster adds the metadata of a local cluster; used when loading the saved
 // metadata for local clusters.
-func AddCluster(cluster *cloudcluster.Cluster) {
+func AddCluster(cluster *cloud.Cluster) {
 	p := vm.Providers[ProviderName].(*Provider)
 	p.clusters[cluster.Name] = cluster
 }
@@ -95,7 +93,7 @@ func DeleteCluster(l *logger.Logger, name string) error {
 	// Local clusters are expected to specifically use the local DNS provider
 	// implementation, and should clean up any DNS records in the local file
 	// system cache.
-	return p.dnsProvider.DeleteSRVRecordsBySubdomain(context.Background(), c.Name)
+	return p.DeleteRecordsBySubdomain(context.Background(), c.Name)
 }
 
 // Clusters returns a list of all known local clusters.
@@ -109,7 +107,7 @@ type VMStorage interface {
 	// SaveCluster saves the metadata for a local cluster. It is expected that
 	// when the program runs again, this same metadata will be reported via
 	// AddCluster.
-	SaveCluster(l *logger.Logger, cluster *cloudcluster.Cluster) error
+	SaveCluster(l *logger.Logger, cluster *cloud.Cluster) error
 
 	// DeleteCluster deletes the metadata for a local cluster.
 	DeleteCluster(l *logger.Logger, name string) error
@@ -117,14 +115,9 @@ type VMStorage interface {
 
 // A Provider is used to create stub VM objects.
 type Provider struct {
-	clusters    cloudcluster.Clusters
-	storage     VMStorage
-	dnsProvider vm.DNSProvider
-}
-
-// IsCentralizedProvider returns false because it is executed locally.
-func (p *Provider) IsCentralizedProvider() bool {
-	return false
+	clusters cloud.Clusters
+	storage  VMStorage
+	vm.DNSProvider
 }
 
 func (p *Provider) DefaultZones(_ string, _ bool) []string {
@@ -265,7 +258,7 @@ func (p *Provider) Create(
 	l *logger.Logger, names []string, opts vm.CreateOpts, unusedProviderOpts vm.ProviderOpts,
 ) (vm.List, error) {
 	now := timeutil.Now()
-	c := &cloudcluster.Cluster{
+	c := &cloud.Cluster{
 		Name:      opts.ClusterName,
 		CreatedAt: now,
 		Lifetime:  time.Hour,
@@ -348,7 +341,7 @@ func (p *Provider) CreateProviderOpts() vm.ProviderOpts {
 }
 
 // List reports all the local cluster "VM" instances.
-func (p *Provider) List(_ context.Context, l *logger.Logger, opts vm.ListOptions) (vm.List, error) {
+func (p *Provider) List(l *logger.Logger, opts vm.ListOptions) (vm.List, error) {
 	var result vm.List
 	for _, clusterName := range p.clusters.Names() {
 		c := p.clusters[clusterName]
@@ -370,9 +363,4 @@ func (p *Provider) Active() bool {
 // ProjectActive is part of the vm.Provider interface.
 func (p *Provider) ProjectActive(project string) bool {
 	return project == ""
-}
-
-// String is part of the vm.Provider interface.
-func (p *Provider) String() string {
-	return ProviderName
 }

@@ -1,5 +1,3 @@
-# knob-opt: allow-unsafe
-
 statement ok
 CREATE FUNCTION f1(a INT) RETURNS INT LANGUAGE SQL AS $$ SELECT a + 1 $$;
 

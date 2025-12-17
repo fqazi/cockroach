@@ -1071,7 +1071,7 @@ func buildTriggerCascadeHelper(
 	factoryI interface{},
 	stmtTreeInitFn func() statementTree,
 	fn func(b *Builder) memo.RelExpr,
-) (_ memo.RelExpr, retErr error) {
+) (_ memo.RelExpr, err error) {
 	factory := factoryI.(*norm.Factory)
 	b := New(ctx, semaCtx, evalCtx, catalog, factory, nil /* stmt */)
 	if stmtTreeInitFn != nil {
@@ -1082,7 +1082,15 @@ func buildTriggerCascadeHelper(
 	defer b.stmtTree.Pop()
 
 	// Enact panic handling similar to Builder.Build().
-	defer errorutil.MaybeCatchPanic(&retErr, nil /* errCallback */)
+	defer func() {
+		if r := recover(); r != nil {
+			if ok, e := errorutil.ShouldCatch(r); ok {
+				err = e
+			} else {
+				panic(r)
+			}
+		}
+	}()
 
 	return fn(b), nil
 }

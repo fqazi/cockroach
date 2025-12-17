@@ -6,7 +6,6 @@
 package ibm
 
 import (
-	"context"
 	"strings"
 	"time"
 
@@ -549,7 +548,7 @@ func (i *instance) toVM() vm.VM {
 
 	if i == nil || i.instance == nil {
 		return vm.VM{
-			Errors: []vm.VMError{vm.NewVMError(errors.New("instance is nil"))},
+			Errors: []error{errors.New("instance is nil")},
 		}
 	}
 
@@ -557,58 +556,50 @@ func (i *instance) toVM() vm.VM {
 		err := i.load()
 		if err != nil {
 			return vm.VM{
-				Errors: []vm.VMError{vm.NewVMError(errors.Wrap(err, "failed to load instance"))},
+				Errors: []error{errors.Wrap(err, "failed to load instance")},
 			}
 		}
 	}
 
-	var vmErrors []vm.VMError
+	var vmErrors []error
 
 	vpcID := ""
 	region, err := i.provider.zoneToRegion(*i.instance.Zone.Name)
 	if err != nil {
-		vmErrors = append(vmErrors, vm.NewVMError(errors.Wrap(err, "unable to get region")))
+		vmErrors = append(vmErrors, errors.Wrap(err, "unable to get region"))
 	} else {
 		vpcID = i.provider.config.regions[region].vpcID
 	}
 
 	// Check if the instance is in a valid state.
 	if core.StringNilMapper(i.instance.Status) == "failed" {
-		vmErrors = append(vmErrors, vm.NewVMError(errors.New("instance is in failed state")))
+		vmErrors = append(vmErrors, errors.New("instance is in failed state"))
 	}
 
 	// Gather tags
 	tags, err := i.getTagsAsMap()
 	if err != nil {
-		vmErrors = append(vmErrors, vm.NewVMError(errors.Wrap(err, "unable to get tags")))
+		vmErrors = append(vmErrors, errors.Wrap(err, "unable to get tags"))
 	}
 
 	var lifetime time.Duration
 	if lifeText, ok := tags[vm.TagLifetime]; ok {
 		lifetime, err = time.ParseDuration(lifeText)
 		if err != nil {
-			vmErrors = append(vmErrors, vm.NewVMError(errors.Wrap(err, "unable to compute lifetime")))
+			vmErrors = append(vmErrors, errors.Wrap(err, "unable to compute lifetime"))
 		}
-	} else {
-		// Missing lifetime tag, use the default lifetime.
-		// This is not an error, but a fallback to ensure the VM has a lifetime
-		// even if the tag is not set to avoid GCing it right away.
-		lifetime = vm.DefaultLifetime
 	}
 
 	privateIP := i.getPrivateIPAddress()
 	publicIP, err := i.getPublicIPAddress()
 	if err != nil {
-		vmErrors = append(vmErrors, vm.NewVMError(errors.Wrap(err, "unable to get public IP")))
+		vmErrors = append(vmErrors, errors.Wrap(err, "unable to get public IP"))
 	}
 
 	nonBootAttachedVolumes := []vm.Volume{}
 	for _, v := range i.attachedVolumes {
 		nonBootAttachedVolumes = append(nonBootAttachedVolumes, v.toVmVolume())
 	}
-
-	// Get DNS info from the DNS provider if it is configured.
-	publicDNS, publicDNSZone, dnsProviderName := vm.GetVMDNSInfo(context.Background(), *i.instance.Name, i.provider.dnsProvider)
 
 	v := vm.VM{
 		ProviderAccountID: i.provider.config.accountID,
@@ -621,15 +612,12 @@ func (i *instance) toVM() vm.VM {
 		RemoteUser:        defaultRemoteUser,
 		Preemptible:       false,
 
-		ProviderID:    *i.instance.CRN,
-		Name:          *i.instance.Name,
-		CreatedAt:     time.Time(*i.instance.CreatedAt),
-		PublicIP:      publicIP,
-		PrivateIP:     privateIP,
-		DNS:           privateIP,
-		PublicDNS:     publicDNS,
-		PublicDNSZone: publicDNSZone,
-		DNSProvider:   dnsProviderName,
+		ProviderID: *i.instance.CRN,
+		Name:       *i.instance.Name,
+		CreatedAt:  time.Time(*i.instance.CreatedAt),
+		PublicIP:   publicIP,
+		PrivateIP:  privateIP,
+		DNS:        privateIP,
 
 		NonBootAttachedVolumes: nonBootAttachedVolumes,
 		LocalDisks:             nil, // No local disks on IBM Cloud

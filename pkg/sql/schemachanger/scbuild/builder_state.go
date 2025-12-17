@@ -9,7 +9,6 @@ import (
 	"context"
 	"sort"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
@@ -605,42 +604,6 @@ func (b *builderState) IsTableEmpty(table *scpb.Table) bool {
 	return b.tr.IsTableEmpty(b.ctx, table.TableID, index.IndexID)
 }
 
-// TTLExpirationExpression returns a validated TTL expiration expression for
-// a table's row-level TTL configuration. It verifies that the expression:
-// - type-checks as a TIMESTAMPTZ
-// - is not volatile
-// - references valid columns in the table
-func (b *builderState) TTLExpirationExpression(
-	tableID catid.DescID,
-	ttl *catpb.RowLevelTTL,
-	getAllNonDropColumnsFn func() colinfo.ResultColumns,
-	columnLookupByNameFn schemaexpr.ColumnLookupFn,
-) tree.Expr {
-	if ttl == nil || !ttl.HasExpirationExpr() {
-		return nil
-	}
-	b.ensureDescriptor(tableID)
-	ns := b.QueryByID(tableID).FilterNamespace().MustGetOneElement()
-	tableName := tree.MakeTableNameFromPrefix(b.NamePrefix(ns), tree.Name(ns.Name))
-	serializedExpr, err := schemaexpr.ValidateTTLExpirationExpression(
-		b.ctx,
-		b.semaCtx,
-		&tableName,
-		ttl,
-		b.clusterSettings.Version.ActiveVersion(b.ctx),
-		getAllNonDropColumnsFn,
-		columnLookupByNameFn,
-	)
-	if err != nil {
-		panic(err)
-	}
-	parsedExpr, err := parser.ParseExpr(serializedExpr)
-	if err != nil {
-		panic(err)
-	}
-	return parsedExpr
-}
-
 func (b *builderState) nextIndexID(id catid.DescID) (ret catid.IndexID) {
 	{
 		b.ensureDescriptor(id)
@@ -875,49 +838,13 @@ func (b *builderState) WrapExpression(tableID catid.DescID, expr tree.Expr) *scp
 
 // ComputedColumnExpression implements the scbuildstmt.TableHelpers interface.
 func (b *builderState) ComputedColumnExpression(
-	tbl *scpb.Table,
-	d *tree.ColumnTableDef,
-	exprContext tree.SchemaExprContext,
-	getAllNonDropColumnsFn func() colinfo.ResultColumns,
-	columnLookupByNameFn schemaexpr.ColumnLookupFn,
+	tbl *scpb.Table, d *tree.ColumnTableDef, exprContext tree.SchemaExprContext,
 ) (tree.Expr, *types.T) {
 	_, _, ns := scpb.FindNamespace(b.QueryByID(tbl.TableID))
 	tn := tree.MakeTableNameFromPrefix(b.NamePrefix(tbl), tree.Name(ns.Name))
 	b.ensureDescriptor(tbl.TableID)
-
-	// In versions before 26.1, computed columns referencing newly added columns
-	// are not supported in the declarative schema changer. Fall back to the
-	// legacy schema changer for those cases.
-	if !b.clusterSettings.Version.IsActive(b.ctx, clusterversion.V26_1) {
-		// Use the old validation logic that doesn't support newly added columns.
-		expr, typ, err := schemaexpr.ValidateComputedColumnExpression(
-			b.ctx,
-			b.descCache[tbl.TableID].desc.(catalog.TableDescriptor),
-			d,
-			&tn,
-			exprContext,
-			b.semaCtx,
-			b.clusterSettings.Version.ActiveVersion(b.ctx),
-		)
-		if err != nil {
-			// This may be referencing newly added columns, so return a
-			// NotImplementedError to force fallback to the legacy schema changer.
-			if pgerror.GetPGCode(err) == pgcode.UndefinedColumn {
-				panic(errors.Wrapf(errors.WithSecondaryError(scerrors.NotImplementedError(d), err),
-					"computed column validation error"))
-			}
-			panic(err)
-		}
-		parsedExpr, err := parser.ParseExpr(expr)
-		if err != nil {
-			panic(err)
-		}
-		return parsedExpr, typ
-	}
-
-	// In 26.1+, we can validate computed columns that reference newly added
-	// columns by using the lookup functions to query the builder state.
-	expr, typ, err := schemaexpr.ValidateComputedColumnExpressionWithLookup(
+	// TODO(postamar): this doesn't work when referencing newly added columns.
+	expr, typ, err := schemaexpr.ValidateComputedColumnExpression(
 		b.ctx,
 		b.descCache[tbl.TableID].desc.(catalog.TableDescriptor),
 		d,
@@ -925,10 +852,15 @@ func (b *builderState) ComputedColumnExpression(
 		exprContext,
 		b.semaCtx,
 		b.clusterSettings.Version.ActiveVersion(b.ctx),
-		getAllNonDropColumnsFn,
-		columnLookupByNameFn,
 	)
 	if err != nil {
+		// This may be referencing newly added columns, so cheat and return
+		// a not implemented error.
+		if pgerror.GetPGCode(err) == pgcode.UndefinedColumn {
+
+			panic(errors.Wrapf(errors.WithSecondaryError(scerrors.NotImplementedError(d), err),
+				"computed column validation error"))
+		}
 		panic(err)
 	}
 	parsedExpr, err := parser.ParseExpr(expr)
@@ -942,8 +874,8 @@ func (b *builderState) ComputedColumnExpression(
 func (b *builderState) PartialIndexPredicateExpression(
 	tableID catid.DescID, expr tree.Expr,
 ) tree.Expr {
-	// Ensure that a namespace entry exists for the table.
-	ns := b.QueryByID(tableID).FilterNamespace().MustGetOneElement()
+	// Ensure that an namespace entry exists for the table.
+	_, _, ns := scpb.FindNamespace(b.QueryByID(tableID))
 	if ns == nil {
 		panic(errors.AssertionFailedf("unable to find namespace for %d.", tableID))
 	}
@@ -1438,8 +1370,6 @@ func (b *builderState) ResolveConstraint(
 	rel := b.descCache[relationID].desc.(catalog.TableDescriptor)
 	elts := b.QueryByID(rel.GetID())
 	var constraintID catid.ConstraintID
-	var indexID catid.IndexID
-
 	scpb.ForEachConstraintWithoutIndexName(elts,
 		func(status scpb.Status, _ scpb.TargetStatus, e *scpb.ConstraintWithoutIndexName) {
 			if tree.Name(e.Name) == constraintName {
@@ -1449,6 +1379,7 @@ func (b *builderState) ResolveConstraint(
 	)
 
 	if constraintID == 0 {
+		var indexID catid.IndexID
 		scpb.ForEachIndexName(elts, func(_ scpb.Status, _ scpb.TargetStatus, e *scpb.IndexName) {
 			if tree.Name(e.Name) == constraintName {
 				indexID = e.IndexID
@@ -1480,14 +1411,8 @@ func (b *builderState) ResolveConstraint(
 	}
 
 	return elts.Filter(func(_ scpb.Status, _ scpb.TargetStatus, e scpb.Element) bool {
-		constraintIDAttr, _ := screl.Schema.GetAttribute(screl.ConstraintID, e)
-		constraintIDMatches := constraintIDAttr != nil && constraintIDAttr.(catid.ConstraintID) == constraintID
-
-		// For index-backed constraints, we also want to include the elements that
-		// pertain to that index.
-		indexIDAttr, _ := screl.Schema.GetAttribute(screl.IndexID, e)
-		indexIDMatches := indexIDAttr != nil && indexID != 0 && indexIDAttr.(catid.IndexID) == indexID
-		return constraintIDMatches || indexIDMatches
+		idI, _ := screl.Schema.GetAttribute(screl.ConstraintID, e)
+		return idI != nil && idI.(catid.ConstraintID) == constraintID
 	})
 }
 

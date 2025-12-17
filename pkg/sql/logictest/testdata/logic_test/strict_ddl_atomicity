@@ -1,4 +1,3 @@
-# LogicTest: !local-prepared
 # Default behavior, where atomicity violations are allowed
 
 statement ok

@@ -10,14 +10,14 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"math"
 	"runtime"
-	"slices"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/build"
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvnemesis/kvnemesisutil"
@@ -46,7 +46,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
-	"github.com/cockroachdb/pebble/objstorage"
 )
 
 const (
@@ -1006,7 +1005,7 @@ func updateStatsOnClear(
 	// restoredNanos to orig.Timestamp (rule 1).
 	if restored != nil {
 		if restored.Txn != nil {
-			panic(errors.AssertionFailedf("restored version should never be an intent"))
+			panic("restored version should never be an intent")
 		}
 
 		ms.AgeTo(restoredNanos)
@@ -1196,7 +1195,7 @@ func MVCCBlindPutInlineWithPrev(
 			return err
 		}
 		if ok != prev.IsPresent() || metaKeySize != origMetaKeySize || metaValSize != origMetaValSize {
-			log.Dev.Fatalf(ctx,
+			log.Fatalf(ctx,
 				"MVCCBlindPutInlineWithPrev IsPresent=%t (%t) origMetaKeySize=%d (%d) origMetaValSize=%d (%d)",
 				prev.IsPresent(), ok, origMetaKeySize, metaKeySize, origMetaValSize, metaValSize)
 		}
@@ -1205,7 +1204,7 @@ func MVCCBlindPutInlineWithPrev(
 	// ClearUnversioned sets ClearOptions.ValueSize[Known].
 	acq, err := MVCCBlindPut(ctx, rw, key, hlc.Timestamp{}, value, MVCCWriteOptions{Stats: ms})
 	if !acq.Empty() {
-		log.Dev.Fatal(ctx, "inline write should not be within a transaction; lock acquisition found")
+		log.Fatal(ctx, "inline write should not be within a transaction; lock acquisition found")
 	}
 	return err
 }
@@ -2743,7 +2742,7 @@ func mvccPutInternal(
 	}
 	newMeta.Timestamp = versionKey.Timestamp.ToLegacyTimestamp()
 	newMeta.KeyBytes = MVCCVersionTimestampSize
-	newMeta.ValBytes = int64(versionValue.encodedSize())
+	newMeta.ValBytes = int64(encodedMVCCValueSize(versionValue))
 	newMeta.Deleted = versionValue.IsTombstone()
 	newMeta.IntentHistory = newIntentHistory
 
@@ -3706,221 +3705,6 @@ func MVCCDeleteRange(
 	return keys, res.ResumeSpan, res.NumKeys, acqs, nil
 }
 
-// checkDeletePredicates returns true if the value at the current iterator
-// position should be deleted.
-func checkDeletePredicates(
-	it SimpleMVCCIterator, predicates *kvpb.DeleteRangePredicates,
-) (bool, error) {
-	if predicates.ImportEpoch > 0 {
-		// TODO(ssd): We will likely eventually want something that constructs our
-		// iterator options based on the predicate so that we can use a
-		// block-property filter for import epochs.
-		rawV, err := it.UnsafeValue()
-		if err != nil {
-			return false, err
-		}
-		v, err := DecodeMVCCValue(rawV)
-		if err != nil {
-			return false, err
-		}
-		return v.ImportEpoch == predicates.ImportEpoch, nil
-	} else {
-		return predicates.StartTime.Less(it.UnsafeKey().Timestamp), nil
-	}
-}
-
-// MVCCPredicateDeleteRangePointTombstones issues MVCC tombstones at endTime to
-// live keys within the span [startKey, endKey) that also have MVCC versions
-// that match the predicate filters.
-//
-// This operation is non-transactional, but will check for existing intents in
-// the target key span, regardless of timestamp, and return a LockConflictError
-// containing up to maxLockConflicts locks.
-//
-// MVCCPredicateDeleteRangePointTombstones will return with a resumeSpan if the
-// number of tombstones written exceeds maxBatchSize or the size of the written
-// tombstones exceeds maxByteSize. These constraints prevent overwhelming raft.
-//
-// If an MVCC key surfaced has a timestamp at or above endTime,
-// MVCCPredicateDeleteRangePointTombstones returns a WriteTooOldError without a
-// resumeSpan, even if tombstones were already written to disk. To resolve, the
-// caller should retry the call at a higher timestamp, assuming they have the
-// appropriate level of isolation (e.g. the span covers an offline table, in
-// the case of IMPORT rollbacks).
-//
-// An example of how this works: Issuing DeleteRange[a,e)@3 with
-// Predicate{StartTime=1} on the following keys would issue tombstones at a@3,
-// b@3, and d@3.
-//
-// t3
-// t2 a2 b2    d2 e2
-// t1    b1 c1
-//
-//	a  b  c  d  e
-func MVCCPredicateDeleteRangePointTombstones(
-	ctx context.Context,
-	rw ReadWriter,
-	ms *enginepb.MVCCStats,
-	startKey, endKey roachpb.Key,
-	endTime hlc.Timestamp,
-	localTimestamp hlc.ClockTimestamp,
-	predicates kvpb.DeleteRangePredicates,
-	maxBatchSize int64,
-	maxBatchByteSize int64,
-	maxLockConflicts int64,
-	targetLockConflictBytes int64,
-) (*roachpb.Span, error) {
-	if endTime.IsEmpty() {
-		return nil, errors.AssertionFailedf("MVCCPredicateDeleteRange expects non-empty endTime")
-	}
-	if ms == nil {
-		return nil, errors.AssertionFailedf(
-			"MVCCStats passed in to MVCCPredicateDeleteRange must be non-nil to ensure proper stats" +
-				" computation during Delete operations")
-	}
-
-	// Check for any overlapping locks, and return them to be resolved.
-	if locks, err := ScanLocks(ctx, rw, startKey, endKey, maxLockConflicts, targetLockConflictBytes); err != nil {
-		return nil, err
-	} else if len(locks) > 0 {
-		return nil, &kvpb.LockConflictError{Locks: locks}
-	}
-
-	// Create some reusable machinery for flushing a run with point tombstones
-	// that is typically used in a single MVCCPut call.
-	pointTombstoneIter, err := newMVCCIterator(
-		ctx, rw, endTime, false /* rangeKeyMasking */, true, /* noInterleavedIntents */
-		IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			Prefix:       true,
-			ReadCategory: fs.BatchEvalReadCategory,
-		},
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer pointTombstoneIter.Close()
-
-	ltScanner, err := newLockTableKeyScanner(
-		ctx, rw, uuid.UUID{} /* txnID */, lock.Intent,
-		maxLockConflicts, targetLockConflictBytes, fs.BatchEvalReadCategory,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer ltScanner.close()
-
-	pointTombstoneBuf := newPutBuffer()
-	defer pointTombstoneBuf.release()
-
-	deleteKey := func(key roachpb.Key) error {
-		// Use Point tombstones
-		_, acq, err := mvccPutInternal(
-			ctx, rw, pointTombstoneIter, ltScanner, key, endTime, noValue, pointTombstoneBuf,
-			nil, MVCCWriteOptions{
-				LocalTimestamp: localTimestamp, Stats: ms, Category: fs.BatchEvalReadCategory},
-		)
-		if err != nil {
-			return err
-		}
-		if !acq.Empty() {
-			log.Dev.Fatal(ctx, "expected empty lock acquisition for non-transactional point delete")
-		}
-		return nil
-	}
-
-	// Note: The range tombstone based predicate deletion logic used an mvcc
-	// incremental iterator because it needed to know when it was skipping over
-	// keys so that it didn't accidentally lay down range tombstones on key
-	// values that are older than the MinTimestamp. Since we are only using point
-	// tombstones, we can use a normal mvcc iterator with timestamp masking.
-	iter, err := newMVCCIterator(ctx, rw, endTime, true, true, IterOptions{
-		LowerBound:   startKey,
-		UpperBound:   endKey,
-		MinTimestamp: predicates.StartTime,
-		// Notice that the iterator's EndTime is set to hlc.MaxTimestamp, in order to
-		// detect and fail on any keys written at or after the client provided
-		// endTime. We don't _expect_ to hit intents or newer keys in the client
-		// provided span since the MVCCPredicateDeleteRange is only intended for
-		// non-live key spans, but there could be an intent leftover.
-		MaxTimestamp:         hlc.MaxTimestamp,
-		KeyTypes:             IterKeyTypePointsAndRanges,
-		ReadCategory:         fs.BatchEvalReadCategory,
-		RangeKeyMaskingBelow: endTime,
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer iter.Close()
-
-	var batchSize, batchSizeBytes int64
-	iter.SeekGE(MVCCKey{Key: startKey})
-	for {
-		if ok, err := iter.Valid(); err != nil {
-			return nil, err
-		} else if !ok {
-			break
-		}
-
-		hasPointKey, hasRangeKey := iter.HasPointAndRange()
-		if hasRangeKey && iter.RangeKeyChanged() {
-			// If the range keys have changed check to see if one is more recent than
-			// the write time.
-			rangeKeys := iter.RangeKeys()
-			if endTime.LessEq(rangeKeys.Newest()) {
-				return nil, kvpb.NewWriteTooOldError(
-					endTime, rangeKeys.Newest().Next(), rangeKeys.Bounds.Key.Clone())
-			}
-		}
-
-		// NOTE: We don't check for a range key covering the point key because the
-		// iterator has range key masking enabled.
-		if !hasPointKey {
-			iter.Next()
-			continue
-		}
-
-		if endTime.LessEq(iter.UnsafeKey().Timestamp) {
-			return nil, kvpb.NewWriteTooOldError(endTime, iter.UnsafeKey().Timestamp.Next(), iter.UnsafeKey().Key.Clone())
-		}
-
-		_, tombstone, err := iter.MVCCValueLenAndIsTombstone()
-		if err != nil {
-			return nil, err
-		}
-		if tombstone {
-			iter.NextKey()
-			continue
-		}
-
-		delete, err := checkDeletePredicates(iter, &predicates)
-		if err != nil {
-			return nil, err
-		}
-		if !delete {
-			iter.NextKey()
-			continue
-		}
-
-		k := iter.UnsafeKey().Clone()
-		batchSize += 1
-		batchSizeBytes += int64(k.EncodedSize())
-
-		if maxBatchSize < batchSize || maxBatchByteSize < batchSizeBytes {
-			// If deleting the key would cross the batch size limits, do not delete
-			// it. Pass it back to the caller for the next iteration.
-			return &roachpb.Span{Key: k.Key, EndKey: endKey}, nil
-		}
-
-		if err := deleteKey(k.Key); err != nil {
-			return nil, err
-		}
-
-		iter.NextKey()
-	}
-	return nil, nil
-}
-
 // MVCCPredicateDeleteRange issues MVCC tombstones at endTime to live keys
 // within the span [startKey, endKey) that also have MVCC versions that match
 // the predicate filters. Long runs of matched keys will get deleted with a
@@ -3965,10 +3749,6 @@ func MVCCPredicateDeleteRange(
 	maxLockConflicts int64,
 	targetLockConflictBytes int64,
 ) (*roachpb.Span, error) {
-	// TODO(jeffswenson): delete the range tombstone predicate delete once V25_2
-	// is no longer supported as an upgrade path.
-	_ = clusterversion.V25_2
-
 	if endTime.IsEmpty() {
 		return nil, errors.AssertionFailedf("MVCCPredicateDeleteRange expects non-empty endTime")
 	}
@@ -4009,6 +3789,29 @@ func MVCCPredicateDeleteRange(
 		return nil, err
 	} else if len(locks) > 0 {
 		return nil, &kvpb.LockConflictError{Locks: locks}
+	}
+
+	var stopRunBasedOnPredicate func(k MVCCKey, iter *MVCCIncrementalIterator) (bool, error)
+	if predicates.ImportEpoch > 0 {
+		// TODO(ssd): We will likely eventually want something
+		// that consturcts our iterator opetions based on the
+		// predicate so that we can use a block-property
+		// filter for import epochs.
+		stopRunBasedOnPredicate = func(k MVCCKey, it *MVCCIncrementalIterator) (bool, error) {
+			rawV, err := it.UnsafeValue()
+			if err != nil {
+				return true, err
+			}
+			v, err := DecodeMVCCValue(rawV)
+			if err != nil {
+				return true, err
+			}
+			return v.ImportEpoch != predicates.ImportEpoch, nil
+		}
+	} else {
+		stopRunBasedOnPredicate = func(k MVCCKey, _ *MVCCIncrementalIterator) (bool, error) {
+			return k.Timestamp.LessEq(predicates.StartTime), nil
+		}
 	}
 
 	// continueRun returns three bools: the first is true if the current run
@@ -4061,13 +3864,10 @@ func MVCCPredicateDeleteRange(
 			return true, true, false, nil
 		}
 
-		// The latest key is a live point key. Conduct predicate filtering and stop
-		// the current run if the key does not match the predicate.
-		shouldDelete, err := checkDeletePredicates(iter, &predicates)
-		if err != nil {
+		// The latest key is a live point key. Conduct predicate filtering.
+		if stop, err := stopRunBasedOnPredicate(k, iter); err != nil {
 			return false, false, false, err
-		}
-		if !shouldDelete {
+		} else if stop {
 			return false, false, false, nil
 		}
 
@@ -4130,7 +3930,7 @@ func MVCCPredicateDeleteRange(
 					return err
 				}
 				if !acq.Empty() {
-					log.Dev.Fatal(ctx, "expected empty lock acquisition for non-transactional point delete")
+					log.Fatal(ctx, "expected empty lock acquisition for non-transactional point delete")
 				}
 			}
 			batchByteSize += runByteSize
@@ -4597,9 +4397,8 @@ func recordIteratorStats(iter iteratorWithStats, scanStats *kvpb.ScanStats) {
 	scanStats.NumInternalSeeks += uint64(internalSeeks)
 	scanStats.NumInterfaceSteps += uint64(steps)
 	scanStats.NumInternalSteps += uint64(internalSteps)
-	blockReads := stats.InternalStats.TotalBlockReads()
-	scanStats.BlockBytes += blockReads.BlockBytes
-	scanStats.BlockBytesInCache += blockReads.BlockBytesInCache
+	scanStats.BlockBytes += stats.InternalStats.BlockBytes
+	scanStats.BlockBytesInCache += stats.InternalStats.BlockBytesInCache
 	scanStats.KeyBytes += stats.InternalStats.KeyBytes
 	scanStats.ValueBytes += stats.InternalStats.ValueBytes
 	scanStats.PointCount += stats.InternalStats.PointCount
@@ -4610,9 +4409,7 @@ func recordIteratorStats(iter iteratorWithStats, scanStats *kvpb.ScanStats) {
 	scanStats.SeparatedPointCount += stats.InternalStats.SeparatedPointValue.Count
 	scanStats.SeparatedPointValueBytes += stats.InternalStats.SeparatedPointValue.ValueBytes
 	scanStats.SeparatedPointValueBytesFetched += stats.InternalStats.SeparatedPointValue.ValueBytesFetched
-	scanStats.SeparatedPointValueCountFetched += stats.InternalStats.SeparatedPointValue.CountFetched
-	scanStats.SeparatedPointValueReaderCacheMisses += stats.InternalStats.SeparatedPointValue.ReaderCacheMisses
-	scanStats.BlockReadDuration += blockReads.BlockReadDuration
+	scanStats.BlockReadDuration += stats.InternalStats.BlockReadDuration
 }
 
 // mvccScanInit performs some preliminary checks on the validity of options for
@@ -5188,7 +4985,7 @@ func MVCCPaginate(
 		addedKeys, addedBytes, resumeReason, err := f(maxKeys, targetBytes)
 		if err != nil {
 			if addedKeys != 0 || addedBytes != 0 || resumeReason != 0 {
-				log.Dev.Fatalf(ctx,
+				log.Fatalf(ctx,
 					"addedKeys, addedBytes, and resumeReason should all be 0, but got addedKeys=%d, addedBytes=%d, resumeReason=%d",
 					addedKeys, addedBytes, resumeReason)
 			}
@@ -5199,7 +4996,7 @@ func MVCCPaginate(
 		numBytes += addedBytes
 		if maxKeys > 0 {
 			if addedKeys > maxKeys {
-				log.Dev.Fatalf(ctx, "added %d keys, which exceeds the max key limit %d", addedKeys, maxKeys)
+				log.Fatalf(ctx, "added %d keys, which exceeds the max key limit %d", addedKeys, maxKeys)
 			} else if addedKeys < maxKeys {
 				maxKeys -= addedKeys
 			} else {
@@ -5216,16 +5013,16 @@ func MVCCPaginate(
 		switch resumeReason {
 		case kvpb.RESUME_KEY_LIMIT:
 			if maxKeys >= 0 {
-				log.Dev.Fatalf(ctx, "Resume reason RESUME_KEY_LIMIT, but key limit = %d has not been hit", maxKeys)
+				log.Fatalf(ctx, "Resume reason RESUME_KEY_LIMIT, but key limit = %d has not been hit", maxKeys)
 			}
 		case kvpb.RESUME_BYTE_LIMIT:
 			if !allowEmpty && targetBytes >= 0 {
-				log.Dev.Fatalf(ctx, "Resume reason RESUME_BYTE_LIMIT, but byte limit = %d has not been hit", targetBytes)
+				log.Fatalf(ctx, "Resume reason RESUME_BYTE_LIMIT, but byte limit = %d has not been hit", targetBytes)
 			}
 			targetBytes = -1
 		case 0:
 		default:
-			log.Dev.Fatalf(ctx, "Resume reason must be RESUME_KEY_LIMIT, RESUME_BYTE_LIMIT, or 0, got resumeReason = %d", resumeReason)
+			log.Fatalf(ctx, "Resume reason must be RESUME_KEY_LIMIT, RESUME_BYTE_LIMIT, or 0, got resumeReason = %d", resumeReason)
 		}
 	}
 }
@@ -5697,7 +5494,7 @@ func mvccResolveWriteIntent(
 			newMeta.Txn.WriteTimestamp = newTimestamp
 			newMeta.Timestamp = newTimestamp.ToLegacyTimestamp()
 			newMeta.KeyBytes = MVCCVersionTimestampSize
-			newMeta.ValBytes = int64(newValue.encodedSize())
+			newMeta.ValBytes = int64(encodedMVCCValueSize(newValue))
 			newMeta.Deleted = newValue.IsTombstone()
 
 			if err = writer.PutMVCC(newKey, newValue); err != nil {
@@ -6112,7 +5909,7 @@ func MVCCResolveWriteIntentRange(
 			replLocksReleased = replLocksReleased || outcome != lockNoop
 		}
 		if err != nil {
-			log.Dev.Warningf(ctx, "failed to resolve intent for key %q: %+v", lastResolvedKey, err)
+			log.Warningf(ctx, "failed to resolve intent for key %q: %+v", lastResolvedKey, err)
 		}
 		if outcome != lockNoop && !lastResolvedKeyOk {
 			// We only count the first successfully resolved lock/intent on a
@@ -6535,10 +6332,10 @@ func MVCCGarbageCollect(
 
 	// Sort the slice to both determine the bounds and ensure that we're seeking
 	// in increasing order.
-	slices.SortFunc(keys, func(a, b kvpb.GCRequest_GCKey) int {
-		aKey := MVCCKey{Key: a.Key, Timestamp: a.Timestamp}
-		bKey := MVCCKey{Key: b.Key, Timestamp: b.Timestamp}
-		return aKey.Compare(bKey)
+	sort.Slice(keys, func(i, j int) bool {
+		iKey := MVCCKey{Key: keys[i].Key, Timestamp: keys[i].Timestamp}
+		jKey := MVCCKey{Key: keys[j].Key, Timestamp: keys[j].Timestamp}
+		return iKey.Less(jKey)
 	})
 
 	// Bound the iterator appropriately for the set of keys we'll be garbage
@@ -6849,8 +6646,8 @@ func MVCCGarbageCollectRangeKeys(
 		}
 	}
 
-	slices.SortFunc(rks, func(i, j CollectableGCRangeKey) int {
-		return i.MVCCRangeKey.Compare(j.MVCCRangeKey)
+	sort.Slice(rks, func(i, j int) bool {
+		return rks[i].Compare(rks[j].MVCCRangeKey) < 0
 	})
 
 	// Validate that keys are non-overlapping.
@@ -7435,47 +7232,24 @@ func willOverflow(a, b int64) bool {
 // specifies the wall time in nanoseconds since the epoch and is used to compute
 // age-related stats quantities.
 func ComputeStats(
-	ctx context.Context,
-	r Reader,
-	readCategory fs.ReadCategory,
-	start, end roachpb.Key,
-	nowNanos int64,
+	ctx context.Context, r Reader, start, end roachpb.Key, nowNanos int64,
 ) (enginepb.MVCCStats, error) {
-	return ComputeStatsWithVisitors(ctx, r, readCategory, start, end, nowNanos, ComputeStatsVisitors{})
+	return ComputeStatsWithVisitors(ctx, r, start, end, nowNanos, ComputeStatsVisitors{})
 }
 
 // ComputeStatsVisitors holds a set of callbacks that are invoked on each key
 // during stats computation.
-//
-// These callbacks may throttle iteration, in addition to doing real work.
-// When throttling, the callbacks may return resumeSoon=true after some
-// duration to indicate to the caller that it should find a safe resumption
-// point and terminate with that resumption point. See the declaration
-// comments for computeStatsForIterWithVisitors and
-// computeLockTableStatsWithVisitors, for details on how the callers handle
-// resumeSoon. If the caller cannot immediately resume, it should use the
-// first indication of resumeSoon=true to find a safe resumption point and not
-// expect that the callback will keep returning resumeSoon=true (since the
-// callback is oblivious to when the resumption happens).
 type ComputeStatsVisitors struct {
-	PointKey     func(MVCCKey, []byte) (resumeSoon bool, _ error)
-	RangeKey     func(MVCCRangeKeyValue) (resumeSoon bool, _ error)
-	LockTableKey func(LockTableKey, []byte) (resumeSoon bool, _ error)
+	PointKey     func(MVCCKey, []byte) error
+	RangeKey     func(MVCCRangeKeyValue) error
+	LockTableKey func(LockTableKey, []byte) error
 }
 
 // ComputeStatsWithVisitors is like ComputeStats, but also takes callbacks that
 // are invoked on each key.
-//
-// The optional visitors callbacks are invoked for the encountered keys and
-// values. These callbacks may throttle iteration, in addition to doing real
-// work. When throttling, the callbacks may return resumeSoon=true after some
-// duration to limit the lifetime of the iterators constructed for iteration.
-// In this case, the current iterator will be closed and a new one created --
-// this requires that the Reader supports consistent iterators.
 func ComputeStatsWithVisitors(
 	ctx context.Context,
 	r Reader,
-	readCategory fs.ReadCategory,
 	start, end roachpb.Key,
 	nowNanos int64,
 	visitors ComputeStatsVisitors,
@@ -7483,48 +7257,20 @@ func ComputeStatsWithVisitors(
 	ctx, sp := tracing.ChildSpan(ctx, "ComputeStatsWithVisitors")
 	defer sp.Finish()
 	if isLockTableKey(start) {
-		return computeLockTableStatsWithVisitors(ctx, r, readCategory, start, end, nowNanos, visitors.LockTableKey)
+		return computeLockTableStatsWithVisitors(ctx, r, start, end, nowNanos, visitors.LockTableKey)
 	}
 
-	consistentIters := r.ConsistentIterators()
-	resumeKey := &start
-	var ms enginepb.MVCCStats
-	firstIter := true
-	iterFunc := func() error {
-		iter, err := r.NewMVCCIterator(ctx, MVCCKeyAndIntentsIterKind, IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			LowerBound:   *resumeKey,
-			UpperBound:   end,
-			ReadCategory: readCategory,
-		})
-		if err != nil {
-			return err
-		}
-		defer iter.Close()
-		iter.SeekGE(MVCCKey{Key: *resumeKey})
-		var msIter enginepb.MVCCStats
-		msIter, resumeKey, err = computeStatsForIterWithVisitors(
-			iter, nowNanos, visitors.PointKey, visitors.RangeKey, consistentIters)
-		if err != nil {
-			return err
-		}
-		if firstIter {
-			ms = msIter
-			firstIter = false
-			if resumeKey != nil && !consistentIters {
-				return errors.AssertionFailedf("reader does not provide consistent iterators")
-			}
-		} else {
-			ms.Add(msIter)
-		}
-		return nil
+	iter, err := r.NewMVCCIterator(ctx, MVCCKeyAndIntentsIterKind, IterOptions{
+		KeyTypes:   IterKeyTypePointsAndRanges,
+		LowerBound: start,
+		UpperBound: end,
+	})
+	if err != nil {
+		return enginepb.MVCCStats{}, err
 	}
-	for resumeKey != nil {
-		if err := iterFunc(); err != nil {
-			return enginepb.MVCCStats{}, err
-		}
-	}
-	return ms, nil
+	defer iter.Close()
+	iter.SeekGE(MVCCKey{Key: start})
+	return computeStatsForIterWithVisitors(iter, nowNanos, visitors.PointKey, visitors.RangeKey)
 }
 
 // ComputeStatsForIter is like ComputeStats, but scans across the given iterator
@@ -7539,14 +7285,7 @@ func ComputeStatsWithVisitors(
 // Most callers should use ComputeStats() instead. This exists primarily for use
 // with SST iterators.
 func ComputeStatsForIter(iter SimpleMVCCIterator, nowNanos int64) (enginepb.MVCCStats, error) {
-	ms, k, err := computeStatsForIterWithVisitors(iter, nowNanos, nil, nil, false)
-	if err != nil {
-		return enginepb.MVCCStats{}, err
-	}
-	if k != nil {
-		return enginepb.MVCCStats{}, errors.AssertionFailedf("unexpected key: %v", *k)
-	}
-	return ms, nil
+	return computeStatsForIterWithVisitors(iter, nowNanos, nil, nil)
 }
 
 // computeStatsForIterWithVisitors performs the actual stats computation for the
@@ -7560,56 +7299,15 @@ func ComputeStatsForIter(iter SimpleMVCCIterator, nowNanos int64) (enginepb.MVCC
 //
 // Notably, we do not want to take the start/end key here, and instead rely on
 // the iterator's bounds, to avoid expensive key comparisons.
-//
-// The optional pointKeyVisitor and rangeKeyVisitor callbacks are invoked for
-// each point and range key. These callbacks may throttle iteration, in
-// addition to doing real work. When throttling, the callbacks may return
-// resumeSoon=true after some duration to limit the lifetime of the iter. This
-// method will attempt to terminate soon after resumeSoon is true, at the
-// boundary between roachpb.Keys and range keys (to avoid repeatedly counting
-// the same range key). In such a case, the resumeKey return value contains
-// the roachpb.Key that the caller must seek to before calling
-// computeStatsForIterWithVisitors again. If the visitors are nil, or they
-// never return resumeSoon=true, the resumeKey will never be non-nil.
-//
-// We desire to stress test this resumption behavior even when the callbacks
-// don't return resumeSoon=true, when the caller knows that such testing is
-// permissible from a correctness perspective (the caller has the capability
-// to create another iterator and call this function again). The
-// allowResumptionForTesting  is set to true by the caller in that case.
 func computeStatsForIterWithVisitors(
 	iter SimpleMVCCIterator,
 	nowNanos int64,
-	pointKeyVisitor func(MVCCKey, []byte) (resumeSoon bool, _ error),
-	rangeKeyVisitor func(MVCCRangeKeyValue) (resumeSoon bool, _ error),
-	allowResumptionForTesting bool,
-) (_ enginepb.MVCCStats, resumeKey *roachpb.Key, _ error) {
+	pointKeyVisitor func(MVCCKey, []byte) error,
+	rangeKeyVisitor func(MVCCRangeKeyValue) error,
+) (enginepb.MVCCStats, error) {
 	var ms enginepb.MVCCStats
-	ms.LastUpdateNanos = nowNanos
-	// meta is used to store the MVCCMetadata for the current key but is only
-	// reset and initialized for a subset of keys. Specifically, meta gets
-	// initialized below when:
-	//
-	// implicitMeta=true [isValue=true && key != prevKey]: When we encounter a
-	// key that a) has a non-empty timestamp and b) is a new user key, its
-	// MVCCMetadata is implicit. The loop below will reset meta and synthesize
-	// its fields.
-	//
-	// isValue=false && !isSys: When we encounter a key that has a zero
-	// timestamp and it's not a system key, we read and unmarshal the value into
-	// the MVCCMetadata struct.
 	var meta enginepb.MVCCMetadata
 	var prevKey roachpb.Key
-	// When versions of prevKey are being iterated over, pointSeenAtKey
-	// transitions (at most) once from false to true, when a point is
-	// encountered at prevKey. This is used to determine when we are at the most
-	// recent point version for prevKey. The value transitions back to false
-	// when we step to a new key.
-	pointSeenAtKey := false
-	// When versions of prevKey are being iterated over, first is set to true
-	// for the first point version encountered, and subsequently transitions to
-	// false. The initial transition to true is derived from various inputs,
-	// including pointSeenAtKey being false.
 	var first bool
 
 	// Values start accruing GCBytesAge at the timestamp at which they
@@ -7620,31 +7318,13 @@ func computeStatsForIterWithVisitors(
 	var accrueGCAgeNanos int64
 	var rangeTombstones MVCCRangeKeyVersions
 
-	resumeSoon := false
 	for ; ; iter.Next() {
 		if ok, err := iter.Valid(); err != nil {
-			return enginepb.MVCCStats{}, nil, err
+			return ms, err
 		} else if !ok {
 			break
 		}
-		unsafeKey := iter.UnsafeKey()
-		sameKey := bytes.Equal(unsafeKey.Key, prevKey)
-		if !sameKey {
-			prevKey = append(prevKey[:0], unsafeKey.Key...)
-			pointSeenAtKey = false
-		}
-		// First iteration is always !resumeSoon, so will never return here.
-		if resumeSoon && !sameKey {
-			// Ensure in-between range keys, to avoid repeatedly counting the same
-			// range key.
-			_, hasRange := iter.HasPointAndRange()
-			if !hasRange || iter.RangeKeyChanged() {
-				return ms, &prevKey, nil
-			}
-		}
-		if util.RaceEnabled && allowResumptionForTesting && !resumeSoon {
-			resumeSoon = true
-		}
+
 		// Process MVCC range tombstones, and buffer them in rangeTombstones
 		// for all overlapping point keys.
 		if iter.RangeKeyChanged() {
@@ -7673,10 +7353,8 @@ func computeStatsForIterWithVisitors(
 					ms.GCBytesAge += (keyBytes + valBytes) * (nowNanos/1e9 - v.Timestamp.WallTime/1e9)
 
 					if rangeKeyVisitor != nil {
-						if resume, err := rangeKeyVisitor(rangeKeys.AsRangeKeyValue(v)); err != nil {
-							return enginepb.MVCCStats{}, nil, err
-						} else if resume && !resumeSoon {
-							resumeSoon = true
+						if err := rangeKeyVisitor(rangeKeys.AsRangeKeyValue(v)); err != nil {
+							return enginepb.MVCCStats{}, err
 						}
 					}
 				}
@@ -7688,20 +7366,18 @@ func computeStatsForIterWithVisitors(
 				rangeTombstones.Clear()
 			}
 		}
-		// Has a point key.
-		firstPointAtKey := !pointSeenAtKey
-		pointSeenAtKey = true
+
+		unsafeKey := iter.UnsafeKey()
+
 		if pointKeyVisitor != nil {
 			// NB: pointKeyVisitor is typically nil, so we will typically not call
 			// iter.UnsafeValue().
 			v, err := iter.UnsafeValue()
 			if err != nil {
-				return enginepb.MVCCStats{}, nil, err
+				return enginepb.MVCCStats{}, err
 			}
-			if resume, err := pointKeyVisitor(unsafeKey, v); err != nil {
-				return enginepb.MVCCStats{}, nil, err
-			} else if resume && !resumeSoon {
-				resumeSoon = true
+			if err := pointKeyVisitor(unsafeKey, v); err != nil {
+				return enginepb.MVCCStats{}, err
 			}
 		}
 
@@ -7712,14 +7388,13 @@ func computeStatsForIterWithVisitors(
 				// RangeID-local key.
 				_ /* rangeID */, infix, suffix, _ /* detail */, err := keys.DecodeRangeIDKey(unsafeKey.Key)
 				if err != nil {
-					return enginepb.MVCCStats{}, nil, errors.Wrap(err, "unable to decode rangeID key")
+					return enginepb.MVCCStats{}, errors.Wrap(err, "unable to decode rangeID key")
 				}
 
 				if infix.Equal(keys.LocalRangeIDReplicatedInfix) {
 					// Replicated RangeID-local key.
 					if suffix.Equal(keys.LocalRangeAppliedStateSuffix) {
-						// RangeAppliedState key. Ignore. Note that this isn't a versioned
-						// key.
+						// RangeAppliedState key. Ignore.
 						continue
 					}
 				}
@@ -7729,63 +7404,14 @@ func computeStatsForIterWithVisitors(
 			// function. They are handled by computeLockTableStatsWithVisitors
 			// instead.
 			if bytes.HasPrefix(unsafeKey.Key, keys.LocalRangeLockTablePrefix) {
-				return enginepb.MVCCStats{}, nil, errors.AssertionFailedf(
+				return enginepb.MVCCStats{}, errors.AssertionFailedf(
 					"lock table key encountered by ComputeStats: %s", unsafeKey.Key)
 			}
 		}
 
 		isValue := unsafeKey.IsValue()
-		implicitMeta := isValue && firstPointAtKey
-
-		if !isValue {
-			// The key-value is not a MVCC value (i.e., the key has a zero
-			// timestamp). The stats accounting for non-MVCC values is simpler.
-			metaKeySize := int64(len(unsafeKey.Key)) + 1
-			metaValSize := int64(iter.ValueLen())
-			totalBytes := metaKeySize + metaValSize
-			first = true
-			if util.RaceEnabled && first != firstPointAtKey {
-				return enginepb.MVCCStats{}, nil, errors.AssertionFailedf(
-					"unexpected first=%t != firstPointAtKey=%t", first, firstPointAtKey)
-			}
-
-			if isSys {
-				// The key is an internal system key. It contributes to
-				// Sys{Bytes,Count} instead of {Key,Val}{Count,Bytes}.
-				ms.SysBytes += totalBytes
-				ms.SysCount++
-				if isAbortSpanKey(unsafeKey.Key) {
-					ms.AbortSpanBytes += totalBytes
-				}
-				continue
-			}
-			// A non-system key. Decode the value as a MVCCMetadata.
-			v, err := iter.UnsafeValue()
-			if err != nil {
-				return enginepb.MVCCStats{}, nil, err
-			}
-			if err := protoutil.Unmarshal(v, &meta); err != nil {
-				return enginepb.MVCCStats{}, nil, errors.Wrap(err, "unable to decode MVCCMetadata")
-			}
-			if meta.Deleted {
-				// First value is deleted, so it's GC'able; add meta key & value
-				// bytes to age stat.
-				ms.GCBytesAge += totalBytes * (nowNanos/1e9 - meta.Timestamp.WallTime/1e9)
-			} else {
-				ms.LiveBytes += totalBytes
-				ms.LiveCount++
-			}
-			ms.KeyBytes += metaKeySize
-			ms.ValBytes += metaValSize
-			ms.KeyCount++
-			if meta.IsInline() {
-				ms.ValCount++
-			}
-			continue
-		}
-
-		// The key-value is a MVCC value (i.e., the key has a non-zero
-		// timestamp).
+		implicitMeta := isValue && !bytes.Equal(unsafeKey.Key, prevKey)
+		prevKey = append(prevKey[:0], unsafeKey.Key...)
 
 		// Find the closest range tombstone above the point key. Range tombstones
 		// cannot exist above intents, and are undefined across inline values, so we
@@ -7796,15 +7422,25 @@ func computeStatsForIterWithVisitors(
 		// stack as we descend through older versions, resetting once we hit a new
 		// key.
 		var nextRangeTombstone hlc.Timestamp
-		if !rangeTombstones.IsEmpty() && unsafeKey.Timestamp.LessEq(rangeTombstones.Newest()) {
-			if v, ok := rangeTombstones.FirstAtOrAbove(unsafeKey.Timestamp); ok {
-				nextRangeTombstone = v.Timestamp
+		if isValue {
+			if !rangeTombstones.IsEmpty() && unsafeKey.Timestamp.LessEq(rangeTombstones.Newest()) {
+				if v, ok := rangeTombstones.FirstAtOrAbove(unsafeKey.Timestamp); ok {
+					nextRangeTombstone = v.Timestamp
+				}
 			}
 		}
 
-		valueLen, mvccValueIsTombstone, err := iter.MVCCValueLenAndIsTombstone()
-		if err != nil {
-			return enginepb.MVCCStats{}, nil, errors.Wrap(err, "unable to decode MVCCValue")
+		var valueLen int
+		var mvccValueIsTombstone bool
+		if isValue {
+			// MVCC value
+			var err error
+			valueLen, mvccValueIsTombstone, err = iter.MVCCValueLenAndIsTombstone()
+			if err != nil {
+				return enginepb.MVCCStats{}, errors.Wrap(err, "unable to decode MVCCValue")
+			}
+		} else {
+			valueLen = iter.ValueLen()
 		}
 		if implicitMeta {
 			// INVARIANT: implicitMeta => isValue.
@@ -7814,19 +7450,32 @@ func computeStatsForIterWithVisitors(
 			meta.ValBytes = int64(valueLen)
 			meta.Deleted = mvccValueIsTombstone
 			meta.Timestamp.WallTime = unsafeKey.Timestamp.WallTime
+		}
 
+		if !isValue || implicitMeta {
 			metaKeySize := int64(len(unsafeKey.Key)) + 1
-			totalBytes := metaKeySize
+			var metaValSize int64
+			if !implicitMeta {
+				metaValSize = int64(valueLen)
+			}
+			totalBytes := metaKeySize + metaValSize
 			first = true
+
+			if !implicitMeta {
+				v, err := iter.UnsafeValue()
+				if err != nil {
+					return enginepb.MVCCStats{}, err
+				}
+				if err := protoutil.Unmarshal(v, &meta); err != nil {
+					return ms, errors.Wrap(err, "unable to decode MVCCMetadata")
+				}
+			}
 
 			if isSys {
 				ms.SysBytes += totalBytes
 				ms.SysCount++
-				// We don't need to account for the abort-span key here because
-				// that key is not versioned.
-				if buildutil.CrdbTestBuild && isAbortSpanKey(unsafeKey.Key) {
-					return enginepb.MVCCStats{}, nil, errors.AssertionFailedf(
-						"versioned abort span key encountered by ComputeStats: %s", unsafeKey.Key)
+				if isAbortSpanKey(unsafeKey.Key) {
+					ms.AbortSpanBytes += totalBytes
 				}
 			} else {
 				if meta.Deleted {
@@ -7841,67 +7490,73 @@ func computeStatsForIterWithVisitors(
 					ms.LiveCount++
 				}
 				ms.KeyBytes += metaKeySize
+				ms.ValBytes += metaValSize
 				ms.KeyCount++
 				if meta.IsInline() {
 					ms.ValCount++
 				}
+			}
+			if !implicitMeta {
+				continue
 			}
 		}
 
 		totalBytes := int64(valueLen) + MVCCVersionTimestampSize
 		if isSys {
 			ms.SysBytes += totalBytes
-			continue
-		}
-		ms.KeyBytes += MVCCVersionTimestampSize
-		ms.ValBytes += int64(valueLen)
-		ms.ValCount++
-		if first {
-			first = false
-			if meta.Deleted {
-				// First value is deleted, so it's GC'able; add key & value bytes to age stat.
-				ms.GCBytesAge += totalBytes * (nowNanos/1e9 - meta.Timestamp.WallTime/1e9)
-			} else if nextRangeTombstone.IsSet() {
-				// First value was deleted by a range tombstone; add key & value bytes to
-				// age stat from range tombstone onwards.
-				ms.GCBytesAge += totalBytes * (nowNanos/1e9 - nextRangeTombstone.WallTime/1e9)
-			} else {
-				ms.LiveBytes += totalBytes
-			}
-			if meta.Txn != nil {
-				ms.IntentBytes += totalBytes
-				ms.IntentCount++
-				ms.LockCount++
-				ms.LockAge += nowNanos/1e9 - meta.Timestamp.WallTime/1e9
-			}
-			if meta.KeyBytes != MVCCVersionTimestampSize {
-				return enginepb.MVCCStats{}, nil, errors.Errorf("expected mvcc metadata key bytes to equal %d; got %d "+
-					"(meta: %s)", MVCCVersionTimestampSize, meta.KeyBytes, &meta)
-			}
-			if meta.ValBytes != int64(valueLen) {
-				return enginepb.MVCCStats{}, nil, errors.Errorf("expected mvcc metadata val bytes to equal %d; got %d "+
-					"(meta: %s)", valueLen, meta.ValBytes, &meta)
-			}
-			accrueGCAgeNanos = meta.Timestamp.WallTime
 		} else {
-			// Overwritten value. Is it a deletion tombstone?
-			if mvccValueIsTombstone {
-				// The contribution of the tombstone picks up GCByteAge from its own timestamp on.
-				ms.GCBytesAge += totalBytes * (nowNanos/1e9 - unsafeKey.Timestamp.WallTime/1e9)
-			} else if nextRangeTombstone.IsSet() && nextRangeTombstone.WallTime < accrueGCAgeNanos {
-				// The kv pair was deleted by a range tombstone below the next
-				// version, so it accumulates garbage from the range tombstone.
-				ms.GCBytesAge += totalBytes * (nowNanos/1e9 - nextRangeTombstone.WallTime/1e9)
+			if first {
+				first = false
+				if meta.Deleted {
+					// First value is deleted, so it's GC'able; add key & value bytes to age stat.
+					ms.GCBytesAge += totalBytes * (nowNanos/1e9 - meta.Timestamp.WallTime/1e9)
+				} else if nextRangeTombstone.IsSet() {
+					// First value was deleted by a range tombstone; add key & value bytes to
+					// age stat from range tombstone onwards.
+					ms.GCBytesAge += totalBytes * (nowNanos/1e9 - nextRangeTombstone.WallTime/1e9)
+				} else {
+					ms.LiveBytes += totalBytes
+				}
+				if meta.Txn != nil {
+					ms.IntentBytes += totalBytes
+					ms.IntentCount++
+					ms.LockCount++
+					ms.LockAge += nowNanos/1e9 - meta.Timestamp.WallTime/1e9
+				}
+				if meta.KeyBytes != MVCCVersionTimestampSize {
+					return ms, errors.Errorf("expected mvcc metadata key bytes to equal %d; got %d "+
+						"(meta: %s)", MVCCVersionTimestampSize, meta.KeyBytes, &meta)
+				}
+				if meta.ValBytes != int64(valueLen) {
+					return ms, errors.Errorf("expected mvcc metadata val bytes to equal %d; got %d "+
+						"(meta: %s)", valueLen, meta.ValBytes, &meta)
+				}
+				accrueGCAgeNanos = meta.Timestamp.WallTime
 			} else {
-				// The kv pair is an overwritten value, so it became non-live when the closest more
-				// recent value was written.
-				ms.GCBytesAge += totalBytes * (nowNanos/1e9 - accrueGCAgeNanos/1e9)
+				// Overwritten value. Is it a deletion tombstone?
+				if mvccValueIsTombstone {
+					// The contribution of the tombstone picks up GCByteAge from its own timestamp on.
+					ms.GCBytesAge += totalBytes * (nowNanos/1e9 - unsafeKey.Timestamp.WallTime/1e9)
+				} else if nextRangeTombstone.IsSet() && nextRangeTombstone.WallTime < accrueGCAgeNanos {
+					// The kv pair was deleted by a range tombstone below the next
+					// version, so it accumulates garbage from the range tombstone.
+					ms.GCBytesAge += totalBytes * (nowNanos/1e9 - nextRangeTombstone.WallTime/1e9)
+				} else {
+					// The kv pair is an overwritten value, so it became non-live when the closest more
+					// recent value was written.
+					ms.GCBytesAge += totalBytes * (nowNanos/1e9 - accrueGCAgeNanos/1e9)
+				}
+				// Update for the next version we may end up looking at.
+				accrueGCAgeNanos = unsafeKey.Timestamp.WallTime
 			}
-			// Update for the next version we may end up looking at.
-			accrueGCAgeNanos = unsafeKey.Timestamp.WallTime
+			ms.KeyBytes += MVCCVersionTimestampSize
+			ms.ValBytes += int64(valueLen)
+			ms.ValCount++
 		}
 	}
-	return ms, nil, nil
+
+	ms.LastUpdateNanos = nowNanos
+	return ms, nil
 }
 
 // computeLockTableStatsWithVisitors performs stats computation for the lock
@@ -7911,105 +7566,68 @@ func computeStatsForIterWithVisitors(
 // (intent interleaving) MVCCIterator.
 //
 // Unlike computeStatsForIterWithVisitors, this function accepts a Reader and
-// a start and end key. The start and end key must both be lock table keys. It
-// uses the Reader to create an iterator to read the lock tabke keys and
-// values.
-//
-// The optional lockTableKeyVisitor callback is invoked for each lock table
-// key. The callback may throttle iteration, in addition to doing real work.
-// When throttling, the callback may return resumeSoon=true after some
-// duration to limit the lifetime of the iterator being used. When resumeSoon
-// is true, the iterator will be closed and a new iterator created -- this
-// requires that the Reader supports consistent iterators.
+// a start and end key. The start and end key must both be lock table keys.
 func computeLockTableStatsWithVisitors(
 	ctx context.Context,
 	r Reader,
-	readCategory fs.ReadCategory,
 	start, end roachpb.Key,
 	nowNanos int64,
-	lockTableKeyVisitor func(LockTableKey, []byte) (resumeSoon bool, _ error),
+	lockTableKeyVisitor func(LockTableKey, []byte) error,
 ) (enginepb.MVCCStats, error) {
-	consistentIters := r.ConsistentIterators()
-	var ms enginepb.MVCCStats
-	resumeKey := EngineKey{Key: start}
-	hasResumeKey := true
-	var resumeKeyBacking roachpb.Key
-	iterFunc := func() error {
-		iter, err := NewLockTableIterator(ctx, r, LockTableIteratorOptions{
-			UpperBound:   end,
-			MatchMinStr:  lock.Shared, // all locks
-			ReadCategory: readCategory,
-		})
-		if err != nil {
-			return err
-		}
-		defer iter.Close()
-
-		var meta enginepb.MVCCMetadata
-		var ok bool
-		resumeSoon := false
-		hasResumeKey = false
-		for ok, err = iter.SeekEngineKeyGE(resumeKey); ok; ok, err = iter.NextEngineKey() {
-			key, err := iter.UnsafeLockTableKey()
-			if err != nil {
-				return err
-			}
-			if resumeSoon {
-				if !consistentIters {
-					return errors.AssertionFailedf("reader does not provide consistent iterators")
-				}
-				resumeKey, err = iter.UnsafeEngineKey()
-				if err != nil {
-					return err
-				}
-				hasResumeKey = true
-				resumeKeyBacking = append(resumeKeyBacking[:0], resumeKey.Key...)
-				resumeKey.Key = resumeKeyBacking
-				return nil
-			}
-			if key.Strength == lock.Intent {
-				// The contributions of intents to the MVCCStats are handled by
-				// computeStatsForIterWithVisitors, which uses an intent
-				// interleaving iterator to interpret the mvcc keyspace. That
-				// function draws a distinction between provisional versioned values
-				// that are associated with intents and committed versioned values
-				// that are not.
-				//
-				// For simplicity, we ignore intents in this function.
-				continue
-			}
-			val, err := iter.UnsafeValue()
-			if err != nil {
-				return err
-			}
-			if err := protoutil.Unmarshal(val, &meta); err != nil {
-				return errors.Wrap(err, "unable to decode MVCCMetadata")
-			}
-			if lockTableKeyVisitor != nil {
-				if resume, err := lockTableKeyVisitor(key, val); err != nil {
-					return err
-				} else if resume && !resumeSoon {
-					resumeSoon = true
-				}
-			}
-			if util.RaceEnabled && consistentIters && !resumeSoon {
-				resumeSoon = true
-			}
-
-			keyBytes := key.EncodedSize()
-			valBytes := int64(len(val))
-
-			ms.LockBytes += keyBytes + valBytes
-			ms.LockCount++
-			ms.LockAge += nowNanos/1e9 - meta.Timestamp.WallTime/1e9
-		}
-		return err
+	iter, err := NewLockTableIterator(ctx, r, LockTableIteratorOptions{
+		LowerBound:  start,
+		UpperBound:  end,
+		MatchMinStr: lock.Shared, // all locks
+	})
+	if err != nil {
+		return enginepb.MVCCStats{}, err
 	}
-	for hasResumeKey {
-		if err := iterFunc(); err != nil {
+	defer iter.Close()
+
+	var ms enginepb.MVCCStats
+	var meta enginepb.MVCCMetadata
+	var ok bool
+	for ok, err = iter.SeekEngineKeyGE(EngineKey{Key: start}); ok; ok, err = iter.NextEngineKey() {
+		key, err := iter.UnsafeLockTableKey()
+		if err != nil {
 			return enginepb.MVCCStats{}, err
 		}
+		if key.Strength == lock.Intent {
+			// The contributions of intents to the MVCCStats are handled by
+			// computeStatsForIterWithVisitors, which uses an intent
+			// interleaving iterator to interpret the mvcc keyspace. That
+			// function draws a distinction between provisional versioned values
+			// that are associated with intents and committed versioned values
+			// that are not.
+			//
+			// For simplicity, we ignore intents in this function.
+			continue
+		}
+		val, err := iter.UnsafeValue()
+		if err != nil {
+			return enginepb.MVCCStats{}, err
+		}
+		if err := protoutil.Unmarshal(val, &meta); err != nil {
+			return ms, errors.Wrap(err, "unable to decode MVCCMetadata")
+		}
+
+		if lockTableKeyVisitor != nil {
+			if err := lockTableKeyVisitor(key, val); err != nil {
+				return enginepb.MVCCStats{}, err
+			}
+		}
+
+		keyBytes := key.EncodedSize()
+		valBytes := int64(len(val))
+
+		ms.LockBytes += keyBytes + valBytes
+		ms.LockCount++
+		ms.LockAge += nowNanos/1e9 - meta.Timestamp.WallTime/1e9
 	}
+	if err != nil {
+		return enginepb.MVCCStats{}, err
+	}
+
 	ms.LastUpdateNanos = nowNanos
 	return ms, nil
 }
@@ -8082,11 +7700,7 @@ func MVCCIsSpanEmpty(
 // is used by the caller to throw away the empty SST file and avoid unnecessary
 // allocations.
 func MVCCExportFingerprint(
-	ctx context.Context,
-	cs *cluster.Settings,
-	reader Reader,
-	opts MVCCExportOptions,
-	dest objstorage.Writable,
+	ctx context.Context, cs *cluster.Settings, reader Reader, opts MVCCExportOptions, dest io.Writer,
 ) (kvpb.BulkOpSummary, ExportRequestResumeInfo, uint64, bool, error) {
 	ctx, span := tracing.ChildSpan(ctx, "storage.MVCCExportFingerprint")
 	defer span.Finish()
@@ -8114,11 +7728,7 @@ func MVCCExportFingerprint(
 // interval (StartTS, EndTS] as a Pebble SST. See mvccExportToWriter for more
 // details.
 func MVCCExportToSST(
-	ctx context.Context,
-	cs *cluster.Settings,
-	reader Reader,
-	opts MVCCExportOptions,
-	dest objstorage.Writable,
+	ctx context.Context, cs *cluster.Settings, reader Reader, opts MVCCExportOptions, dest io.Writer,
 ) (kvpb.BulkOpSummary, ExportRequestResumeInfo, error) {
 	ctx, span := tracing.ChildSpan(ctx, "storage.MVCCExportToSST")
 	defer span.Finish()
@@ -8259,7 +7869,7 @@ func mvccExportToWriter(
 				stats := iter.Stats()
 				elapsed := timeutil.Since(startTime)
 				preWorkCPUTime, workCPUTime := elasticCPUHandle.RunningTime()
-				log.Dev.Errorf(ctx,
+				log.Errorf(ctx,
 					"export exceeded deadline work wall: %v, cpu: %v, pre-work-cpu: %v, stats: %v",
 					elapsed, workCPUTime, preWorkCPUTime, &stats.Stats)
 			default:
@@ -8433,7 +8043,7 @@ func mvccExportToWriter(
 					rangeKeys.Clear()
 					rangeKeysSize = 0
 					resumeKey = unsafeKey.Clone()
-					log.Dev.VInfof(ctx, 2, "paginating ExportRequest: rangekeys hit size limit: "+
+					log.VInfof(ctx, 2, "paginating ExportRequest: rangekeys hit size limit: "+
 						"reachedTargetSize: %t, reachedMaxSize: %t", reachedTargetSize, reachedMaxSize)
 					break
 				}
@@ -8508,7 +8118,7 @@ func mvccExportToWriter(
 				if isNewKey || !opts.StopMidKey {
 					resumeKey.Timestamp = hlc.Timestamp{}
 				}
-				log.Dev.VInfof(ctx, 2, "paginating ExportRequest: point keys hit size limit: "+
+				log.VInfof(ctx, 2, "paginating ExportRequest: point keys hit size limit: "+
 					"reachedTargetSize: %t, reachedMaxSize: %t", reachedTargetSize, reachedMaxSize)
 				break
 			}

@@ -346,8 +346,8 @@ func (e *distSQLSpecExecFactory) ConstructScan(
 	post := execinfrapb.PostProcessSpec{}
 	if params.HardLimit != 0 {
 		post.Limit = uint64(params.HardLimit)
-	} else if softLimit := int64(params.SoftLimit); softLimit > 0 {
-		trSpec.LimitHint = softLimit
+	} else if params.SoftLimit != 0 {
+		trSpec.LimitHint = params.SoftLimit
 	}
 
 	err = e.dsp.planTableReaders(
@@ -362,7 +362,6 @@ func (e *distSQLSpecExecFactory) ConstructScan(
 			reverse:           params.Reverse,
 			parallelize:       params.Parallelize,
 			estimatedRowCount: params.EstimatedRowCount,
-			statsCreatedAt:    params.StatsCreatedAt,
 			reqOrdering:       ReqOrdering(reqOrdering),
 		},
 	)
@@ -520,7 +519,6 @@ func (e *distSQLSpecExecFactory) ConstructApplyJoin(
 	rightColumns colinfo.ResultColumns,
 	onCond tree.TypedExpr,
 	planRightSideFn exec.ApplyJoinPlanRightSideFn,
-	rightSideForExplainFn exec.ApplyJoinRightSideForExplainFn,
 ) (exec.Node, error) {
 	return nil, unimplemented.NewWithIssue(47473, "experimental opt-driven distsql planning: apply join")
 }
@@ -1725,7 +1723,7 @@ func (e *distSQLSpecExecFactory) ConstructCancelSessions(
 }
 
 func (e *distSQLSpecExecFactory) ConstructCreateStatistics(
-	cs *tree.CreateStats, table cat.Table, index cat.Index, whereConstraint *constraint.Constraint,
+	cs *tree.CreateStats,
 ) (exec.Node, error) {
 	return nil, unimplemented.NewWithIssue(47473, "experimental opt-driven distsql planning: create statistics")
 }

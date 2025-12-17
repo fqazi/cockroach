@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/rangedesc"
@@ -126,7 +125,7 @@ func (s *systemStatusServer) spanStatsFanOut(
 	}
 
 	errorFn := func(nodeID roachpb.NodeID, err error) {
-		log.Dev.Errorf(ctx, nodeErrorMsgPlaceholder, nodeID, err)
+		log.Errorf(ctx, nodeErrorMsgPlaceholder, nodeID, err)
 		errorMessage := fmt.Sprintf("%v", err)
 		res.Errors = append(res.Errors, errorMessage)
 	}
@@ -172,13 +171,13 @@ func collectSpanStatsResponses(
 		// See #108779.
 		for spanStr, spanStats := range nodeResponse.SpanToStats {
 			if spanStats == nil {
-				log.Dev.Errorf(ctx, "Span stats for %s from node response is nil", spanStr)
+				log.Errorf(ctx, "Span stats for %s from node response is nil", spanStr)
 				continue
 			}
 
 			_, ok := res.SpanToStats[spanStr]
 			if !ok {
-				log.Dev.Warningf(ctx, "Received Span not in original request: %s", spanStr)
+				log.Warningf(ctx, "Received Span not in original request: %s", spanStr)
 				res.SpanToStats[spanStr] = &roachpb.SpanStats{}
 			}
 
@@ -315,7 +314,6 @@ func (s *systemStatusServer) statsForSpan(
 				stats, err := storage.ComputeStats(
 					ctx,
 					s.TODOEngine(),
-					fs.UnknownReadCategory,
 					scanStart.AsRawKey(),
 					scanEnd.AsRawKey(),
 					timeutil.Now().UnixNano(),

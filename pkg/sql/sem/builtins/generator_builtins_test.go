@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -64,16 +63,8 @@ func TestConcurrentProcessorsReadEpoch(t *testing.T) {
 func TestGetSSTableMetricsMultiNode(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	skip.UnderRace(t, "heavy test")
-
 	ctx := context.Background()
-	tc := serverutils.StartCluster(t, 3, base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
-			// CompactEngineSpan RPC is available only in the system tenant.
-			DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-		},
-	})
+	tc := serverutils.StartCluster(t, 3, base.TestClusterArgs{})
 	defer tc.Stopper().Stop(ctx)
 
 	sqlDB := sqlutils.MakeSQLRunner(tc.ServerConn(0))
@@ -164,13 +155,8 @@ func TestGetSSTableMetricsSingleNode(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderRace(t, "heavy test")
-
 	ctx := context.Background()
-	ts, hostDB, _ := serverutils.StartServer(t, base.TestServerArgs{
-		// CompactEngineSpan RPC is available only in the system tenant.
-		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-	})
+	ts, hostDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
 	defer ts.Stopper().Stop(ctx)
 
 	nodeIDArg := int(ts.NodeID())
@@ -221,18 +207,9 @@ func TestGetSSTableMetricsSingleNode(t *testing.T) {
 func TestScanStorageInternalKeys(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	skip.UnderRace(t, "too slow")
-
 	ctx := context.Background()
 	const numNodes = 3
-	tc := serverutils.StartCluster(t, numNodes, base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
-			// ScanStorageInternalKeys RPC is available only in the system
-			// tenant.
-			DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-		},
-	})
+	tc := serverutils.StartCluster(t, numNodes, base.TestClusterArgs{})
 	defer tc.Stopper().Stop(ctx)
 
 	sqlDB := sqlutils.MakeSQLRunner(tc.ServerConn(0))

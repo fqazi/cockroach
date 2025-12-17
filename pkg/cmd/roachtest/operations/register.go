@@ -34,5 +34,4 @@ func RegisterOperations(r registry.Registry) {
 	registerSessionVariables(r)
 	registerDebugZip(r)
 	changefeeds.RegisterChangefeeds(r)
-	registerInspect(r)
 }

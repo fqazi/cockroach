@@ -32,7 +32,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/doctor"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -72,8 +71,6 @@ when run on an empty cluster, recreate that state as closely as possible. System
 tables are queried either from a live cluster or from an unzipped debug.zip.
 `,
 }
-
-const doctorAppName = catconstants.InternalAppNamePrefix + " cockroach doctor"
 
 type doctorFn = func(
 	version *clusterversion.ClusterVersion,
@@ -120,7 +117,7 @@ Run the doctor tool system data from a live cluster specified by --url.
 		Args: cobra.NoArgs,
 		RunE: clierrorplus.MaybeDecorateError(
 			func(cmd *cobra.Command, args []string) (resErr error) {
-				sqlConn, err := makeSQLClient(context.Background(), doctorAppName, useSystemDb)
+				sqlConn, err := makeSQLClient(context.Background(), "cockroach doctor", useSystemDb)
 				if err != nil {
 					return errors.Wrap(err, "could not establish connection to cluster")
 				}
@@ -379,9 +376,6 @@ func fromZipDir(
 	if checkIfFileExists(zipDirPath, "system.descriptor.txt") {
 		if err := slurp(zipDirPath, "system.descriptor.txt", func(row string) error {
 			fields := strings.Fields(row)
-			if len(fields) != 2 {
-				return errors.Errorf("expected 2 fields, got %d in system.descriptors.txt", len(fields))
-			}
 			last := len(fields) - 1
 			i, err := strconv.Atoi(fields[0])
 			if err != nil {
@@ -438,9 +432,6 @@ func fromZipDir(
 	if checkIfFileExists(zipDirPath, namespaceFileName) {
 		if err := slurp(zipDirPath, namespaceFileName, func(row string) error {
 			fields := strings.Fields(row)
-			if len(fields) != 4 {
-				return errors.Errorf("expected 4 fields, got %d in system.namespace.txtq", len(fields))
-			}
 			parID, err := strconv.Atoi(fields[0])
 			if err != nil {
 				return errors.Wrapf(err, "failed to parse parent id %s", fields[0])
@@ -514,9 +505,6 @@ func fromZipDir(
 	if checkIfFileExists(zipDirPath, "crdb_internal.system_jobs.txt") {
 		if err := slurp(zipDirPath, "crdb_internal.system_jobs.txt", func(row string) error {
 			fields := strings.Fields(row)
-			if len(fields) < 6 {
-				return errors.Errorf("expected at least 6 fields, got %d in crdb_internal.system_jobs.txt", len(fields))
-			}
 			md := jobs.JobMetadata{}
 			md.State = jobs.State(fields[1])
 

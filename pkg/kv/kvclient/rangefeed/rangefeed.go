@@ -8,6 +8,7 @@ package rangefeed
 import (
 	"context"
 	"fmt"
+	"runtime/pprof"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,11 +23,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/pprofutil"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/span"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
-	"github.com/cockroachdb/crlib/crtime"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
@@ -241,11 +241,9 @@ func (f *RangeFeed) start(
 		// pprof.Do function does exactly what we do here, but it also results in
 		// pprof.Do function showing up in the stack traces -- so, just set and reset
 		// labels manually.
-		ctx, reset := pprofutil.SetProfilerLabels(
-			ctx, append(f.extraPProfLabels, "rangefeed", f.name)...,
-		)
-		defer reset()
-
+		defer pprof.SetGoroutineLabels(ctx)
+		ctx = pprof.WithLabels(ctx, pprof.Labels(append(f.extraPProfLabels, "rangefeed", f.name)...))
+		pprof.SetGoroutineLabels(ctx)
 		if f.invoker != nil {
 			_ = f.invoker(func() error {
 				f.run(ctx, frontier, resumeFromFrontier)
@@ -334,12 +332,6 @@ func (f *RangeFeed) run(ctx context.Context, frontier span.Frontier, resumeWithF
 	eventCh := make(chan kvcoord.RangeFeedMessage)
 
 	var rangefeedOpts []kvcoord.RangeFeedOption
-	// We can unconditionally enable bulk-delivery from the server at least as far
-	// as to this client; if an onValues is configured we can also bulk-process
-	// values, but even if it isn't we know how to unwrap a bulk delivery and pass
-	// each event to the caller's individual event handlers.
-	rangefeedOpts = append(rangefeedOpts, kvcoord.WithBulkDelivery())
-
 	if f.scanConfig.overSystemTable {
 		rangefeedOpts = append(rangefeedOpts, kvcoord.WithSystemTablePriority())
 	}
@@ -363,7 +355,7 @@ func (f *RangeFeed) run(ctx context.Context, frontier span.Frontier, resumeWithF
 			log.Eventf(ctx, "starting rangefeed from %v on %v", ts, f.spansDebugStr)
 		}
 
-		start := crtime.NowMono()
+		start := timeutil.Now()
 
 		rangeFeedTask := func(ctx context.Context) error {
 			if f.invoker == nil {
@@ -398,14 +390,13 @@ func (f *RangeFeed) run(ctx context.Context, frontier span.Frontier, resumeWithF
 			errors.HasType(err, &kvpb.MVCCHistoryMutationError{}) {
 			if errCallback := f.onUnrecoverableError; errCallback != nil {
 				errCallback(ctx, err)
-				log.VEventf(ctx, 1, "exiting rangefeed due to internal error: %v", err)
-			} else {
-				log.Dev.Warningf(ctx, "exiting rangefeed because of internal error with no OnInternalError callback: %s", err.Error())
 			}
+
+			log.VEventf(ctx, 1, "exiting rangefeed due to internal error: %v", err)
 			return
 		}
 		if err != nil && ctx.Err() == nil && restartLogEvery.ShouldLog() {
-			log.Dev.Warningf(ctx, "rangefeed failed %d times, restarting: %v",
+			log.Warningf(ctx, "rangefeed failed %d times, restarting: %v",
 				redact.Safe(i), err)
 		}
 		if ctx.Err() != nil {
@@ -413,7 +404,7 @@ func (f *RangeFeed) run(ctx context.Context, frontier span.Frontier, resumeWithF
 			return
 		}
 
-		ranFor := start.Elapsed()
+		ranFor := timeutil.Since(start)
 		log.VEventf(ctx, 1, "restarting rangefeed for %v after %v",
 			f.spansDebugStr, ranFor)
 		if f.knobs != nil && f.knobs.OnRangefeedRestart != nil {
@@ -436,98 +427,54 @@ func (f *RangeFeed) processEvents(
 	for {
 		select {
 		case ev := <-eventCh:
-			if err := f.processEvent(ctx, frontier, ev.RangeFeedEvent, ev.RegisteredSpan); err != nil {
-				return err
+			switch {
+			case ev.Val != nil:
+				f.onValue(ctx, ev.Val)
+			case ev.Checkpoint != nil:
+				ts := ev.Checkpoint.ResolvedTS
+				if f.frontierQuantize != 0 {
+					ts.Logical = 0
+					ts.WallTime -= ts.WallTime % int64(f.frontierQuantize)
+				}
+				advanced, err := frontier.Forward(ev.Checkpoint.Span, ts)
+				if err != nil {
+					return err
+				}
+				if f.onCheckpoint != nil {
+					f.onCheckpoint(ctx, ev.Checkpoint)
+				}
+				if advanced && f.onFrontierAdvance != nil {
+					f.onFrontierAdvance(ctx, frontier.Frontier())
+				}
+				if f.frontierVisitor != nil {
+					f.frontierVisitor(ctx, advanced, frontier)
+				}
+			case ev.SST != nil:
+				if f.onSSTable == nil {
+					return errors.AssertionFailedf(
+						"received unexpected rangefeed SST event with no OnSSTable handler")
+				}
+				f.onSSTable(ctx, ev.SST, ev.RegisteredSpan)
+			case ev.DeleteRange != nil:
+				if f.onDeleteRange == nil {
+					if f.knobs != nil && f.knobs.IgnoreOnDeleteRangeError {
+						continue
+					}
+					return errors.AssertionFailedf(
+						"received unexpected rangefeed DeleteRange event with no OnDeleteRange handler: %s", ev)
+				}
+				f.onDeleteRange(ctx, ev.DeleteRange)
+			case ev.Metadata != nil:
+				if f.onMetadata == nil {
+					return errors.AssertionFailedf("received unexpected metadata event with no OnMetadata handler")
+				}
+				f.onMetadata(ctx, ev.Metadata)
+			case ev.Error != nil:
+				// Intentionally do nothing, we'll get an error returned from the
+				// call to RangeFeed.
 			}
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
-}
-
-func (f *RangeFeed) processEvent(
-	ctx context.Context, frontier span.Frontier, ev *kvpb.RangeFeedEvent, registeredSpan roachpb.Span,
-) error {
-	switch {
-	case ev.Val != nil:
-		f.onValue(ctx, ev.Val)
-	case ev.Checkpoint != nil:
-		ts := ev.Checkpoint.ResolvedTS
-		if f.frontierQuantize != 0 {
-			ts.Logical = 0
-			ts.WallTime -= ts.WallTime % int64(f.frontierQuantize)
-		}
-		advanced, err := frontier.Forward(ev.Checkpoint.Span, ts)
-		if err != nil {
-			return err
-		}
-		if f.onCheckpoint != nil {
-			f.onCheckpoint(ctx, ev.Checkpoint)
-		}
-		if advanced && f.onFrontierAdvance != nil {
-			f.onFrontierAdvance(ctx, frontier.Frontier())
-		}
-		if f.frontierVisitor != nil {
-			f.frontierVisitor(ctx, advanced, frontier)
-		}
-	case ev.SST != nil:
-		if f.onSSTable == nil {
-			return errors.AssertionFailedf(
-				"received unexpected rangefeed SST event with no OnSSTable handler")
-		}
-		f.onSSTable(ctx, ev.SST, registeredSpan)
-	case ev.DeleteRange != nil:
-		if f.onDeleteRange == nil {
-			if f.knobs != nil && f.knobs.IgnoreOnDeleteRangeError {
-				return nil
-			}
-			return errors.AssertionFailedf(
-				"received unexpected rangefeed DeleteRange event with no OnDeleteRange handler: %s", ev)
-		}
-		f.onDeleteRange(ctx, ev.DeleteRange)
-	case ev.Metadata != nil:
-		if f.onMetadata == nil {
-			return errors.AssertionFailedf("received unexpected metadata event with no OnMetadata handler")
-		}
-		f.onMetadata(ctx, ev.Metadata)
-	case ev.Error != nil:
-		// Intentionally do nothing, we'll get an error returned from the
-		// call to RangeFeed.
-	case ev.BulkEvents != nil:
-		if f.onValues != nil {
-			// We can optimistically assume the bulk event consists of all value
-			// events, and allocate a buffer for them to be passed to onValues. In the
-			// rare case we hit a non-value event (it would have to be a range key as
-			// only a catch-up scan currently produces bulk events), we will throw out
-			// this buffer and any events we might have copied to it so far and just
-			// fallback to to processing each event, but this should be so uncommon it
-			// is not worth worrying about the potential wasted work.
-			allValues := true
-			buf := make([]kv.KeyValue, len(ev.BulkEvents.Events))
-			for i := range ev.BulkEvents.Events {
-				if ev.BulkEvents.Events[i].Val != nil {
-					buf[i] = kv.KeyValue{
-						Key:   ev.BulkEvents.Events[i].Val.Key,
-						Value: &ev.BulkEvents.Events[i].Val.Value,
-					}
-				} else {
-					allValues = false
-					break
-				}
-			}
-			if allValues {
-				f.onValues(ctx, buf)
-				return nil
-			}
-		}
-		// Either the bulk event contains non-value events or a onValues handler is
-		// not configured, so process each event individually.
-		for _, e := range ev.BulkEvents.Events {
-			if err := f.processEvent(ctx, frontier, e, registeredSpan); err != nil {
-				return err
-			}
-		}
-
-	}
-	return nil
 }

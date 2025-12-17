@@ -138,7 +138,7 @@ func makeTestQuery(i int) (*Statement, error) {
 	}
 
 	return &Statement{
-		StmtNoConstants: tree.FormatStatementHideConstants(stmt.AST, tree.FmtCollapseLists|tree.FmtConstantsAsUnderscores),
+		StmtNoConstants: formatStatementHideConstants(stmt.AST, tree.FmtCollapseLists|tree.FmtConstantsAsUnderscores),
 		Statement:       stmt,
 	}, nil
 }

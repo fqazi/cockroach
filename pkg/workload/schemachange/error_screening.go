@@ -65,17 +65,6 @@ func (og *operationGenerator) columnExistsOnTable(
    )`, tableName.Schema(), tableName.Object(), columnName)
 }
 
-func (og *operationGenerator) fnExistsByName(
-	ctx context.Context, tx pgx.Tx, schemaName string, routineName string,
-) (bool, error) {
-	return og.scanBool(ctx, tx, `SELECT EXISTS (
-	SELECT routine_name
-    FROM information_schema.routines 
-   WHERE routine_schema = $1
-     AND routine_name = $2
-   )`, schemaName, routineName)
-}
-
 func (og *operationGenerator) tableHasRows(
 	ctx context.Context, tx pgx.Tx, tableName *tree.TableName,
 ) (bool, error) {
@@ -1412,39 +1401,4 @@ func (og *operationGenerator) tableHasUniqueConstraintMutation(
 			WHERE (m->>'direction')::STRING IN ('ADD', 'DROP')
 			AND (m->'index'->>'unique')::BOOL IS TRUE
 		);`, tableName)
-}
-
-// getTableForeignKeyReferences returns a list of tables that reference
-// the specified table via foreign key references.
-func (og *operationGenerator) getTableForeignKeyReferences(
-	ctx context.Context, tx pgx.Tx, tableName *tree.TableName,
-) ([]tree.TableName, error) {
-	rows, err := tx.Query(ctx,
-		`WITH fk_refs AS (
-					SELECT conrelid FROM pg_constraint WHERE
-						confrelid = $1::REGCLASS AND
-						conrelid <> $1::REGCLASS
-				)
-				SELECT
-					n.nspname as schema_name,  c.relname AS object_name
-				FROM fk_refs AS f
-					JOIN pg_class AS c ON c.oid = f.conrelid
-					JOIN pg_namespace AS n ON c.relnamespace = n.oid
-`,
-		tableName.String())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var result []tree.TableName
-	for rows.Next() {
-		var table, schema string
-		err = rows.Scan(&schema, &table)
-		if err != nil {
-			return nil, err
-		}
-		name := tree.MakeTableNameWithSchema(tableName.CatalogName, tree.Name(schema), tree.Name(table))
-		result = append(result, name)
-	}
-	return result, rows.Err()
 }

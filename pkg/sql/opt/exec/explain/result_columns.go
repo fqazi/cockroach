@@ -22,10 +22,18 @@ import (
 // input exec.Nodes.
 func getResultColumns(
 	op execOperator, args interface{}, inputs ...colinfo.ResultColumns,
-) (out colinfo.ResultColumns, retErr error) {
-	// If we have a bug in the code below, it's easily possible to hit panic
-	// (like out-of-bounds). Catch these here and return as an error.
-	defer errorutil.MaybeCatchPanic(&retErr, nil /* errCallback */)
+) (out colinfo.ResultColumns, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			// If we have a bug in the code below, it's easily possible to hit panic
+			// (like out-of-bounds). Catch these here and return as an error.
+			if ok, e := errorutil.ShouldCatch(r); ok {
+				err = e
+			} else {
+				panic(r)
+			}
+		}
+	}()
 
 	switch op {
 	case filterOp, invertedFilterOp, limitOp, max1RowOp, sortOp, topKOp, bufferOp, hashSetOpOp,
@@ -159,9 +167,6 @@ func getResultColumns(
 		return tableColumns(a.Table, a.OutCols), nil
 
 	case vectorMutationSearchOp:
-		if len(inputs) == 0 {
-			return nil, nil
-		}
 		a := args.(*vectorMutationSearchArgs)
 		cols := appendColumns(inputs[0], colinfo.ResultColumn{Name: "partition-key", Typ: types.Int})
 		if a.IsIndexPut {

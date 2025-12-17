@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -607,26 +608,6 @@ func userIsSuper(
 	return tree.DBool(isSuper), err
 }
 
-func userHasReplicationPrivilegeOrRoleOption(
-	ctx context.Context, p *planner, userName username.SQLUsername,
-) (tree.DBool, error) {
-	replication, err := p.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.REPLICATION, userName)
-	if err != nil {
-		return *tree.DBoolFalse, err
-	}
-
-	replicationDest, err := p.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.REPLICATIONDEST, userName)
-	if err != nil {
-		return *tree.DBoolFalse, err
-	}
-
-	replicationSrc, err := p.UserHasGlobalPrivilegeOrRoleOption(ctx, privilege.REPLICATIONSOURCE, userName)
-	if err != nil {
-		return *tree.DBoolFalse, err
-	}
-	return tree.DBool(replication || replicationDest || replicationSrc), nil
-}
-
 var pgCatalogAuthIDTable = virtualSchemaTable{
 	comment: `authorization identifiers - differs from postgres as we do not display passwords, 
 and thus do not require admin privileges for access. 
@@ -669,11 +650,6 @@ https://www.postgresql.org/docs/9.5/catalog-pg-authid.html`,
 				return err
 			}
 
-			replication, err := userHasReplicationPrivilegeOrRoleOption(ctx, p, userName)
-			if err != nil {
-				return err
-			}
-
 			return addRow(
 				h.UserOid(userName),                              // oid
 				tree.NewDName(userName.Normalized()),             // rolname
@@ -682,7 +658,7 @@ https://www.postgresql.org/docs/9.5/catalog-pg-authid.html`,
 				tree.MakeDBool(isRoot || tree.DBool(createRole)), // rolcreaterole
 				tree.MakeDBool(isRoot || tree.DBool(createDB)),   // rolcreatedb
 				tree.MakeDBool(roleCanLogin),                     // rolcanlogin.
-				tree.MakeDBool(replication),                      // rolreplication
+				tree.DBoolFalse,                                  // rolreplication
 				tree.MakeDBool(tree.DBool(bypassRLS)),            // rolbypassrls
 				negOneVal,                                        // rolconnlimit
 				passwdStarString,                                 // rolpassword
@@ -1079,7 +1055,7 @@ func populateTableConstraints(
 			if refConstraint, err := catalog.FindFKReferencedUniqueConstraint(referencedTable, fk); err != nil {
 				// We couldn't find a unique constraint that matched. This shouldn't
 				// happen.
-				log.Dev.Warningf(ctx, "broken fk reference: %v", err)
+				log.Warningf(ctx, "broken fk reference: %v", err)
 			} else if idx := refConstraint.AsUniqueWithIndex(); idx != nil {
 				conindid = h.IndexOid(referencedTable.GetID(), idx.GetID())
 			}
@@ -1195,7 +1171,7 @@ type oneAtATimeSchemaResolver struct {
 func (r oneAtATimeSchemaResolver) getDatabaseByID(
 	id descpb.ID,
 ) (catalog.DatabaseDescriptor, error) {
-	desc, err := descs.GetCatalogDescriptorGetter(r.ctx, r.p.Descriptors(), r.p.txn, r.p.EvalContext().Settings).WithoutNonPublic().Get().Database(r.ctx, id)
+	desc, err := r.p.Descriptors().ByIDWithLeased(r.p.txn).WithoutNonPublic().Get().Database(r.ctx, id)
 	return desc, err
 }
 
@@ -1208,7 +1184,7 @@ func (r oneAtATimeSchemaResolver) getTableByID(id descpb.ID) (catalog.TableDescr
 }
 
 func (r oneAtATimeSchemaResolver) getSchemaByID(id descpb.ID) (catalog.SchemaDescriptor, error) {
-	return descs.GetCatalogDescriptorGetter(r.ctx, r.p.Descriptors(), r.p.txn, r.p.EvalContext().Settings).Get().Schema(r.ctx, id)
+	return r.p.Descriptors().ByIDWithoutLeased(r.p.txn).Get().Schema(r.ctx, id)
 }
 
 // makeAllRelationsVirtualTableWithDescriptorIDIndex creates a virtual table that searches through
@@ -1250,7 +1226,6 @@ func makeAllRelationsVirtualTableWithDescriptorIDIndex(
 				ctx,
 				p,
 				dbContext,
-				false, /* includeMetadata */
 				func(ctx context.Context, _ catalog.DatabaseDescriptor, sc catalog.SchemaDescriptor, typeDesc catalog.TypeDescriptor) error {
 					nspOid := schemaOid(sc.GetID())
 					tn := tree.NewQualifiedTypeName(dbContext.GetName(), sc.GetName(), typeDesc.GetName())
@@ -1605,7 +1580,7 @@ https://www.postgresql.org/docs/13/catalog-pg-default-acl.html`,
 			}
 		}
 		err := dbContext.ForEachSchema(func(id descpb.ID, name string) error {
-			schemaDescriptor, err := descs.GetCatalogDescriptorGetter(ctx, p.Descriptors(), p.txn, p.EvalContext().Settings).Get().Schema(ctx, id)
+			schemaDescriptor, err := p.Descriptors().ByIDWithoutLeased(p.txn).Get().Schema(ctx, id)
 			if err != nil {
 				return err
 			}
@@ -1686,31 +1661,46 @@ https://www.postgresql.org/docs/9.5/catalog-pg-depend.html`,
 	schema: vtable.PGCatalogDepend,
 	populate: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
 		vt := p.getVirtualTabler()
-		pgConstraintsDesc, err := vt.getVirtualTableDesc(&pgConstraintsTableName)
+		pgConstraintsDesc, err := vt.getVirtualTableDesc(&pgConstraintsTableName, p)
 		if err != nil {
 			return errors.New("could not find pg_catalog.pg_constraint")
 		}
-		pgClassDesc, err := vt.getVirtualTableDesc(&pgClassTableName)
+		pgClassDesc, err := vt.getVirtualTableDesc(&pgClassTableName, p)
 		if err != nil {
 			return errors.New("could not find pg_catalog.pg_class")
 		}
-		pgRewriteDesc, err := vt.getVirtualTableDesc(&pgRewriteTableName)
+		pgRewriteDesc, err := vt.getVirtualTableDesc(&pgRewriteTableName, p)
 		if err != nil {
 			return errors.New("could not find pg_catalog.pg_rewrite")
 		}
-		pgProcDesc, err := vt.getVirtualTableDesc(&pgProcTableName)
+		pgProcDesc, err := vt.getVirtualTableDesc(&pgProcTableName, p)
 		if err != nil {
-			return errors.New("could not find pg_catalog.pg_proc")
+			return errors.New("could not find pg_catalog.pg_rewrite")
 		}
 		h := makeOidHasher()
-		pgConstraintTableOid := tableOid(pgConstraintsDesc.GetID())
-		pgClassTableOid := tableOid(pgClassDesc.GetID())
-		pgRewriteTableOid := tableOid(pgRewriteDesc.GetID())
-
 		opts := forEachTableDescOptions{virtualOpts: hideVirtual} /*virtual tables have no constraints*/
 		err = forEachTableDesc(ctx, p, dbContext, opts, func(
 			ctx context.Context, descCtx tableDescContext) error {
 			db, sc, table, tableLookup := descCtx.database, descCtx.schema, descCtx.table, descCtx.tableLookup
+			pgConstraintTableOid := tableOid(pgConstraintsDesc.GetID())
+			pgClassTableOid := tableOid(pgClassDesc.GetID())
+			pgRewriteTableOid := tableOid(pgRewriteDesc.GetID())
+			if table.IsSequence() &&
+				!table.GetSequenceOpts().SequenceOwner.Equal(descpb.TableDescriptor_SequenceOpts_SequenceOwner{}) {
+				refObjID := tableOid(table.GetSequenceOpts().SequenceOwner.OwnerTableID)
+				refObjSubID := tree.NewDInt(tree.DInt(table.GetSequenceOpts().SequenceOwner.OwnerColumnID))
+				objID := tableOid(table.GetID())
+				return addRow(
+					pgClassTableOid, // classid
+					objID,           // objid
+					zeroVal,         // objsubid
+					pgClassTableOid, // refclassid
+					refObjID,        // refobjid
+					refObjSubID,     // refobjsubid
+					depTypeAuto,     // deptype
+				)
+			}
+
 			// In the case of table/view relationship, In PostgreSQL pg_depend.objid refers to
 			// pg_rewrite.oid, then pg_rewrite ev_class refers to the dependent object.
 			reportViewDependency := func(dep *descpb.TableDescriptor_Reference) error {
@@ -1750,7 +1740,7 @@ https://www.postgresql.org/docs/9.5/catalog-pg-depend.html`,
 				if refConstraint, err := catalog.FindFKReferencedUniqueConstraint(referencedTable, fk); err != nil {
 					// We couldn't find a unique constraint that matched. This shouldn't
 					// happen.
-					log.Dev.Warningf(ctx, "broken fk reference: %v", err)
+					log.Warningf(ctx, "broken fk reference: %v", err)
 				} else if idx := refConstraint.AsUniqueWithIndex(); idx != nil {
 					refObjID = h.IndexOid(referencedTable.GetID(), idx.GetID())
 				}
@@ -1768,45 +1758,15 @@ https://www.postgresql.org/docs/9.5/catalog-pg-depend.html`,
 					return err
 				}
 			}
-
-			// Add dependencies for columns that use sequences. This creates pg_depend
-			// entries with deptype 'a' (auto) for regular sequences and 'i'
-			// (internal) for IDENTITY columns.
-			if table.IsTable() {
-				for _, column := range table.AllColumns() {
-					for i := 0; i < column.NumOwnsSequences(); i++ {
-						seqID := column.GetOwnsSequenceID(i)
-						seqObjID := tableOid(seqID)
-						tableObjID := tableOid(table.GetID())
-						columnSubID := tree.NewDInt(tree.DInt(column.GetPGAttributeNum()))
-						depType := depTypeAuto
-						if column.IsGeneratedAsIdentity() {
-							depType = depTypeInternal
-						}
-
-						if err := addRow(
-							pgClassTableOid, // classid
-							seqObjID,        // objid
-							zeroVal,         // objsubid
-							pgClassTableOid, // refclassid
-							tableObjID,      // refobjid
-							columnSubID,     // refobjsubid
-							depType,         // deptype
-						); err != nil {
-							return err
-						}
-					}
-				}
-			}
 			return nil
 		})
 		if err != nil {
 			return err
 		}
-		return forEachSchema(ctx, p, dbContext, true /* requiresPrivileges */, false /* includeMetadata */, func(ctx context.Context, sc catalog.SchemaDescriptor) error {
+		return forEachSchema(ctx, p, dbContext, true, func(ctx context.Context, sc catalog.SchemaDescriptor) error {
 			pgProcTableOid := tableOid(pgProcDesc.GetID())
 			return sc.ForEachFunctionSignature(func(sig descpb.SchemaDescriptor_FunctionSignature) error {
-				funcDesc, err := descs.GetCatalogDescriptorGetter(ctx, p.Descriptors(), p.txn, p.EvalContext().Settings).Get().Function(ctx, sig.ID)
+				funcDesc, err := p.Descriptors().ByIDWithoutLeased(p.txn).Get().Function(ctx, sig.ID)
 				if err != nil {
 					return err
 				}
@@ -1915,7 +1875,7 @@ https://www.postgresql.org/docs/9.5/catalog-pg-enum.html`,
 	populate: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
 		h := makeOidHasher()
 
-		return forEachTypeDesc(ctx, p, dbContext, false /* includeMetadata */, func(ctx context.Context, _ catalog.DatabaseDescriptor, _ catalog.SchemaDescriptor, typDesc catalog.TypeDescriptor) error {
+		return forEachTypeDesc(ctx, p, dbContext, func(ctx context.Context, _ catalog.DatabaseDescriptor, _ catalog.SchemaDescriptor, typDesc catalog.TypeDescriptor) error {
 			e := typDesc.AsEnumTypeDescriptor()
 			if e == nil {
 				// We only want to iterate over ENUM types and multi-region enums.
@@ -2303,7 +2263,7 @@ https://www.postgresql.org/docs/9.5/catalog-pg-namespace.html`,
 	populate: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
 		return forEachDatabaseDesc(ctx, p, dbContext, true, /* requiresPrivileges */
 			func(ctx context.Context, db catalog.DatabaseDescriptor) error {
-				return forEachSchema(ctx, p, db, true /* requiresPrivileges */, false /* includeMetadata */, func(ctx context.Context, sc catalog.SchemaDescriptor) error {
+				return forEachSchema(ctx, p, db, true /* requiresPrivileges */, func(ctx context.Context, sc catalog.SchemaDescriptor) error {
 					ownerOID := tree.DNull
 					if sc.SchemaKind() == catalog.SchemaUserDefined {
 						var err error
@@ -2341,14 +2301,14 @@ https://www.postgresql.org/docs/9.5/catalog-pg-namespace.html`,
 					if sc, ok := schemadesc.GetVirtualSchemaByID(descpb.ID(ooid)); ok {
 						return sc, true, nil
 					}
-					if sc, err := descs.GetCatalogDescriptorGetter(ctx, p.Descriptors(), p.Txn(), p.EvalContext().Settings).WithoutNonPublic().Get().Schema(ctx, descpb.ID(ooid)); err == nil {
+					if sc, err := p.Descriptors().ByIDWithLeased(p.Txn()).WithoutNonPublic().Get().Schema(ctx, descpb.ID(ooid)); err == nil {
 						return sc, true, nil
 					} else if !sqlerrors.IsUndefinedSchemaError(err) {
 						return nil, false, err
 					}
 					// Fallback to looking for temporary schemas.
 					var tempSchema catalog.SchemaDescriptor
-					if err := forEachSchema(ctx, p, db, false /* requiresPrivileges */, false /* includeMetadata */, func(ctx context.Context, schema catalog.SchemaDescriptor) error {
+					if err := forEachSchema(ctx, p, db, false /* requiresPrivileges */, func(ctx context.Context, schema catalog.SchemaDescriptor) error {
 						if schema.GetID() != descpb.ID(ooid) {
 							return nil
 						}
@@ -2499,6 +2459,11 @@ var pgCatalogPreparedXactsTable = virtualSchemaTable{
 https://www.postgresql.org/docs/9.6/view-pg-prepared-xacts.html`,
 	schema: vtable.PGCatalogPreparedXacts,
 	populate: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
+		if !p.IsActive(ctx, clusterversion.TODO_Delete_V25_1_PreparedTransactionsTable) {
+			// TODO(nvanbenschoten): Remove this logic when mixed-version support
+			// with v24.3 is no longer necessary.
+			return nil
+		}
 		rows, err := p.InternalSQLTxn().QueryBufferedEx(
 			ctx,
 			"select-prepared-transactions",
@@ -2549,14 +2514,11 @@ https://www.postgresql.org/docs/9.6/view-pg-prepared-statements.html`,
 			paramNames := make([]string, len(placeholderTypes))
 
 			for i, placeholderType := range placeholderTypes {
-				// TODO(yuzefovich): we're including INT8 into array containing
-				// REGTYPE. Figure it out.
 				paramTypes.Array[i] = tree.NewDOidWithTypeAndName(
 					placeholderType.Oid(),
 					placeholderType,
 					placeholderType.SQLStandardName(),
 				)
-				paramTypes.SetHasNonNulls(true /* hasNonNulls */)
 				paramNames[i] = placeholderType.Name()
 			}
 
@@ -2653,7 +2615,7 @@ func addPgProcBuiltinRow(name string, addRow func(...tree.Datum) error) error {
 		}
 
 		getVariadicStringArray := func() tree.Datum {
-			return tree.NewDArrayFromDatums(types.String, tree.Datums{proArgModeVariadic})
+			return &tree.DArray{ParamTyp: types.String, Array: tree.Datums{proArgModeVariadic}}
 		}
 
 		var argmodes tree.Datum
@@ -2891,9 +2853,9 @@ https://www.postgresql.org/docs/16/catalog-pg-proc.html`,
 		}
 		return forEachDatabaseDesc(ctx, p, dbContext, false, /* requiresPrivileges */
 			func(ctx context.Context, dbDesc catalog.DatabaseDescriptor) error {
-				return forEachSchema(ctx, p, dbDesc, true /* requiresPrivileges */, false /* includeMetadata */, func(ctx context.Context, scDesc catalog.SchemaDescriptor) error {
+				return forEachSchema(ctx, p, dbDesc, true /* requiresPrivileges */, func(ctx context.Context, scDesc catalog.SchemaDescriptor) error {
 					return scDesc.ForEachFunctionSignature(func(sig descpb.SchemaDescriptor_FunctionSignature) error {
-						fnDesc, err := descs.GetCatalogDescriptorGetter(ctx, p.Descriptors(), p.Txn(), p.EvalContext().Settings).WithoutNonPublic().Get().Function(ctx, sig.ID)
+						fnDesc, err := p.Descriptors().ByIDWithoutLeased(p.Txn()).WithoutNonPublic().Get().Function(ctx, sig.ID)
 						if err != nil {
 							return err
 						}
@@ -2913,7 +2875,7 @@ https://www.postgresql.org/docs/16/catalog-pg-proc.html`,
 				ooid := coid.Oid
 
 				if funcdesc.IsOIDUserDefinedFunc(ooid) {
-					fnDesc, err := descs.GetCatalogDescriptorGetter(ctx, p.Descriptors(), p.Txn(), p.EvalContext().Settings).WithoutNonPublic().Get().Function(ctx, funcdesc.UserDefinedFunctionOIDToID(ooid))
+					fnDesc, err := p.Descriptors().ByIDWithoutLeased(p.Txn()).WithoutNonPublic().Get().Function(ctx, funcdesc.UserDefinedFunctionOIDToID(ooid))
 					if err != nil {
 						if errors.Is(err, tree.ErrRoutineUndefined) {
 							return false, nil //nolint:returnerrcheck
@@ -2921,7 +2883,7 @@ https://www.postgresql.org/docs/16/catalog-pg-proc.html`,
 						return false, err
 					}
 
-					scDesc, err := descs.GetCatalogDescriptorGetter(ctx, p.Descriptors(), p.Txn(), p.EvalContext().Settings).WithoutNonPublic().Get().Schema(ctx, fnDesc.GetParentSchemaID())
+					scDesc, err := p.Descriptors().ByIDWithLeased(p.Txn()).WithoutNonPublic().Get().Schema(ctx, fnDesc.GetParentSchemaID())
 					if err != nil {
 						return false, err
 					}
@@ -3048,11 +3010,6 @@ https://www.postgresql.org/docs/9.5/view-pg-roles.html`,
 					return err
 				}
 
-				replication, err := userHasReplicationPrivilegeOrRoleOption(ctx, p, userName)
-				if err != nil {
-					return err
-				}
-
 				return addRow(
 					h.UserOid(userName),                               // oid
 					tree.NewDName(userName.Normalized()),              // rolname
@@ -3062,7 +3019,7 @@ https://www.postgresql.org/docs/9.5/view-pg-roles.html`,
 					tree.MakeDBool(isSuper || tree.DBool(createDB)),   // rolcreatedb
 					tree.DBoolFalse,                                   // rolcatupdate
 					tree.MakeDBool(roleCanLogin),                      // rolcanlogin.
-					tree.MakeDBool(replication),                       // rolreplication
+					tree.DBoolFalse,                                   // rolreplication
 					negOneVal,                                         // rolconnlimit
 					passwdStarString,                                  // rolpassword
 					rolValidUntil,                                     // rolvaliduntil
@@ -3149,7 +3106,7 @@ https://www.postgresql.org/docs/9.5/catalog-pg-settings.html`,
 				if hasDefault, defVal := getSessionVarDefaultString(
 					vName,
 					gen,
-					p.sessionDataMutatorIterator.SessionDataMutatorBase,
+					p.sessionDataMutatorIterator.sessionDataMutatorBase,
 				); hasDefault {
 					resetDatum = tree.NewDString(defVal)
 				}
@@ -3188,19 +3145,19 @@ https://www.postgresql.org/docs/9.6/catalog-pg-shdepend.html`,
 		vt := p.getVirtualTabler()
 		h := makeOidHasher()
 
-		pgClassDesc, err := vt.getVirtualTableDesc(&pgClassTableName)
+		pgClassDesc, err := vt.getVirtualTableDesc(&pgClassTableName, p)
 		if err != nil {
 			return errors.New("could not find pg_catalog.pg_class")
 		}
 		pgClassOid := tableOid(pgClassDesc.GetID())
 
-		pgAuthIDDesc, err := vt.getVirtualTableDesc(&pgAuthIDTableName)
+		pgAuthIDDesc, err := vt.getVirtualTableDesc(&pgAuthIDTableName, p)
 		if err != nil {
 			return errors.New("could not find pg_catalog.pg_authid")
 		}
 		pgAuthIDOid := tableOid(pgAuthIDDesc.GetID())
 
-		pgDatabaseDesc, err := vt.getVirtualTableDesc(&pgDatabaseTableName)
+		pgDatabaseDesc, err := vt.getVirtualTableDesc(&pgDatabaseTableName, p)
 		if err != nil {
 			return errors.New("could not find pg_catalog.pg_database")
 		}
@@ -3246,7 +3203,7 @@ https://www.postgresql.org/docs/9.6/catalog-pg-shdepend.html`,
 		if err = forEachTableDesc(ctx, p, dbContext, opts,
 			func(ctx context.Context, descCtx tableDescContext) error {
 				db, table := descCtx.database, descCtx.table
-				privDesc, err := p.getImmutablePrivilegeDescriptor(ctx, table)
+				privDesc, err := p.getPrivilegeDescriptor(ctx, table)
 				if err != nil {
 					return err
 				}
@@ -3630,12 +3587,10 @@ func addPGTypeRow(
 	case types.VoidFamily:
 		// void does not have an array type.
 	case types.TriggerFamily:
-		builtinPrefix = "trigger_"
-		// trigger does not have an array type.
+	// trigger does not have an array type.
 	case types.AnyFamily:
+		// Any does not have an array type. You may be thinking of AnyElement.
 		if typ.Oid() == oid.T_any {
-			builtinPrefix = "any_"
-			// Any does not have an array type.
 			break
 		}
 		fallthrough
@@ -3796,13 +3751,9 @@ func addPGAttributeRowForCompositeType(
 }
 
 func getSchemaAndTypeByTypeID(
-	ctx context.Context, p *planner, id descpb.ID, includeMetaData bool,
+	ctx context.Context, p *planner, id descpb.ID,
 ) (catalog.SchemaDescriptor, catalog.TypeDescriptor, error) {
-	getter := descs.GetCatalogDescriptorGetter(ctx, p.Descriptors(), p.txn, p.EvalContext().Settings)
-	if includeMetaData {
-		getter = getter.WithMetaData()
-	}
-	typDesc, err := getter.WithoutNonPublic().Get().Type(ctx, id)
+	typDesc, err := p.Descriptors().ByIDWithLeased(p.txn).WithoutNonPublic().Get().Type(ctx, id)
 	if err != nil {
 		// If the type was not found, it may be a table.
 		if !(errors.Is(err, catalog.ErrDescriptorNotFound) || pgerror.GetPGCode(err) == pgcode.UndefinedObject) {
@@ -3811,7 +3762,7 @@ func getSchemaAndTypeByTypeID(
 		return nil, nil, nil
 	}
 
-	sc, err := descs.GetCatalogDescriptorGetter(ctx, p.Descriptors(), p.txn, p.EvalContext().Settings).WithoutNonPublic().Get().Schema(ctx, typDesc.GetParentSchemaID())
+	sc, err := p.Descriptors().ByIDWithLeased(p.txn).WithoutNonPublic().Get().Schema(ctx, typDesc.GetParentSchemaID())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -3851,7 +3802,6 @@ https://www.postgresql.org/docs/9.5/catalog-pg-type.html`,
 					ctx,
 					p,
 					db,
-					false, /* includeMetadata */
 					func(ctx context.Context, _ catalog.DatabaseDescriptor, sc catalog.SchemaDescriptor, typDesc catalog.TypeDescriptor) error {
 						nspOid := schemaOid(sc.GetID())
 						tn := tree.NewQualifiedTypeName(db.GetName(), sc.GetName(), typDesc.GetName())
@@ -3901,7 +3851,7 @@ https://www.postgresql.org/docs/9.5/catalog-pg-type.html`,
 
 				id := typedesc.UserDefinedTypeOIDToID(ooid)
 
-				sc, typDesc, err := getSchemaAndTypeByTypeID(ctx, p, id, false /* includeMetaData */)
+				sc, typDesc, err := getSchemaAndTypeByTypeID(ctx, p, id)
 				if err != nil || typDesc == nil {
 					return false, err
 				}
@@ -3913,7 +3863,7 @@ https://www.postgresql.org/docs/9.5/catalog-pg-type.html`,
 				// It's an entry for the implicit record type created on behalf of each
 				// table. We have special logic for this case.
 				if typDesc.AsTableImplicitRecordTypeDescriptor() != nil {
-					table, err := descs.GetCatalogDescriptorGetter(ctx, p.Descriptors(), p.txn, p.EvalContext().Settings).WithoutNonPublic().Get().Table(ctx, id)
+					table, err := p.Descriptors().ByIDWithLeased(p.txn).WithoutNonPublic().Get().Table(ctx, id)
 					if err != nil {
 						if errors.Is(err, catalog.ErrDescriptorNotFound) ||
 							pgerror.GetPGCode(err) == pgcode.UndefinedObject ||
@@ -4160,7 +4110,7 @@ https://www.postgresql.org/docs/13/catalog-pg-statistic-ext.html`,
 			h.writeUInt64(uint64(statisticsID))
 			statisticsOID := h.getOid()
 
-			tbl, err := descs.GetCatalogDescriptorGetter(ctx, p.Descriptors(), p.Txn(), p.EvalContext().Settings).Get().Table(ctx, descpb.ID(tableID))
+			tbl, err := p.Descriptors().ByIDWithLeased(p.Txn()).Get().Table(ctx, descpb.ID(tableID))
 			if err != nil {
 				if pgerror.GetPGCode(err) == pgcode.UndefinedTable {
 					// The system.table_statistics could contain stale rows that
@@ -5195,7 +5145,6 @@ var datumToTypeCategory = map[types.Family]*tree.DString{
 	types.UnknownFamily:        typCategoryUnknown,
 	types.VoidFamily:           typCategoryPseudo,
 	types.TriggerFamily:        typCategoryPseudo,
-	types.LTreeFamily:          typCategoryUserDefined,
 }
 
 func typCategory(typ *types.T) tree.Datum {
@@ -5676,7 +5625,7 @@ func populateVirtualIndexForTable(
 		// Ideally, the catalog API would be able to return the temporary
 		// schemas from other sessions, but it cannot right now. See
 		// https://github.com/cockroachdb/cockroach/issues/97822.
-		if err := forEachSchema(ctx, p, dbContext, false /* requiresPrivileges */, false /* includeMetadata */, func(ctx context.Context, schema catalog.SchemaDescriptor) error {
+		if err := forEachSchema(ctx, p, dbContext, false /* requiresPrivileges*/, func(ctx context.Context, schema catalog.SchemaDescriptor) error {
 			if schema.GetID() == tableDesc.GetParentSchemaID() {
 				sc = schema
 			}
@@ -5686,14 +5635,14 @@ func populateVirtualIndexForTable(
 		}
 	}
 	if sc == nil {
-		sc, err = descs.GetCatalogDescriptorGetter(ctx, p.Descriptors(), p.txn, p.EvalContext().Settings).WithoutNonPublic().Get().Schema(ctx, tableDesc.GetParentSchemaID())
+		sc, err = p.Descriptors().ByIDWithLeased(p.txn).WithoutNonPublic().Get().Schema(ctx, tableDesc.GetParentSchemaID())
 		if err != nil {
 			return false, err
 		}
 	}
 	db := dbContext
 	if db == nil {
-		db, err = descs.GetCatalogDescriptorGetter(ctx, p.Descriptors(), p.txn, p.EvalContext().Settings).WithoutNonPublic().Get().Database(ctx, tableDesc.GetParentID())
+		db, err = p.Descriptors().ByIDWithLeased(p.txn).WithoutNonPublic().Get().Database(ctx, tableDesc.GetParentID())
 		if err != nil {
 			return false, err
 		}
@@ -5719,7 +5668,7 @@ func populateVirtualIndexForType(
 		return true, nil
 	}
 	h := makeOidHasher()
-	sc, err := descs.GetCatalogDescriptorGetter(ctx, p.Descriptors(), p.txn, p.EvalContext().Settings).WithoutNonPublic().Get().Schema(ctx, typeDesc.GetParentSchemaID())
+	sc, err := p.Descriptors().ByIDWithLeased(p.txn).WithoutNonPublic().Get().Schema(ctx, typeDesc.GetParentSchemaID())
 	if err != nil {
 		return false, err
 	}

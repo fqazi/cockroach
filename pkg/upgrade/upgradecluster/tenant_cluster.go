@@ -16,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlinstance"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlinstance/instancestorage"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
@@ -134,7 +133,6 @@ type TenantCluster struct {
 	InstanceReader  *instancestorage.Reader
 	instancesAtBump []sqlinstance.InstanceInfo
 	DB              *kv.DB
-	Settings        *cluster.Settings
 }
 
 // TenantClusterConfig configures a TenantCluster.
@@ -148,9 +146,6 @@ type TenantClusterConfig struct {
 	// DB is used to generate transactions for consistent reads of the set of
 	// instances.
 	DB *kv.DB
-
-	// Cluster settings allow access to version and other settings.
-	Settings *cluster.Settings
 }
 
 // NewTenantCluster returns a new TenantCluster.
@@ -160,7 +155,6 @@ func NewTenantCluster(cfg TenantClusterConfig) *TenantCluster {
 		InstanceReader:  cfg.InstanceReader,
 		instancesAtBump: make([]sqlinstance.InstanceInfo, 0),
 		DB:              cfg.DB,
-		Settings:        cfg.Settings,
 	}
 }
 
@@ -217,7 +211,7 @@ func (t *TenantCluster) ForEveryNodeOrServer(
 	// nodes at the storage cluster level.
 	const quotaCapacity = 25
 	qp := quotapool.NewIntPool("every-sql-server", quotaCapacity)
-	log.Dev.Infof(ctx, "executing %s on nodes %v", redact.Safe(op), instances)
+	log.Infof(ctx, "executing %s on nodes %v", redact.Safe(op), instances)
 	grp := ctxgroup.WithContext(ctx)
 
 	for i := range instances {
@@ -240,7 +234,7 @@ func (t *TenantCluster) ForEveryNodeOrServer(
 			// test flakes due to network issues.
 			if err := retry.WithMaxAttempts(ctx, retryOpts, retryOpts.MaxRetries+1, func() error {
 				var err error
-				client, err = serverpb.DialMigrationClient(t.Dialer, ctx, roachpb.NodeID(instance.InstanceID), rpcbase.DefaultClass, t.Settings)
+				client, err = serverpb.DialMigrationClient(t.Dialer, ctx, roachpb.NodeID(instance.InstanceID), rpcbase.DefaultClass)
 				return err
 			}); err != nil {
 				return annotateDialError(err)
@@ -301,11 +295,11 @@ func (t *TenantCluster) UntilClusterStable(
 			return nil
 		}
 		if len(instances) != len(curInstances) {
-			log.Dev.Infof(ctx,
+			log.Infof(ctx,
 				"number of SQL servers has changed (pre: %d, post: %d), retrying",
 				len(instances), len(curInstances))
 		} else {
-			log.Dev.Infof(ctx, "different set of SQL servers running (pre: %v, post: %v), retrying", instances, curInstances)
+			log.Infof(ctx, "different set of SQL servers running (pre: %v, post: %v), retrying", instances, curInstances)
 		}
 		instances = curInstances
 	}

@@ -59,6 +59,34 @@ var upgrades = []upgradebase.Upgrade{
 		bootstrapCluster,
 		upgrade.RestoreActionNotRequired("initialization runs before restore")),
 
+	newFirstUpgrade(clusterversion.TODO_Delete_V25_1_Start.Version()),
+
+	upgrade.NewTenantUpgrade(
+		"create prepared_transactions table",
+		clusterversion.TODO_Delete_V25_1_PreparedTransactionsTable.Version(),
+		upgrade.NoPrecondition,
+		createPreparedTransactionsTable,
+		upgrade.RestoreActionNotRequired("cluster restore does not restore this table"),
+	),
+
+	newFirstUpgrade(clusterversion.TODO_Delete_V25_2_Start.Version()),
+
+	upgrade.NewTenantUpgrade(
+		"add new sql activity flush job",
+		clusterversion.TODO_Delete_V25_2_AddSqlActivityFlushJob.Version(),
+		upgrade.NoPrecondition,
+		addSqlActivityFlushJob,
+		upgrade.RestoreActionNotRequired("cluster restore does not restore this job"),
+	),
+
+	upgrade.NewTenantUpgrade(
+		"set new ui.default_timezone setting to ui.display_timezone value",
+		clusterversion.TODO_Delete_V25_2_SetUiDefaultTimezoneSetting.Version(),
+		upgrade.NoPrecondition,
+		setUiDefaultTimezone,
+		upgrade.RestoreActionNotRequired("cluster restore does not restore this setting"),
+	),
+
 	newFirstUpgrade(clusterversion.V25_3_Start.Version()),
 
 	upgrade.NewTenantUpgrade(
@@ -83,52 +111,6 @@ var upgrades = []upgradebase.Upgrade{
 		upgrade.NoPrecondition,
 		addHotRangeLoggerJob,
 		upgrade.RestoreActionNotRequired("cluster restore does not restore this job"),
-	),
-
-	newFirstUpgrade(clusterversion.V25_4_Start.Version()),
-
-	upgrade.NewTenantUpgrade(
-		"add new system.inspect_errors table",
-		clusterversion.V25_4_InspectErrorsTable.Version(),
-		upgrade.NoPrecondition,
-		createInspectErrorsTable,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore this table"),
-	),
-
-	upgrade.NewTenantUpgrade(
-		"add transaction diagnostics tables and update statement_diagnostics table",
-		clusterversion.V25_4_TransactionDiagnosticsSupport.Version(),
-		upgrade.NoPrecondition,
-		createTransactionDiagnosticsTables,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore these tables"),
-	),
-
-	upgrade.NewTenantUpgrade(
-		"set autostats fraction for system stats tables",
-		clusterversion.V25_4_SystemStatsTablesAutostatsFraction.Version(),
-		upgrade.NoPrecondition,
-		systemStatsTablesAutostatsFractionMigration,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore table storage parameters"),
-	),
-
-	upgrade.NewTenantUpgrade(
-		"create statement_hints table",
-		clusterversion.V25_4_AddSystemStatementHintsTable.Version(),
-		upgrade.NoPrecondition,
-		createStatementHintsTable,
-		upgrade.RestoreActionNotRequired(
-			"restore for a cluster predating this table can leave it empty",
-		),
-	),
-
-	newFirstUpgrade(clusterversion.V26_1_Start.Version()),
-
-	upgrade.NewTenantUpgrade(
-		"create table_statistics_locks table",
-		clusterversion.V26_1_AddTableStatisticsLocksTable.Version(),
-		upgrade.NoPrecondition,
-		createTableStatisticsLocksTable,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore this table"),
 	),
 
 	// Note: when starting a new release version, the first upgrade (for

@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/roachprod/cloud"
-	cloudcluster "github.com/cockroachdb/cockroach/pkg/roachprod/cloud/types"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
@@ -35,14 +34,13 @@ import (
 // clusters cache.
 
 type syncedClustersWithMutex struct {
-	clusters cloudcluster.Clusters
+	clusters cloud.Clusters
 	mu       syncutil.Mutex
 }
 
 var syncedClusters syncedClustersWithMutex
 
-// readSyncedClusters reads the syncedClusters map under lock.
-func readSyncedClusters(key string) (*cloudcluster.Cluster, bool) {
+func readSyncedClusters(key string) (*cloud.Cluster, bool) {
 	syncedClusters.mu.Lock()
 	defer syncedClusters.mu.Unlock()
 	if cluster, ok := syncedClusters.clusters[key]; ok {
@@ -65,7 +63,7 @@ func InitDirs() error {
 
 // saveCluster creates (or overwrites) the file in config.ClusterDir storing the
 // given metadata.
-func saveCluster(l *logger.Logger, c *cloudcluster.Cluster) error {
+func saveCluster(l *logger.Logger, c *cloud.Cluster) error {
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetIndent("", "  ")
@@ -99,13 +97,13 @@ func saveCluster(l *logger.Logger, c *cloudcluster.Cluster) error {
 
 // loadCluster reads the file in config.ClustersDir with the metadata for the
 // given cluster name.
-func loadCluster(name string) (*cloudcluster.Cluster, error) {
+func loadCluster(name string) (*cloud.Cluster, error) {
 	filename := clusterFilename(name)
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
-	c := &cloudcluster.Cluster{}
+	c := &cloud.Cluster{}
 	if err := json.Unmarshal(data, c); err != nil {
 		return nil, err
 	}
@@ -124,7 +122,7 @@ func deleteCluster(name string) error {
 // shouldIgnoreCluster returns true if the cluster references a project that is
 // not active. This is relevant if we have a cluster that was cached when
 // another project was in use.
-func shouldIgnoreCluster(c *cloudcluster.Cluster) bool {
+func shouldIgnoreCluster(c *cloud.Cluster) bool {
 	for i := range c.VMs {
 		provider, ok := vm.Providers[c.VMs[i].Provider]
 		if !ok || !provider.ProjectActive(c.VMs[i].Project) {
@@ -140,7 +138,7 @@ func shouldIgnoreCluster(c *cloudcluster.Cluster) bool {
 func LoadClusters() error {
 	syncedClusters.mu.Lock()
 	defer syncedClusters.mu.Unlock()
-	syncedClusters.clusters = make(cloudcluster.Clusters)
+	syncedClusters.clusters = make(cloud.Clusters)
 
 	clusterNames, err := listClustersInCache()
 	if err != nil {
@@ -259,11 +257,12 @@ type localVMStorage struct{}
 var _ local.VMStorage = localVMStorage{}
 
 // SaveCluster is part of the local.VMStorage interface.
-func (localVMStorage) SaveCluster(l *logger.Logger, cluster *cloudcluster.Cluster) error {
+func (localVMStorage) SaveCluster(l *logger.Logger, cluster *cloud.Cluster) error {
 	return saveCluster(l, cluster)
 }
 
 // DeleteCluster is part of the local.VMStorage interface.
 func (localVMStorage) DeleteCluster(l *logger.Logger, name string) error {
-	return deleteCluster(name)
+	path := clusterFilename(name)
+	return os.Remove(path)
 }

@@ -18,6 +18,11 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
+type testProvider struct {
+	vm.Provider
+	vm.DNSProvider
+}
+
 type testDNSRecord struct {
 	Name       string   `json:"name"`
 	Kind       string   `json:"kind"`
@@ -161,13 +166,10 @@ func (t *testDNSServer) execFunc(cmd *exec.Cmd) ([]byte, error) {
 // test DNS provider, and the provider name.
 func ProviderWithTestDNSServer(rng *rand.Rand) (TestDNSServer, vm.DNSProvider, string) {
 	testServer := &testDNSServer{records: make(map[string]vm.DNSRecord)}
-	testDNS := gce.NewDNSProviderWithExec(
-		testServer.execFunc,
-		(&gce.DNSProviderOpts{}).NewFromGCEDNSProviderOpts(gce.NewDNSProviderDefaultOptions()),
-	)
+	testDNS := gce.NewDNSProviderWithExec(testServer.execFunc)
 	// Since this is a global variable, we need to make sure the provider name is
 	// unique, in order to avoid conflicts with other tests.
 	providerName := fmt.Sprintf("testProvider-%d", rng.Uint32())
-	vm.DNSProviders[providerName] = testDNS
+	vm.Providers[providerName] = &testProvider{DNSProvider: testDNS}
 	return testServer, testDNS, providerName
 }
