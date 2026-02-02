@@ -15,6 +15,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keyvisualizer"
 	"github.com/cockroachdb/cockroach/pkg/kv"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/repstream"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
@@ -57,6 +59,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
+	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
@@ -1171,4 +1174,96 @@ func (p *planner) GetHintIDs() []int64 {
 // ResetLeaseTimestamp is part of Planner interface.
 func (p *planner) ResetLeaseTimestamp(ctx context.Context) {
 	p.Descriptors().ResetLeaseTimestamp(ctx)
+}
+
+func (p *planner) AdvisoryLock(
+	ctx context.Context, id int, mode eval.AdvisoryLockModes, wait bool,
+) (err error) {
+	isShared := mode == eval.AdvisoryLockShared
+	// FIXME: This is session based only.
+	// FIXME: Add support for shared next.
+	// FIXME: We can have a new txn per operation.
+	// Construct the key needed for this lock.
+	lockPrefix := p.EvalContext().Codec.AdvisoryLockKeyPrefix(uint32(id))
+	// Scan the prefix to see if its already held.
+	b := p.txn.NewBatch()
+	if !isShared {
+		b.ScanForUpdate(lockPrefix, lockPrefix.PrefixEnd(), kvpb.GuaranteedDurability)
+	} else {
+		b.ScanForShare(lockPrefix, lockPrefix.PrefixEnd(), kvpb.GuaranteedDurability)
+	}
+	b.Header.WaitPolicy = lock.WaitPolicy_Block
+	if !wait {
+		b.Header.WaitPolicy = lock.WaitPolicy_Error
+	}
+	err = p.txn.Run(ctx, b)
+	if err != nil {
+		return err
+	}
+	if len(b.Results[0].Rows) > 0 {
+		req, err := p.makeSessionsRequest(ctx, true /* excludeClosed */)
+		if err != nil {
+			return err
+		}
+		response, err := p.extendedEvalCtx.SQLStatusServer.ListSessions(ctx, &req)
+		if err != nil {
+			return err
+		}
+		sessionMap := make(map[string]struct{})
+		for _, session := range response.Sessions {
+			id := uint128.FromBytes(session.ID)
+			sessionMap[id.String()] = struct{}{}
+		}
+
+		for _, row := range b.Results[0].Rows {
+			_, exisingIsExclusive, sessionID, err := p.EvalContext().Codec.DecodeAdvisoryLockKey(row.Key, row.Value)
+			if err != nil {
+				return err
+			}
+			if _, exists := sessionMap[sessionID]; !exists {
+				_, err := p.txn.Del(ctx, row.Key)
+				if err != nil {
+					return err
+				}
+				continue
+			}
+			// Other shared locks are allowed.
+			if isShared && !exisingIsExclusive {
+				continue
+			}
+			return p.txn.GenerateForcedRetryableErr(ctx, redact.Sprintf("retrying due to advisory lock conflict on session: %s", sessionID))
+		}
+
+	}
+	// Write a key and mark this lock as exclusive.
+	lockKey := p.EvalContext().Codec.AdvisoryLockExclusiveKeyPrefix(uint32(id))
+	var value interface{} = p.ExtendedEvalContext().SessionID.String()
+	if isShared {
+		lockKey = p.EvalContext().Codec.AdvisoryLockSharedKeyPrefix(uint32(id), p.ExtendedEvalContext().SessionID.String())
+		value = 1
+	}
+	err = p.txn.CPut(ctx, lockKey, value, nil)
+	if errors.HasType(err, &kvpb.ConditionFailedError{}) {
+		// FIXME: Retry at a later time
+		return p.txn.GenerateForcedRetryableErr(ctx, "retrying due to advisory lock conflict")
+	} else if err != nil {
+		panic(err)
+	}
+	return nil
+}
+func (p *planner) AdvisoryLockRelease(ctx context.Context, id int) (err error) {
+	// FIXME: Renetrancy..
+	// FIXME: We can track state in some other way.
+	// Validate we are an exclusive holder of the key already.
+	lockKey := p.EvalContext().Codec.AdvisoryLockExclusiveKeyPrefix(uint32(id))
+	val, err := p.txn.Get(ctx, lockKey)
+	if err != nil {
+		return err
+	}
+	if !val.Exists() {
+		return nil
+	}
+	b := p.txn.NewBatch()
+	b.DelMustAcquireExclusiveLock(lockKey)
+	return p.txn.Run(ctx, b)
 }

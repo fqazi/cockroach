@@ -2866,6 +2866,8 @@ var builtinOidsArray = []string{
 	2911: `information_schema.crdb_datums_to_bytes(any...) -> bytes`,
 	2912: `information_schema.crdb_rewrite_inline_hints(statement_fingerprint: string, donor_sql: string) -> int`,
 	2913: `crdb_internal.decode_key(key: bytes) -> jsonb`,
+	2914: `pg_advisory_lock(int: int) -> void`,
+	2915: `pg_advisory_lock_shared(int: int) -> void`,
 }
 
 var builtinOidsBySignature map[string]oid.Oid

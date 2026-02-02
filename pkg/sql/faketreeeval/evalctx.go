@@ -601,6 +601,15 @@ func (ep *DummyEvalPlanner) ProcessVectorIndexFixups(
 	return nil
 }
 
+func (ep *DummyEvalPlanner) AdvisoryLock(
+	ctx context.Context, id int, mode eval.AdvisoryLockModes, wait bool,
+) (err error) {
+	return errors.AssertionFailedf("AdvisoryLock unimplemented")
+}
+func (ep *DummyEvalPlanner) AdvisoryLockRelease(ctx context.Context, id int) (err error) {
+	return errors.AssertionFailedf("AdvisoryLockRelease unimplemented")
+}
+
 // InsertStatementHint is part of the eval.Planner interface.
 func (ep *DummyEvalPlanner) InsertStatementHint(
 	ctx context.Context, statementFingerprint string, hint hintpb.StatementHintUnion,

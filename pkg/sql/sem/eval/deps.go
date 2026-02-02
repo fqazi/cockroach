@@ -206,11 +206,22 @@ type TypeResolver interface {
 	) (_ *tree.DOid, errSafeToIgnore bool, _ error)
 }
 
+type AdvisoryLockModes int
+
+const AdvisoryLockShared AdvisoryLockModes = 0
+const AdvisoryLockExclusive AdvisoryLockModes = 1
+
+type AdvisoryLockProvider interface {
+	AdvisoryLock(ctx context.Context, id int, mode AdvisoryLockModes, wait bool) (err error)
+	AdvisoryLockRelease(ctx context.Context, id int) (err error)
+}
+
 // Planner is a limited planner that can be used from EvalContext.
 type Planner interface {
 	DatabaseCatalog
 	TypeResolver
 	tree.FunctionReferenceResolver
+	AdvisoryLockProvider
 
 	// Mon returns the Planner's monitor.
 	//

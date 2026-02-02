@@ -253,6 +253,67 @@ func (e sqlEncoder) StartupMigrationKeyPrefix() roachpb.Key {
 	return append(e.TenantPrefix(), StartupMigrationPrefix...)
 }
 
+// AdvisoryLockKeyPrefix returns the key prefix for an advisory lock under
+// a certain ID.
+func (e sqlEncoder) AdvisoryLockKeyPrefix(id uint32) roachpb.Key {
+	k := append(e.TenantPrefix(), AdvisoryLockPrefix...)
+	k = encoding.EncodeUvarintAscending(k, uint64(id))
+	return k
+}
+
+// AdvisoryLockExclusiveKeyPrefix returns the key prefix for exclusive
+// locks.
+func (e sqlEncoder) AdvisoryLockExclusiveKeyPrefix(id uint32) roachpb.Key {
+	k := e.AdvisoryLockKeyPrefix(id)
+	k = encoding.EncodeStringAscending(k, "Exclusive")
+	return k
+}
+
+// AdvisoryLockSharedKeyPrefix returns the key prefix for shared
+// locks.
+func (e sqlEncoder) AdvisoryLockSharedKeyPrefix(id uint32, sessionID string) roachpb.Key {
+	k := e.AdvisoryLockKeyPrefix(id)
+	k = encoding.EncodeStringAscending(k, "Shared")
+	k = encoding.EncodeStringAscending(k, sessionID)
+	return k
+}
+
+func (d sqlDecoder) DecodeAdvisoryLockKey(
+	key roachpb.Key, value *roachpb.Value,
+) (id int, exclusive bool, sessionID string, err error) {
+	remaining, err := d.StripTenantPrefix(key)
+	if err != nil {
+		return 0, false, "", err
+	}
+	if !bytes.HasPrefix(remaining, AdvisoryLockPrefix) {
+		return 0, false, "", errors.Errorf("invalid advisory lock key: %q", key)
+	}
+	// Next extract the ID.
+	remaining, idInt, err := encoding.DecodeUvarintAscending(remaining[len(AdvisoryLockPrefix):])
+	if err != nil {
+		return 0, false, "", err
+	}
+	remaining, typ, err := encoding.DecodeUnsafeStringAscending(remaining, nil)
+	if err != nil {
+		return 0, false, "", err
+	}
+	if typ == "Exclusive" {
+		exclusive = true
+		sessionIDBytes, err := value.GetBytes()
+		if err != nil {
+			return 0, false, "", err
+		}
+		sessionID = string(sessionIDBytes)
+	} else {
+		remaining, sessionID, err = encoding.DecodeUnsafeStringAscending(remaining, nil)
+		if err != nil {
+			return 0, false, "", err
+		}
+	}
+
+	return int(idInt), exclusive, sessionID, nil
+}
+
 // unexpected to avoid colliding with sqlEncoder.tenantPrefix.
 func (d sqlDecoder) tenantPrefix() roachpb.Key {
 	return *d.buf
