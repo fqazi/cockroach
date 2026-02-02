@@ -1180,60 +1180,82 @@ func (p *planner) AdvisoryLock(
 	ctx context.Context, id int, mode eval.AdvisoryLockModes, wait bool,
 ) (err error) {
 	isShared := mode == eval.AdvisoryLockShared
-	// FIXME: This is session based only.
 	// FIXME: Add support for shared next.
 	// FIXME: We can have a new txn per operation.
 	// Construct the key needed for this lock.
 	lockPrefix := p.EvalContext().Codec.AdvisoryLockKeyPrefix(uint32(id))
-	// Scan the prefix to see if its already held.
-	b := p.txn.NewBatch()
-	if !isShared {
-		b.ScanForUpdate(lockPrefix, lockPrefix.PrefixEnd(), kvpb.GuaranteedDurability)
-	} else {
-		b.ScanForShare(lockPrefix, lockPrefix.PrefixEnd(), kvpb.GuaranteedDurability)
-	}
-	b.Header.WaitPolicy = lock.WaitPolicy_Block
-	if !wait {
-		b.Header.WaitPolicy = lock.WaitPolicy_Error
-	}
-	err = p.txn.Run(ctx, b)
-	if err != nil {
-		return err
-	}
-	if len(b.Results[0].Rows) > 0 {
-		req, err := p.makeSessionsRequest(ctx, true /* excludeClosed */)
-		if err != nil {
-			return err
-		}
-		response, err := p.extendedEvalCtx.SQLStatusServer.ListSessions(ctx, &req)
-		if err != nil {
-			return err
-		}
-		sessionMap := make(map[string]struct{})
-		for _, session := range response.Sessions {
-			id := uint128.FromBytes(session.ID)
-			sessionMap[id.String()] = struct{}{}
-		}
 
-		for _, row := range b.Results[0].Rows {
-			_, exisingIsExclusive, sessionID, err := p.EvalContext().Codec.DecodeAdvisoryLockKey(row.Key, row.Value)
+	// scanAndCheck scans the prefix to see if its already held.
+	// If useLock is true, it acquires a lock (ScanForUpdate/Share) and cleans up dead sessions.
+	scanAndCheck := func(useLock bool) error {
+		b := p.txn.NewBatch()
+		if useLock {
+			if !isShared {
+				b.ScanForUpdate(lockPrefix, lockPrefix.PrefixEnd(), kvpb.GuaranteedDurability)
+			} else {
+				b.ScanForShare(lockPrefix, lockPrefix.PrefixEnd(), kvpb.GuaranteedDurability)
+			}
+		} else {
+			b.Scan(lockPrefix, lockPrefix.PrefixEnd())
+			b.Header.WaitPolicy = lock.WaitPolicy_SkipLocked
+		}
+		if useLock {
+			b.Header.WaitPolicy = lock.WaitPolicy_Block
+			if !wait {
+				b.Header.WaitPolicy = lock.WaitPolicy_Error
+			}
+		}
+		err = p.txn.Run(ctx, b)
+		if err != nil {
+			return err
+		}
+		if len(b.Results[0].Rows) > 0 {
+			req, err := p.makeSessionsRequest(ctx, true /* excludeClosed */)
 			if err != nil {
 				return err
 			}
-			if _, exists := sessionMap[sessionID]; !exists {
-				_, err := p.txn.Del(ctx, row.Key)
+			response, err := p.extendedEvalCtx.SQLStatusServer.ListSessions(ctx, &req)
+			if err != nil {
+				return err
+			}
+			sessionMap := make(map[string]struct{})
+			for _, session := range response.Sessions {
+				id := uint128.FromBytes(session.ID)
+				sessionMap[id.String()] = struct{}{}
+			}
+
+			for _, row := range b.Results[0].Rows {
+				_, exisingIsExclusive, sessionID, err := p.EvalContext().Codec.DecodeAdvisoryLockKey(row.Key, row.Value)
 				if err != nil {
 					return err
 				}
-				continue
+				if _, exists := sessionMap[sessionID]; !exists {
+					if useLock {
+						_, err := p.txn.Del(ctx, row.Key)
+						if err != nil {
+							return err
+						}
+					}
+					continue
+				}
+				// Other shared locks are allowed.
+				if isShared && !exisingIsExclusive {
+					continue
+				}
+				return p.txn.GenerateForcedRetryableErr(ctx, redact.Sprintf("retrying due to advisory lock conflict on session: %s", sessionID))
 			}
-			// Other shared locks are allowed.
-			if isShared && !exisingIsExclusive {
-				continue
-			}
-			return p.txn.GenerateForcedRetryableErr(ctx, redact.Sprintf("retrying due to advisory lock conflict on session: %s", sessionID))
 		}
+		return nil
+	}
 
+	// First, check for conflicts without acquiring a lock. This avoids blocking
+	// other operations (like release) when the lock is already held.
+	if err := scanAndCheck(false /* useLock */); err != nil {
+		return err
+	}
+	// If no conflict found (or we need to cleanup), acquire the lock and proceed.
+	if err := scanAndCheck(true /* useLock */); err != nil {
+		return err
 	}
 	// Write a key and mark this lock as exclusive.
 	lockKey := p.EvalContext().Codec.AdvisoryLockExclusiveKeyPrefix(uint32(id))
@@ -1255,15 +1277,24 @@ func (p *planner) AdvisoryLockRelease(ctx context.Context, id int) (err error) {
 	// FIXME: Renetrancy..
 	// FIXME: We can track state in some other way.
 	// Validate we are an exclusive holder of the key already.
-	lockKey := p.EvalContext().Codec.AdvisoryLockExclusiveKeyPrefix(uint32(id))
-	val, err := p.txn.Get(ctx, lockKey)
+	eraseKey := func(lockKey roachpb.Key) error {
+		val, err := p.txn.Get(ctx, lockKey)
+		if err != nil {
+			return err
+		}
+		if !val.Exists() {
+			return nil
+		}
+		b := p.txn.NewBatch()
+		b.DelMustAcquireExclusiveLock(lockKey)
+		return p.txn.Run(ctx, b)
+	}
+
+	exclusiveLockKey := p.EvalContext().Codec.AdvisoryLockExclusiveKeyPrefix(uint32(id))
+	sharedLockKey := p.EvalContext().Codec.AdvisoryLockSharedKeyPrefix(uint32(id), p.ExtendedEvalContext().SessionID.String())
+	err = eraseKey(exclusiveLockKey)
 	if err != nil {
 		return err
 	}
-	if !val.Exists() {
-		return nil
-	}
-	b := p.txn.NewBatch()
-	b.DelMustAcquireExclusiveLock(lockKey)
-	return p.txn.Run(ctx, b)
+	return eraseKey(sharedLockKey)
 }
