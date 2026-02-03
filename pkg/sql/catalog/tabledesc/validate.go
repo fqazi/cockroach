@@ -6,6 +6,9 @@
 package tabledesc
 
 import (
+	"fmt"
+	"runtime/debug"
+
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -822,6 +825,9 @@ func validateMutation(m *descpb.DescriptorMutation) error {
 // correct.
 // If version is supplied, the descriptor is checked for version incompatibilities.
 func (desc *wrapper) ValidateSelf(vea catalog.ValidationErrorAccumulator) {
+	if desc.GetID() > 102 && desc.GetName() == "t1" {
+		fmt.Printf("Validating descriptor: %s %s\n", desc.GetName(), debug.Stack())
+	}
 	// Validate local properties of the descriptor.
 	vea.Report(catalog.ValidateName(desc))
 	if desc.GetID() == descpb.InvalidID {

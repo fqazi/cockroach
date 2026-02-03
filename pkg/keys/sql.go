@@ -261,6 +261,22 @@ func (e sqlEncoder) AdvisoryLockKeyPrefix(id uint32) roachpb.Key {
 	return k
 }
 
+// AdvisoryLockWaitingKeyPrefix returns the key for a waiting exclusive lock request.
+// Format: AdvisoryLockPrefix + ID + "Waiting" + sessionID
+func (e sqlEncoder) AdvisoryLockWaitingKeyPrefix(id uint32, sessionID string) roachpb.Key {
+	k := e.AdvisoryLockKeyPrefix(id)
+	k = encoding.EncodeStringAscending(k, "Waiting")
+	k = encoding.EncodeStringAscending(k, sessionID)
+	return k
+}
+
+// AdvisoryLockAllWaitingPrefix returns the prefix to scan all waiting requests for a lock.
+func (e sqlEncoder) AdvisoryLockAllWaitingPrefix(id uint32) roachpb.Key {
+	k := e.AdvisoryLockKeyPrefix(id)
+	k = encoding.EncodeStringAscending(k, "Waiting")
+	return k
+}
+
 // AdvisoryLockExclusiveKeyPrefix returns the key prefix for exclusive
 // locks.
 func (e sqlEncoder) AdvisoryLockExclusiveKeyPrefix(id uint32) roachpb.Key {
@@ -278,40 +294,74 @@ func (e sqlEncoder) AdvisoryLockSharedKeyPrefix(id uint32, sessionID string) roa
 	return k
 }
 
-func (d sqlDecoder) DecodeAdvisoryLockKey(
-	key roachpb.Key, value *roachpb.Value,
-) (id int, exclusive bool, sessionID string, err error) {
+func (d sqlDecoder) DecodeAdvisoryLockWaitingKeyPrefix(
+	key roachpb.Key,
+) (id uint32, sessionID string, err error) {
 	remaining, err := d.StripTenantPrefix(key)
 	if err != nil {
-		return 0, false, "", err
+		return 0, "", err
 	}
 	if !bytes.HasPrefix(remaining, AdvisoryLockPrefix) {
-		return 0, false, "", errors.Errorf("invalid advisory lock key: %q", key)
+		return 0, "", errors.Errorf("invalid advisory lock key: %q", key)
+	}
+	remaining, idInt, err := encoding.DecodeUvarintAscending(remaining[len(AdvisoryLockPrefix):])
+	if err != nil {
+		return 0, "", err
+	}
+	remaining, typ, err := encoding.DecodeUnsafeStringAscending(remaining, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	if typ != "Waiting" {
+		return 0, "", errors.Errorf("invalid advisory lock key: %q", key)
+	}
+	remaining, sessionID, err = encoding.DecodeUnsafeStringAscending(remaining, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	return uint32(idInt), sessionID, nil
+}
+
+func (d sqlDecoder) DecodeAdvisoryLockKey(
+	key roachpb.Key, value *roachpb.Value,
+) (id int, exclusive bool, sessionID string, refCount int, err error) {
+	remaining, err := d.StripTenantPrefix(key)
+	if err != nil {
+		return 0, false, "", 0, err
+	}
+	if !bytes.HasPrefix(remaining, AdvisoryLockPrefix) {
+		return 0, false, "", 0, errors.Errorf("invalid advisory lock key: %q", key)
 	}
 	// Next extract the ID.
 	remaining, idInt, err := encoding.DecodeUvarintAscending(remaining[len(AdvisoryLockPrefix):])
 	if err != nil {
-		return 0, false, "", err
+		return 0, false, "", 0, err
 	}
 	remaining, typ, err := encoding.DecodeUnsafeStringAscending(remaining, nil)
 	if err != nil {
-		return 0, false, "", err
+		return 0, false, "", 0, err
 	}
 	if typ == "Exclusive" {
 		exclusive = true
 		sessionIDBytes, err := value.GetBytes()
 		if err != nil {
-			return 0, false, "", err
+			return 0, false, "", 0, err
 		}
 		sessionID = string(sessionIDBytes)
+		refCount = 1 // FIXME: Reeentrancy is not supported for exclusve.
 	} else {
 		remaining, sessionID, err = encoding.DecodeUnsafeStringAscending(remaining, nil)
 		if err != nil {
-			return 0, false, "", err
+			return 0, false, "", 0, err
 		}
+		refCountVal, err := value.GetInt()
+		if err != nil {
+			return 0, false, "", 0, err
+		}
+		refCount = int(refCountVal)
 	}
 
-	return int(idInt), exclusive, sessionID, nil
+	return int(idInt), exclusive, sessionID, refCount, nil
 }
 
 // unexpected to avoid colliding with sqlEncoder.tenantPrefix.
