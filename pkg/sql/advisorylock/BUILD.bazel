@@ -1,0 +1,18 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "advisorylock",
+    srcs = [
+        "kvlocktable.go",
+        "manager.go",
+    ],
+    importpath = "github.com/cockroachdb/cockroach/pkg/sql/advisorylock",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/keys",
+        "//pkg/kv",
+        "//pkg/kv/kvpb",
+        "//pkg/roachpb",
+        "//pkg/sql/catalog/descpb",
+    ],
+)

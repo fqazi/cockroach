@@ -1956,3 +1956,18 @@ message DescriptorUpdates {
   repeated uint32 descriptor_ids = 1 [(gogoproto.customname) = "DescriptorIDs", (gogoproto.casttype) = "ID"];
   repeated uint32 descriptor_versions = 2  [(gogoproto.customname) = "DescriptorVersions", (gogoproto.casttype) = "DescriptorVersion"];
 }
+
+message AdvisoryLockTracking {
+  required int32 lock = 1 [(gogoproto.nullable) = false];;
+  enum LockType {
+    SHARED = 0;
+    EXCLUSIVE = 1;
+  }
+  required LockType lock_state = 2 [(gogoproto.nullable) = false];;
+  message LockWaiter {
+    required string session_id = 1;
+    required LockType required_type = 2;
+  }
+  repeated LockWaiter waiters = 3;
+  repeated string holder_session_id = 4;
+}

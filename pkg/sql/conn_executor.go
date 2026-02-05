@@ -31,6 +31,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/sql/advisorylock"
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/auditlogging"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -1239,6 +1240,7 @@ func (s *Server) newConnExecutor(
 		totalActiveTimeStopWatch:  timeutil.NewStopWatch(),
 		txnFingerprintIDCache:     NewTxnFingerprintIDCache(ctx, s.cfg.Settings, &txnFingerprintIDCacheAcc),
 		txnFingerprintIDAcc:       &txnFingerprintIDCacheAcc,
+		advisoryLockManager:       advisorylock.NewManager(s.cfg.DB, s.cfg.Codec, sessionID.String()),
 	}
 	ex.rng.internal = rand.New(rand.NewSource(timeutil.Now().UnixNano()))
 
@@ -1440,6 +1442,11 @@ func (ex *connExecutor) close(ctx context.Context, closeType closeType) {
 	}
 
 	ex.resetExtraTxnState(ctx, txnEvent{eventType: txnEvType}, payloadErr)
+	err := ex.advisoryLockManager.ReleaseAllLocks()
+	if err != nil {
+		log.Dev.Warningf(ctx, "error releasing advisory locks: %v", err)
+	}
+
 	if ex.hasCreatedTemporarySchema && !ex.server.cfg.TestingKnobs.DisableTempObjectsCleanupOnSessionExit {
 		err := cleanupSessionTempObjects(
 			ctx,
@@ -1937,6 +1944,8 @@ type connExecutor struct {
 	// PCR reader catalog, which is done by checking for the ReplicatedPCRVersion
 	// field on the system database (which is set during tenant bootstrap).
 	isPCRReaderCatalog bool
+
+	advisoryLockManager advisorylock.Manager
 }
 
 // ctxHolder contains a connection's context and, while session tracing is
@@ -4026,6 +4035,7 @@ func (ex *connExecutor) initPlanner(ctx context.Context, p *planner) {
 	p.schemaResolver.authAccessor = p
 	p.reducedAuditConfig = &auditlogging.ReducedAuditConfig{}
 	p.datumAlloc = &tree.DatumAlloc{}
+	p.advisoryLockManager = ex.advisoryLockManager
 }
 
 // maybeAdjustMaxTimestampBound checks

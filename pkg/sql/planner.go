@@ -22,6 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
+	"github.com/cockroachdb/cockroach/pkg/sql/advisorylock"
 	"github.com/cockroachdb/cockroach/pkg/sql/auditlogging"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catsessiondata"
@@ -39,7 +40,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/hintpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/hints"
 	"github.com/cockroachdb/cockroach/pkg/sql/idxusage"
-	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/prep"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
@@ -60,7 +60,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
-	retry "github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
@@ -333,6 +332,8 @@ type planner struct {
 	// usingHintInjection is true if we're passing the rewritten AST with injected
 	// hints into optbuild. It is only set during planning.
 	usingHintInjection bool
+
+	advisoryLockManager *advisorylock.Manager
 }
 
 // hasFlowForPausablePortal returns true if the planner is for re-executing a
@@ -1373,46 +1374,52 @@ func (p *planner) doAdvisoryLockAcquire(
 func (p *planner) AdvisoryLock(
 	ctx context.Context, id int, mode eval.AdvisoryLockModes, wait bool,
 ) (err error) {
-
-	r := retry.StartWithCtx(ctx, retry.Options{})
-	for r.Next() {
-		retryAgain := false
-		err = p.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-			var err error
-			retryAgain, err = p.doAdvisoryLockAcquire(ctx, txn.KV(), id, mode, wait)
-			return err
-		})
-		if err != nil {
-			return err
+	/*
+		r := retry.StartWithCtx(ctx, retry.Options{})
+		for r.Next() {
+			retryAgain := false
+			err = p.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+				var err error
+				retryAgain, err = p.doAdvisoryLockAcquire(ctx, txn.KV(), id, mode, wait)
+				return err
+			})
+			if err != nil {
+				return err
+			}
+			if !retryAgain {
+				return nil
+			}
 		}
-		if !retryAgain {
-			return nil
-		}
+		return nil*/
+	aqMode := advisorylock.LockShared
+	if mode == eval.AdvisoryLockExclusive {
+		aqMode = advisorylock.LockExclusive
 	}
-	return nil
+	return p.advisoryLockManager.AcquireLock(ctx, id, aqMode, wait)
 }
 func (p *planner) AdvisoryLockRelease(ctx context.Context, id int) (err error) {
 	// FIXME: Renetrancy..
 	// FIXME: We can track state in some other way.
 	// Validate we are an exclusive holder of the key already.
-	eraseKey := func(lockKey roachpb.Key) error {
-		val, err := p.txn.Get(ctx, lockKey)
-		if err != nil {
-			return err
-		}
-		if !val.Exists() {
-			return nil
-		}
-		b := p.txn.NewBatch()
-		b.DelMustAcquireExclusiveLock(lockKey)
-		return p.txn.Run(ctx, b)
-	}
+	/*eraseKey := func(lockKey roachpb.Key) error {
+	  	val, err := p.txn.Get(ctx, lockKey)
+	  	if err != nil {
+	  		return err
+	  	}
+	  	if !val.Exists() {
+	  		return nil
+	  	}
+	  	b := p.txn.NewBatch()
+	  	b.DelMustAcquireExclusiveLock(lockKey)
+	  	return p.txn.Run(ctx, b)
+	  }
 
-	exclusiveLockKey := p.EvalContext().Codec.AdvisoryLockExclusiveKeyPrefix(uint32(id))
-	sharedLockKey := p.EvalContext().Codec.AdvisoryLockSharedKeyPrefix(uint32(id), p.ExtendedEvalContext().SessionID.String())
-	err = eraseKey(exclusiveLockKey)
-	if err != nil {
-		return err
-	}
-	return eraseKey(sharedLockKey)
+	  exclusiveLockKey := p.EvalContext().Codec.AdvisoryLockExclusiveKeyPrefix(uint32(id))
+	  sharedLockKey := p.EvalContext().Codec.AdvisoryLockSharedKeyPrefix(uint32(id), p.ExtendedEvalContext().SessionID.String())
+	  err = eraseKey(exclusiveLockKey)
+	  if err != nil {
+	  	return err
+	  }
+	  return eraseKey(sharedLockKey)*/
+	return p.advisoryLockManager.ReleaseLock(id)
 }

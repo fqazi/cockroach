@@ -253,6 +253,22 @@ func (e sqlEncoder) StartupMigrationKeyPrefix() roachpb.Key {
 	return append(e.TenantPrefix(), StartupMigrationPrefix...)
 }
 
+// AdvisoryLockPrefix returns the key prefix for exclusive
+// locks.
+func (e sqlEncoder) AdvisoryLockPrefix(id uint32) roachpb.Key {
+	k := e.AdvisoryLockKeyPrefix(id)
+	k = encoding.EncodeStringAscending(k, "Lock")
+	return k
+}
+
+// AdvisoryLockMetaPrefix returns the key prefix for exclusive
+// locks.
+func (e sqlEncoder) AdvisoryLockMetaPrefix(id uint32) roachpb.Key {
+	k := e.AdvisoryLockKeyPrefix(id)
+	k = encoding.EncodeStringAscending(k, "Meta")
+	return k
+}
+
 // AdvisoryLockKeyPrefix returns the key prefix for an advisory lock under
 // a certain ID.
 func (e sqlEncoder) AdvisoryLockKeyPrefix(id uint32) roachpb.Key {

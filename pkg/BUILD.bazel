@@ -2018,6 +2018,7 @@ GO_TARGETS = [
     "//pkg/spanconfig/spanconfigtestutils:spanconfigtestutils_test",
     "//pkg/spanconfig:spanconfig",
     "//pkg/spanconfig:spanconfig_test",
+    "//pkg/sql/advisorylock:advisorylock",
     "//pkg/sql/appstatspb:appstatspb",
     "//pkg/sql/appstatspb:appstatspb_test",
     "//pkg/sql/auditlogging/auditevents:auditevents",
