@@ -7,7 +7,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
+	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/errors"
 )
 
@@ -20,10 +22,17 @@ type sqlTableManager struct {
 	codec        keys.SQLCodec
 	sessionID    string
 	sessionMapFn SessionMapProvider
+	stopper      *stop.Stopper
 	heldLocks    map[int]int
 }
 
 func (s *sqlTableManager) AcquireLock(ctx context.Context, id int, mode LockMode, wait bool) error {
+	// If the user context is cancelled, then we need to remove ourselves from the wait list.
+	defer func() {
+		if ctx.Err() != nil {
+			s.removeWaiterOnCancellation(ctx, id)
+		}
+	}()
 	r := retry.StartWithCtx(ctx, retry.Options{})
 	if s.heldLocks[id] > 0 {
 		s.heldLocks[id] = s.heldLocks[id] + 1
@@ -115,7 +124,11 @@ func (s *sqlTableManager) ReleaseAllLocks() error {
 }
 
 func NewSQLManager(
-	db *kv.DB, codec keys.SQLCodec, sessionID string, provider SessionMapProvider,
+	db *kv.DB,
+	codec keys.SQLCodec,
+	sessionID string,
+	provider SessionMapProvider,
+	stopper *stop.Stopper,
 ) Manager {
 	return &sqlTableManager{
 		db:           db,
@@ -123,6 +136,7 @@ func NewSQLManager(
 		sessionID:    sessionID,
 		sessionMapFn: provider,
 		heldLocks:    make(map[int]int),
+		stopper:      stopper,
 	}
 }
 
@@ -194,12 +208,54 @@ func (s *sqlTableManager) checkForDeadlocks(
 	return deadlock, nil
 }
 
+// removeWaiterOnCancellation removes the session from the wait list of the lock.
+func (s *sqlTableManager) removeWaiterOnCancellation(ctx context.Context, id int) {
+	err := s.stopper.RunAsyncTask(ctx, "remove-waiter-on-cancel", func(ctx context.Context) {
+		err := s.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
+			// Construct the key needed for this lock.
+			lockPrefix := s.codec.AdvisoryLockKeyPrefix(uint32(id))
+
+			currentLock := descpb.AdvisoryLockTracking{Lock: int32(id)}
+
+			// Fetch the existing value that is stored for the lock.
+			currentValue, err := txn.Get(ctx, lockPrefix)
+			if err != nil {
+				return err
+			}
+			if !currentValue.Exists() {
+				return nil
+			}
+			if err := currentValue.Value.GetProto(&currentLock); err != nil {
+				return err
+			}
+			// Remove this session from the wait list.
+			for idx, waiter := range currentLock.Waiters {
+				if *waiter.SessionId == s.sessionID {
+					currentLock.Waiters = append(currentLock.Waiters[:idx], currentLock.Waiters[idx+1:]...)
+					break
+				}
+			}
+			newValue := roachpb.Value{}
+			if err := newValue.SetProto(&currentLock); err != nil {
+			}
+			return txn.CPut(ctx, lockPrefix, &newValue, currentValue.Value.TagAndDataBytes())
+		})
+		if err != nil {
+			log.Dev.Errorf(ctx, "failed to remove waiter on lock cancellation: %v", err)
+		}
+	})
+	if err != nil {
+		log.Dev.Infof(ctx, "failed to remove waiter on lock cancellation: %v", err)
+	}
+}
+
 // doAdvisoryLockAcquire will run with a transaction and attempt to acquire
 // the advisory lock. When acquistion is complete retry will be false; otherwise,
 // another attempt should be made with a fresh transaction.
 func (s *sqlTableManager) doAdvisoryLockAcquire(
 	ctx context.Context, txn *kv.Txn, id int, mode LockMode, wait bool,
 ) (retry bool, err error) {
+	// FIXME: Handle lock upgrades and downgrades...
 	isShared := mode == LockShared
 	// Construct the key needed for this lock.
 	lockPrefix := s.codec.AdvisoryLockKeyPrefix(uint32(id))

@@ -1257,7 +1257,7 @@ func (s *Server) newConnExecutor(
 			sessionMap[id.String()] = struct{}{}
 		}
 		return sessionMap, nil
-	})
+	}, s.cfg.Stopper)
 	ex.rng.internal = rand.New(rand.NewSource(timeutil.Now().UnixNano()))
 
 	ex.state.txnAbortCount = ex.metrics.EngineMetrics.TxnAbortCount

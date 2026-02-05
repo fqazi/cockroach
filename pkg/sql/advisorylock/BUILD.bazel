@@ -15,7 +15,9 @@ go_library(
         "//pkg/kv/kvpb",
         "//pkg/roachpb",
         "//pkg/sql/catalog/descpb",
+        "//pkg/util/log",
         "//pkg/util/retry",
+        "//pkg/util/stop",
         "@com_github_cockroachdb_errors//:errors",
     ],
 )

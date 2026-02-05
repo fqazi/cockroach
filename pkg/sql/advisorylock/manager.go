@@ -5,7 +5,8 @@ import "context"
 type LockMode int
 
 const (
-	LockShared LockMode = iota
+	LockInvalid LockMode = iota
+	LockShared
 	LockExclusive
 )
 
