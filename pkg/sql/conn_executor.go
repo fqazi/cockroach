@@ -93,6 +93,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tochar"
+	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
@@ -1240,8 +1241,23 @@ func (s *Server) newConnExecutor(
 		totalActiveTimeStopWatch:  timeutil.NewStopWatch(),
 		txnFingerprintIDCache:     NewTxnFingerprintIDCache(ctx, s.cfg.Settings, &txnFingerprintIDCacheAcc),
 		txnFingerprintIDAcc:       &txnFingerprintIDCacheAcc,
-		advisoryLockManager:       advisorylock.NewManager(s.cfg.DB, s.cfg.Codec, sessionID.String()),
 	}
+	ex.advisoryLockManager = advisorylock.NewSQLManager(s.cfg.DB, s.cfg.Codec, sessionID.String(), func() (map[string]struct{}, error) {
+		req, err := ex.planner.makeSessionsRequest(ctx, true /* excludeClosed */)
+		if err != nil {
+			return nil, err
+		}
+		response, err := ex.planner.extendedEvalCtx.SQLStatusServer.ListSessions(ctx, &req)
+		if err != nil {
+			return nil, err
+		}
+		sessionMap := make(map[string]struct{})
+		for _, session := range response.Sessions {
+			id := uint128.FromBytes(session.ID)
+			sessionMap[id.String()] = struct{}{}
+		}
+		return sessionMap, nil
+	})
 	ex.rng.internal = rand.New(rand.NewSource(timeutil.Now().UnixNano()))
 
 	ex.state.txnAbortCount = ex.metrics.EngineMetrics.TxnAbortCount

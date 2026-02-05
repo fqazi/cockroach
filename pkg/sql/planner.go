@@ -333,7 +333,7 @@ type planner struct {
 	// hints into optbuild. It is only set during planning.
 	usingHintInjection bool
 
-	advisoryLockManager *advisorylock.Manager
+	advisoryLockManager advisorylock.Manager
 }
 
 // hasFlowForPausablePortal returns true if the planner is for re-executing a

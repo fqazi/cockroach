@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "kvlocktable.go",
         "manager.go",
+        "sqltable.go",
     ],
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/advisorylock",
     visibility = ["//visibility:public"],
@@ -14,5 +15,7 @@ go_library(
         "//pkg/kv/kvpb",
         "//pkg/roachpb",
         "//pkg/sql/catalog/descpb",
+        "//pkg/util/retry",
+        "@com_github_cockroachdb_errors//:errors",
     ],
 )

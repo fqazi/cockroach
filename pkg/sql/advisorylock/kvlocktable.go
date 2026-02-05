@@ -10,6 +10,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 )
 
+type LockData struct {
+	id       int
+	mode     LockMode
+	txn      *kv.Txn
+	refCount int
+}
+
 type kvLockTableManager struct {
 	locks     map[int]*LockData
 	db        *kv.DB

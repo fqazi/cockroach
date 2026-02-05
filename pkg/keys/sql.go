@@ -269,6 +269,10 @@ func (e sqlEncoder) AdvisoryLockMetaPrefix(id uint32) roachpb.Key {
 	return k
 }
 
+func (e sqlEncoder) AdvisoryLockBase() roachpb.Key {
+	return append(e.TenantPrefix(), AdvisoryLockPrefix...)
+}
+
 // AdvisoryLockKeyPrefix returns the key prefix for an advisory lock under
 // a certain ID.
 func (e sqlEncoder) AdvisoryLockKeyPrefix(id uint32) roachpb.Key {
