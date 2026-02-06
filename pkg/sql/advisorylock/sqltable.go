@@ -17,6 +17,50 @@ var deadlockError = errors.New("deadlock detected")
 
 type SessionMapProvider func() (map[string]struct{}, error)
 
+type sqlLockInfo struct {
+	lockMode     []LockMode // Refcount and the mode that is acquired.
+	numExclusive int
+	numShared    int
+}
+
+// isExclusive returns if the lock is exclusive.
+func (s *sqlLockInfo) isExclusive() bool {
+	return s.numExclusive > 0
+}
+
+// isShared returns if the lock is shared.
+func (s *sqlLockInfo) isShared() bool {
+	return s.numShared > 0
+}
+
+// addRefCount adds reference type on to the stack.
+func (s *sqlLockInfo) addRefCount(mode LockMode) {
+	s.lockMode = append(s.lockMode, mode)
+	if mode == LockShared {
+		s.numShared++
+	} else {
+		s.numExclusive++
+	}
+}
+
+// removeRefCount removes  the last reference type off the stack.
+func (s *sqlLockInfo) removeRefCount() LockMode {
+	lastMode := s.lockMode[len(s.lockMode)-1]
+	s.lockMode = s.lockMode[:len(s.lockMode)-1]
+	if lastMode == LockShared {
+		s.numShared--
+		if s.numShared == 0 {
+			return LockShared
+		}
+	} else {
+		s.numExclusive--
+		if s.numExclusive == 0 {
+			return LockExclusive
+		}
+	}
+	return LockInvalid
+}
+
 type sqlTableManager struct {
 	db           *kv.DB
 	codec        keys.SQLCodec
