@@ -8,6 +8,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
+	"github.com/cockroachdb/errors"
 )
 
 type LockData struct {
@@ -62,8 +63,11 @@ func (m *kvLockTableManager) updateTrackingInfo(
 }
 
 func (m *kvLockTableManager) AcquireLock(
-	ctx context.Context, id int, mode LockMode, wait bool,
+	ctx context.Context, id int, mode LockMode, wait bool, txnScoped bool,
 ) error {
+	if txnScoped {
+		return errors.New("txn scoped locks not implemented for kvLockTableManager")
+	}
 	entry, exists := m.locks[id]
 	// Acquire an existing lock.
 	if exists {
@@ -116,6 +120,11 @@ func (m *kvLockTableManager) AcquireLock(
 
 	})
 }
+
+func (m *kvLockTableManager) Savepoint()           {}
+func (m *kvLockTableManager) ReleaseSavepoint()    {}
+func (m *kvLockTableManager) RollbackToSavepoint() {}
+func (m *kvLockTableManager) FinishTransaction()   {}
 
 func (m *kvLockTableManager) ReleaseLock(id int) error {
 	entry := m.locks[id]

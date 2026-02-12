@@ -1372,54 +1372,14 @@ func (p *planner) doAdvisoryLockAcquire(
 }
 
 func (p *planner) AdvisoryLock(
-	ctx context.Context, id int, mode eval.AdvisoryLockModes, wait bool,
+	ctx context.Context, id int, mode eval.AdvisoryLockModes, wait bool, txnScoped bool,
 ) (err error) {
-	/*
-		r := retry.StartWithCtx(ctx, retry.Options{})
-		for r.Next() {
-			retryAgain := false
-			err = p.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-				var err error
-				retryAgain, err = p.doAdvisoryLockAcquire(ctx, txn.KV(), id, mode, wait)
-				return err
-			})
-			if err != nil {
-				return err
-			}
-			if !retryAgain {
-				return nil
-			}
-		}
-		return nil*/
 	aqMode := advisorylock.LockShared
 	if mode == eval.AdvisoryLockExclusive {
 		aqMode = advisorylock.LockExclusive
 	}
-	return p.advisoryLockManager.AcquireLock(ctx, id, aqMode, wait)
+	return p.advisoryLockManager.AcquireLock(ctx, id, aqMode, wait, txnScoped /* txnScoped */)
 }
 func (p *planner) AdvisoryLockRelease(ctx context.Context, id int) (err error) {
-	// FIXME: Renetrancy..
-	// FIXME: We can track state in some other way.
-	// Validate we are an exclusive holder of the key already.
-	/*eraseKey := func(lockKey roachpb.Key) error {
-	  	val, err := p.txn.Get(ctx, lockKey)
-	  	if err != nil {
-	  		return err
-	  	}
-	  	if !val.Exists() {
-	  		return nil
-	  	}
-	  	b := p.txn.NewBatch()
-	  	b.DelMustAcquireExclusiveLock(lockKey)
-	  	return p.txn.Run(ctx, b)
-	  }
-
-	  exclusiveLockKey := p.EvalContext().Codec.AdvisoryLockExclusiveKeyPrefix(uint32(id))
-	  sharedLockKey := p.EvalContext().Codec.AdvisoryLockSharedKeyPrefix(uint32(id), p.ExtendedEvalContext().SessionID.String())
-	  err = eraseKey(exclusiveLockKey)
-	  if err != nil {
-	  	return err
-	  }
-	  return eraseKey(sharedLockKey)*/
 	return p.advisoryLockManager.ReleaseLock(id)
 }

@@ -1249,7 +1249,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Void),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, true)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, true, false /*txnScoped*/)
 				return tree.DVoidDatum, err
 			},
 			Info:       notUsableInfo,
@@ -1262,7 +1262,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Void),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, true)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, true, false /*txnScoped*/)
 				return tree.DVoidDatum, err
 			},
 			Info:       notUsableInfo,
@@ -1280,7 +1280,6 @@ FROM defaults_parsed
 			Volatility: volatility.Volatile,
 		},
 	),
-
 	"pg_advisory_unlock": makeBuiltin(defProps(),
 		tree.Overload{
 			Types:      tree.ParamTypes{{Name: "key", Typ: types.Int}},

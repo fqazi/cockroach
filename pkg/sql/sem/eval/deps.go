@@ -212,7 +212,7 @@ const AdvisoryLockShared AdvisoryLockModes = 0
 const AdvisoryLockExclusive AdvisoryLockModes = 1
 
 type AdvisoryLockProvider interface {
-	AdvisoryLock(ctx context.Context, id int, mode AdvisoryLockModes, wait bool) (err error)
+	AdvisoryLock(ctx context.Context, id int, mode AdvisoryLockModes, wait bool, txnScoped bool) (err error)
 	AdvisoryLockRelease(ctx context.Context, id int) (err error)
 }
 
