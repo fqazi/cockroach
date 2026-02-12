@@ -712,7 +712,6 @@ go_test(
         "index_mutation_test.go",
         "index_split_scatter_test.go",
         "indexbackfiller_test.go",
-        "information_schema_race_test.go",
         "instrumentation_test.go",
         "internal_test.go",
         "jobs_profiler_execution_details_test.go",

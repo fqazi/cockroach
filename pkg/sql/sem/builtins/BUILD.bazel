@@ -59,6 +59,7 @@ go_library(
         "//pkg/server/telemetry",
         "//pkg/settings",
         "//pkg/settings/cluster",
+        "//pkg/sql/advisorylock",
         "//pkg/sql/appstatspb",
         "//pkg/sql/catalog",
         "//pkg/sql/catalog/catalogkeys",

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/security/username"
+	"github.com/cockroachdb/cockroach/pkg/sql/advisorylock"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/oidext"
@@ -1243,6 +1244,38 @@ FROM defaults_parsed
 			Language:          tree.RoutineLangSQL,
 		},
 	),
+	"pg_try_advisory_xact_lock_shared": makeBuiltin(defProps(),
+		tree.Overload{
+			Types:      tree.ParamTypes{{Name: "int", Typ: types.Int}},
+			ReturnType: tree.FixedReturnType(types.Bool),
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := tree.MustBeDInt(args[0])
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, false, true /*txnScoped*/)
+				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
+					return tree.DBoolFalse, nil
+				}
+				return tree.DBoolTrue, err
+			},
+			Info:       notUsableInfo,
+			Volatility: volatility.Volatile,
+		},
+	),
+	"pg_try_advisory_xact_lock": makeBuiltin(defProps(),
+		tree.Overload{
+			Types:      tree.ParamTypes{{Name: "int", Typ: types.Int}},
+			ReturnType: tree.FixedReturnType(types.Bool),
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := tree.MustBeDInt(args[0])
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, false, true /*txnScoped*/)
+				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
+					return tree.DBoolFalse, nil
+				}
+				return tree.DBoolTrue, err
+			},
+			Info:       notUsableInfo,
+			Volatility: volatility.Volatile,
+		},
+	),
 	"pg_advisory_xact_lock": makeBuiltin(defProps(),
 		tree.Overload{
 			Types:      tree.ParamTypes{{Name: "int", Typ: types.Int}},
@@ -1295,11 +1328,33 @@ FROM defaults_parsed
 			Volatility: volatility.Volatile,
 		},
 	),
+	"pg_try_advisory_lock_shared": makeBuiltin(defProps(),
+		tree.Overload{
+			Types:      tree.ParamTypes{{Name: "int", Typ: types.Int}},
+			ReturnType: tree.FixedReturnType(types.Bool),
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := tree.MustBeDInt(args[0])
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, false, false /*txnScoped*/)
+				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
+					return tree.DBoolFalse, nil
+				}
+				return tree.DBoolTrue, err
+			},
+			Info:       notUsableInfo,
+			Volatility: volatility.Volatile,
+		},
+	),
 	"pg_try_advisory_lock": makeBuiltin(defProps(),
 		tree.Overload{
 			Types:      tree.ParamTypes{{Name: "int", Typ: types.Int}},
 			ReturnType: tree.FixedReturnType(types.Bool),
-			Fn: func(_ context.Context, _ *eval.Context, _ tree.Datums) (tree.Datum, error) {
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := tree.MustBeDInt(args[0])
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, true, false /*txnScoped*/)
+				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
+					return tree.DBoolFalse, nil
+				}
+
 				return tree.DBoolTrue, nil
 			},
 			Info:       notUsableInfo,
