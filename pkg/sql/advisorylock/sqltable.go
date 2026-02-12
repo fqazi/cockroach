@@ -7,6 +7,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
+	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -220,7 +222,7 @@ func (s *sqlTableManager) AcquireLock(
 			return nil
 		})
 		if err != nil {
-			if errors.Is(err, deadlockError) {
+			if pgerror.GetPGCode(err) == pgcode.DeadlockDetected {
 				userError = err
 				break
 			}
@@ -451,18 +453,10 @@ func (s *sqlTableManager) checkForDeadlocks(
 				return err
 			}
 			lockID := int(lock.Lock)
-			checkedSesionIsHoldLock := false
 			for _, holder := range lock.HolderSessionId {
-				if holder == sessionID {
-					checkedSesionIsHoldLock = true
-				}
 				lockHolders[lockID] = append(lockHolders[lockID], holder)
 			}
 			for _, waiter := range lock.Waiters {
-				// Exclude self deadlocks.
-				if *waiter.SessionId == sessionID && checkedSesionIsHoldLock {
-					continue
-				}
 				sessionsWaitingForLocks[*waiter.SessionId] = append(sessionsWaitingForLocks[*waiter.SessionId], lockID)
 			}
 		}
@@ -484,6 +478,9 @@ func (s *sqlTableManager) checkForDeadlocks(
 
 			for _, lockID := range sessionsWaitingForLocks[curr] {
 				for _, holder := range lockHolders[lockID] {
+					if holder == curr {
+						continue
+					}
 					if hasCycle(holder) {
 						return true
 					}
@@ -658,7 +655,7 @@ func (s *sqlTableManager) doAdvisoryLockUpgrade(
 			if err := writeLockState(); err != nil {
 				return true, err
 			}
-			return false, deadlockError
+			return false, pgerror.Newf(pgcode.DeadlockDetected, "deadlock detected")
 		}
 		return true, nil
 	}
@@ -813,7 +810,7 @@ func (s *sqlTableManager) doAdvisoryLockAcquire(
 			if err := writeLockState(); err != nil {
 				return true, err
 			}
-			return false, deadlockError
+			return false, pgerror.Newf(pgcode.DeadlockDetected, "deadlock detected")
 		}
 		return true, nil
 	}

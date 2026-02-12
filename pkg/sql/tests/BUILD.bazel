@@ -30,6 +30,8 @@ go_test(
     name = "tests_test",
     size = "enormous",
     srcs = [
+        "advisory_lock_return_test.go",
+        "advisory_lock_test.go",
         "allow_role_memberships_to_change_during_transaction_test.go",
         "allow_user_create_during_transaction_test.go",
         "autocommit_extended_protocol_test.go",
