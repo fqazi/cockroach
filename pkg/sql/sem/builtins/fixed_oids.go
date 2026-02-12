@@ -2868,6 +2868,8 @@ var builtinOidsArray = []string{
 	2913: `crdb_internal.decode_key(key: bytes) -> jsonb`,
 	2914: `pg_advisory_lock(int: int) -> void`,
 	2915: `pg_advisory_lock_shared(int: int) -> void`,
+	2916: `pg_advisory_xact_lock(int: int) -> void`,
+	2917: `pg_advisory_xact_lock_shared(int: int) -> void`,
 }
 
 var builtinOidsBySignature map[string]oid.Oid

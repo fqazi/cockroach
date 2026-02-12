@@ -103,6 +103,7 @@ func (ex *connExecutor) execSavepointInOpenState(
 		numDDL:          ex.extraTxnState.numDDL,
 	}
 	savepoints.push(sp)
+	ex.advisoryLockManager.Savepoint()
 	ex.sessionDataStack.PushTopClone()
 
 	return nil, nil, nil
@@ -182,6 +183,8 @@ func (ex *connExecutor) execRelease(
 		return ev, payload
 	}
 
+	ex.advisoryLockManager.ReleaseSavepoint()
+
 	if len(ex.extraTxnState.savepoints) == 0 {
 		// NB: Only RELEASE SAVEPOINT can clear the entire savepoint stack. ROLLBACK
 		// TO SAVEPOINT will always leave at least one savepoint.
@@ -211,7 +214,7 @@ func (ex *connExecutor) execRollbackToSavepointInOpenState(
 		ev, payload := ex.makeErrEvent(err, s)
 		return ev, payload
 	}
-
+	ex.advisoryLockManager.RollbackToSavepoint()
 	if err := ex.popSavepointsToIdx(s, idx); err != nil {
 		return ex.makeErrEvent(err, s)
 	}
@@ -297,6 +300,7 @@ func (ex *connExecutor) execRollbackToSavepointInAbortedState(
 		return ex.makeErrEvent(err, s)
 	}
 
+	ex.advisoryLockManager.RollbackToSavepoint()
 	if entry.kvToken.Initial() {
 		return eventTxnRestart{}, nil
 	}

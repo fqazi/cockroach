@@ -2213,6 +2213,8 @@ func (ex *connExecutor) resetExtraTxnState(ctx context.Context, ev txnEvent, pay
 			ctx, &ex.extraTxnState.prepStmtsNamespaceMemAcc,
 		)
 		ex.extraTxnState.savepoints.clear()
+		// FIXME: Error handling
+		ex.advisoryLockManager.FinishTransaction()
 		ex.onTxnFinish(ctx, ev, payloadErr)
 	case txnRestart:
 		ex.onTxnRestart(ctx)
