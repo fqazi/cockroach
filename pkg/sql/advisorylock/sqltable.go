@@ -92,11 +92,14 @@ func (s *sqlLockInfo) addRefCount(mode LockMode, scope LockScope) {
 }
 
 // removeRef removes the last reference type of the given scope off the stack.
-func (s *sqlLockInfo) removeRef(scope LockScope) (newMode LockMode, isHeld bool, found bool) {
+func (s *sqlLockInfo) removeRef(
+	scope LockScope, mode LockMode,
+) (newMode LockMode, isHeld bool, found bool) {
 	idx := -1
 	// Find the last entry with the matching scope.
 	for i := len(s.entries) - 1; i >= 0; i-- {
-		if s.entries[i].scope == scope {
+		if s.entries[i].scope == scope &&
+			s.entries[i].mode == mode {
 			idx = i
 			break
 		}
@@ -242,26 +245,26 @@ func (s *sqlTableManager) getScope(txnScoped bool) LockScope {
 	return LockScopeSession
 }
 
-func (s *sqlTableManager) ReleaseLock(id int) error {
-	return s.releaseLockWithScope(id, LockScopeSession)
+func (s *sqlTableManager) ReleaseLock(id int, mode LockMode) error {
+	return s.releaseLockWithScope(id, mode, LockScopeSession)
 }
 
-func (s *sqlTableManager) releaseLockWithScope(id int, scope LockScope) error {
+func (s *sqlTableManager) releaseLockWithScope(id int, mode LockMode, scope LockScope) error {
 	if _, exists := s.heldLocks[id]; !exists {
 		if scope == LockScopeTransaction {
 			// If we are cleaning up txn locks and it's not held, maybe it was already released?
 			// But it shouldn't be if we tracked it.
 			return nil
 		}
-		return errors.New("lock not held")
+		return ErrLockNotHeld
 	}
 	lockInfo := s.getLockInfo(id)
-	lockMode, isHeld, found := lockInfo.removeRef(scope)
+	lockMode, isHeld, found := lockInfo.removeRef(scope, mode)
 	if !found {
 		if scope == LockScopeTransaction {
 			return nil
 		}
-		return errors.New("lock not held")
+		return ErrLockNotHeld
 	}
 
 	// Lock mode hasn't changed and its still held.
@@ -280,7 +283,7 @@ func (s *sqlTableManager) releaseLockWithScope(id int, scope LockScope) error {
 		}
 		if !currentValue.Exists() {
 			// This shouldn't happen if we think we hold it.
-			return errors.New("lock not held")
+			return ErrLockNotHeld
 		}
 		if err := currentValue.Value.GetProto(&currentLock); err != nil {
 			return err
@@ -322,30 +325,26 @@ func (s *sqlTableManager) releaseLockWithScope(id int, scope LockScope) error {
 func (s *sqlTableManager) ReleaseAllLocks() error {
 	// First release all transaction locks
 	s.FinishTransaction()
+	return s.ReleaseAllForSession(context.TODO())
+}
 
-	// Then release session locks
-	heldLocks := s.heldLocks
-	s.heldLocks = make(map[int]*sqlLockInfo)
-	for id := range heldLocks {
-		// We might still have session locks
-		// Actually heldLocks might be empty after FinishTransaction if only txn locks were held.
-		// But if we have session locks, we need to release them.
-		// The previous loop in ReleaseAllLocks called ReleaseLock(id).
-		// We should do the same but ensure we release all refs?
-		// ReleaseLock only releases one ref.
-		// So we loop until released.
-		for {
-			info, ok := heldLocks[id]
-			if !ok || info.isUnlocked() {
-				break
+func (s *sqlTableManager) ReleaseAllForSession(ctx context.Context) error {
+	type lockReq struct {
+		id   int
+		mode LockMode
+	}
+	var locks []lockReq
+	for id, lockInfo := range s.heldLocks {
+		for _, entry := range lockInfo.entries {
+			if entry.scope == LockScopeSession {
+				locks = append(locks, lockReq{id: id, mode: entry.mode})
 			}
-			if err := s.ReleaseLock(id); err != nil {
-				// If ReleaseLock fails (e.g. not found), break
-				if err.Error() == "lock not held" {
-					break
-				}
-				return err
-			}
+		}
+	}
+	// Release in reverse order.
+	for i := len(locks) - 1; i >= 0; i-- {
+		if err := s.releaseLockWithScope(locks[i].id, locks[i].mode, LockScopeSession); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -395,9 +394,9 @@ func (s *sqlTableManager) RollbackToSavepoint() {
 
 	// Release locks in top
 	for id, modes := range top {
-		for range modes {
+		for _, mode := range modes {
 			// removeRef for each mode acquired
-			_ = s.releaseLockWithScope(id, LockScopeTransaction)
+			_ = s.releaseLockWithScope(id, mode, LockScopeTransaction)
 		}
 	}
 }
@@ -406,8 +405,8 @@ func (s *sqlTableManager) FinishTransaction() {
 	for i := len(s.txnStack) - 1; i >= 0; i-- {
 		level := s.txnStack[i]
 		for id, modes := range level {
-			for range modes {
-				_ = s.releaseLockWithScope(id, LockScopeTransaction)
+			for _, mode := range modes {
+				_ = s.releaseLockWithScope(id, mode, LockScopeTransaction)
 			}
 		}
 	}
@@ -607,7 +606,7 @@ func (s *sqlTableManager) doAdvisoryLockUpgrade(
 	}
 	// We need to wait for this lock next.
 	if !wait {
-		return false, errors.New("cannot wait for lock")
+		return false, ErrLockNotAcquired
 	}
 	// Check we are on the wait list already.
 	needToAdd := true
@@ -760,7 +759,7 @@ func (s *sqlTableManager) doAdvisoryLockAcquire(
 
 	// We need to wait for this lock next.
 	if !wait {
-		return false, errors.New("cannot wait for lock")
+		return false, ErrLockNotAcquired
 	}
 
 	// Check we are on the wait list already.

@@ -606,8 +606,14 @@ func (ep *DummyEvalPlanner) AdvisoryLock(
 ) (err error) {
 	return errors.AssertionFailedf("AdvisoryLock unimplemented")
 }
-func (ep *DummyEvalPlanner) AdvisoryLockRelease(ctx context.Context, id int) (err error) {
+func (ep *DummyEvalPlanner) AdvisoryLockRelease(
+	ctx context.Context, id int, mode eval.AdvisoryLockModes,
+) (err error) {
 	return errors.AssertionFailedf("AdvisoryLockRelease unimplemented")
+}
+
+func (ep *DummyEvalPlanner) ReleaseAllForSession(ctx context.Context) (err error) {
+	return errors.AssertionFailedf("ReleaseAllForSession unimplemented")
 }
 
 // InsertStatementHint is part of the eval.Planner interface.

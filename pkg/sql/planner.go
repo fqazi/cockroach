@@ -1380,6 +1380,16 @@ func (p *planner) AdvisoryLock(
 	}
 	return p.advisoryLockManager.AcquireLock(ctx, id, aqMode, wait, txnScoped /* txnScoped */)
 }
-func (p *planner) AdvisoryLockRelease(ctx context.Context, id int) (err error) {
-	return p.advisoryLockManager.ReleaseLock(id)
+func (p *planner) AdvisoryLockRelease(
+	ctx context.Context, id int, mode eval.AdvisoryLockModes,
+) (err error) {
+	aqMode := advisorylock.LockShared
+	if mode == eval.AdvisoryLockExclusive {
+		aqMode = advisorylock.LockExclusive
+	}
+	return p.advisoryLockManager.ReleaseLock(id, aqMode)
+}
+
+func (p *planner) ReleaseAllForSession(ctx context.Context) error {
+	return p.advisoryLockManager.ReleaseAllForSession(ctx)
 }

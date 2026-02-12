@@ -1312,7 +1312,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLockRelease(ctx, int(id))
+				err := evalCtx.Planner.AdvisoryLockRelease(ctx, int(id), eval.AdvisoryLockExclusive)
 				return tree.DBoolTrue, err
 			},
 			Info:       notUsableInfo,
@@ -1333,8 +1333,10 @@ FROM defaults_parsed
 		tree.Overload{
 			Types:      tree.ParamTypes{{Name: "key", Typ: types.Int}},
 			ReturnType: tree.FixedReturnType(types.Bool),
-			Fn: func(_ context.Context, _ *eval.Context, _ tree.Datums) (tree.Datum, error) {
-				return tree.DBoolTrue, nil
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := tree.MustBeDInt(args[0])
+				err := evalCtx.Planner.AdvisoryLockRelease(ctx, int(id), eval.AdvisoryLockShared)
+				return tree.DBoolTrue, err
 			},
 			Info:       notUsableInfo,
 			Volatility: volatility.Volatile,
@@ -1354,8 +1356,9 @@ FROM defaults_parsed
 		tree.Overload{
 			Types:      tree.ParamTypes{},
 			ReturnType: tree.FixedReturnType(types.Void),
-			Fn: func(_ context.Context, _ *eval.Context, _ tree.Datums) (tree.Datum, error) {
-				return tree.DVoidDatum, nil
+			Fn: func(ctx context.Context, evalCtx *eval.Context, _ tree.Datums) (tree.Datum, error) {
+				err := evalCtx.Planner.ReleaseAllForSession(ctx)
+				return tree.DVoidDatum, err
 			},
 			Info:       notUsableInfo,
 			Volatility: volatility.Volatile,

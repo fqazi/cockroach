@@ -1,6 +1,10 @@
 package advisorylock
 
-import "context"
+import (
+	"context"
+
+	"github.com/cockroachdb/errors"
+)
 
 type LockMode int
 
@@ -10,9 +14,12 @@ const (
 	LockExclusive
 )
 
+var ErrLockNotAcquired = errors.New("lock not acquired")
+var ErrLockNotHeld = errors.New("lock not held")
+
 type Manager interface {
 	AcquireLock(ctx context.Context, id int, mode LockMode, wait bool, txnScoped bool) error
-	ReleaseLock(id int) error
+	ReleaseLock(id int, mode LockMode) error
 	ReleaseAllLocks() error
 
 	// Savepoint creates a new savepoint on the transaction stack.
@@ -25,4 +32,6 @@ type Manager interface {
 	RollbackToSavepoint()
 	// FinishTransaction releases all locks acquired in the transaction.
 	FinishTransaction()
+
+	ReleaseAllForSession(ctx context.Context) error
 }

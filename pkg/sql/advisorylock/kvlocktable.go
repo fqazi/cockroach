@@ -25,6 +25,11 @@ type kvLockTableManager struct {
 	sessionID string
 }
 
+func (m *kvLockTableManager) ReleaseAllForSession(ctx context.Context) error {
+	//TODO implement me
+	panic("implement me")
+}
+
 func NewManager(db *kv.DB, codec keys.SQLCodec, sessionID string) Manager {
 	return &kvLockTableManager{
 		locks:     make(map[int]*LockData),
@@ -126,7 +131,7 @@ func (m *kvLockTableManager) ReleaseSavepoint()    {}
 func (m *kvLockTableManager) RollbackToSavepoint() {}
 func (m *kvLockTableManager) FinishTransaction()   {}
 
-func (m *kvLockTableManager) ReleaseLock(id int) error {
+func (m *kvLockTableManager) ReleaseLock(id int, mode LockMode) error {
 	entry := m.locks[id]
 	entry.refCount--
 	if entry.refCount == 0 {

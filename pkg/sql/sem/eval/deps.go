@@ -213,7 +213,8 @@ const AdvisoryLockExclusive AdvisoryLockModes = 1
 
 type AdvisoryLockProvider interface {
 	AdvisoryLock(ctx context.Context, id int, mode AdvisoryLockModes, wait bool, txnScoped bool) (err error)
-	AdvisoryLockRelease(ctx context.Context, id int) (err error)
+	AdvisoryLockRelease(ctx context.Context, id int, mode AdvisoryLockModes) (err error)
+	ReleaseAllForSession(ctx context.Context) (err error)
 }
 
 // Planner is a limited planner that can be used from EvalContext.
