@@ -1259,6 +1259,20 @@ FROM defaults_parsed
 			Info:       notUsableInfo,
 			Volatility: volatility.Volatile,
 		},
+		tree.Overload{
+			Types:      tree.ParamTypes{{Name: "key1", Typ: types.Int4}, {Name: "key2", Typ: types.Int4}},
+			ReturnType: tree.FixedReturnType(types.Bool),
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, false, true /*txnScoped*/)
+				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
+					return tree.DBoolFalse, nil
+				}
+				return tree.DBoolTrue, err
+			},
+			Info:       notUsableInfo,
+			Volatility: volatility.Volatile,
+		},
 	),
 	"pg_try_advisory_xact_lock": makeBuiltin(defProps(),
 		tree.Overload{
@@ -1266,6 +1280,20 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, false, true /*txnScoped*/)
+				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
+					return tree.DBoolFalse, nil
+				}
+				return tree.DBoolTrue, err
+			},
+			Info:       notUsableInfo,
+			Volatility: volatility.Volatile,
+		},
+		tree.Overload{
+			Types:      tree.ParamTypes{{Name: "key1", Typ: types.Int4}, {Name: "key2", Typ: types.Int4}},
+			ReturnType: tree.FixedReturnType(types.Bool),
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
 				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, false, true /*txnScoped*/)
 				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
 					return tree.DBoolFalse, nil
@@ -1288,6 +1316,17 @@ FROM defaults_parsed
 			Info:       notUsableInfo,
 			Volatility: volatility.Volatile,
 		},
+		tree.Overload{
+			Types:      tree.ParamTypes{{Name: "key1", Typ: types.Int4}, {Name: "key2", Typ: types.Int4}},
+			ReturnType: tree.FixedReturnType(types.Void),
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, true, true /*txnScoped*/)
+				return tree.DVoidDatum, err
+			},
+			Info:       notUsableInfo,
+			Volatility: volatility.Volatile,
+		},
 	),
 	"pg_advisory_lock": makeBuiltin(defProps(),
 		tree.Overload{
@@ -1295,6 +1334,17 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Void),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, true, false /*txnScoped*/)
+				return tree.DVoidDatum, err
+			},
+			Info:       notUsableInfo,
+			Volatility: volatility.Volatile,
+		},
+		tree.Overload{
+			Types:      tree.ParamTypes{{Name: "key1", Typ: types.Int4}, {Name: "key2", Typ: types.Int4}},
+			ReturnType: tree.FixedReturnType(types.Void),
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
 				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, true, false /*txnScoped*/)
 				return tree.DVoidDatum, err
 			},
@@ -1314,6 +1364,17 @@ FROM defaults_parsed
 			Info:       notUsableInfo,
 			Volatility: volatility.Volatile,
 		},
+		tree.Overload{
+			Types:      tree.ParamTypes{{Name: "key1", Typ: types.Int4}, {Name: "key2", Typ: types.Int4}},
+			ReturnType: tree.FixedReturnType(types.Void),
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, true, true /*txnScoped*/)
+				return tree.DVoidDatum, err
+			},
+			Info:       notUsableInfo,
+			Volatility: volatility.Volatile,
+		},
 	),
 	"pg_advisory_lock_shared": makeBuiltin(defProps(),
 		tree.Overload{
@@ -1321,6 +1382,17 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Void),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, true, false /*txnScoped*/)
+				return tree.DVoidDatum, err
+			},
+			Info:       notUsableInfo,
+			Volatility: volatility.Volatile,
+		},
+		tree.Overload{
+			Types:      tree.ParamTypes{{Name: "key1", Typ: types.Int4}, {Name: "key2", Typ: types.Int4}},
+			ReturnType: tree.FixedReturnType(types.Void),
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
 				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, true, false /*txnScoped*/)
 				return tree.DVoidDatum, err
 			},
@@ -1343,6 +1415,20 @@ FROM defaults_parsed
 			Info:       notUsableInfo,
 			Volatility: volatility.Volatile,
 		},
+		tree.Overload{
+			Types:      tree.ParamTypes{{Name: "key1", Typ: types.Int4}, {Name: "key2", Typ: types.Int4}},
+			ReturnType: tree.FixedReturnType(types.Bool),
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, false, false /*txnScoped*/)
+				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
+					return tree.DBoolFalse, nil
+				}
+				return tree.DBoolTrue, err
+			},
+			Info:       notUsableInfo,
+			Volatility: volatility.Volatile,
+		},
 	),
 	"pg_try_advisory_lock": makeBuiltin(defProps(),
 		tree.Overload{
@@ -1350,7 +1436,22 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, true, false /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, false, false /*txnScoped*/)
+				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
+					return tree.DBoolFalse, nil
+				}
+
+				return tree.DBoolTrue, nil
+			},
+			Info:       notUsableInfo,
+			Volatility: volatility.Volatile,
+		},
+		tree.Overload{
+			Types:      tree.ParamTypes{{Name: "key1", Typ: types.Int4}, {Name: "key2", Typ: types.Int4}},
+			ReturnType: tree.FixedReturnType(types.Bool),
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, false, false /*txnScoped*/)
 				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
 					return tree.DBoolFalse, nil
 				}
@@ -1376,8 +1477,10 @@ FROM defaults_parsed
 		tree.Overload{
 			Types:      tree.ParamTypes{{Name: "key1", Typ: types.Int4}, {Name: "key2", Typ: types.Int4}},
 			ReturnType: tree.FixedReturnType(types.Bool),
-			Fn: func(_ context.Context, _ *eval.Context, _ tree.Datums) (tree.Datum, error) {
-				return tree.DBoolTrue, nil
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
+				err := evalCtx.Planner.AdvisoryLockRelease(ctx, int(id), eval.AdvisoryLockExclusive)
+				return tree.DBoolTrue, err
 			},
 			Info:       notUsableInfo,
 			Volatility: volatility.Volatile,
@@ -1399,8 +1502,10 @@ FROM defaults_parsed
 		tree.Overload{
 			Types:      tree.ParamTypes{{Name: "key1", Typ: types.Int4}, {Name: "key2", Typ: types.Int4}},
 			ReturnType: tree.FixedReturnType(types.Bool),
-			Fn: func(_ context.Context, _ *eval.Context, _ tree.Datums) (tree.Datum, error) {
-				return tree.DBoolTrue, nil
+			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
+				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
+				err := evalCtx.Planner.AdvisoryLockRelease(ctx, int(id), eval.AdvisoryLockShared)
+				return tree.DBoolTrue, err
 			},
 			Info:       notUsableInfo,
 			Volatility: volatility.Volatile,

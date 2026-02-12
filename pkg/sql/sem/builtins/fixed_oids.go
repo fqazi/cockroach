@@ -2874,6 +2874,14 @@ var builtinOidsArray = []string{
 	2919: `pg_try_advisory_lock(int: int) -> bool`,
 	2920: `pg_try_advisory_xact_lock(int: int) -> bool`,
 	2921: `pg_try_advisory_xact_lock_shared(int: int) -> bool`,
+	2922: `pg_advisory_lock(key1: int4, key2: int4) -> void`,
+	2923: `pg_advisory_lock_shared(key1: int4, key2: int4) -> void`,
+	2924: `pg_advisory_xact_lock(key1: int4, key2: int4) -> void`,
+	2925: `pg_advisory_xact_lock_shared(key1: int4, key2: int4) -> void`,
+	2926: `pg_try_advisory_lock(key1: int4, key2: int4) -> bool`,
+	2927: `pg_try_advisory_lock_shared(key1: int4, key2: int4) -> bool`,
+	2928: `pg_try_advisory_xact_lock(key1: int4, key2: int4) -> bool`,
+	2929: `pg_try_advisory_xact_lock_shared(key1: int4, key2: int4) -> bool`,
 }
 
 var builtinOidsBySignature map[string]oid.Oid
