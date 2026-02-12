@@ -23,6 +23,44 @@ type sqlLockInfo struct {
 	numShared    int
 }
 
+func (s *sqlLockInfo) maybeAcquireIfCompatible(
+	mode LockMode,
+) (accquired bool, upgradeRequired bool) {
+	// Lock is not acquired yet, so we need to get fetch it.
+	if s.isUnlocked() {
+		return false, false
+	}
+	switch mode {
+	case LockShared:
+		// If we have a compatible lock mode then just bump
+		// the reference count.
+		if s.isShared() || s.isExclusive() {
+			s.addRefCount(mode)
+			return true, false
+		}
+		// Otherwise, we need to queue up to
+		// get the lock.
+		return false, false
+	case LockExclusive:
+		// If we have a compatible lock mode then just bump
+		// the reference count.
+		if s.isExclusive() {
+			s.addRefCount(mode)
+			return true, false
+		}
+		// If we have a shared reference then we need to upgrade.
+		if s.isShared() {
+			return false, true
+		}
+	}
+	return false, false
+}
+
+// isUnlocked returns if the locked is unlocked.
+func (s *sqlLockInfo) isUnlocked() bool {
+	return s.numExclusive == 0 && s.numShared == 0
+}
+
 // isExclusive returns if the lock is exclusive.
 func (s *sqlLockInfo) isExclusive() bool {
 	return s.numExclusive > 0
@@ -44,21 +82,36 @@ func (s *sqlLockInfo) addRefCount(mode LockMode) {
 }
 
 // removeRefCount removes  the last reference type off the stack.
-func (s *sqlLockInfo) removeRefCount() LockMode {
+func (s *sqlLockInfo) removeRefCount() (newMode LockMode, isHeld bool) {
+	previousMode := LockInvalid
+	if s.isShared() {
+		previousMode = LockShared
+	}
+	if s.isExclusive() {
+		previousMode = LockExclusive
+	}
 	lastMode := s.lockMode[len(s.lockMode)-1]
 	s.lockMode = s.lockMode[:len(s.lockMode)-1]
 	if lastMode == LockShared {
 		s.numShared--
-		if s.numShared == 0 {
-			return LockShared
-		}
 	} else {
 		s.numExclusive--
-		if s.numExclusive == 0 {
-			return LockExclusive
-		}
 	}
-	return LockInvalid
+	// We no longer hold the lock.
+	if s.isUnlocked() {
+		return LockInvalid, false
+	}
+	if s.isShared() {
+		newMode = LockShared
+	}
+	if s.isExclusive() {
+		newMode = LockExclusive
+	}
+	// No need  to update the exisitng mode.
+	if newMode == previousMode {
+		newMode = LockInvalid
+	}
+	return newMode, true
 }
 
 type sqlTableManager struct {
@@ -67,7 +120,17 @@ type sqlTableManager struct {
 	sessionID    string
 	sessionMapFn SessionMapProvider
 	stopper      *stop.Stopper
-	heldLocks    map[int]int
+	heldLocks    map[int]*sqlLockInfo
+}
+
+func (s *sqlTableManager) getLockInfo(id int) *sqlLockInfo {
+	lockInfo, exists := s.heldLocks[id]
+	if exists {
+		return lockInfo
+	}
+	lockInfo = &sqlLockInfo{}
+	s.heldLocks[id] = lockInfo
+	return lockInfo
 }
 
 func (s *sqlTableManager) AcquireLock(ctx context.Context, id int, mode LockMode, wait bool) error {
@@ -78,8 +141,10 @@ func (s *sqlTableManager) AcquireLock(ctx context.Context, id int, mode LockMode
 		}
 	}()
 	r := retry.StartWithCtx(ctx, retry.Options{})
-	if s.heldLocks[id] > 0 {
-		s.heldLocks[id] = s.heldLocks[id] + 1
+	lockInfo := s.getLockInfo(id)
+	acquired, upgradeLock := lockInfo.maybeAcquireIfCompatible(mode)
+	// Lock was acquired nothing needs to be done here.
+	if acquired {
 		return nil
 	}
 	var userError error
@@ -87,7 +152,11 @@ func (s *sqlTableManager) AcquireLock(ctx context.Context, id int, mode LockMode
 		retryAgain := false
 		err := s.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
 			var err error
-			retryAgain, err = s.doAdvisoryLockAcquire(ctx, txn, id, mode, wait)
+			if !upgradeLock {
+				retryAgain, err = s.doAdvisoryLockAcquire(ctx, txn, id, mode, wait)
+			} else {
+				retryAgain, err = s.doAdvisoryLockUpgrade(ctx, txn, id, wait)
+			}
 			if err != nil {
 				return err
 			}
@@ -107,7 +176,7 @@ func (s *sqlTableManager) AcquireLock(ctx context.Context, id int, mode LockMode
 	if userError != nil {
 		return userError
 	}
-	s.heldLocks[id] = s.heldLocks[id] + 1
+	lockInfo.addRefCount(mode)
 	return nil
 }
 
@@ -115,8 +184,10 @@ func (s *sqlTableManager) ReleaseLock(id int) error {
 	if _, exists := s.heldLocks[id]; !exists {
 		return errors.New("lock not held")
 	}
-	s.heldLocks[id] = s.heldLocks[id] - 1
-	if s.heldLocks[id] > 0 {
+	lockInfo := s.getLockInfo(id)
+	lockMode, isHeld := lockInfo.removeRefCount()
+	// Lock mode hasn't changed and its still held.
+	if lockMode == LockInvalid && isHeld {
 		return nil
 	}
 	err := s.db.Txn(context.Background(), func(ctx context.Context, txn *kv.Txn) error {
@@ -137,11 +208,22 @@ func (s *sqlTableManager) ReleaseLock(id int) error {
 		}
 		// Find our holder and remove it
 		var newValue roachpb.Value
-		for idx, holder := range currentLock.HolderSessionId {
-			if holder == s.sessionID {
-				currentLock.HolderSessionId = append(currentLock.HolderSessionId[:idx], currentLock.HolderSessionId[idx+1:]...)
-				break
+		if !isHeld {
+			for idx, holder := range currentLock.HolderSessionId {
+				if holder == s.sessionID {
+					currentLock.HolderSessionId = append(currentLock.HolderSessionId[:idx], currentLock.HolderSessionId[idx+1:]...)
+					break
+				}
 			}
+		}
+		// Updathe lock mode if it has changed.
+		switch lockMode {
+		case LockShared:
+			currentLock.LockState = descpb.AdvisoryLockTracking_SHARED
+		case LockExclusive:
+			currentLock.LockState = descpb.AdvisoryLockTracking_EXCLUSIVE
+		default:
+			// Mode hasn't changed.
 		}
 		err = newValue.SetProto(&currentLock)
 		if err != nil {
@@ -152,13 +234,15 @@ func (s *sqlTableManager) ReleaseLock(id int) error {
 	if err != nil {
 		return err
 	}
-	delete(s.heldLocks, id)
+	if lockMode == LockInvalid && !isHeld {
+		delete(s.heldLocks, id)
+	}
 	return nil
 }
 
 func (s *sqlTableManager) ReleaseAllLocks() error {
 	heldLocks := s.heldLocks
-	s.heldLocks = make(map[int]int)
+	s.heldLocks = make(map[int]*sqlLockInfo)
 	for id := range heldLocks {
 		if err := s.ReleaseLock(id); err != nil {
 			return err
@@ -179,7 +263,7 @@ func NewSQLManager(
 		codec:        codec,
 		sessionID:    sessionID,
 		sessionMapFn: provider,
-		heldLocks:    make(map[int]int),
+		heldLocks:    make(map[int]*sqlLockInfo),
 		stopper:      stopper,
 	}
 }
@@ -205,10 +289,18 @@ func (s *sqlTableManager) checkForDeadlocks(
 				return err
 			}
 			lockID := int(lock.Lock)
+			checkedSesionIsHoldLock := false
 			for _, holder := range lock.HolderSessionId {
+				if holder == sessionID {
+					checkedSesionIsHoldLock = true
+				}
 				lockHolders[lockID] = append(lockHolders[lockID], holder)
 			}
 			for _, waiter := range lock.Waiters {
+				// Exclude self deadlocks.
+				if *waiter.SessionId == sessionID && checkedSesionIsHoldLock {
+					continue
+				}
 				sessionsWaitingForLocks[*waiter.SessionId] = append(sessionsWaitingForLocks[*waiter.SessionId], lockID)
 			}
 		}
@@ -239,7 +331,6 @@ func (s *sqlTableManager) checkForDeadlocks(
 		}
 		// Check if this session is involved in a deadlock.
 		// TODO: For this prototype all members of the cycle are terminated.
-		// FIXME: We need to remove this as a lock waiter next.
 		if hasCycle(sessionID) {
 			deadlock = true
 			return nil
@@ -293,13 +384,151 @@ func (s *sqlTableManager) removeWaiterOnCancellation(ctx context.Context, id int
 	}
 }
 
+func (s *sqlTableManager) doAdvisoryLockUpgrade(
+	ctx context.Context, txn *kv.Txn, id int, wait bool,
+) (retry bool, err error) {
+	// Construct the key needed for this lock.
+	lockPrefix := s.codec.AdvisoryLockKeyPrefix(uint32(id))
+
+	currentLock := descpb.AdvisoryLockTracking{Lock: int32(id)}
+
+	// Fetch the existing value that is stored for the lock.
+	currentValue, err := txn.Get(ctx, lockPrefix)
+	if err != nil {
+		return false, err
+	}
+	if currentValue.Exists() {
+		if err := currentValue.Value.GetProto(&currentLock); err != nil {
+			return false, err
+		}
+	}
+
+	var newValue roachpb.Value
+	lockValue := descpb.AdvisoryLockTracking_EXCLUSIVE
+
+	uncontendedUpgrade := func() bool {
+		// Simple case: If the lock is already held by us, then we just need to switch the state.
+		if len(currentLock.HolderSessionId) == 1 && len(currentLock.Waiters) == 0 {
+			currentLock.LockState = lockValue
+			return true
+		}
+		// If its not held, and we are the first waiter then we can get it.
+		if len(currentLock.HolderSessionId) == 0 && len(currentLock.Waiters) > 0 &&
+			*currentLock.Waiters[0].SessionId == s.sessionID {
+			currentLock.LockState = lockValue
+			currentLock.Waiters = currentLock.Waiters[1:]
+			return true
+		}
+		return false
+	}
+
+	writeLockState := func() error {
+		if err := newValue.SetProto(&currentLock); err != nil {
+			return err
+		}
+		var oldValue []byte
+		if currentValue.Exists() {
+			oldValue = currentValue.Value.TagAndDataBytes()
+		}
+		err := txn.CPut(ctx, lockPrefix, &newValue, oldValue)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	acquired := uncontendedUpgrade()
+
+	// If the uncontended upgrade succeeded write the new value
+	if acquired {
+		return false, writeLockState()
+	}
+	// We need to wait for this lock next.
+	if !wait {
+		return false, errors.New("cannot wait for lock")
+	}
+	// Check we are on the wait list already.
+	needToAdd := true
+	for _, waiter := range currentLock.Waiters {
+		if *waiter.SessionId == s.sessionID {
+			needToAdd = false
+		}
+	}
+	// Add into the wait list if needed.
+	if needToAdd {
+		currentLock.Waiters = append(currentLock.Waiters, &descpb.AdvisoryLockTracking_LockWaiter{
+			SessionId:    &s.sessionID,
+			RequiredType: &lockValue,
+		})
+		return true, writeLockState()
+	}
+	// Scan if we are at the head due to dead sessions.
+	sessionList, err := s.sessionMapFn()
+	if err != nil {
+		return true, err
+	}
+	numActive := 0
+	offset := 0
+	for _, waiter := range currentLock.Waiters {
+		if _, found := sessionList[*waiter.SessionId]; !found {
+			numActive++
+			break
+		} else {
+			offset++
+		}
+		// We are at the head of the queue.
+		if *waiter.SessionId == s.sessionID {
+			break
+		}
+	}
+	checkForDeadlocksBeforeRetry := func() (bool, error) {
+		hasDeadlock, err := s.checkForDeadlocks(ctx, s.sessionID)
+		if err != nil {
+			return true, err
+		}
+		if hasDeadlock {
+			// Remove ourselves from the wait queue.
+			for idx, waiter := range currentLock.Waiters {
+				if *waiter.SessionId == s.sessionID {
+					currentLock.Waiters = append(currentLock.Waiters[:idx], currentLock.Waiters[idx+1:]...)
+					break
+				}
+			}
+			if err := writeLockState(); err != nil {
+				return true, err
+			}
+			return false, deadlockError
+		}
+		return true, nil
+	}
+
+	// Retry, we are not at the head of the queue,
+	// if we ignore dead sessions.
+	if numActive > 0 {
+		return checkForDeadlocksBeforeRetry()
+	}
+	// Next, validate if there are no holders or all of them are dead.
+	for _, holder := range currentLock.HolderSessionId {
+		if holder == s.sessionID {
+			continue
+		}
+		// Holder is still alive.
+		if _, found := sessionList[holder]; found {
+			return checkForDeadlocksBeforeRetry()
+		}
+	}
+	// Otherwise, truncate the list to our session.
+	currentLock.Waiters = currentLock.Waiters[offset:]
+	// Mark the lock as held finally.
+	currentLock.LockState = lockValue
+	return false, writeLockState()
+}
+
 // doAdvisoryLockAcquire will run with a transaction and attempt to acquire
 // the advisory lock. When acquistion is complete retry will be false; otherwise,
 // another attempt should be made with a fresh transaction.
 func (s *sqlTableManager) doAdvisoryLockAcquire(
 	ctx context.Context, txn *kv.Txn, id int, mode LockMode, wait bool,
 ) (retry bool, err error) {
-	// FIXME: Handle lock upgrades and downgrades...
 	isShared := mode == LockShared
 	// Construct the key needed for this lock.
 	lockPrefix := s.codec.AdvisoryLockKeyPrefix(uint32(id))
