@@ -1,0 +1,27 @@
+# Test pg_catalog.pg_locks for advisory locks
+
+statement ok
+SELECT pg_advisory_lock(12345)
+
+query TTTIITITTITITBB regexp
+SELECT * FROM pg_catalog.pg_locks WHERE objid = 12345
+----
+advisory 0 0 0 0 NULL NULL 0 12345 1 .* 0 ExclusiveLock true false
+
+statement ok
+SELECT pg_advisory_unlock(12345)
+
+query TTTIITITTITITBB
+SELECT * FROM pg_catalog.pg_locks WHERE objid = 12345
+----
+
+statement ok
+SELECT pg_advisory_lock_shared(67890)
+
+query TTTIITITTITITBB regexp
+SELECT * FROM pg_catalog.pg_locks WHERE objid = 67890
+----
+advisory 0 0 0 0 NULL NULL 0 67890 1 .* 0 ShareLock true false
+
+statement ok
+SELECT pg_advisory_unlock_shared(67890)

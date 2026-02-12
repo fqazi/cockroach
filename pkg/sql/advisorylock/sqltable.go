@@ -164,6 +164,25 @@ type sqlTableManager struct {
 	txnStack []map[int][]LockMode
 }
 
+func (s *sqlTableManager) GetAllLocks() (locks map[int]*descpb.AdvisoryLockTracking, err error) {
+	err = s.db.Txn(context.Background(), func(ctx context.Context, txn *kv.Txn) error {
+		allRows, err := txn.Scan(ctx, s.codec.AdvisoryLockBase(), s.codec.AdvisoryLockBase().PrefixEnd(), 0)
+		if err != nil {
+			return err
+		}
+		locks = make(map[int]*descpb.AdvisoryLockTracking)
+		for _, kv := range allRows {
+			lock := descpb.AdvisoryLockTracking{}
+			if err := kv.Value.GetProto(&lock); err != nil {
+				return err
+			}
+			locks[int(lock.Lock)] = &lock
+		}
+		return nil
+	})
+	return locks, err
+}
+
 func (s *sqlTableManager) getLockInfo(id int) *sqlLockInfo {
 	lockInfo, exists := s.heldLocks[id]
 	if exists {

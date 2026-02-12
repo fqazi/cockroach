@@ -1449,6 +1449,13 @@ func TestRepeatableReadLogic_pg_extension(
 	runLogicTest(t, "pg_extension")
 }
 
+func TestRepeatableReadLogic_pg_locks(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runLogicTest(t, "pg_locks")
+}
+
 func TestRepeatableReadLogic_pg_lsn(
 	t *testing.T,
 ) {

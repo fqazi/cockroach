@@ -2286,9 +2286,70 @@ var pgCatalogLocksTable = virtualSchemaTable{
 https://www.postgresql.org/docs/9.6/view-pg-locks.html`,
 	schema: vtable.PGCatalogLocks,
 	populate: func(ctx context.Context, p *planner, dbContext catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
+		locks, err := p.advisoryLockManager.GetAllLocks()
+		if err != nil {
+			return err
+		}
+		for id, l := range locks {
+			classID := uint32((id >> 32) & 0xFFFFFFFF)
+			objID := uint32(id & 0xFFFFFFFF)
+			objSubID := 1 // FIXME: We need a tag bit...
+
+			// Report holders
+			for _, holder := range l.HolderSessionId {
+				mode := "ShareLock"
+				if l.LockState == descpb.AdvisoryLockTracking_EXCLUSIVE {
+					mode = "ExclusiveLock"
+				}
+				if err := addRow(
+					tree.NewDString("advisory"),       // locktype
+					dbOid(dbContext.GetID()),          // database (stub)
+					oidZero,                           // relation
+					zeroVal,                           // page
+					zeroVal,                           // tuple
+					tree.DNull,                        // virtualxid
+					tree.DNull,                        // transactionid
+					tree.NewDOid(oid.Oid(classID)),    // classid
+					tree.NewDOid(oid.Oid(objID)),      // objid
+					tree.NewDInt(tree.DInt(objSubID)), // objsubid
+					tree.NewDString(holder),           // virtualtransaction
+					zeroVal,                           // pid
+					tree.NewDString(mode),             // mode
+					tree.DBoolTrue,                    // granted
+					tree.DBoolFalse,                   // fastpath
+				); err != nil {
+					return err
+				}
+			}
+			// Report waiters
+			for _, waiter := range l.Waiters {
+				mode := "ShareLock"
+				if *waiter.RequiredType == descpb.AdvisoryLockTracking_EXCLUSIVE {
+					mode = "ExclusiveLock"
+				}
+				if err := addRow(
+					tree.NewDString("advisory"),        // locktype
+					oidZero,                            // database
+					oidZero,                            // relation
+					zeroVal,                            // page
+					zeroVal,                            // tuple
+					tree.DNull,                         // virtualxid
+					tree.DNull,                         // transactionid
+					tree.NewDOid(oid.Oid(classID)),     // classid
+					tree.NewDOid(oid.Oid(objID)),       // objid
+					tree.NewDInt(tree.DInt(objSubID)),  // objsubid
+					tree.NewDString(*waiter.SessionId), // virtualtransaction
+					zeroVal,                            // pid
+					tree.NewDString(mode),              // mode
+					tree.DBoolFalse,                    // granted
+					tree.DBoolFalse,                    // fastpath
+				); err != nil {
+					return err
+				}
+			}
+		}
 		return nil
 	},
-	unimplemented: true,
 }
 
 var pgCatalogMatViewsTable = virtualSchemaTable{

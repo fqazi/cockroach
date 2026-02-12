@@ -3,6 +3,7 @@ package advisorylock
 import (
 	"context"
 
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/errors"
 )
 
@@ -21,6 +22,7 @@ type Manager interface {
 	AcquireLock(ctx context.Context, id int, mode LockMode, wait bool, txnScoped bool) error
 	ReleaseLock(id int, mode LockMode) error
 	ReleaseAllLocks() error
+	GetAllLocks() (map[int]*descpb.AdvisoryLockTracking, error)
 
 	// Savepoint creates a new savepoint on the transaction stack.
 	Savepoint()

@@ -30,6 +30,10 @@ func (m *kvLockTableManager) ReleaseAllForSession(ctx context.Context) error {
 	panic("implement me")
 }
 
+func (m *kvLockTableManager) GetAllLocks() (map[int]*descpb.AdvisoryLockTracking, error) {
+	return make(map[int]*descpb.AdvisoryLockTracking), nil
+}
+
 func NewManager(db *kv.DB, codec keys.SQLCodec, sessionID string) Manager {
 	return &kvLockTableManager{
 		locks:     make(map[int]*LockData),

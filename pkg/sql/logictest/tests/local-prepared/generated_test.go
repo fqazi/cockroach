@@ -934,6 +934,13 @@ func TestLogic_pg_extension(
 	runLogicTest(t, "pg_extension")
 }
 
+func TestLogic_pg_locks(
+	t *testing.T,
+) {
+	defer leaktest.AfterTest(t)()
+	runLogicTest(t, "pg_locks")
+}
+
 func TestLogic_poison_after_push(
 	t *testing.T,
 ) {
