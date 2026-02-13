@@ -1250,7 +1250,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, false, true /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int64(id), eval.AdvisoryLockShared, false, true /*txnScoped*/)
 				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
 					return tree.DBoolFalse, nil
 				}
@@ -1264,7 +1264,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, false, true /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, id, eval.AdvisoryLockShared, false, true /*txnScoped*/)
 				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
 					return tree.DBoolFalse, nil
 				}
@@ -1280,7 +1280,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, false, true /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int64(id), eval.AdvisoryLockExclusive, false, true /*txnScoped*/)
 				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
 					return tree.DBoolFalse, nil
 				}
@@ -1294,7 +1294,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, false, true /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, id, eval.AdvisoryLockExclusive, false, true /*txnScoped*/)
 				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
 					return tree.DBoolFalse, nil
 				}
@@ -1310,7 +1310,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Void),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, true, true /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int64(id), eval.AdvisoryLockExclusive, true, true /*txnScoped*/)
 				return tree.DVoidDatum, err
 			},
 			Info:       notUsableInfo,
@@ -1321,7 +1321,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Void),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, true, true /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, id, eval.AdvisoryLockExclusive, true, true /*txnScoped*/)
 				return tree.DVoidDatum, err
 			},
 			Info:       notUsableInfo,
@@ -1334,7 +1334,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Void),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, true, false /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int64(id), eval.AdvisoryLockExclusive, true, false /*txnScoped*/)
 				return tree.DVoidDatum, err
 			},
 			Info:       notUsableInfo,
@@ -1345,7 +1345,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Void),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, true, false /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, id, eval.AdvisoryLockExclusive, true, false /*txnScoped*/)
 				return tree.DVoidDatum, err
 			},
 			Info:       notUsableInfo,
@@ -1358,7 +1358,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Void),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, true, true /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int64(id), eval.AdvisoryLockShared, true, true /*txnScoped*/)
 				return tree.DVoidDatum, err
 			},
 			Info:       notUsableInfo,
@@ -1369,7 +1369,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Void),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, true, true /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, id, eval.AdvisoryLockShared, true, true /*txnScoped*/)
 				return tree.DVoidDatum, err
 			},
 			Info:       notUsableInfo,
@@ -1382,7 +1382,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Void),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, true, false /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int64(id), eval.AdvisoryLockShared, true, false /*txnScoped*/)
 				return tree.DVoidDatum, err
 			},
 			Info:       notUsableInfo,
@@ -1393,7 +1393,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Void),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, true, false /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, id, eval.AdvisoryLockShared, true, false /*txnScoped*/)
 				return tree.DVoidDatum, err
 			},
 			Info:       notUsableInfo,
@@ -1406,7 +1406,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, false, false /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int64(id), eval.AdvisoryLockShared, false, false /*txnScoped*/)
 				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
 					return tree.DBoolFalse, nil
 				}
@@ -1420,7 +1420,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockShared, false, false /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, id, eval.AdvisoryLockShared, false, false /*txnScoped*/)
 				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
 					return tree.DBoolFalse, nil
 				}
@@ -1436,7 +1436,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, false, false /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, int64(id), eval.AdvisoryLockExclusive, false, false /*txnScoped*/)
 				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
 					return tree.DBoolFalse, nil
 				}
@@ -1451,7 +1451,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
-				err := evalCtx.Planner.AdvisoryLock(ctx, int(id), eval.AdvisoryLockExclusive, false, false /*txnScoped*/)
+				err := evalCtx.Planner.AdvisoryLock(ctx, id, eval.AdvisoryLockExclusive, false, false /*txnScoped*/)
 				if errors.Is(err, advisorylock.ErrLockNotAcquired) {
 					return tree.DBoolFalse, nil
 				}
@@ -1468,7 +1468,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLockRelease(ctx, int(id), eval.AdvisoryLockExclusive)
+				err := evalCtx.Planner.AdvisoryLockRelease(ctx, int64(id), eval.AdvisoryLockExclusive)
 				if errors.Is(err, advisorylock.ErrLockNotHeld) {
 					return tree.DBoolFalse, nil
 				}
@@ -1482,7 +1482,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
-				err := evalCtx.Planner.AdvisoryLockRelease(ctx, int(id), eval.AdvisoryLockExclusive)
+				err := evalCtx.Planner.AdvisoryLockRelease(ctx, id, eval.AdvisoryLockExclusive)
 				if errors.Is(err, advisorylock.ErrLockNotHeld) {
 					return tree.DBoolFalse, nil
 				}
@@ -1499,7 +1499,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := tree.MustBeDInt(args[0])
-				err := evalCtx.Planner.AdvisoryLockRelease(ctx, int(id), eval.AdvisoryLockShared)
+				err := evalCtx.Planner.AdvisoryLockRelease(ctx, int64(id), eval.AdvisoryLockShared)
 				if errors.Is(err, advisorylock.ErrLockNotHeld) {
 					return tree.DBoolFalse, nil
 				}
@@ -1513,7 +1513,7 @@ FROM defaults_parsed
 			ReturnType: tree.FixedReturnType(types.Bool),
 			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 				id := (int64(tree.MustBeDInt(args[0])) << 32) | (int64(tree.MustBeDInt(args[1])) & 0xFFFFFFFF)
-				err := evalCtx.Planner.AdvisoryLockRelease(ctx, int(id), eval.AdvisoryLockShared)
+				err := evalCtx.Planner.AdvisoryLockRelease(ctx, id, eval.AdvisoryLockShared)
 				if errors.Is(err, advisorylock.ErrLockNotHeld) {
 					return tree.DBoolFalse, nil
 				}

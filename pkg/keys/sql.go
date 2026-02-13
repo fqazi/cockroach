@@ -255,7 +255,7 @@ func (e sqlEncoder) StartupMigrationKeyPrefix() roachpb.Key {
 
 // AdvisoryLockPrefix returns the key prefix for exclusive
 // locks.
-func (e sqlEncoder) AdvisoryLockPrefix(id uint32) roachpb.Key {
+func (e sqlEncoder) AdvisoryLockPrefix(id int64) roachpb.Key {
 	k := e.AdvisoryLockKeyPrefix(id)
 	k = encoding.EncodeStringAscending(k, "Lock")
 	return k
@@ -263,7 +263,7 @@ func (e sqlEncoder) AdvisoryLockPrefix(id uint32) roachpb.Key {
 
 // AdvisoryLockMetaPrefix returns the key prefix for exclusive
 // locks.
-func (e sqlEncoder) AdvisoryLockMetaPrefix(id uint32) roachpb.Key {
+func (e sqlEncoder) AdvisoryLockMetaPrefix(id int64) roachpb.Key {
 	k := e.AdvisoryLockKeyPrefix(id)
 	k = encoding.EncodeStringAscending(k, "Meta")
 	return k
@@ -275,7 +275,7 @@ func (e sqlEncoder) AdvisoryLockBase() roachpb.Key {
 
 // AdvisoryLockKeyPrefix returns the key prefix for an advisory lock under
 // a certain ID.
-func (e sqlEncoder) AdvisoryLockKeyPrefix(id uint32) roachpb.Key {
+func (e sqlEncoder) AdvisoryLockKeyPrefix(id int64) roachpb.Key {
 	k := append(e.TenantPrefix(), AdvisoryLockPrefix...)
 	k = encoding.EncodeUvarintAscending(k, uint64(id))
 	return k
@@ -283,7 +283,7 @@ func (e sqlEncoder) AdvisoryLockKeyPrefix(id uint32) roachpb.Key {
 
 // AdvisoryLockWaitingKeyPrefix returns the key for a waiting exclusive lock request.
 // Format: AdvisoryLockPrefix + ID + "Waiting" + sessionID
-func (e sqlEncoder) AdvisoryLockWaitingKeyPrefix(id uint32, sessionID string) roachpb.Key {
+func (e sqlEncoder) AdvisoryLockWaitingKeyPrefix(id int64, sessionID string) roachpb.Key {
 	k := e.AdvisoryLockKeyPrefix(id)
 	k = encoding.EncodeStringAscending(k, "Waiting")
 	k = encoding.EncodeStringAscending(k, sessionID)
@@ -291,7 +291,7 @@ func (e sqlEncoder) AdvisoryLockWaitingKeyPrefix(id uint32, sessionID string) ro
 }
 
 // AdvisoryLockAllWaitingPrefix returns the prefix to scan all waiting requests for a lock.
-func (e sqlEncoder) AdvisoryLockAllWaitingPrefix(id uint32) roachpb.Key {
+func (e sqlEncoder) AdvisoryLockAllWaitingPrefix(id int64) roachpb.Key {
 	k := e.AdvisoryLockKeyPrefix(id)
 	k = encoding.EncodeStringAscending(k, "Waiting")
 	return k
@@ -299,7 +299,7 @@ func (e sqlEncoder) AdvisoryLockAllWaitingPrefix(id uint32) roachpb.Key {
 
 // AdvisoryLockExclusiveKeyPrefix returns the key prefix for exclusive
 // locks.
-func (e sqlEncoder) AdvisoryLockExclusiveKeyPrefix(id uint32) roachpb.Key {
+func (e sqlEncoder) AdvisoryLockExclusiveKeyPrefix(id int64) roachpb.Key {
 	k := e.AdvisoryLockKeyPrefix(id)
 	k = encoding.EncodeStringAscending(k, "Exclusive")
 	return k
@@ -307,7 +307,7 @@ func (e sqlEncoder) AdvisoryLockExclusiveKeyPrefix(id uint32) roachpb.Key {
 
 // AdvisoryLockSharedKeyPrefix returns the key prefix for shared
 // locks.
-func (e sqlEncoder) AdvisoryLockSharedKeyPrefix(id uint32, sessionID string) roachpb.Key {
+func (e sqlEncoder) AdvisoryLockSharedKeyPrefix(id int64, sessionID string) roachpb.Key {
 	k := e.AdvisoryLockKeyPrefix(id)
 	k = encoding.EncodeStringAscending(k, "Shared")
 	k = encoding.EncodeStringAscending(k, sessionID)
@@ -316,7 +316,7 @@ func (e sqlEncoder) AdvisoryLockSharedKeyPrefix(id uint32, sessionID string) roa
 
 func (d sqlDecoder) DecodeAdvisoryLockWaitingKeyPrefix(
 	key roachpb.Key,
-) (id uint32, sessionID string, err error) {
+) (id int64, sessionID string, err error) {
 	remaining, err := d.StripTenantPrefix(key)
 	if err != nil {
 		return 0, "", err
@@ -339,7 +339,7 @@ func (d sqlDecoder) DecodeAdvisoryLockWaitingKeyPrefix(
 	if err != nil {
 		return 0, "", err
 	}
-	return uint32(idInt), sessionID, nil
+	return int64(idInt), sessionID, nil
 }
 
 func (d sqlDecoder) DecodeAdvisoryLockKey(

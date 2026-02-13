@@ -12,14 +12,14 @@ import (
 )
 
 type LockData struct {
-	id       int
+	id       int64
 	mode     LockMode
 	txn      *kv.Txn
 	refCount int
 }
 
 type kvLockTableManager struct {
-	locks     map[int]*LockData
+	locks     map[int64]*LockData
 	db        *kv.DB
 	codec     keys.SQLCodec
 	sessionID string
@@ -30,13 +30,13 @@ func (m *kvLockTableManager) ReleaseAllForSession(ctx context.Context) error {
 	panic("implement me")
 }
 
-func (m *kvLockTableManager) GetAllLocks() (map[int]*descpb.AdvisoryLockTracking, error) {
-	return make(map[int]*descpb.AdvisoryLockTracking), nil
+func (m *kvLockTableManager) GetAllLocks() (map[int64]*descpb.AdvisoryLockTracking, error) {
+	return make(map[int64]*descpb.AdvisoryLockTracking), nil
 }
 
 func NewManager(db *kv.DB, codec keys.SQLCodec, sessionID string) Manager {
 	return &kvLockTableManager{
-		locks:     make(map[int]*LockData),
+		locks:     make(map[int64]*LockData),
 		db:        db,
 		codec:     codec,
 		sessionID: sessionID,
@@ -44,9 +44,9 @@ func NewManager(db *kv.DB, codec keys.SQLCodec, sessionID string) Manager {
 }
 
 func (m *kvLockTableManager) updateTrackingInfo(
-	id int, retryabe func(tracking *descpb.AdvisoryLockTracking),
+	id int64, retryabe func(tracking *descpb.AdvisoryLockTracking),
 ) error {
-	key := m.codec.AdvisoryLockMetaPrefix(uint32(id))
+	key := m.codec.AdvisoryLockMetaPrefix(id)
 	return m.db.Txn(context.Background(), func(ctx context.Context, txn *kv.Txn) error {
 		var tracking descpb.AdvisoryLockTracking
 		kv, err := txn.Get(ctx, key)
@@ -72,7 +72,7 @@ func (m *kvLockTableManager) updateTrackingInfo(
 }
 
 func (m *kvLockTableManager) AcquireLock(
-	ctx context.Context, id int, mode LockMode, wait bool, txnScoped bool,
+	ctx context.Context, id int64, mode LockMode, wait bool, txnScoped bool,
 ) error {
 	if txnScoped {
 		return errors.New("txn scoped locks not implemented for kvLockTableManager")
@@ -91,7 +91,7 @@ func (m *kvLockTableManager) AcquireLock(
 	entry = &LockData{id: id, mode: mode, refCount: 1}
 
 	// Create the key if doesn't exist.
-	key := m.codec.AdvisoryLockPrefix(uint32(id))
+	key := m.codec.AdvisoryLockPrefix(id)
 	err := m.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
 		v, err := txn.Get(ctx, key)
 		if err != nil || v.Exists() {
@@ -118,7 +118,7 @@ func (m *kvLockTableManager) AcquireLock(
 	entry.txn = txn
 	m.locks[id] = entry
 	return m.updateTrackingInfo(id, func(tracking *descpb.AdvisoryLockTracking) {
-		tracking.Lock = int32(id)
+		tracking.Lock = id
 		if mode == LockShared {
 			tracking.LockState = descpb.AdvisoryLockTracking_EXCLUSIVE
 
@@ -135,7 +135,7 @@ func (m *kvLockTableManager) ReleaseSavepoint()    {}
 func (m *kvLockTableManager) RollbackToSavepoint() {}
 func (m *kvLockTableManager) FinishTransaction()   {}
 
-func (m *kvLockTableManager) ReleaseLock(id int, mode LockMode) error {
+func (m *kvLockTableManager) ReleaseLock(id int64, mode LockMode) error {
 	entry := m.locks[id]
 	entry.refCount--
 	if entry.refCount == 0 {
@@ -145,7 +145,7 @@ func (m *kvLockTableManager) ReleaseLock(id int, mode LockMode) error {
 			return err
 		}
 		return m.updateTrackingInfo(id, func(tracking *descpb.AdvisoryLockTracking) {
-			tracking.Lock = int32(id)
+			tracking.Lock = id
 			for idx, sessionId := range tracking.HolderSessionId {
 				if sessionId == m.sessionID {
 					tracking.HolderSessionId = append(tracking.HolderSessionId[:idx], tracking.HolderSessionId[idx+1:]...)
@@ -164,7 +164,7 @@ func (m *kvLockTableManager) ReleaseAllLocks() error {
 			return err
 		}
 	}
-	m.locks = make(map[int]*LockData)
+	m.locks = make(map[int64]*LockData)
 	return nil
 }
 

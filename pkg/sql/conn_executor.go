@@ -1257,6 +1257,54 @@ func (s *Server) newConnExecutor(
 			sessionMap[id.String()] = struct{}{}
 		}
 		return sessionMap, nil
+	}, func(ctx context.Context, sessionID string) ([]string, error) {
+		// WaitGraphProvider implementation:
+		// Checks if the given session (holder of advisory lock) is waiting on any KV locks.
+		// If so, returns the session IDs of the holders of those KV locks.
+
+		// This query finds the session_id of the holder of a lock that the target session (sessionID) is waiting for.
+		// 1. target_txn: Resolve sessionID to txn_id.
+		// 2. waiting_keys: Find keys where this txn_id is waiting (granted=false) and contended=true.
+		// 3. blocking_sessions: Find the holder (granted=true) of those keys and resolve back to session_id.
+		const query = `
+WITH target_txn AS (
+    SELECT id AS txn_id FROM crdb_internal.cluster_transactions WHERE session_id = $1
+),
+waiting_keys AS (
+    SELECT lock.lock_key
+    FROM crdb_internal.cluster_locks lock
+    JOIN target_txn tt ON lock.txn_id = tt.txn_id
+    WHERE lock.granted = false AND lock.contended = true
+)
+SELECT ct.session_id
+FROM crdb_internal.cluster_locks lock
+JOIN waiting_keys wk ON lock.lock_key = wk.lock_key
+JOIN crdb_internal.cluster_transactions ct ON lock.txn_id = ct.id
+WHERE lock.granted = true AND lock.contended = true
+`
+		// Use InternalExecutor to run the query.
+		// We need a session data override to run as root/node user.
+		ie := MakeInternalExecutor(s, MemoryMetrics{}, s.pool)
+		sessionOverride := sessiondata.InternalExecutorOverride{
+			User: username.NodeUserName(),
+		}
+
+		rows, err := ie.QueryBufferedEx(
+			ctx, "advisory-lock-deadlock-check", nil /* txn */, sessionOverride, query, sessionID,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		var blockingSessions []string
+		for _, row := range rows {
+			if len(row) > 0 {
+				if sID, ok := row[0].(*tree.DString); ok {
+					blockingSessions = append(blockingSessions, string(*sID))
+				}
+			}
+		}
+		return blockingSessions, nil
 	}, s.cfg.Stopper)
 	ex.rng.internal = rand.New(rand.NewSource(timeutil.Now().UnixNano()))
 

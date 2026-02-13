@@ -1958,7 +1958,7 @@ message DescriptorUpdates {
 }
 
 message AdvisoryLockTracking {
-  required int32 lock = 1 [(gogoproto.nullable) = false];;
+  required int64 lock = 1 [(gogoproto.nullable) = false];;
   enum LockType {
     SHARED = 0;
     EXCLUSIVE = 1;

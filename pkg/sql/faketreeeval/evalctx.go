@@ -602,12 +602,12 @@ func (ep *DummyEvalPlanner) ProcessVectorIndexFixups(
 }
 
 func (ep *DummyEvalPlanner) AdvisoryLock(
-	ctx context.Context, id int, mode eval.AdvisoryLockModes, wait bool, txnScoped bool,
+	ctx context.Context, id int64, mode eval.AdvisoryLockModes, wait bool, txnScoped bool,
 ) (err error) {
 	return errors.AssertionFailedf("AdvisoryLock unimplemented")
 }
 func (ep *DummyEvalPlanner) AdvisoryLockRelease(
-	ctx context.Context, id int, mode eval.AdvisoryLockModes,
+	ctx context.Context, id int64, mode eval.AdvisoryLockModes,
 ) (err error) {
 	return errors.AssertionFailedf("AdvisoryLockRelease unimplemented")
 }

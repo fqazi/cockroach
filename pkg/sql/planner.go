@@ -15,8 +15,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keyvisualizer"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/repstream"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
@@ -60,7 +58,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
-	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
@@ -1179,200 +1176,8 @@ func (p *planner) ResetLeaseTimestamp(ctx context.Context) {
 	p.Descriptors().ResetLeaseTimestamp(ctx)
 }
 
-func (p *planner) checkForWaiters(
-	ctx context.Context, txn *kv.Txn, id int,
-) (hasEarlierWaiters bool, keyToDelete *roachpb.Key, err error) {
-	b := txn.NewBatch()
-	waitPrefix := p.EvalContext().Codec.AdvisoryLockAllWaitingPrefix(uint32(id))
-	b.Scan(waitPrefix, waitPrefix.PrefixEnd())
-	err = txn.Run(ctx, b)
-	if err != nil {
-		return false, nil, err
-	}
-	// No waiters exist.
-	if len(b.Results[0].Rows) == 0 {
-		return false, nil, nil
-	}
-	req, err := p.makeSessionsRequest(ctx, true /* excludeClosed */)
-	if err != nil {
-		return false, nil, err
-	}
-	response, err := p.extendedEvalCtx.SQLStatusServer.ListSessions(ctx, &req)
-	if err != nil {
-		return false, nil, err
-	}
-	sessionMap := make(map[string]struct{})
-	for _, session := range response.Sessions {
-		id := uint128.FromBytes(session.ID)
-		sessionMap[id.String()] = struct{}{}
-	}
-	// Otherwise, lets see if the waiters are alive.
-	var lowestTime time.Time
-	lowestTimeSet := false
-	var sessionTime time.Time
-	sessionTimeSet := false
-	for _, row := range b.Results[0].Rows {
-		_, sessionID, err := p.EvalContext().Codec.DecodeAdvisoryLockWaitingKeyPrefix(row.Key)
-		if err != nil {
-			return false, nil, err
-		}
-		timestamp, err := row.Value.GetTime()
-		if err != nil {
-			return false, nil, err
-		}
-		// Exclude our own session.
-		if sessionID == p.ExtendedEvalContext().SessionID.String() {
-			sessionTime = timestamp
-			sessionTimeSet = true
-			tmp := row.Key.Clone()
-			keyToDelete = &tmp
-			continue
-		}
-		// Found one active waiter.
-		// FIXME: Clean the waiters?
-		if _, found := sessionMap[sessionID]; !found {
-			continue
-		}
-		if !lowestTimeSet || lowestTime.Before(timestamp) {
-			lowestTime = timestamp
-			lowestTimeSet = true
-		}
-	}
-	// There are other waiters that are earlier than us.
-	if sessionTimeSet && (!lowestTime.Before(sessionTime) || !lowestTimeSet) {
-		return false, keyToDelete, nil
-	}
-	return false, nil, nil
-}
-
-func (p *planner) AddAdvisoryLockWait(ctx context.Context, txn *kv.Txn, id int) error {
-	ts := p.ExecCfg().Clock.Now().GoTime()
-	key := p.EvalContext().Codec.AdvisoryLockWaitingKeyPrefix(uint32(id), p.ExtendedEvalContext().SessionID.String())
-	return txn.Put(ctx, key, ts)
-}
-
-func (p *planner) doAdvisoryLockAcquire(
-	ctx context.Context, txn *kv.Txn, id int, mode eval.AdvisoryLockModes, wait bool,
-) (retry bool, err error) {
-	isShared := mode == eval.AdvisoryLockShared
-	// FIXME: Use a seperate txn for session based.
-	// FIXME: We have no fairness here?
-	// FIXME: Add support for shared next.
-	// FIXME: We can have a new txn per operation.
-	// FIMXE: Inject a delete at the end.
-	// Construct the key needed for this lock.
-	lockPrefix := p.EvalContext().Codec.AdvisoryLockKeyPrefix(uint32(id))
-
-	// scanAndCheck scans the prefix to see if its already held.
-	// If useLock is true, it acquires a lock (ScanForUpdate/Share) and cleans up dead sessions.
-	scanAndCheck := func(useLock bool) (retry bool, err error) {
-		b := txn.NewBatch()
-		if useLock {
-			if !isShared {
-				b.ScanForUpdate(lockPrefix, lockPrefix.PrefixEnd(), kvpb.GuaranteedDurability)
-			} else {
-				b.ScanForShare(lockPrefix, lockPrefix.PrefixEnd(), kvpb.GuaranteedDurability)
-			}
-		} else {
-			b.Scan(lockPrefix, lockPrefix.PrefixEnd())
-			b.Header.WaitPolicy = lock.WaitPolicy_SkipLocked
-		}
-		if useLock {
-			b.Header.WaitPolicy = lock.WaitPolicy_Block
-			if !wait {
-				b.Header.WaitPolicy = lock.WaitPolicy_Error
-			}
-		}
-		err = txn.Run(ctx, b)
-		if err != nil {
-			return false, err
-		}
-		if len(b.Results[0].Rows) > 0 {
-			req, err := p.makeSessionsRequest(ctx, true /* excludeClosed */)
-			if err != nil {
-				return false, err
-			}
-			response, err := p.extendedEvalCtx.SQLStatusServer.ListSessions(ctx, &req)
-			if err != nil {
-				return false, err
-			}
-			sessionMap := make(map[string]struct{})
-			for _, session := range response.Sessions {
-				id := uint128.FromBytes(session.ID)
-				sessionMap[id.String()] = struct{}{}
-			}
-			for _, row := range b.Results[0].Rows {
-				_, exisingIsExclusive, sessionID, _, err := p.EvalContext().Codec.DecodeAdvisoryLockKey(row.Key, row.Value)
-				if err != nil {
-					return false, err
-				}
-				if _, exists := sessionMap[sessionID]; !exists {
-					if useLock {
-						_, err := txn.Del(ctx, row.Key)
-						if err != nil {
-							return false, err
-						}
-					}
-					continue
-				}
-				// Other shared locks are allowed.
-				if isShared && !exisingIsExclusive {
-					continue
-				}
-				// Otherwise, lets add a wait for ourselves.
-				return true, p.AddAdvisoryLockWait(ctx, txn, id)
-				//return txn.GenerateForcedRetryableErr(ctx, redact.Sprintf("retrying due to advisory lock conflict on session: %s", sessionID))
-			}
-		}
-		return false, nil
-	}
-	// Check if there are already waiters, which should
-	// cause us to join the queue.
-	hasWaiters, deleteKey, err := p.checkForWaiters(ctx, txn, id)
-	if err != nil {
-		return false, err
-	}
-	if hasWaiters {
-		// Line up and become another waiter.
-		err = p.AddAdvisoryLockWait(ctx, txn, id)
-		return true, err
-	}
-	// Otherwise, we were the earliest waiter, so remove
-	// our key.
-	if deleteKey != nil {
-		_, err := txn.Del(ctx, *deleteKey)
-		if err != nil {
-			return false, err
-		}
-	}
-	// First, check for conflicts without acquiring a lock. This avoids blocking
-	// other operations (like release) when the lock is already held.
-	if retry, err := scanAndCheck(false /* useLock */); err != nil || retry {
-		return retry, err
-	}
-	// If no conflict found (or we need to clean up), acquire the lock and proceed.
-	if retry, err := scanAndCheck(true /* useLock */); err != nil || retry {
-		return retry, err
-	}
-	// Write a key and mark this lock as exclusive.
-	lockKey := p.EvalContext().Codec.AdvisoryLockExclusiveKeyPrefix(uint32(id))
-	var value interface{} = p.ExtendedEvalContext().SessionID.String()
-	if isShared {
-		lockKey = p.EvalContext().Codec.AdvisoryLockSharedKeyPrefix(uint32(id), p.ExtendedEvalContext().SessionID.String())
-		value = 1
-	}
-	err = p.txn.CPut(ctx, lockKey, value, nil)
-	if errors.HasType(err, &kvpb.ConditionFailedError{}) {
-		// FIXME: Retry at a later time
-		return false, txn.GenerateForcedRetryableErr(ctx, "retrying due to advisory lock conflict")
-	} else if err != nil {
-		panic(err)
-	}
-	return false, nil
-}
-
 func (p *planner) AdvisoryLock(
-	ctx context.Context, id int, mode eval.AdvisoryLockModes, wait bool, txnScoped bool,
+	ctx context.Context, id int64, mode eval.AdvisoryLockModes, wait bool, txnScoped bool,
 ) (err error) {
 	aqMode := advisorylock.LockShared
 	if mode == eval.AdvisoryLockExclusive {
@@ -1381,7 +1186,7 @@ func (p *planner) AdvisoryLock(
 	return p.advisoryLockManager.AcquireLock(ctx, id, aqMode, wait, txnScoped /* txnScoped */)
 }
 func (p *planner) AdvisoryLockRelease(
-	ctx context.Context, id int, mode eval.AdvisoryLockModes,
+	ctx context.Context, id int64, mode eval.AdvisoryLockModes,
 ) (err error) {
 	aqMode := advisorylock.LockShared
 	if mode == eval.AdvisoryLockExclusive {

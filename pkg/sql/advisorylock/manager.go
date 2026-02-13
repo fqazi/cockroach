@@ -19,10 +19,10 @@ var ErrLockNotAcquired = errors.New("lock not acquired")
 var ErrLockNotHeld = errors.New("lock not held")
 
 type Manager interface {
-	AcquireLock(ctx context.Context, id int, mode LockMode, wait bool, txnScoped bool) error
-	ReleaseLock(id int, mode LockMode) error
+	AcquireLock(ctx context.Context, id int64, mode LockMode, wait bool, txnScoped bool) error
+	ReleaseLock(id int64, mode LockMode) error
 	ReleaseAllLocks() error
-	GetAllLocks() (map[int]*descpb.AdvisoryLockTracking, error)
+	GetAllLocks() (map[int64]*descpb.AdvisoryLockTracking, error)
 
 	// Savepoint creates a new savepoint on the transaction stack.
 	Savepoint()

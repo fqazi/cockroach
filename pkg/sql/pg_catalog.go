@@ -2294,7 +2294,9 @@ https://www.postgresql.org/docs/9.6/view-pg-locks.html`,
 			classID := uint32((id >> 32) & 0xFFFFFFFF)
 			objID := uint32(id & 0xFFFFFFFF)
 			objSubID := 1 // FIXME: We need a tag bit...
-
+			if classID > 0 && objID > 0 {
+				objSubID = 2
+			}
 			// Report holders
 			for _, holder := range l.HolderSessionId {
 				mode := "ShareLock"

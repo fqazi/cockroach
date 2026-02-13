@@ -12,12 +12,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
-	"github.com/cockroachdb/errors"
 )
 
-var deadlockError = errors.New("deadlock detected")
-
 type SessionMapProvider func() (map[string]struct{}, error)
+
+type WaitGraphProvider func(ctx context.Context, sessionID string) ([]string, error)
 
 type LockScope int
 
@@ -156,34 +155,35 @@ type sqlTableManager struct {
 	codec        keys.SQLCodec
 	sessionID    string
 	sessionMapFn SessionMapProvider
+	waitGraphFn  WaitGraphProvider
 	stopper      *stop.Stopper
-	heldLocks    map[int]*sqlLockInfo
+	heldLocks    map[int64]*sqlLockInfo
 	// txnStack tracks the locks acquired in the current transaction scope.
 	// Each element represents a savepoint level and contains a map of
 	// LockID -> list of modes acquired at that level.
-	txnStack []map[int][]LockMode
+	txnStack []map[int64][]LockMode
 }
 
-func (s *sqlTableManager) GetAllLocks() (locks map[int]*descpb.AdvisoryLockTracking, err error) {
+func (s *sqlTableManager) GetAllLocks() (locks map[int64]*descpb.AdvisoryLockTracking, err error) {
 	err = s.db.Txn(context.Background(), func(ctx context.Context, txn *kv.Txn) error {
 		allRows, err := txn.Scan(ctx, s.codec.AdvisoryLockBase(), s.codec.AdvisoryLockBase().PrefixEnd(), 0)
 		if err != nil {
 			return err
 		}
-		locks = make(map[int]*descpb.AdvisoryLockTracking)
-		for _, kv := range allRows {
+		locks = make(map[int64]*descpb.AdvisoryLockTracking)
+		for _, row := range allRows {
 			lock := descpb.AdvisoryLockTracking{}
-			if err := kv.Value.GetProto(&lock); err != nil {
+			if err := row.Value.GetProto(&lock); err != nil {
 				return err
 			}
-			locks[int(lock.Lock)] = &lock
+			locks[lock.Lock] = &lock
 		}
 		return nil
 	})
 	return locks, err
 }
 
-func (s *sqlTableManager) getLockInfo(id int) *sqlLockInfo {
+func (s *sqlTableManager) getLockInfo(id int64) *sqlLockInfo {
 	lockInfo, exists := s.heldLocks[id]
 	if exists {
 		return lockInfo
@@ -194,7 +194,7 @@ func (s *sqlTableManager) getLockInfo(id int) *sqlLockInfo {
 }
 
 func (s *sqlTableManager) AcquireLock(
-	ctx context.Context, id int, mode LockMode, wait bool, txnScoped bool,
+	ctx context.Context, id int64, mode LockMode, wait bool, txnScoped bool,
 ) error {
 	// If the user context is cancelled, then we need to remove ourselves from the wait list.
 	defer func() {
@@ -208,7 +208,7 @@ func (s *sqlTableManager) AcquireLock(
 
 	// If txn scoped, ensure we have a stack.
 	if txnScoped && len(s.txnStack) == 0 {
-		s.txnStack = append(s.txnStack, make(map[int][]LockMode))
+		s.txnStack = append(s.txnStack, make(map[int64][]LockMode))
 	}
 
 	// Helper to record txn lock
@@ -266,11 +266,11 @@ func (s *sqlTableManager) getScope(txnScoped bool) LockScope {
 	return LockScopeSession
 }
 
-func (s *sqlTableManager) ReleaseLock(id int, mode LockMode) error {
+func (s *sqlTableManager) ReleaseLock(id int64, mode LockMode) error {
 	return s.releaseLockWithScope(id, mode, LockScopeSession)
 }
 
-func (s *sqlTableManager) releaseLockWithScope(id int, mode LockMode, scope LockScope) error {
+func (s *sqlTableManager) releaseLockWithScope(id int64, mode LockMode, scope LockScope) error {
 	if _, exists := s.heldLocks[id]; !exists {
 		if scope == LockScopeTransaction {
 			// If we are cleaning up txn locks and it's not held, maybe it was already released?
@@ -294,9 +294,9 @@ func (s *sqlTableManager) releaseLockWithScope(id int, mode LockMode, scope Lock
 	}
 	err := s.db.Txn(context.Background(), func(ctx context.Context, txn *kv.Txn) error {
 		// Construct the key needed for this lock.
-		lockPrefix := s.codec.AdvisoryLockKeyPrefix(uint32(id))
+		lockPrefix := s.codec.AdvisoryLockKeyPrefix(id)
 
-		currentLock := descpb.AdvisoryLockTracking{Lock: int32(id)}
+		currentLock := descpb.AdvisoryLockTracking{Lock: id}
 		// Fetch the existing value that is stored for the lock.
 		currentValue, err := txn.Get(ctx, lockPrefix)
 		if err != nil {
@@ -351,7 +351,7 @@ func (s *sqlTableManager) ReleaseAllLocks() error {
 
 func (s *sqlTableManager) ReleaseAllForSession(ctx context.Context) error {
 	type lockReq struct {
-		id   int
+		id   int64
 		mode LockMode
 	}
 	var locks []lockReq
@@ -372,7 +372,7 @@ func (s *sqlTableManager) ReleaseAllForSession(ctx context.Context) error {
 }
 
 func (s *sqlTableManager) Savepoint() {
-	s.txnStack = append(s.txnStack, make(map[int][]LockMode))
+	s.txnStack = append(s.txnStack, make(map[int64][]LockMode))
 }
 
 func (s *sqlTableManager) ReleaseSavepoint() {
@@ -439,6 +439,7 @@ func NewSQLManager(
 	codec keys.SQLCodec,
 	sessionID string,
 	provider SessionMapProvider,
+	waitGraphFn WaitGraphProvider,
 	stopper *stop.Stopper,
 ) Manager {
 	return &sqlTableManager{
@@ -446,7 +447,8 @@ func NewSQLManager(
 		codec:        codec,
 		sessionID:    sessionID,
 		sessionMapFn: provider,
-		heldLocks:    make(map[int]*sqlLockInfo),
+		waitGraphFn:  waitGraphFn,
+		heldLocks:    make(map[int64]*sqlLockInfo),
 		stopper:      stopper,
 	}
 }
@@ -464,14 +466,14 @@ func (s *sqlTableManager) checkForDeadlocks(
 			return err
 		}
 		// First, build a list of all locks that are currently held.
-		lockHolders := make(map[int][]string)
-		sessionsWaitingForLocks := make(map[string][]int)
-		for _, kv := range allLocks {
+		lockHolders := make(map[int64][]string)
+		sessionsWaitingForLocks := make(map[string][]int64)
+		for _, row := range allLocks {
 			lock := descpb.AdvisoryLockTracking{}
-			if err := kv.Value.GetProto(&lock); err != nil {
+			if err := row.Value.GetProto(&lock); err != nil {
 				return err
 			}
-			lockID := int(lock.Lock)
+			lockID := lock.Lock
 			for _, holder := range lock.HolderSessionId {
 				lockHolders[lockID] = append(lockHolders[lockID], holder)
 			}
@@ -505,6 +507,21 @@ func (s *sqlTableManager) checkForDeadlocks(
 					}
 				}
 			}
+
+			if s.waitGraphFn != nil {
+				others, err := s.waitGraphFn(ctx, curr)
+				if err != nil {
+					// We can't check external dependencies, assume no cycle through them or log?
+					// For now, we proceed as if there are no external dependencies.
+				} else {
+					for _, other := range others {
+						if hasCycle(other) {
+							return true
+						}
+					}
+				}
+			}
+
 			return false
 		}
 		// Check if this session is involved in a deadlock.
@@ -522,13 +539,13 @@ func (s *sqlTableManager) checkForDeadlocks(
 }
 
 // removeWaiterOnCancellation removes the session from the wait list of the lock.
-func (s *sqlTableManager) removeWaiterOnCancellation(ctx context.Context, id int) {
+func (s *sqlTableManager) removeWaiterOnCancellation(ctx context.Context, id int64) {
 	err := s.stopper.RunAsyncTask(ctx, "remove-waiter-on-cancel", func(ctx context.Context) {
 		err := s.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
 			// Construct the key needed for this lock.
-			lockPrefix := s.codec.AdvisoryLockKeyPrefix(uint32(id))
+			lockPrefix := s.codec.AdvisoryLockKeyPrefix(id)
 
-			currentLock := descpb.AdvisoryLockTracking{Lock: int32(id)}
+			currentLock := descpb.AdvisoryLockTracking{Lock: id}
 
 			// Fetch the existing value that is stored for the lock.
 			currentValue, err := txn.Get(ctx, lockPrefix)
@@ -563,12 +580,12 @@ func (s *sqlTableManager) removeWaiterOnCancellation(ctx context.Context, id int
 }
 
 func (s *sqlTableManager) doAdvisoryLockUpgrade(
-	ctx context.Context, txn *kv.Txn, id int, wait bool,
+	ctx context.Context, txn *kv.Txn, id int64, wait bool,
 ) (retry bool, err error) {
 	// Construct the key needed for this lock.
-	lockPrefix := s.codec.AdvisoryLockKeyPrefix(uint32(id))
+	lockPrefix := s.codec.AdvisoryLockKeyPrefix(id)
 
-	currentLock := descpb.AdvisoryLockTracking{Lock: int32(id)}
+	currentLock := descpb.AdvisoryLockTracking{Lock: id}
 
 	// Fetch the existing value that is stored for the lock.
 	currentValue, err := txn.Get(ctx, lockPrefix)
@@ -705,13 +722,13 @@ func (s *sqlTableManager) doAdvisoryLockUpgrade(
 // the advisory lock. When acquistion is complete retry will be false; otherwise,
 // another attempt should be made with a fresh transaction.
 func (s *sqlTableManager) doAdvisoryLockAcquire(
-	ctx context.Context, txn *kv.Txn, id int, mode LockMode, wait bool,
+	ctx context.Context, txn *kv.Txn, id int64, mode LockMode, wait bool,
 ) (retry bool, err error) {
 	isShared := mode == LockShared
 	// Construct the key needed for this lock.
-	lockPrefix := s.codec.AdvisoryLockKeyPrefix(uint32(id))
+	lockPrefix := s.codec.AdvisoryLockKeyPrefix(id)
 
-	currentLock := descpb.AdvisoryLockTracking{Lock: int32(id)}
+	currentLock := descpb.AdvisoryLockTracking{Lock: id}
 
 	// Fetch the existing value that is stored for the lock.
 	currentValue, err := txn.Get(ctx, lockPrefix)
