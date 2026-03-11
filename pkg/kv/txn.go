@@ -1811,6 +1811,14 @@ func (txn *Txn) CreateSavepoint(ctx context.Context) (SavepointToken, error) {
 	return txn.mu.sender.CreateSavepoint(ctx)
 }
 
+// ClearAdvisoryLock releases an advisory lock and clears its footprint.
+func (txn *Txn) ClearAdvisoryLock(ctx context.Context, key roachpb.Key) error {
+	txn.mu.Lock()
+	defer txn.mu.Unlock()
+	// The sender will handle both the storage release and footprint cleanup.
+	return txn.mu.sender.ClearAdvisoryLock(ctx, key)
+}
+
 // RollbackToSavepoint rolls back to the given savepoint.
 // All savepoints "under" the savepoint being rolled back
 // are also rolled back and their token must not be used any more.

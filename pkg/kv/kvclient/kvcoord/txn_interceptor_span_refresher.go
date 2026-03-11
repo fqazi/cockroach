@@ -768,6 +768,10 @@ func (sr *txnSpanRefresher) epochBumpedLocked() {
 }
 
 // createSavepointLocked is part of the txnInterceptor interface.
+func (sr *txnSpanRefresher) clearAdvisoryLockLocked(ctx context.Context, key roachpb.Key) {
+	sr.refreshFootprint.remove(key)
+}
+
 func (sr *txnSpanRefresher) createSavepointLocked(ctx context.Context, s *savepoint) {
 	// TODO(nvanbenschoten): make sure this works correctly with ReadCommitted.
 	// The refresh spans should either be empty when captured into a savepoint or

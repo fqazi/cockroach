@@ -736,6 +736,8 @@ func (twb *txnWriteBuffer) resetBuffer() {
 }
 
 // createSavepointLocked is part of the txnInterceptor interface.
+func (*txnWriteBuffer) clearAdvisoryLockLocked(context.Context, roachpb.Key) {}
+
 func (twb *txnWriteBuffer) createSavepointLocked(ctx context.Context, sp *savepoint) {
 	assertTrue(twb.firstExplicitSavepointSeq <= sp.seqNum,
 		"sequence number in created savepoint lower than retained savepoint")

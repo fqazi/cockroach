@@ -2328,11 +2328,12 @@ func (qir *QueryIntentRequest) StrengthOrDefault() lock.Strength {
 // intent request.
 func (rir *ResolveIntentRequest) AsLockUpdate() roachpb.LockUpdate {
 	return roachpb.LockUpdate{
-		Span:              rir.Span(),
-		Txn:               rir.IntentTxn,
-		Status:            rir.Status,
-		IgnoredSeqNums:    rir.IgnoredSeqNums,
-		ClockWhilePending: rir.ClockWhilePending,
+		Span:                rir.Span(),
+		Txn:                 rir.IntentTxn,
+		Status:              rir.Status,
+		IgnoredSeqNums:      rir.IgnoredSeqNums,
+		ClockWhilePending:   rir.ClockWhilePending,
+		ReleaseAdvisoryLock: rir.ReleaseAdvisoryLock,
 	}
 }
 

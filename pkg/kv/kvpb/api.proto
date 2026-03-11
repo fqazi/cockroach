@@ -1575,6 +1575,8 @@ message ResolveIntentRequest {
   // This could lead to stale reads if that leaseholder later served an observed
   // timestamp with a clock reading below the intent's local timestamp.
   ObservedTimestamp clock_while_pending = 6 [(gogoproto.nullable) = false];
+  // This intent release is specifically for advisory locks so it can bypass checks.
+  bool release_advisory_lock = 7;
 }
 
 // A ResolveIntentResponse is the return value from the

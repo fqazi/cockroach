@@ -629,6 +629,8 @@ func (*txnCommitter) importLeafFinalState(context.Context, *roachpb.LeafTxnFinal
 func (tc *txnCommitter) epochBumpedLocked() {}
 
 // createSavepointLocked is part of the txnInterceptor interface.
+func (*txnCommitter) clearAdvisoryLockLocked(context.Context, roachpb.Key) {}
+
 func (*txnCommitter) createSavepointLocked(context.Context, *savepoint) {}
 
 // releaseSavepointLocked is part of the txnInterceptor interface.

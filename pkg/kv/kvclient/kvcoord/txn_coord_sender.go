@@ -223,6 +223,9 @@ type txnInterceptor interface {
 	// createSavepointLocked().
 	rollbackToSavepointLocked(context.Context, savepoint)
 
+	// clearAdvisoryLockLocked removes the advisory lock from the footprint.
+	clearAdvisoryLockLocked(context.Context, roachpb.Key)
+
 	// releaseSavepointLocked is called when a savepoint is being
 	// released.
 	releaseSavepointLocked(context.Context, *savepoint)
@@ -442,6 +445,35 @@ func newLeafTxnCoordSender(
 }
 
 // DisablePipelining is part of the kv.TxnSender interface.
+func (tc *TxnCoordSender) ClearAdvisoryLock(ctx context.Context, key roachpb.Key) error {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	req := kvpb.BatchRequest{}
+	req.Add(&kvpb.ResolveIntentRequest{
+		RequestHeader: kvpb.RequestHeader{
+			Key: key,
+		},
+		IntentTxn:           tc.mu.txn.TxnMeta,
+		Status:              roachpb.PENDING,
+		ReleaseAdvisoryLock: true,
+	})
+
+	// Unlock while we wait for network/storage
+	tc.mu.Unlock()
+	_, err := tc.NonTransactionalSender().Send(ctx, &req)
+	tc.mu.Lock()
+
+	if err != nil {
+		return err.GoError()
+	}
+
+	for _, reqInt := range tc.interceptorStack {
+		reqInt.clearAdvisoryLockLocked(ctx, key)
+	}
+	return nil
+}
+
 func (tc *TxnCoordSender) DisablePipelining() error {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()

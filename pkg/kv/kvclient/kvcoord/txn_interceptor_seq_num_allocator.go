@@ -218,6 +218,8 @@ func (s *txnSeqNumAllocator) epochBumpedLocked() {
 }
 
 // createSavepointLocked is part of the txnInterceptor interface.
+func (*txnSeqNumAllocator) clearAdvisoryLockLocked(context.Context, roachpb.Key) {}
+
 func (s *txnSeqNumAllocator) createSavepointLocked(ctx context.Context, sp *savepoint) {
 	sp.seqNum = s.writeSeq
 }

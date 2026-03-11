@@ -301,6 +301,8 @@ func (*txnHeartbeater) importLeafFinalState(context.Context, *roachpb.LeafTxnFin
 func (h *txnHeartbeater) epochBumpedLocked() {}
 
 // createSavepointLocked is part of the txnInterceptor interface.
+func (*txnHeartbeater) clearAdvisoryLockLocked(context.Context, roachpb.Key) {}
+
 func (*txnHeartbeater) createSavepointLocked(context.Context, *savepoint) {}
 
 // releaseSavepointLocked is part of the txnInterceptor interface.

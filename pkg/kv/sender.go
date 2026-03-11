@@ -245,6 +245,9 @@ type TxnSender interface {
 	// merges ranges together.
 	DisablePipelining() error
 
+	// ClearAdvisoryLock clears the in-memory state of the given lock key.
+	ClearAdvisoryLock(ctx context.Context, key roachpb.Key) error
+
 	// ReadTimestamp returns the transaction's current read timestamp.
 	// Note a transaction can be internally pushed forward in time
 	// before committing so this is not guaranteed to be the commit

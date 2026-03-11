@@ -150,17 +150,9 @@ func (m *kvLockTableManager) ReleaseLock(id int64, mode LockMode) error {
 		delete(m.locks, id)
 		// Release our lock and leave this txn in a pending state.
 		key := m.codec.AdvisoryLockPrefix(id)
-		req := kvpb.BatchRequest{}
-		req.Add(&kvpb.ResolveIntentRequest{
-			RequestHeader: kvpb.RequestHeader{
-				Key: key,
-			},
-			IntentTxn: m.lockTxn.TestingCloneTxn().TxnMeta,
-			Status:    roachpb.PENDING,
-		})
-		_, kvErr := m.db.NonTransactionalSender().Send(context.Background(), &req)
-		if kvErr != nil {
-			return kvErr.GoError()
+		err := m.lockTxn.ClearAdvisoryLock(context.Background(), key)
+		if err != nil {
+			return err
 		}
 		return m.updateTrackingInfo(id, func(tracking *descpb.AdvisoryLockTracking) {
 			tracking.Lock = id

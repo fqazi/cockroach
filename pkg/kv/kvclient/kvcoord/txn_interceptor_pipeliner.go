@@ -1012,6 +1012,11 @@ func (tp *txnPipeliner) epochBumpedLocked() {
 }
 
 // createSavepointLocked is part of the txnInterceptor interface.
+func (tp *txnPipeliner) clearAdvisoryLockLocked(ctx context.Context, key roachpb.Key) {
+	tp.lockFootprint.remove(key)
+	tp.ifWrites.removeAllFor(key)
+}
+
 func (tp *txnPipeliner) createSavepointLocked(context.Context, *savepoint) {}
 
 // releaseSavepointLocked is part of the txnInterceptor interface.
@@ -1269,4 +1274,18 @@ func (a *inFlightWriteAlloc) clear() {
 
 func keySize(k roachpb.Key) int64 {
 	return int64(len(k))
+}
+
+
+// removeAllFor removes all in-flight writes for a key.
+func (s *inFlightWriteSet) removeAllFor(key roachpb.Key) {
+	var toDelete []*inFlightWrite
+	s.ascend(func(w *inFlightWrite) {
+		if w.Key.Equal(key) {
+			toDelete = append(toDelete, w)
+		}
+	})
+	for _, w := range toDelete {
+		s.remove(w.Key, w.Sequence, w.Strength)
+	}
 }

@@ -240,6 +240,8 @@ func (m *MockTransactionalSender) Active() bool {
 }
 
 // DisablePipelining is part of the kv.TxnSender interface.
+func (m *MockTransactionalSender) ClearAdvisoryLock(ctx context.Context, key roachpb.Key) error { return nil }
+
 func (m *MockTransactionalSender) DisablePipelining() error { return nil }
 
 // Step is part of the TxnSender interface.

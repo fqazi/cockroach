@@ -184,6 +184,22 @@ func (s *condensableSpanSet) clear() {
 	*s = condensableSpanSet{}
 }
 
+// remove removes any overlapping keys from the span set.
+// For simplicity, it only removes exact point span matches. Range spans are ignored.
+func (s *condensableSpanSet) remove(key roachpb.Key) {
+	j := 0
+	for i := 0; i < len(s.s); i++ {
+		sp := s.s[i]
+		if len(sp.EndKey) == 0 && sp.Key.Equal(key) {
+			s.bytes -= spanSize(sp)
+		} else {
+			s.s[j] = s.s[i]
+			j++
+		}
+	}
+	s.s = s.s[:j]
+}
+
 // estimateSize returns the size that the spanSet would grow to if spans were
 // added to the set. As a side-effect, the receiver might get its spans merged.
 //
