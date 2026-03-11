@@ -2,6 +2,7 @@ package advisorylock
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
@@ -14,11 +15,11 @@ import (
 type LockData struct {
 	id       int64
 	mode     LockMode
-	txn      *kv.Txn
 	refCount int
 }
 
 type kvLockTableManager struct {
+	lockTxn   *kv.Txn
 	locks     map[int64]*LockData
 	db        *kv.DB
 	codec     keys.SQLCodec
@@ -40,6 +41,7 @@ func NewManager(db *kv.DB, codec keys.SQLCodec, sessionID string) Manager {
 		db:        db,
 		codec:     codec,
 		sessionID: sessionID,
+		lockTxn:   db.NewTxn(context.Background(), "advisory-lock-txn"),
 	}
 }
 
@@ -59,7 +61,7 @@ func (m *kvLockTableManager) updateTrackingInfo(
 			if err != nil {
 				return err
 			}
-			oldValue = kv.Value.RawBytes
+			oldValue = kv.Value.TagAndDataBytes()
 		}
 		retryabe(&tracking)
 		var newValue roachpb.Value
@@ -105,17 +107,23 @@ func (m *kvLockTableManager) AcquireLock(
 	if err != nil {
 		return err
 	}
-	txn := m.db.NewTxn(ctx, "accquire-advisory-lock")
-	// FIXME: Double accquire to update waiting state..
-	if mode == LockExclusive {
-		_, err = txn.GetForUpdate(ctx, key, kvpb.GuaranteedDurability)
-	} else if mode == LockShared {
-		_, err = txn.GetForShare(ctx, key, kvpb.GuaranteedDurability)
+	// FIXME: We need to bump up our sequence number of each
+	// acquistion.
+	// FIMXE: Why are we in a bad state?
+	fmt.Printf("retryable: %s\n", m.lockTxn.Sender().GetRetryableErr(ctx))
+	_ = m.lockTxn.Sender().ClearRetryableErr(ctx)
+	if _, err := m.lockTxn.CreateSavepoint(ctx); err != nil {
+		return err
+	}
+	switch mode {
+	case LockExclusive:
+		_, err = m.lockTxn.GetForUpdate(ctx, key, kvpb.GuaranteedDurability)
+	case LockShared:
+		_, err = m.lockTxn.GetForShare(ctx, key, kvpb.GuaranteedDurability)
 	}
 	if err != nil {
 		return err
 	}
-	entry.txn = txn
 	m.locks[id] = entry
 	return m.updateTrackingInfo(id, func(tracking *descpb.AdvisoryLockTracking) {
 		tracking.Lock = id
@@ -140,9 +148,19 @@ func (m *kvLockTableManager) ReleaseLock(id int64, mode LockMode) error {
 	entry.refCount--
 	if entry.refCount == 0 {
 		delete(m.locks, id)
-		err := entry.txn.Commit(context.Background())
-		if err != nil {
-			return err
+		// Release our lock and leave this txn in a pending state.
+		key := m.codec.AdvisoryLockPrefix(id)
+		req := kvpb.BatchRequest{}
+		req.Add(&kvpb.ResolveIntentRequest{
+			RequestHeader: kvpb.RequestHeader{
+				Key: key,
+			},
+			IntentTxn: m.lockTxn.TestingCloneTxn().TxnMeta,
+			Status:    roachpb.PENDING,
+		})
+		_, kvErr := m.db.NonTransactionalSender().Send(context.Background(), &req)
+		if kvErr != nil {
+			return kvErr.GoError()
 		}
 		return m.updateTrackingInfo(id, func(tracking *descpb.AdvisoryLockTracking) {
 			tracking.Lock = id
@@ -159,11 +177,10 @@ func (m *kvLockTableManager) ReleaseLock(id int64, mode LockMode) error {
 }
 
 func (m *kvLockTableManager) ReleaseAllLocks() error {
-	for _, entry := range m.locks {
-		if err := entry.txn.Commit(context.Background()); err != nil {
-			return err
-		}
+	if err := m.lockTxn.Rollback(context.Background()); err != nil {
+		return err
 	}
+	m.lockTxn = m.db.NewTxn(context.Background(), "advisory-lock-txn")
 	m.locks = make(map[int64]*LockData)
 	return nil
 }

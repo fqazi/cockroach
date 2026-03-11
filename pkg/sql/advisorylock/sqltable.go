@@ -442,7 +442,7 @@ func NewSQLManager(
 	waitGraphFn WaitGraphProvider,
 	stopper *stop.Stopper,
 ) Manager {
-	return &sqlTableManager{
+	/*return &sqlTableManager{
 		db:           db,
 		codec:        codec,
 		sessionID:    sessionID,
@@ -450,7 +450,8 @@ func NewSQLManager(
 		waitGraphFn:  waitGraphFn,
 		heldLocks:    make(map[int64]*sqlLockInfo),
 		stopper:      stopper,
-	}
+	}*/
+	return NewManager(db, codec, sessionID)
 }
 
 // checkForDeadlocks checks if sessionID is involved in a deadlock, this

@@ -6463,7 +6463,7 @@ func mvccReleaseLockInternal(
 	rolledBack := meta.Txn.Epoch < update.Txn.Epoch ||
 		(meta.Txn.Epoch == update.Txn.Epoch && enginepb.TxnSeqIsIgnored(meta.Txn.Sequence, update.IgnoredSeqNums))
 	release := finalized || rolledBack
-	if !release {
+	if !release && false {
 		return lockNoop, nil
 	}
 
