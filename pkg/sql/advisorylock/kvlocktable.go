@@ -2,7 +2,6 @@ package advisorylock
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
@@ -11,13 +10,14 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/errors"
 )
 
 // LockData tracks the advisory lock state for a single lock ID within a
 // session. Exclusive and Shared references are counted independently,
 // matching PostgreSQL semantics where pg_advisory_lock and
-// pg_advisory_lock_shared maintain separate refcounts.
+// pg_advisory_lock_shared maintain separate refcounts. Each individual
+// acquisition is recorded as a lockEntry so that session-scoped and
+// transaction-scoped references can be released independently.
 type LockData struct {
 	id int64
 	// exclCount is the number of Exclusive references held on this lock.
@@ -31,6 +31,8 @@ type LockData struct {
 	exclSeqNum enginepb.TxnSeq
 	// sharedCount is the number of Shared references held on this lock.
 	sharedCount int
+	// entries tracks the scope (session vs transaction) of each acquisition.
+	entries []lockEntry
 }
 
 // isExclusive returns true if any Exclusive references are held.
@@ -43,21 +45,94 @@ func (d *LockData) isHeld() bool {
 	return d.exclCount > 0 || d.sharedCount > 0
 }
 
+// addRef records a new acquisition with the given mode and scope.
+func (d *LockData) addRef(mode LockMode, scope LockScope) {
+	d.entries = append(d.entries, lockEntry{mode: mode, scope: scope})
+	if mode == LockExclusive {
+		d.exclCount++
+	} else {
+		d.sharedCount++
+	}
+}
+
+// removeRef removes the last matching entry by scope and mode (searching
+// from the end). Returns true if a matching entry was found and removed.
+func (d *LockData) removeRef(scope LockScope, mode LockMode) bool {
+	for i := len(d.entries) - 1; i >= 0; i-- {
+		if d.entries[i].scope == scope && d.entries[i].mode == mode {
+			d.entries = append(d.entries[:i], d.entries[i+1:]...)
+			if mode == LockExclusive {
+				d.exclCount--
+			} else {
+				d.sharedCount--
+			}
+			return true
+		}
+	}
+	return false
+}
+
 type kvLockTableManager struct {
 	lockTxn   *kv.Txn
 	locks     map[int64]*LockData
 	db        *kv.DB
 	codec     keys.SQLCodec
 	sessionID string
+	// txnStack tracks transaction-scoped lock acquisitions across savepoint
+	// levels. Each element maps lock IDs to the modes acquired at that level.
+	txnStack []map[int64][]LockMode
 }
 
+// ReleaseAllForSession releases only session-scoped locks, leaving
+// transaction-scoped locks intact. This is called by pg_advisory_unlock_all().
 func (m *kvLockTableManager) ReleaseAllForSession(ctx context.Context) error {
-	//TODO implement me
-	panic("implement me")
+	type lockReq struct {
+		id   int64
+		mode LockMode
+	}
+	var locks []lockReq
+	for id, data := range m.locks {
+		for _, e := range data.entries {
+			if e.scope == LockScopeSession {
+				locks = append(locks, lockReq{id: id, mode: e.mode})
+			}
+		}
+	}
+	for i := len(locks) - 1; i >= 0; i-- {
+		if err := m.releaseLockWithScope(
+			locks[i].id, locks[i].mode, LockScopeSession,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
+// GetAllLocks scans advisory lock metadata keys and returns the current
+// tracking state of all locks.
 func (m *kvLockTableManager) GetAllLocks() (map[int64]*descpb.AdvisoryLockTracking, error) {
-	return make(map[int64]*descpb.AdvisoryLockTracking), nil
+	var locks map[int64]*descpb.AdvisoryLockTracking
+	err := m.db.Txn(context.Background(), func(
+		ctx context.Context, txn *kv.Txn,
+	) error {
+		rows, err := txn.Scan(
+			ctx, m.codec.AdvisoryLockBase(),
+			m.codec.AdvisoryLockBase().PrefixEnd(), 0,
+		)
+		if err != nil {
+			return err
+		}
+		locks = make(map[int64]*descpb.AdvisoryLockTracking, len(rows))
+		for _, row := range rows {
+			var t descpb.AdvisoryLockTracking
+			if err := row.Value.GetProto(&t); err != nil {
+				return err
+			}
+			locks[t.Lock] = &t
+		}
+		return nil
+	})
+	return locks, err
 }
 
 func NewManager(db *kv.DB, codec keys.SQLCodec, sessionID string) Manager {
@@ -124,8 +199,6 @@ func (m *kvLockTableManager) ensureKeyExists(ctx context.Context, key roachpb.Ke
 func (m *kvLockTableManager) acquireKVLock(
 	ctx context.Context, key roachpb.Key, mode LockMode,
 ) (enginepb.TxnSeq, error) {
-	fmt.Printf("retryable: %s %s\n",
-		m.lockTxn.Sender().TxnStatus(), m.lockTxn.Sender().GetRetryableErr(ctx))
 	_ = m.lockTxn.Sender().ClearRetryableErr(ctx)
 	if _, err := m.lockTxn.CreateSavepoint(ctx); err != nil {
 		return 0, err
@@ -146,8 +219,20 @@ func (m *kvLockTableManager) acquireKVLock(
 func (m *kvLockTableManager) AcquireLock(
 	ctx context.Context, id int64, mode LockMode, wait bool, txnScoped bool,
 ) error {
+	scope := LockScopeSession
 	if txnScoped {
-		return errors.New("txn scoped locks not implemented for kvLockTableManager")
+		scope = LockScopeTransaction
+		if len(m.txnStack) == 0 {
+			m.txnStack = append(m.txnStack, make(map[int64][]LockMode))
+		}
+	}
+
+	// Helper to record the acquisition in the txn stack.
+	recordTxnLock := func() {
+		if txnScoped {
+			top := m.txnStack[len(m.txnStack)-1]
+			top[id] = append(top[id], mode)
+		}
 	}
 
 	entry, exists := m.locks[id]
@@ -157,7 +242,8 @@ func (m *kvLockTableManager) AcquireLock(
 			if entry.isExclusive() {
 				// Already hold Exclusive. MVCCAcquireLock short-circuits repeated
 				// GetForUpdate at same or stronger strength, so just bump count.
-				entry.exclCount++
+				entry.addRef(LockExclusive, scope)
+				recordTxnLock()
 				return nil
 			}
 			// Currently hold only Shared. Need to upgrade to Exclusive.
@@ -168,7 +254,8 @@ func (m *kvLockTableManager) AcquireLock(
 				return err
 			}
 			entry.exclSeqNum = seq
-			entry.exclCount = 1
+			entry.addRef(LockExclusive, scope)
+			recordTxnLock()
 			return m.updateTrackingInfo(id, func(tracking *descpb.AdvisoryLockTracking) {
 				tracking.Lock = id
 				tracking.LockState = descpb.AdvisoryLockTracking_EXCLUSIVE
@@ -178,7 +265,8 @@ func (m *kvLockTableManager) AcquireLock(
 			// Whether we hold Exclusive or Shared, just bump Shared count.
 			// If Exclusive is held, it subsumes Shared (no KV op needed).
 			// If only Shared is held, MVCCAcquireLock short-circuits.
-			entry.sharedCount++
+			entry.addRef(LockShared, scope)
+			recordTxnLock()
 			return nil
 		}
 	}
@@ -199,12 +287,11 @@ func (m *kvLockTableManager) AcquireLock(
 	switch mode {
 	case LockExclusive:
 		entry.exclSeqNum = seq
-		entry.exclCount = 1
-	case LockShared:
-		entry.sharedCount = 1
 	}
+	entry.addRef(mode, scope)
 
 	m.locks[id] = entry
+	recordTxnLock()
 	return m.updateTrackingInfo(id, func(tracking *descpb.AdvisoryLockTracking) {
 		tracking.Lock = id
 		if mode == LockShared {
@@ -216,28 +303,73 @@ func (m *kvLockTableManager) AcquireLock(
 	})
 }
 
-func (m *kvLockTableManager) Savepoint()           {}
-func (m *kvLockTableManager) ReleaseSavepoint()    {}
-func (m *kvLockTableManager) RollbackToSavepoint() {}
-func (m *kvLockTableManager) FinishTransaction()   {}
+func (m *kvLockTableManager) Savepoint() {
+	m.txnStack = append(m.txnStack, make(map[int64][]LockMode))
+}
+
+func (m *kvLockTableManager) ReleaseSavepoint() {
+	if len(m.txnStack) == 0 {
+		return
+	}
+	top := m.txnStack[len(m.txnStack)-1]
+	m.txnStack = m.txnStack[:len(m.txnStack)-1]
+	if len(m.txnStack) > 0 {
+		parent := m.txnStack[len(m.txnStack)-1]
+		for id, modes := range top {
+			parent[id] = append(parent[id], modes...)
+		}
+	}
+}
+
+func (m *kvLockTableManager) RollbackToSavepoint() {
+	if len(m.txnStack) == 0 {
+		return
+	}
+	top := m.txnStack[len(m.txnStack)-1]
+	m.txnStack = m.txnStack[:len(m.txnStack)-1]
+	for id, modes := range top {
+		for _, mode := range modes {
+			_ = m.releaseLockWithScope(id, mode, LockScopeTransaction)
+		}
+	}
+}
+
+func (m *kvLockTableManager) FinishTransaction() {
+	for i := len(m.txnStack) - 1; i >= 0; i-- {
+		for id, modes := range m.txnStack[i] {
+			for _, mode := range modes {
+				_ = m.releaseLockWithScope(id, mode, LockScopeTransaction)
+			}
+		}
+	}
+	m.txnStack = nil
+}
 
 func (m *kvLockTableManager) ReleaseLock(id int64, mode LockMode) error {
+	return m.releaseLockWithScope(id, mode, LockScopeSession)
+}
+
+// releaseLockWithScope releases a single acquisition of the given mode and
+// scope from the lock identified by id. When scope is LockScopeTransaction
+// and no matching entry exists, the call is a no-op (the lock may have been
+// explicitly released already).
+func (m *kvLockTableManager) releaseLockWithScope(id int64, mode LockMode, scope LockScope) error {
 	entry, ok := m.locks[id]
 	if !ok {
+		if scope == LockScopeTransaction {
+			return nil
+		}
 		return ErrLockNotHeld
 	}
 
-	switch mode {
-	case LockExclusive:
-		if entry.exclCount <= 0 {
-			return ErrLockNotHeld
+	wasExclusive := entry.isExclusive()
+
+	found := entry.removeRef(scope, mode)
+	if !found {
+		if scope == LockScopeTransaction {
+			return nil
 		}
-		entry.exclCount--
-	case LockShared:
-		if entry.sharedCount <= 0 {
-			return ErrLockNotHeld
-		}
-		entry.sharedCount--
+		return ErrLockNotHeld
 	}
 
 	// Case 1: Still hold Exclusive refs. Nothing changes at KV layer.
@@ -247,7 +379,7 @@ func (m *kvLockTableManager) ReleaseLock(id int64, mode LockMode) error {
 
 	// Case 2: Just dropped the last Exclusive ref, but Shared refs remain.
 	// Demote the KV lock from Exclusive to Shared.
-	if entry.sharedCount > 0 && mode == LockExclusive {
+	if entry.sharedCount > 0 && wasExclusive {
 		return m.demoteLock(id, entry)
 	}
 
