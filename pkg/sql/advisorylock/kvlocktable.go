@@ -2,10 +2,12 @@ package advisorylock
 
 import (
 	"context"
+	"errors"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
@@ -197,20 +199,29 @@ func (m *kvLockTableManager) ensureKeyExists(ctx context.Context, key roachpb.Ke
 // acquireKVLock acquires a KV lock on the given key at the specified mode
 // and returns the sequence number used for the acquisition.
 func (m *kvLockTableManager) acquireKVLock(
-	ctx context.Context, key roachpb.Key, mode LockMode,
+	ctx context.Context, key roachpb.Key, mode LockMode, wait bool,
 ) (enginepb.TxnSeq, error) {
 	_ = m.lockTxn.Sender().ClearRetryableErr(ctx)
 	if _, err := m.lockTxn.CreateSavepoint(ctx); err != nil {
 		return 0, err
 	}
 	var err error
+	b := m.lockTxn.NewBatch()
+	if !wait {
+		b.Header.WaitPolicy = lock.WaitPolicy_Error
+	}
 	switch mode {
 	case LockExclusive:
-		_, err = m.lockTxn.GetForUpdate(ctx, key, kvpb.GuaranteedDurability)
+		b.GetForUpdate(key, kvpb.GuaranteedDurability)
 	case LockShared:
-		_, err = m.lockTxn.GetForShare(ctx, key, kvpb.GuaranteedDurability)
+		b.GetForShare(key, kvpb.GuaranteedDurability)
 	}
+	err = m.lockTxn.Run(ctx, b)
 	if err != nil {
+		lcErr := new(kvpb.WriteIntentError)
+		if errors.As(err, &lcErr) && lcErr.Reason == kvpb.WriteIntentError_REASON_WAIT_POLICY {
+			return 0, ErrLockNotAcquired
+		}
 		return 0, err
 	}
 	return m.lockTxn.GetReadSeqNum(), nil
@@ -249,7 +260,7 @@ func (m *kvLockTableManager) AcquireLock(
 			// Currently hold only Shared. Need to upgrade to Exclusive.
 			// The KV layer handles promotion natively (Shared → Exclusive).
 			key := m.codec.AdvisoryLockPrefix(id)
-			seq, err := m.acquireKVLock(ctx, key, LockExclusive)
+			seq, err := m.acquireKVLock(ctx, key, LockExclusive, wait)
 			if err != nil {
 				return err
 			}
@@ -279,7 +290,7 @@ func (m *kvLockTableManager) AcquireLock(
 		return err
 	}
 
-	seq, err := m.acquireKVLock(ctx, key, mode)
+	seq, err := m.acquireKVLock(ctx, key, mode, wait)
 	if err != nil {
 		return err
 	}
@@ -429,7 +440,7 @@ func (m *kvLockTableManager) demoteLock(id int64, entry *LockData) error {
 
 	// Step 2: Acquire a Shared lock. MVCCAcquireLock sees the old Exclusive
 	// as rolled back (its seq is now ignored) and writes a new Shared entry.
-	if _, err := m.acquireKVLock(ctx, key, LockShared); err != nil {
+	if _, err := m.acquireKVLock(ctx, key, LockShared, true); err != nil {
 		return err
 	}
 
