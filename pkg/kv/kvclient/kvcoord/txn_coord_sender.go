@@ -8,6 +8,7 @@ package kvcoord
 import (
 	"context"
 	"math/rand"
+	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/kv"
@@ -475,6 +476,58 @@ func (tc *TxnCoordSender) ClearAdvisoryLock(ctx context.Context, key roachpb.Key
 	for _, reqInt := range tc.interceptorStack {
 		reqInt.clearAdvisoryLockLocked(ctx, key)
 	}
+	return nil
+}
+
+// AddIgnoredSeqNumRange is part of the kv.TxnSender interface.
+//
+// Unlike Transaction.AddIgnoredSeqNumRange (which uses TxnSeqListAppend and
+// truncates ranges after the insertion point for savepoint semantics), this
+// performs a proper sorted insertion that preserves all non-overlapping
+// ranges. This is necessary for advisory lock demotion, where we may ignore
+// individual sequence numbers out of order (e.g., demoting lock B at seq 6
+// before lock A at seq 2).
+func (tc *TxnCoordSender) AddIgnoredSeqNumRange(
+	ctx context.Context, r enginepb.IgnoredSeqNumRange,
+) error {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	list := tc.mu.txn.IgnoredSeqNums
+	i := sort.Search(len(list), func(i int) bool {
+		return list[i].Start > r.Start
+	})
+	// Insert r at position i, preserving all existing ranges.
+	updated := make([]enginepb.IgnoredSeqNumRange, len(list)+1)
+	copy(updated[:i], list[:i])
+	updated[i] = r
+	copy(updated[i+1:], list[i:])
+	tc.mu.txn.IgnoredSeqNums = updated
+	return tc.interceptorAlloc.txnSeqNumAllocator.stepWriteSeqLocked(ctx)
+}
+
+// CleanupDemotedAdvisoryLock is part of the kv.TxnSender interface.
+func (tc *TxnCoordSender) CleanupDemotedAdvisoryLock(ctx context.Context, key roachpb.Key) error {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	req := kvpb.BatchRequest{}
+	req.Add(&kvpb.ResolveIntentRequest{
+		RequestHeader: kvpb.RequestHeader{
+			Key: key,
+		},
+		IntentTxn:      tc.mu.txn.TxnMeta,
+		Status:         roachpb.PENDING,
+		IgnoredSeqNums: tc.mu.txn.IgnoredSeqNums,
+	})
+
+	tc.mu.Unlock()
+	_, err := tc.NonTransactionalSender().Send(ctx, &req)
+	tc.mu.Lock()
+
+	if err != nil {
+		return err.GoError()
+	}
+	// Do NOT call clearAdvisoryLockLocked — we still hold the lock at Shared.
 	return nil
 }
 
@@ -1210,7 +1263,9 @@ func (tc *TxnCoordSender) SetDebugName(name string) {
 }
 
 // SetSessionTxn sets the session transaction ID and anchor key on the transaction.
-func (tc *TxnCoordSender) SetSessionTxn(sessionTxnID uuid.UUID, getSessionTxnKey func() roachpb.Key) {
+func (tc *TxnCoordSender) SetSessionTxn(
+	sessionTxnID uuid.UUID, getSessionTxnKey func() roachpb.Key,
+) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 	tc.mu.txn.SessionTxnID = &sessionTxnID

@@ -1826,6 +1826,22 @@ func (txn *Txn) ClearAdvisoryLock(ctx context.Context, key roachpb.Key) error {
 	return txn.mu.sender.ClearAdvisoryLock(ctx, key)
 }
 
+// AddIgnoredSeqNumRange adds a sequence number range to the transaction's
+// ignored list and steps the write sequence. Used for advisory lock demotion.
+func (txn *Txn) AddIgnoredSeqNumRange(ctx context.Context, r enginepb.IgnoredSeqNumRange) error {
+	txn.mu.Lock()
+	defer txn.mu.Unlock()
+	return txn.mu.sender.AddIgnoredSeqNumRange(ctx, r)
+}
+
+// CleanupDemotedAdvisoryLock sends a ResolveIntentRequest with IgnoredSeqNums
+// to clean up a rolled-back lock after demotion, without fully releasing it.
+func (txn *Txn) CleanupDemotedAdvisoryLock(ctx context.Context, key roachpb.Key) error {
+	txn.mu.Lock()
+	defer txn.mu.Unlock()
+	return txn.mu.sender.CleanupDemotedAdvisoryLock(ctx, key)
+}
+
 // RollbackToSavepoint rolls back to the given savepoint.
 // All savepoints "under" the savepoint being rolled back
 // are also rolled back and their token must not be used any more.

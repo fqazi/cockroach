@@ -7,6 +7,7 @@ package kv
 
 import (
 	"context"
+	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
@@ -96,7 +97,9 @@ func (m *MockTransactionalSender) SetUserPriority(pri roachpb.UserPriority) erro
 }
 
 // SetDebugName is part of the TxnSender interface.
-func (m *MockTransactionalSender) SetSessionTxn(sessionTxnID uuid.UUID, getSessionTxnKey func() roachpb.Key) {
+func (m *MockTransactionalSender) SetSessionTxn(
+	sessionTxnID uuid.UUID, getSessionTxnKey func() roachpb.Key,
+) {
 }
 
 func (m *MockTransactionalSender) SetDebugName(name string) {
@@ -245,6 +248,31 @@ func (m *MockTransactionalSender) Active() bool {
 
 // DisablePipelining is part of the kv.TxnSender interface.
 func (m *MockTransactionalSender) ClearAdvisoryLock(ctx context.Context, key roachpb.Key) error {
+	return nil
+}
+
+// AddIgnoredSeqNumRange is part of the kv.TxnSender interface.
+// Uses a proper sorted insert (not TxnSeqListAppend which truncates for
+// savepoint semantics).
+func (m *MockTransactionalSender) AddIgnoredSeqNumRange(
+	ctx context.Context, r enginepb.IgnoredSeqNumRange,
+) error {
+	list := m.txn.IgnoredSeqNums
+	i := sort.Search(len(list), func(i int) bool {
+		return list[i].Start > r.Start
+	})
+	updated := make([]enginepb.IgnoredSeqNumRange, len(list)+1)
+	copy(updated[:i], list[:i])
+	updated[i] = r
+	copy(updated[i+1:], list[i:])
+	m.txn.IgnoredSeqNums = updated
+	return nil
+}
+
+// CleanupDemotedAdvisoryLock is part of the kv.TxnSender interface.
+func (m *MockTransactionalSender) CleanupDemotedAdvisoryLock(
+	ctx context.Context, key roachpb.Key,
+) error {
 	return nil
 }
 

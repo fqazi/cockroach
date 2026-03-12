@@ -252,6 +252,19 @@ type TxnSender interface {
 	// ClearAdvisoryLock clears the in-memory state of the given lock key.
 	ClearAdvisoryLock(ctx context.Context, key roachpb.Key) error
 
+	// AddIgnoredSeqNumRange adds the given sequence number range to the
+	// transaction's ignored list and steps the write sequence number.
+	// Used for advisory lock demotion to selectively invalidate a lock
+	// acquisition without a full savepoint rollback.
+	AddIgnoredSeqNumRange(ctx context.Context, r enginepb.IgnoredSeqNumRange) error
+
+	// CleanupDemotedAdvisoryLock sends a ResolveIntentRequest with the
+	// transaction's IgnoredSeqNums to clean up a rolled-back lock after
+	// demotion. Unlike ClearAdvisoryLock, it does NOT set
+	// ReleaseAdvisoryLock and does NOT clear interceptor footprints,
+	// because the lock is still held at a weaker strength.
+	CleanupDemotedAdvisoryLock(ctx context.Context, key roachpb.Key) error
+
 	// ReadTimestamp returns the transaction's current read timestamp.
 	// Note a transaction can be internally pushed forward in time
 	// before committing so this is not guaranteed to be the commit

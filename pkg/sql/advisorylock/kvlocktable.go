@@ -9,14 +9,38 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
+	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 )
 
+// LockData tracks the advisory lock state for a single lock ID within a
+// session. Exclusive and Shared references are counted independently,
+// matching PostgreSQL semantics where pg_advisory_lock and
+// pg_advisory_lock_shared maintain separate refcounts.
 type LockData struct {
-	id       int64
-	mode     LockMode
-	refCount int
+	id int64
+	// exclCount is the number of Exclusive references held on this lock.
+	exclCount int
+	// exclSeqNum is the sequence number at which the first Exclusive lock
+	// was acquired in Pebble. Subsequent Exclusive re-acquisitions are
+	// no-ops at the storage layer (MVCCAcquireLock short-circuits), so
+	// only the first seq matters. This seq is used for demotion: marking
+	// it as ignored causes the storage layer to treat the Exclusive lock
+	// as rolled back.
+	exclSeqNum enginepb.TxnSeq
+	// sharedCount is the number of Shared references held on this lock.
+	sharedCount int
+}
+
+// isExclusive returns true if any Exclusive references are held.
+func (d *LockData) isExclusive() bool {
+	return d.exclCount > 0
+}
+
+// isHeld returns true if any references (Exclusive or Shared) are held.
+func (d *LockData) isHeld() bool {
+	return d.exclCount > 0 || d.sharedCount > 0
 }
 
 type kvLockTableManager struct {
@@ -37,12 +61,18 @@ func (m *kvLockTableManager) GetAllLocks() (map[int64]*descpb.AdvisoryLockTracki
 }
 
 func NewManager(db *kv.DB, codec keys.SQLCodec, sessionID string) Manager {
+	lockTxn := db.NewTxn(context.Background(), "advisory-lock-txn")
+	// Disable pipelining so that GetForUpdate/GetForShare are not tracked as
+	// in-flight writes. Without this, AddIgnoredSeqNumRange during demotion
+	// causes QueryIntent to fail because the pipeliner still holds the old
+	// (now-ignored) seq as an in-flight write.
+	_ = lockTxn.DisablePipelining()
 	m := &kvLockTableManager{
 		locks:     make(map[int64]*LockData),
 		db:        db,
 		codec:     codec,
 		sessionID: sessionID,
-		lockTxn:   db.NewTxn(context.Background(), "advisory-lock-txn"),
+		lockTxn:   lockTxn,
 	}
 	return m
 }
@@ -75,28 +105,9 @@ func (m *kvLockTableManager) updateTrackingInfo(
 	})
 }
 
-func (m *kvLockTableManager) AcquireLock(
-	ctx context.Context, id int64, mode LockMode, wait bool, txnScoped bool,
-) error {
-	if txnScoped {
-		return errors.New("txn scoped locks not implemented for kvLockTableManager")
-	}
-	entry, exists := m.locks[id]
-	// Acquire an existing lock.
-	if exists {
-		if entry.mode != mode {
-			panic("unimplemented cannot switch modes yet")
-		}
-		entry.refCount++
-		m.locks[id] = entry
-		return nil
-	}
-	// Otherwise, lets setup a new entry.
-	entry = &LockData{id: id, mode: mode, refCount: 1}
-
-	// Create the key if doesn't exist.
-	key := m.codec.AdvisoryLockPrefix(id)
-	err := m.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
+// ensureKeyExists creates the advisory lock key if it doesn't already exist.
+func (m *kvLockTableManager) ensureKeyExists(ctx context.Context, key roachpb.Key) error {
+	return m.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
 		txn.SetSessionTxn(m.lockTxn.ID(), func() roachpb.Key { return m.lockTxn.Key() })
 		v, err := txn.Get(ctx, key)
 		if err != nil || v.Exists() {
@@ -104,20 +115,22 @@ func (m *kvLockTableManager) AcquireLock(
 		}
 		b := txn.NewBatch()
 		b.CPut(key, []byte{1}, nil)
-		err = txn.Run(ctx, b)
-		return err
+		return txn.Run(ctx, b)
 	})
-	if err != nil {
-		return err
-	}
-	// FIXME: We need to bump up our sequence number of each
-	// acquistion.
-	// FIMXE: Why are we in a bad state?
-	fmt.Printf("retryable: %s %s\n", m.lockTxn.Sender().TxnStatus(), m.lockTxn.Sender().GetRetryableErr(ctx))
+}
+
+// acquireKVLock acquires a KV lock on the given key at the specified mode
+// and returns the sequence number used for the acquisition.
+func (m *kvLockTableManager) acquireKVLock(
+	ctx context.Context, key roachpb.Key, mode LockMode,
+) (enginepb.TxnSeq, error) {
+	fmt.Printf("retryable: %s %s\n",
+		m.lockTxn.Sender().TxnStatus(), m.lockTxn.Sender().GetRetryableErr(ctx))
 	_ = m.lockTxn.Sender().ClearRetryableErr(ctx)
 	if _, err := m.lockTxn.CreateSavepoint(ctx); err != nil {
-		return err
+		return 0, err
 	}
+	var err error
 	switch mode {
 	case LockExclusive:
 		_, err = m.lockTxn.GetForUpdate(ctx, key, kvpb.GuaranteedDurability)
@@ -125,19 +138,81 @@ func (m *kvLockTableManager) AcquireLock(
 		_, err = m.lockTxn.GetForShare(ctx, key, kvpb.GuaranteedDurability)
 	}
 	if err != nil {
+		return 0, err
+	}
+	return m.lockTxn.GetReadSeqNum(), nil
+}
+
+func (m *kvLockTableManager) AcquireLock(
+	ctx context.Context, id int64, mode LockMode, wait bool, txnScoped bool,
+) error {
+	if txnScoped {
+		return errors.New("txn scoped locks not implemented for kvLockTableManager")
+	}
+
+	entry, exists := m.locks[id]
+	if exists {
+		switch mode {
+		case LockExclusive:
+			if entry.isExclusive() {
+				// Already hold Exclusive. MVCCAcquireLock short-circuits repeated
+				// GetForUpdate at same or stronger strength, so just bump count.
+				entry.exclCount++
+				return nil
+			}
+			// Currently hold only Shared. Need to upgrade to Exclusive.
+			// The KV layer handles promotion natively (Shared → Exclusive).
+			key := m.codec.AdvisoryLockPrefix(id)
+			seq, err := m.acquireKVLock(ctx, key, LockExclusive)
+			if err != nil {
+				return err
+			}
+			entry.exclSeqNum = seq
+			entry.exclCount = 1
+			return m.updateTrackingInfo(id, func(tracking *descpb.AdvisoryLockTracking) {
+				tracking.Lock = id
+				tracking.LockState = descpb.AdvisoryLockTracking_EXCLUSIVE
+			})
+
+		case LockShared:
+			// Whether we hold Exclusive or Shared, just bump Shared count.
+			// If Exclusive is held, it subsumes Shared (no KV op needed).
+			// If only Shared is held, MVCCAcquireLock short-circuits.
+			entry.sharedCount++
+			return nil
+		}
+	}
+
+	// New lock — no existing entry.
+	entry = &LockData{id: id}
+	key := m.codec.AdvisoryLockPrefix(id)
+
+	if err := m.ensureKeyExists(ctx, key); err != nil {
 		return err
 	}
+
+	seq, err := m.acquireKVLock(ctx, key, mode)
+	if err != nil {
+		return err
+	}
+
+	switch mode {
+	case LockExclusive:
+		entry.exclSeqNum = seq
+		entry.exclCount = 1
+	case LockShared:
+		entry.sharedCount = 1
+	}
+
 	m.locks[id] = entry
 	return m.updateTrackingInfo(id, func(tracking *descpb.AdvisoryLockTracking) {
 		tracking.Lock = id
 		if mode == LockShared {
-			tracking.LockState = descpb.AdvisoryLockTracking_EXCLUSIVE
-
+			tracking.LockState = descpb.AdvisoryLockTracking_SHARED
 		} else {
 			tracking.LockState = descpb.AdvisoryLockTracking_EXCLUSIVE
 		}
 		tracking.HolderSessionId = append(tracking.HolderSessionId, m.sessionID)
-
 	})
 }
 
@@ -151,27 +226,94 @@ func (m *kvLockTableManager) ReleaseLock(id int64, mode LockMode) error {
 	if !ok {
 		return ErrLockNotHeld
 	}
-	entry.refCount--
-	if entry.refCount == 0 {
-		delete(m.locks, id)
-		// Release our lock and leave this txn in a pending state.
-		key := m.codec.AdvisoryLockPrefix(id)
-		err := m.lockTxn.ClearAdvisoryLock(context.Background(), key)
-		if err != nil {
-			return err
+
+	switch mode {
+	case LockExclusive:
+		if entry.exclCount <= 0 {
+			return ErrLockNotHeld
 		}
-		return m.updateTrackingInfo(id, func(tracking *descpb.AdvisoryLockTracking) {
-			tracking.Lock = id
-			for idx, sessionId := range tracking.HolderSessionId {
-				if sessionId == m.sessionID {
-					tracking.HolderSessionId = append(tracking.HolderSessionId[:idx], tracking.HolderSessionId[idx+1:]...)
-					break
-				}
-			}
-			// FIXME: Set to not held.
-		})
+		entry.exclCount--
+	case LockShared:
+		if entry.sharedCount <= 0 {
+			return ErrLockNotHeld
+		}
+		entry.sharedCount--
 	}
-	return nil
+
+	// Case 1: Still hold Exclusive refs. Nothing changes at KV layer.
+	if entry.isExclusive() {
+		return nil
+	}
+
+	// Case 2: Just dropped the last Exclusive ref, but Shared refs remain.
+	// Demote the KV lock from Exclusive to Shared.
+	if entry.sharedCount > 0 && mode == LockExclusive {
+		return m.demoteLock(id, entry)
+	}
+
+	// Case 3: Released a Shared ref, Shared refs still remain. No KV change.
+	if entry.sharedCount > 0 {
+		return nil
+	}
+
+	// Case 4: All refs gone. Full release.
+	delete(m.locks, id)
+	key := m.codec.AdvisoryLockPrefix(id)
+	err := m.lockTxn.ClearAdvisoryLock(context.Background(), key)
+	if err != nil {
+		return err
+	}
+	return m.updateTrackingInfo(id, func(tracking *descpb.AdvisoryLockTracking) {
+		tracking.Lock = id
+		for idx, sessionId := range tracking.HolderSessionId {
+			if sessionId == m.sessionID {
+				tracking.HolderSessionId = append(
+					tracking.HolderSessionId[:idx],
+					tracking.HolderSessionId[idx+1:]...,
+				)
+				break
+			}
+		}
+	})
+}
+
+// demoteLock transitions a lock from Exclusive to Shared at the KV layer
+// using the IgnoredSeqNums mechanism:
+//  1. Mark the Exclusive acquisition's seq as ignored.
+//  2. Acquire a Shared lock (storage sees Exclusive as rolled back, writes Shared).
+//  3. Clean up the rolled-back Exclusive from Pebble via ResolveIntentRequest.
+func (m *kvLockTableManager) demoteLock(id int64, entry *LockData) error {
+	ctx := context.Background()
+	key := m.codec.AdvisoryLockPrefix(id)
+
+	// Step 1: Mark the Exclusive acquisition seq as ignored. This also
+	// steps writeSeq so subsequent operations use a non-ignored seq.
+	if err := m.lockTxn.AddIgnoredSeqNumRange(ctx, enginepb.IgnoredSeqNumRange{
+		Start: entry.exclSeqNum,
+		End:   entry.exclSeqNum,
+	}); err != nil {
+		return err
+	}
+
+	// Step 2: Acquire a Shared lock. MVCCAcquireLock sees the old Exclusive
+	// as rolled back (its seq is now ignored) and writes a new Shared entry.
+	if _, err := m.acquireKVLock(ctx, key, LockShared); err != nil {
+		return err
+	}
+
+	// Step 3: Send ResolveIntentRequest with IgnoredSeqNums to clean up the
+	// rolled-back Exclusive from Pebble. The Shared lock we just wrote is at
+	// a non-ignored seq, so it is preserved.
+	if err := m.lockTxn.CleanupDemotedAdvisoryLock(ctx, key); err != nil {
+		return err
+	}
+
+	entry.exclSeqNum = 0
+
+	return m.updateTrackingInfo(id, func(tracking *descpb.AdvisoryLockTracking) {
+		tracking.Lock = id
+		tracking.LockState = descpb.AdvisoryLockTracking_SHARED
+	})
 }
 
 func (m *kvLockTableManager) ReleaseAllLocks() error {
@@ -179,6 +321,7 @@ func (m *kvLockTableManager) ReleaseAllLocks() error {
 		return err
 	}
 	m.lockTxn = m.db.NewTxn(context.Background(), "advisory-lock-txn")
+	_ = m.lockTxn.DisablePipelining()
 	m.locks = make(map[int64]*LockData)
 	return nil
 }
