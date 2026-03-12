@@ -147,7 +147,10 @@ func (m *kvLockTableManager) RollbackToSavepoint() {}
 func (m *kvLockTableManager) FinishTransaction()   {}
 
 func (m *kvLockTableManager) ReleaseLock(id int64, mode LockMode) error {
-	entry := m.locks[id]
+	entry, ok := m.locks[id]
+	if !ok {
+		return ErrLockNotHeld
+	}
 	entry.refCount--
 	if entry.refCount == 0 {
 		delete(m.locks, id)

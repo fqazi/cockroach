@@ -862,6 +862,11 @@ func (q *Queue) waitForPush(
 				p1, p2 := pusheePriority, pusherPriority
 				abortPushee := p1 < p2 || (p1 == p2 && bytes.Compare(tieBreakerPushee, tieBreakerPusher) < 0)
 
+				if pending.getTxn().Name == "advisory-lock-txn" {
+					// We NEVER break deadlocks by aborting an advisory-lock-txn.
+					abortPushee = false
+				}
+
 				level := log.Level(1)
 				if q.every.ShouldLog() {
 					level = 0 // will behave like a log.KvExec.Infof
@@ -1051,10 +1056,13 @@ func (q *Queue) startQueryPusherTxn(
 							Key: updatedPusher.SessionTxnKey,
 						}
 						// We don't want to wait on the session transaction update, just get the current waiting txns.
-						_, sessionTxnWaitingTxns, sessionPErr := q.queryTxnStatus(ctx, sessionMeta, false, nil)
+						updatedSessionTxn, sessionTxnWaitingTxns, sessionPErr := q.queryTxnStatus(ctx, sessionMeta, false, nil)
 						if sessionPErr == nil {
 							for _, txnID := range sessionTxnWaitingTxns {
 								push.mu.dependents[txnID] = struct{}{}
+							}
+							if pusher.Name == "advisory-lock-txn" && updatedSessionTxn != nil && updatedSessionTxn.Status == roachpb.ABORTED {
+								updatedPusher.Status = roachpb.ABORTED
 							}
 						}
 					}
