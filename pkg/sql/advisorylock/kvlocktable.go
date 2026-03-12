@@ -10,6 +10,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
+	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 )
@@ -219,8 +221,14 @@ func (m *kvLockTableManager) acquireKVLock(
 	err = m.lockTxn.Run(ctx, b)
 	if err != nil {
 		lcErr := new(kvpb.WriteIntentError)
-		if errors.As(err, &lcErr) && lcErr.Reason == kvpb.WriteIntentError_REASON_WAIT_POLICY {
-			return 0, ErrLockNotAcquired
+		if errors.As(err, &lcErr) {
+			switch lcErr.Reason {
+			case kvpb.WriteIntentError_REASON_WAIT_POLICY:
+				return 0, ErrLockNotAcquired
+			case kvpb.WriteIntentError_REASON_DEADLOCK:
+				return 0, pgerror.Newf(pgcode.DeadlockDetected,
+					"deadlock detected while waiting for advisory lock")
+			}
 		}
 		return 0, err
 	}

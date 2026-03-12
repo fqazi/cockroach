@@ -836,10 +836,57 @@ func (q *Queue) waitForPush(
 
 			if haveDependency {
 				if req.PusherTxn.Name == "advisory-lock-txn" {
-					// We NEVER break deadlocks by aborting an advisory-lock-txn.
-					// We rely on the other side of the dependency cycle (the SQL txn) to break it.
-					log.VEventf(ctx, 1, "detected deadlock involving advisory-lock-txn, waiting for SQL txn to break it")
-					continue
+					// Advisory-lock-txns only contend on advisory lock keys,
+					// which regular SQL txns never touch. A deadlock here
+					// necessarily involves only advisory-lock-txns. We don't
+					// check pending.getTxn().Name because TransactionRecord
+					// does not persist the Name field.
+					//
+					// Use a tie-breaker to deterministically pick a loser.
+					// The loser receives a WriteIntentError(REASON_DEADLOCK)
+					// which the advisory lock manager translates to
+					// pgcode.DeadlockDetected. The winner continues
+					// waiting — the circular dependency is broken once the
+					// loser retries.
+					tieBreakerPushee := req.PusheeTxn.ID.GetBytes()
+					if req.PusheeTxn.SessionTxnID != nil && *req.PusheeTxn.SessionTxnID != (uuid.UUID{}) {
+						sessID := req.PusheeTxn.SessionTxnID.GetBytes()
+						if bytes.Compare(sessID, tieBreakerPushee) < 0 {
+							tieBreakerPushee = sessID
+						}
+					}
+					tieBreakerPusher := req.PusherTxn.ID.GetBytes()
+					if req.PusherTxn.SessionTxnID != nil && *req.PusherTxn.SessionTxnID != (uuid.UUID{}) {
+						sessID := req.PusherTxn.SessionTxnID.GetBytes()
+						if bytes.Compare(sessID, tieBreakerPusher) < 0 {
+							tieBreakerPusher = sessID
+						}
+					}
+
+					p1, p2 := pusheePriority, pusherPriority
+					abortPushee := p1 < p2 || (p1 == p2 && bytes.Compare(tieBreakerPushee, tieBreakerPusher) < 0)
+
+					if abortPushee {
+						// The pushee should lose. The other side (pushing
+						// us) will see abortPushee=false and receive the
+						// error. We are the winner — keep waiting.
+						continue
+					}
+
+					// We are the loser. Return a deadlock error without
+					// aborting our transaction.
+					metrics.DeadlocksTotal.Inc(1)
+					level := log.Level(1)
+					if q.every.ShouldLog() {
+						level = 0
+					}
+					log.VEventf(ctx, level,
+						"%s breaking advisory lock deadlock by returning error to pusher %s; dependencies=%s",
+						req.PusheeTxn.ID.Short(), req.PusherTxn.ID.Short(), dependents,
+					)
+					return nil, kvpb.NewError(&kvpb.WriteIntentError{
+						Reason: kvpb.WriteIntentError_REASON_DEADLOCK,
+					})
 				}
 
 				// We are a SQL txn. We must break the cycle.

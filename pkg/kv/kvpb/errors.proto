@@ -359,6 +359,10 @@ message WriteIntentError {
     // The request attempted to wait in a lock wait-queue whose length was
     // already equal to or exceeding the configured maximum.
     REASON_LOCK_WAIT_QUEUE_MAX_LENGTH_EXCEEDED = 3;
+    // The request was involved in a deadlock cycle between advisory lock
+    // transactions. The deadlock was broken by returning this error to one
+    // side without aborting either transaction.
+    REASON_DEADLOCK = 4;
   }
   // The reason for the error.
   optional Reason reason = 4 [(gogoproto.nullable) = false];

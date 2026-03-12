@@ -7,7 +7,6 @@ package tests_test
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
+	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -26,7 +26,7 @@ func TestAdvisoryLocks(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	// Support is not there for all lock commands.
-	skip.WithIssue(t, 12345)
+	//skip.WithIssue(t, 12345)
 
 	ctx := context.Background()
 	params := base.TestServerArgs{}
@@ -395,44 +395,30 @@ func TestAdvisoryLocks(t *testing.T) {
 		// Session 2 acquires Lock B
 		db2.Exec(t, "SELECT pg_advisory_lock(401)")
 
-		var wg sync.WaitGroup
-		wg.Add(2)
+		grpCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		grp := ctxgroup.WithContext(grpCtx)
 
-		errCh := make(chan error, 2)
+		grp.GoCtx(func(ctx context.Context) error {
+			defer cancel()
+			_, err := db1.DB.ExecContext(ctx, "SELECT pg_advisory_lock(401)")
+			return err
+		})
 
-		go func() {
-			defer wg.Done()
-			// Session 1 tries to acquire Lock B (held by Session 2)
-			_, err := db1.DB.ExecContext(context.Background(), "SELECT pg_advisory_lock(401)")
-			if err != nil {
-				errCh <- err
-			}
-		}()
-
-		go func() {
-			defer wg.Done()
+		grp.GoCtx(func(ctx context.Context) error {
+			defer cancel()
 			// Session 2 tries to acquire Lock A (held by Session 1)
 			// Wait a bit to ensure Session 1 is waiting first (force order for determinism if possible, though deadlock detector handles any order)
-			time.Sleep(100 * time.Millisecond)
-			_, err := db2.DB.ExecContext(context.Background(), "SELECT pg_advisory_lock(400)")
-			if err != nil {
-				errCh <- err
-			}
-		}()
-
-		wg.Wait()
-		close(errCh)
-
-		var deadlockFound bool
-		for err := range errCh {
-			t.Logf("Received error: %v", err)
-			if pqErr := (*pq.Error)(nil); errors.As(err, &pqErr) {
-				if pgcode.MakeCode(string(pqErr.Code)) == pgcode.DeadlockDetected {
-					deadlockFound = true
-				}
+			_, err := db2.DB.ExecContext(ctx, "SELECT pg_advisory_lock(400)")
+			return err
+		})
+		err := grp.Wait()
+		deadlockFound := false
+		if pqErr := (*pq.Error)(nil); errors.As(err, &pqErr) {
+			if pgcode.MakeCode(string(pqErr.Code)) == pgcode.DeadlockDetected {
+				deadlockFound = true
 			}
 		}
-
 		require.True(t, deadlockFound, "Expected a deadlock error")
 
 		// Cleanup: Reset sessions/locks might be needed if connections are poisoned,
@@ -477,40 +463,29 @@ func TestAdvisoryLocks(t *testing.T) {
 
 		// Both sessions now hold Shared. Neither can upgrade to Exclusive without the other releasing.
 		// If both try to upgrade, one must error with deadlock.
+		grpCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		grp := ctxgroup.WithContext(grpCtx)
 
-		var wg sync.WaitGroup
-		wg.Add(2)
-		errCh := make(chan error, 2)
-
-		go func() {
-			defer wg.Done()
+		grp.GoCtx(func(ctx context.Context) error {
+			defer cancel()
 			// Session 1 tries upgrade
-			_, err := db1.DB.ExecContext(context.Background(), "SELECT pg_advisory_lock(501)")
-			if err != nil {
-				errCh <- err
-			}
-		}()
+			_, err := db1.DB.ExecContext(ctx, "SELECT pg_advisory_lock(501)")
+			return err
+		})
 
-		go func() {
-			defer wg.Done()
-			time.Sleep(100 * time.Millisecond) // Ensure S1 is blocked first (best effort)
+		grp.GoCtx(func(ctx context.Context) error {
+			defer cancel()
 			// Session 2 tries upgrade
-			_, err := db2.DB.ExecContext(context.Background(), "SELECT pg_advisory_lock(501)")
-			if err != nil {
-				errCh <- err
-			}
-		}()
+			_, err := db2.DB.ExecContext(ctx, "SELECT pg_advisory_lock(501)")
+			return err
+		})
 
-		wg.Wait()
-		close(errCh)
-
+		err := grp.Wait()
 		var deadlockFound bool
-		for err := range errCh {
-			t.Logf("Received error: %v", err)
-			if pqErr := (*pq.Error)(nil); errors.As(err, &pqErr) {
-				if pgcode.MakeCode(string(pqErr.Code)) == pgcode.DeadlockDetected {
-					deadlockFound = true
-				}
+		if pqErr := (*pq.Error)(nil); errors.As(err, &pqErr) {
+			if pgcode.MakeCode(string(pqErr.Code)) == pgcode.DeadlockDetected {
+				deadlockFound = true
 			}
 		}
 		require.True(t, deadlockFound, "Expected a deadlock error during mutual upgrade")
