@@ -148,6 +148,10 @@ type TxnCoordSender struct {
 		// caller of DeferCommitWait has assumed responsibility for performing
 		// the commit-wait.
 		commitWaitDeferred bool
+
+		// sessionTxnGetKey is a closure returning the session's transaction anchor key,
+		// evaluated dynamically to ensure it is always up-to-date.
+		sessionTxnGetKey func() roachpb.Key
 	}
 
 	// A pointer member to the creating factory provides access to
@@ -542,6 +546,17 @@ func (tc *TxnCoordSender) finalizeNonLockingTxnLocked(
 func (tc *TxnCoordSender) Send(
 	ctx context.Context, ba *kvpb.BatchRequest,
 ) (*kvpb.BatchResponse, *kvpb.Error) {
+	// Evaluate the session transaction key closure outside of the main lock
+	// to avoid a deadlock, as the closure acquires the lock of the other Txn.
+	tc.mu.Lock()
+	getKeyFn := tc.mu.sessionTxnGetKey
+	tc.mu.Unlock()
+
+	var sessionTxnKey roachpb.Key
+	if getKeyFn != nil {
+		sessionTxnKey = getKeyFn()
+	}
+
 	// NOTE: The locking here is unusual. Although it might look like it, we are
 	// NOT holding the lock continuously for the duration of the Send. We lock
 	// here, and unlock at the bottom of the interceptor stack, in the
@@ -550,6 +565,10 @@ func (tc *TxnCoordSender) Send(
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 	tc.mu.active = true
+
+	if sessionTxnKey != nil {
+		tc.mu.txn.SessionTxnKey = sessionTxnKey
+	}
 
 	if pErr := tc.maybeRejectIncompatibleRequest(ctx, ba); pErr != nil {
 		return nil, pErr
@@ -1188,6 +1207,14 @@ func (tc *TxnCoordSender) SetDebugName(name string) {
 		panic("cannot change the debug name of a running transaction")
 	}
 	tc.mu.txn.Name = name
+}
+
+// SetSessionTxn sets the session transaction ID and anchor key on the transaction.
+func (tc *TxnCoordSender) SetSessionTxn(sessionTxnID uuid.UUID, getSessionTxnKey func() roachpb.Key) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	tc.mu.txn.SessionTxnID = &sessionTxnID
+	tc.mu.sessionTxnGetKey = getSessionTxnKey
 }
 
 // GetOmitInRangefeeds is part of the kv.TxnSender interface.

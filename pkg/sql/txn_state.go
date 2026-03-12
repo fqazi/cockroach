@@ -15,6 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/sql/advisorylock"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -280,6 +281,7 @@ func (ts *txnState) resetForNewSQLTxn(
 			}
 			ts.mu.txn = txn
 		}
+		tranCtx.advisoryLockManager.OnNewTxn(ts.mu.txn)
 
 		txnID = ts.mu.txn.ID()
 		sp.SetTag("txn", attribute.StringValue(txnID.String()))
@@ -565,9 +567,10 @@ type transitionCtx struct {
 	tracer *tracing.Tracer
 	// sessionTracing provides access to the session's tracing interface. The
 	// state machine needs to see if session tracing is enabled.
-	sessionTracing   *SessionTracing
-	settings         *cluster.Settings
-	execTestingKnobs ExecutorTestingKnobs
+	sessionTracing      *SessionTracing
+	settings            *cluster.Settings
+	execTestingKnobs    ExecutorTestingKnobs
+	advisoryLockManager advisorylock.Manager
 }
 
 var noRewind = rewindCapability{}

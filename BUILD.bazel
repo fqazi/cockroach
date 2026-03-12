@@ -1,5 +1,5 @@
 load("@bazel_gazelle//:def.bzl", "gazelle")
-load("@io_bazel_rules_go//go:def.bzl", "go_path", "nogo")
+load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library", "go_path", "go_test", "nogo")
 load("//build/bazelutil/staticcheckanalyzers:def.bzl", "STATICCHECK_CHECKS")
 
 # Consider using `dev` to easily perform Bazel builds. Run `dev doctor` to see
@@ -214,4 +214,30 @@ nogo(
         "//pkg/testutils/lint/passes/unconvert",
         "//pkg/testutils/lint/passes/roachtest",
     ],
+)
+
+go_library(
+    name = "cockroach_lib",
+    srcs = [
+        "test_concurrent.go",
+        "test_dropped_returns_nil.go",
+        "test_mismatch.go",
+        "test_stress.go",
+        "test_validation_dup.go",
+    ],
+    importpath = "github.com/cockroachdb/cockroach",
+    visibility = ["//visibility:private"],
+    deps = ["@com_github_lib_pq//:pq"],
+)
+
+go_binary(
+    name = "cockroach",
+    embed = [":cockroach_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "cockroach_test",
+    srcs = ["deadlock_test.go"],
+    embed = [":cockroach_lib"],
 )

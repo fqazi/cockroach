@@ -809,6 +809,9 @@ func (q *Queue) waitForPush(
 			// Check for dependency cycle to find and break deadlocks.
 			push.mu.Lock()
 			_, haveDependency := push.mu.dependents[req.PusheeTxn.ID]
+			if !haveDependency && req.PusheeTxn.SessionTxnID != nil && *req.PusheeTxn.SessionTxnID != (uuid.UUID{}) {
+				_, haveDependency = push.mu.dependents[*req.PusheeTxn.SessionTxnID]
+			}
 			dependents := make([]string, 0, len(push.mu.dependents))
 			for id := range push.mu.dependents {
 				dependents = append(dependents, id.Short().String())
@@ -832,26 +835,54 @@ func (q *Queue) waitForPush(
 			q.mu.Unlock()
 
 			if haveDependency {
-				// Break the deadlock if the pusher has higher priority.
-				p1, p2 := pusheePriority, pusherPriority
-				if p1 < p2 || (p1 == p2 && bytes.Compare(req.PusheeTxn.ID.GetBytes(), req.PusherTxn.ID.GetBytes()) < 0) {
-					// NB: It's useful to have logs indicating the transactions involved
-					// in a deadlock, but we don't want these to be too spammy.
-					level := log.Level(1)
-					if q.every.ShouldLog() {
-						level = 0 // will behave like a log.KvExec.Infof
+				if req.PusherTxn.Name == "advisory-lock-txn" {
+					// We NEVER break deadlocks by aborting an advisory-lock-txn.
+					// We rely on the other side of the dependency cycle (the SQL txn) to break it.
+					log.VEventf(ctx, 1, "detected deadlock involving advisory-lock-txn, waiting for SQL txn to break it")
+					continue
+				}
+
+				// We are a SQL txn. We must break the cycle.
+				// We use a consistent tie-breaker to decide whether to abort the pushee or the pusher.
+				tieBreakerPushee := req.PusheeTxn.ID.GetBytes()
+				if req.PusheeTxn.SessionTxnID != nil && *req.PusheeTxn.SessionTxnID != (uuid.UUID{}) {
+					sessID := req.PusheeTxn.SessionTxnID.GetBytes()
+					if bytes.Compare(sessID, tieBreakerPushee) < 0 {
+						tieBreakerPushee = sessID
 					}
+				}
+				tieBreakerPusher := req.PusherTxn.ID.GetBytes()
+				if req.PusherTxn.SessionTxnID != nil && *req.PusherTxn.SessionTxnID != (uuid.UUID{}) {
+					sessID := req.PusherTxn.SessionTxnID.GetBytes()
+					if bytes.Compare(sessID, tieBreakerPusher) < 0 {
+						tieBreakerPusher = sessID
+					}
+				}
+
+				p1, p2 := pusheePriority, pusherPriority
+				abortPushee := p1 < p2 || (p1 == p2 && bytes.Compare(tieBreakerPushee, tieBreakerPusher) < 0)
+
+				level := log.Level(1)
+				if q.every.ShouldLog() {
+					level = 0 // will behave like a log.KvExec.Infof
+				}
+
+				metrics.DeadlocksTotal.Inc(1)
+				if abortPushee {
 					log.VEventf(
-						ctx,
-						level,
-						"%s breaking deadlock by force push of %s; dependencies=%s",
-						req.PusherTxn.ID.Short(),
-						req.PusheeTxn.ID.Short(),
-						dependents,
+						ctx, level,
+						"%s breaking deadlock by force abort of pushee %s; dependencies=%s",
+						req.PusherTxn.ID.Short(), req.PusheeTxn.ID.Short(), dependents,
 					)
-					metrics.DeadlocksTotal.Inc(1)
 					return q.forcePushAbort(ctx, req)
 				}
+
+				log.VEventf(
+					ctx, level,
+					"%s breaking deadlock by force abort of pusher %s; dependencies=%s",
+					req.PusheeTxn.ID.Short(), req.PusherTxn.ID.Short(), dependents,
+				)
+				return nil, q.forceAbortPusher(ctx, req, updatedPusher)
 			}
 			// Signal the pusher query txn loop to continue.
 			readyCh <- struct{}{}
@@ -1010,6 +1041,24 @@ func (q *Queue) startQueryPusherTxn(
 				for _, txnID := range waitingTxns {
 					push.mu.dependents[txnID] = struct{}{}
 				}
+				if updatedPusher.SessionTxnID != nil && *updatedPusher.SessionTxnID != (uuid.UUID{}) {
+					push.mu.dependents[*updatedPusher.SessionTxnID] = struct{}{}
+
+					if len(updatedPusher.SessionTxnKey) > 0 {
+						// Also query the session transaction to get its transitive dependents.
+						sessionMeta := enginepb.TxnMeta{
+							ID:  *updatedPusher.SessionTxnID,
+							Key: updatedPusher.SessionTxnKey,
+						}
+						// We don't want to wait on the session transaction update, just get the current waiting txns.
+						_, sessionTxnWaitingTxns, sessionPErr := q.queryTxnStatus(ctx, sessionMeta, false, nil)
+						if sessionPErr == nil {
+							for _, txnID := range sessionTxnWaitingTxns {
+								push.mu.dependents[txnID] = struct{}{}
+							}
+						}
+					}
+				}
 				push.mu.Unlock()
 
 				// Send an update of the pusher txn.
@@ -1104,6 +1153,29 @@ func (q *Queue) forcePushAbort(
 		return nil, b.MustPErr()
 	}
 	return b.RawResponse().Responses[0].GetPushTxn(), nil
+}
+
+// forceAbortPusher forces an abort of the pusher. This mechanism is used to break
+// deadlocks when the tie-breaker dictates that the pusher should be the victim,
+// or when the pushee is an advisory-lock-txn which should not be aborted.
+func (q *Queue) forceAbortPusher(
+	ctx context.Context, req *kvpb.PushTxnRequest, pusher *roachpb.Transaction,
+) *kvpb.Error {
+	log.VEventf(ctx, 1, "force aborting pusher %v to break deadlock", pusher.ID)
+	forcePush := *req
+	forcePush.RequestHeader = kvpb.RequestHeader{Key: pusher.Key}
+	forcePush.PusherTxn = roachpb.Transaction{TxnMeta: req.PusheeTxn}
+	forcePush.PusheeTxn = pusher.TxnMeta
+	forcePush.Force = true
+	forcePush.PushType = kvpb.PUSH_ABORT
+	b := &kv.Batch{}
+	b.Header.Timestamp = q.cfg.Clock.Now()
+	b.AddRawRequest(&forcePush)
+	if err := q.cfg.DB.Run(ctx, b); err != nil {
+		return b.MustPErr()
+	}
+	return kvpb.NewErrorWithTxn(
+		kvpb.NewTransactionAbortedError(kvpb.ABORT_REASON_CLIENT_REJECT), pusher)
 }
 
 // TrackedTxns returns a (newly minted) set containing the transaction IDs which

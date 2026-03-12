@@ -129,6 +129,16 @@ message TxnMeta {
   // transactions) and was introduced for the purposes of SQL Observability.
   // TODO(sarkesian): Refactor to use gogoproto.casttype GenericNodeID when #73309 completes.
   int32 coordinator_node_id = 10 [(gogoproto.customname) = "CoordinatorNodeID"];
+
+  // session_txn_id represents the transaction ID of the SQL session.
+  // Used for deadlock detection and lock table operations involving advisory locks.
+  bytes session_txn_id = 11 [
+    (gogoproto.customname) = "SessionTxnID",
+    (gogoproto.customtype) = "github.com/cockroachdb/cockroach/pkg/util/uuid.UUID"
+  ];
+
+  // session_txn_key represents the anchor key of the session transaction.
+  bytes session_txn_key = 12 [(gogoproto.customname) = "SessionTxnKey"];
 }
 
 // IgnoredSeqNumRange describes a range of ignored seqnums.

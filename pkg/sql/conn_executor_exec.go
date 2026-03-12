@@ -61,6 +61,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/fsm"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+
 	// This import is needed here to properly inject tree.ValidateJSONPath from
 	// pkg/util/jsonpath/parser/parse.go.
 	_ "github.com/cockroachdb/cockroach/pkg/util/jsonpath/parser"
@@ -2334,6 +2335,7 @@ func (ex *connExecutor) resetTransactionOnSchemaChangeRetry(ctx context.Context)
 		}
 	}
 	ex.state.mu.txn = newTxn
+	ex.advisoryLockManager.OnNewTxn(newTxn)
 	return nil
 }
 

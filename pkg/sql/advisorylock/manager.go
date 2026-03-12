@@ -3,6 +3,7 @@ package advisorylock
 import (
 	"context"
 
+	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/errors"
 )
@@ -36,4 +37,5 @@ type Manager interface {
 	FinishTransaction()
 
 	ReleaseAllForSession(ctx context.Context) error
+	OnNewTxn(txn *kv.Txn)
 }

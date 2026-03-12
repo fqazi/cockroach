@@ -14,6 +14,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/interval"
+	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/redact"
 )
 
@@ -95,6 +96,9 @@ func (m *MockTransactionalSender) SetUserPriority(pri roachpb.UserPriority) erro
 }
 
 // SetDebugName is part of the TxnSender interface.
+func (m *MockTransactionalSender) SetSessionTxn(sessionTxnID uuid.UUID, getSessionTxnKey func() roachpb.Key) {
+}
+
 func (m *MockTransactionalSender) SetDebugName(name string) {
 	m.txn.Name = name
 }
@@ -240,7 +244,9 @@ func (m *MockTransactionalSender) Active() bool {
 }
 
 // DisablePipelining is part of the kv.TxnSender interface.
-func (m *MockTransactionalSender) ClearAdvisoryLock(ctx context.Context, key roachpb.Key) error { return nil }
+func (m *MockTransactionalSender) ClearAdvisoryLock(ctx context.Context, key roachpb.Key) error {
+	return nil
+}
 
 func (m *MockTransactionalSender) DisablePipelining() error { return nil }
 

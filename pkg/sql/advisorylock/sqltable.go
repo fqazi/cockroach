@@ -876,3 +876,7 @@ func (s *sqlTableManager) doAdvisoryLockAcquire(
 	currentLock.HolderSessionId = append(currentLock.HolderSessionId, s.sessionID)
 	return false, writeLockState()
 }
+
+func (s *sqlTableManager) OnNewTxn(txn *kv.Txn) {
+	// No-op
+}

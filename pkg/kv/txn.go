@@ -431,6 +431,13 @@ func (txn *Txn) SetDebugName(name string) {
 }
 
 // DebugName returns the debug name associated with the transaction.
+// SetSessionTxn sets the session transaction ID and anchor key on the transaction.
+func (txn *Txn) SetSessionTxn(sessionTxnID uuid.UUID, getSessionTxnKey func() roachpb.Key) {
+	txn.mu.Lock()
+	defer txn.mu.Unlock()
+	txn.mu.sender.SetSessionTxn(sessionTxnID, getSessionTxnKey)
+}
+
 func (txn *Txn) DebugName() string {
 	txn.mu.Lock()
 	defer txn.mu.Unlock()

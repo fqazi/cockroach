@@ -93,7 +93,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tochar"
-	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
@@ -1194,6 +1193,7 @@ func (s *Server) newConnExecutor(
 	})
 	txnFingerprintIDCacheAcc := sessionMon.MakeBoundAccount()
 
+	lockManager := advisorylock.NewManager(s.cfg.DB, s.cfg.Codec, sessionID.String())
 	nodeIDOrZero, _ := s.cfg.NodeInfo.NodeID.OptionalNodeID()
 	ex := &connExecutor{
 		server:              s,
@@ -1217,10 +1217,11 @@ func (s *Server) newConnExecutor(
 			nodeIDOrZero: nodeIDOrZero,
 			clock:        s.cfg.Clock,
 			// Future transaction's monitors will inherits from sessionRootMon.
-			connMon:          sessionRootMon,
-			tracer:           s.cfg.AmbientCtx.Tracer,
-			settings:         s.cfg.Settings,
-			execTestingKnobs: s.GetExecutorConfig().TestingKnobs,
+			connMon:             sessionRootMon,
+			tracer:              s.cfg.AmbientCtx.Tracer,
+			settings:            s.cfg.Settings,
+			execTestingKnobs:    s.GetExecutorConfig().TestingKnobs,
+			advisoryLockManager: lockManager,
 		},
 		memMetrics: memMetrics,
 		planner: planner{
@@ -1241,71 +1242,9 @@ func (s *Server) newConnExecutor(
 		totalActiveTimeStopWatch:  timeutil.NewStopWatch(),
 		txnFingerprintIDCache:     NewTxnFingerprintIDCache(ctx, s.cfg.Settings, &txnFingerprintIDCacheAcc),
 		txnFingerprintIDAcc:       &txnFingerprintIDCacheAcc,
+		advisoryLockManager:       lockManager,
 	}
-	ex.advisoryLockManager = advisorylock.NewSQLManager(s.cfg.DB, s.cfg.Codec, sessionID.String(), func() (map[string]struct{}, error) {
-		req, err := ex.planner.makeSessionsRequest(ctx, true /* excludeClosed */)
-		if err != nil {
-			return nil, err
-		}
-		response, err := ex.planner.extendedEvalCtx.SQLStatusServer.ListSessions(ctx, &req)
-		if err != nil {
-			return nil, err
-		}
-		sessionMap := make(map[string]struct{})
-		for _, session := range response.Sessions {
-			id := uint128.FromBytes(session.ID)
-			sessionMap[id.String()] = struct{}{}
-		}
-		return sessionMap, nil
-	}, func(ctx context.Context, sessionID string) ([]string, error) {
-		// WaitGraphProvider implementation:
-		// Checks if the given session (holder of advisory lock) is waiting on any KV locks.
-		// If so, returns the session IDs of the holders of those KV locks.
 
-		// This query finds the session_id of the holder of a lock that the target session (sessionID) is waiting for.
-		// 1. target_txn: Resolve sessionID to txn_id.
-		// 2. waiting_keys: Find keys where this txn_id is waiting (granted=false) and contended=true.
-		// 3. blocking_sessions: Find the holder (granted=true) of those keys and resolve back to session_id.
-		const query = `
-WITH target_txn AS (
-    SELECT id AS txn_id FROM crdb_internal.cluster_transactions WHERE session_id = $1
-),
-waiting_keys AS (
-    SELECT lock.lock_key
-    FROM crdb_internal.cluster_locks lock
-    JOIN target_txn tt ON lock.txn_id = tt.txn_id
-    WHERE lock.granted = false AND lock.contended = true
-)
-SELECT ct.session_id
-FROM crdb_internal.cluster_locks lock
-JOIN waiting_keys wk ON lock.lock_key = wk.lock_key
-JOIN crdb_internal.cluster_transactions ct ON lock.txn_id = ct.id
-WHERE lock.granted = true AND lock.contended = true
-`
-		// Use InternalExecutor to run the query.
-		// We need a session data override to run as root/node user.
-		ie := MakeInternalExecutor(s, MemoryMetrics{}, s.pool)
-		sessionOverride := sessiondata.InternalExecutorOverride{
-			User: username.NodeUserName(),
-		}
-
-		rows, err := ie.QueryBufferedEx(
-			ctx, "advisory-lock-deadlock-check", nil /* txn */, sessionOverride, query, sessionID,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		var blockingSessions []string
-		for _, row := range rows {
-			if len(row) > 0 {
-				if sID, ok := row[0].(*tree.DString); ok {
-					blockingSessions = append(blockingSessions, string(*sID))
-				}
-			}
-		}
-		return blockingSessions, nil
-	}, s.cfg.Stopper)
 	ex.rng.internal = rand.New(rand.NewSource(timeutil.Now().UnixNano()))
 
 	ex.state.txnAbortCount = ex.metrics.EngineMetrics.TxnAbortCount

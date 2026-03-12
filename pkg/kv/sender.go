@@ -14,6 +14,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/interval"
+	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/redact"
 )
 
@@ -124,6 +125,9 @@ type TxnSender interface {
 
 	// SetDebugName sets the txn's debug name.
 	SetDebugName(name string)
+
+	// SetSessionTxn sets the session transaction ID and its anchor key on the transaction.
+	SetSessionTxn(sessionTxnID uuid.UUID, getSessionTxnKey func() roachpb.Key)
 
 	// GetOmitInRangefeeds returns the value of the OmitInRangefeeds attribute of
 	// the Transaction proto.

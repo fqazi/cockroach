@@ -9,6 +9,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
+	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 )
 
@@ -36,13 +37,14 @@ func (m *kvLockTableManager) GetAllLocks() (map[int64]*descpb.AdvisoryLockTracki
 }
 
 func NewManager(db *kv.DB, codec keys.SQLCodec, sessionID string) Manager {
-	return &kvLockTableManager{
+	m := &kvLockTableManager{
 		locks:     make(map[int64]*LockData),
 		db:        db,
 		codec:     codec,
 		sessionID: sessionID,
 		lockTxn:   db.NewTxn(context.Background(), "advisory-lock-txn"),
 	}
+	return m
 }
 
 func (m *kvLockTableManager) updateTrackingInfo(
@@ -95,6 +97,7 @@ func (m *kvLockTableManager) AcquireLock(
 	// Create the key if doesn't exist.
 	key := m.codec.AdvisoryLockPrefix(id)
 	err := m.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
+		txn.SetSessionTxn(m.lockTxn.ID(), func() roachpb.Key { return m.lockTxn.Key() })
 		v, err := txn.Get(ctx, key)
 		if err != nil || v.Exists() {
 			return err
@@ -110,7 +113,7 @@ func (m *kvLockTableManager) AcquireLock(
 	// FIXME: We need to bump up our sequence number of each
 	// acquistion.
 	// FIMXE: Why are we in a bad state?
-	fmt.Printf("retryable: %s\n", m.lockTxn.Sender().GetRetryableErr(ctx))
+	fmt.Printf("retryable: %s %s\n", m.lockTxn.Sender().TxnStatus(), m.lockTxn.Sender().GetRetryableErr(ctx))
 	_ = m.lockTxn.Sender().ClearRetryableErr(ctx)
 	if _, err := m.lockTxn.CreateSavepoint(ctx); err != nil {
 		return err
@@ -175,6 +178,15 @@ func (m *kvLockTableManager) ReleaseAllLocks() error {
 	m.lockTxn = m.db.NewTxn(context.Background(), "advisory-lock-txn")
 	m.locks = make(map[int64]*LockData)
 	return nil
+}
+
+func (m *kvLockTableManager) OnNewTxn(txn *kv.Txn) {
+	if txn != nil {
+		txn.SetSessionTxn(m.lockTxn.ID(), func() roachpb.Key { return m.lockTxn.Key() })
+		m.lockTxn.SetSessionTxn(txn.ID(), func() roachpb.Key { return txn.Key() })
+	} else {
+		m.lockTxn.SetSessionTxn(uuid.UUID{}, nil)
+	}
 }
 
 var _ Manager = &kvLockTableManager{}
