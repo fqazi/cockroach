@@ -836,18 +836,14 @@ func (q *Queue) waitForPush(
 
 			if haveDependency {
 				if req.PusherTxn.Name == "advisory-lock-txn" {
-					// Advisory-lock-txns only contend on advisory lock keys,
-					// which regular SQL txns never touch. A deadlock here
-					// necessarily involves only advisory-lock-txns. We don't
-					// check pending.getTxn().Name because TransactionRecord
-					// does not persist the Name field.
-					//
-					// Use a tie-breaker to deterministically pick a loser.
-					// The loser receives a WriteIntentError(REASON_DEADLOCK)
-					// which the advisory lock manager translates to
-					// pgcode.DeadlockDetected. The winner continues
-					// waiting — the circular dependency is broken once the
-					// loser retries.
+					// The pusher is an advisory-lock-txn. These long-lived
+					// transactions cannot be aborted by normal deadlock
+					// breaking. Use a tie-breaker to deterministically pick
+					// a loser. The loser receives a
+					// WriteIntentError(REASON_DEADLOCK) which the advisory
+					// lock manager translates to pgcode.DeadlockDetected.
+					// The winner continues waiting — the circular
+					// dependency is broken once the loser retries.
 					tieBreakerPushee := req.PusheeTxn.ID.GetBytes()
 					if req.PusheeTxn.SessionTxnID != nil && *req.PusheeTxn.SessionTxnID != (uuid.UUID{}) {
 						sessID := req.PusheeTxn.SessionTxnID.GetBytes()
@@ -908,11 +904,6 @@ func (q *Queue) waitForPush(
 
 				p1, p2 := pusheePriority, pusherPriority
 				abortPushee := p1 < p2 || (p1 == p2 && bytes.Compare(tieBreakerPushee, tieBreakerPusher) < 0)
-
-				if pending.getTxn().Name == "advisory-lock-txn" {
-					// We NEVER break deadlocks by aborting an advisory-lock-txn.
-					abortPushee = false
-				}
 
 				level := log.Level(1)
 				if q.every.ShouldLog() {

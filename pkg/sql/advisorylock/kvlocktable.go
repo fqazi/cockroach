@@ -203,7 +203,9 @@ func (m *kvLockTableManager) ensureKeyExists(ctx context.Context, key roachpb.Ke
 func (m *kvLockTableManager) acquireKVLock(
 	ctx context.Context, key roachpb.Key, mode LockMode, wait bool,
 ) (enginepb.TxnSeq, error) {
-	_ = m.lockTxn.Sender().ClearRetryableErr(ctx)
+	if err := m.lockTxn.PrepareForPartialRetry(ctx); err != nil {
+		return 0, err
+	}
 	if _, err := m.lockTxn.CreateSavepoint(ctx); err != nil {
 		return 0, err
 	}
