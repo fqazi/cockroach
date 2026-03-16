@@ -363,6 +363,10 @@ message WriteIntentError {
     // transactions. The deadlock was broken by returning this error to one
     // side without aborting either transaction.
     REASON_DEADLOCK = 4;
+    // The pusher's session transaction was aborted. This cleanly
+    // interrupts the advisory lock wait without poisoning the
+    // advisory-lock-txn's client-side state.
+    REASON_SESSION_ABORTED = 5;
   }
   // The reason for the error.
   optional Reason reason = 4 [(gogoproto.nullable) = false];

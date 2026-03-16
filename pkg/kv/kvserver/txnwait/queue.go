@@ -788,6 +788,13 @@ func (q *Queue) waitForPush(
 			now := q.cfg.Clock.Now().GoTime()
 			pusheeTxnTimer.Reset(expiration.Sub(now))
 
+		case pErr := <-queryPusherErrCh:
+			// The monitoring goroutine encountered a non-retryable error
+			// (e.g., session txn aborted). The goroutine already exited,
+			// so nil the channel to prevent the defer from blocking.
+			queryPusherErrCh = nil
+			return nil, pErr
+
 		case updatedPusher := <-queryPusherCh:
 			switch updatedPusher.Status {
 			case roachpb.COMMITTED:
@@ -904,6 +911,13 @@ func (q *Queue) waitForPush(
 
 				p1, p2 := pusheePriority, pusherPriority
 				abortPushee := p1 < p2 || (p1 == p2 && bytes.Compare(tieBreakerPushee, tieBreakerPusher) < 0)
+
+				// Never force-abort a pushee that uses the "abort waiting"
+				// policy. These are long-lived advisory-lock transactions
+				// whose destruction would release all session locks.
+				if req.PusheeTxn.AbortWaitingOnDeadlock {
+					abortPushee = false
+				}
 
 				level := log.Level(1)
 				if q.every.ShouldLog() {
@@ -1100,7 +1114,15 @@ func (q *Queue) startQueryPusherTxn(
 								push.mu.dependents[txnID] = struct{}{}
 							}
 							if pusher.AbortWaitingOnDeadlock && updatedSessionTxn != nil && updatedSessionTxn.Status == roachpb.ABORTED {
-								updatedPusher.Status = roachpb.ABORTED
+								// The session txn was aborted. Cleanly
+								// interrupt the advisory lock wait via a
+								// WriteIntentError instead of poisoning
+								// the advisory-lock-txn with ABORTED.
+								push.mu.Unlock()
+								errCh <- kvpb.NewError(&kvpb.WriteIntentError{
+									Reason: kvpb.WriteIntentError_REASON_SESSION_ABORTED,
+								})
+								return
 							}
 						}
 					}

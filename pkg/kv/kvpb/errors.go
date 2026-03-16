@@ -961,6 +961,8 @@ func (e *WriteIntentError) printError(buf Printer) {
 		buf.Printf(" [reason=lock_wait_queue_max_length_exceeded]")
 	case WriteIntentError_REASON_DEADLOCK:
 		buf.Printf(" [reason=deadlock]")
+	case WriteIntentError_REASON_SESSION_ABORTED:
+		buf.Printf(" [reason=session_aborted]")
 	default:
 		// Could panic, better to silently ignore in case new reasons are added.
 	}

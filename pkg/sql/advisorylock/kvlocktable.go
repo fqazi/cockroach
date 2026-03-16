@@ -231,6 +231,9 @@ func (m *kvLockTableManager) acquireKVLock(
 			case kvpb.WriteIntentError_REASON_DEADLOCK:
 				return 0, pgerror.Newf(pgcode.DeadlockDetected,
 					"deadlock detected while waiting for advisory lock")
+			case kvpb.WriteIntentError_REASON_SESSION_ABORTED:
+				return 0, pgerror.Newf(pgcode.QueryCanceled,
+					"advisory lock wait interrupted: session transaction aborted")
 			}
 		}
 		return 0, err
