@@ -139,6 +139,13 @@ message TxnMeta {
 
   // session_txn_key represents the anchor key of the session transaction.
   bytes session_txn_key = 12 [(gogoproto.customname) = "SessionTxnKey"];
+
+  // When true, deadlocks involving this transaction are resolved by
+  // returning an error to the waiter (WriteIntentError with
+  // REASON_DEADLOCK) instead of aborting a transaction in the cycle.
+  // Used by long-lived advisory-lock transactions that cannot be
+  // restarted through normal deadlock breaking.
+  bool abort_waiting_on_deadlock = 13;
 }
 
 // IgnoredSeqNumRange describes a range of ignored seqnums.

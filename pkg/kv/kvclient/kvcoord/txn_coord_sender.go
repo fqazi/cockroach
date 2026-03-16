@@ -1279,6 +1279,13 @@ func (tc *TxnCoordSender) GetOmitInRangefeeds() bool {
 	return tc.mu.txn.OmitInRangefeeds
 }
 
+// SetAbortWaitingOnDeadlock is part of the kv.TxnSender interface.
+func (tc *TxnCoordSender) SetAbortWaitingOnDeadlock() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	tc.mu.txn.AbortWaitingOnDeadlock = true
+}
+
 // SetOmitInRangefeeds is part of the kv.TxnSender interface.
 func (tc *TxnCoordSender) SetOmitInRangefeeds() {
 	tc.mu.Lock()

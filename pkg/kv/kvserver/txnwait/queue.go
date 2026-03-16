@@ -835,10 +835,10 @@ func (q *Queue) waitForPush(
 			q.mu.Unlock()
 
 			if haveDependency {
-				if req.PusherTxn.Name == "advisory-lock-txn" {
-					// The pusher is an advisory-lock-txn. These long-lived
-					// transactions cannot be aborted by normal deadlock
-					// breaking. Use a tie-breaker to deterministically pick
+				if req.PusherTxn.AbortWaitingOnDeadlock {
+					// The pusher uses the "abort waiting" deadlock policy.
+					// These long-lived transactions cannot be aborted by
+					// normal deadlock breaking. Use a tie-breaker to
 					// a loser. The loser receives a
 					// WriteIntentError(REASON_DEADLOCK) which the advisory
 					// lock manager translates to pgcode.DeadlockDetected.
@@ -1099,7 +1099,7 @@ func (q *Queue) startQueryPusherTxn(
 							for _, txnID := range sessionTxnWaitingTxns {
 								push.mu.dependents[txnID] = struct{}{}
 							}
-							if pusher.Name == "advisory-lock-txn" && updatedSessionTxn != nil && updatedSessionTxn.Status == roachpb.ABORTED {
+							if pusher.AbortWaitingOnDeadlock && updatedSessionTxn != nil && updatedSessionTxn.Status == roachpb.ABORTED {
 								updatedPusher.Status = roachpb.ABORTED
 							}
 						}
@@ -1203,7 +1203,7 @@ func (q *Queue) forcePushAbort(
 
 // forceAbortPusher forces an abort of the pusher. This mechanism is used to break
 // deadlocks when the tie-breaker dictates that the pusher should be the victim,
-// or when the pushee is an advisory-lock-txn which should not be aborted.
+// or when the pushee uses the "abort waiting" deadlock policy.
 func (q *Queue) forceAbortPusher(
 	ctx context.Context, req *kvpb.PushTxnRequest, pusher *roachpb.Transaction,
 ) *kvpb.Error {

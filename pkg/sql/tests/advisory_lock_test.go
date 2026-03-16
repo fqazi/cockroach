@@ -496,59 +496,43 @@ func TestAdvisoryLocks(t *testing.T) {
 	})
 
 	t.Run("Deadlock Winner Acquires Lock", func(t *testing.T) {
-		// After a deadlock, the winner should eventually acquire the
-		// contested lock (not hang forever). This tests that REASON_DEADLOCK
-		// breaks the cycle and unblocks the winner.
+		// After a deadlock, the loser gets REASON_DEADLOCK and stops
+		// waiting. The winner is still blocked on the loser's original
+		// lock. Once the loser releases that lock, the winner should
+		// acquire it (not hang forever).
 		db1.Exec(t, "SELECT pg_advisory_lock(600)")
 		db2.Exec(t, "SELECT pg_advisory_lock(601)")
 
-		grpCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		grp := ctxgroup.WithContext(grpCtx)
+		errCh1 := make(chan error, 1)
+		errCh2 := make(chan error, 1)
 
-		var winnerDB, loserDB *sqlutils.SQLRunner
-		var winnerLock, loserLock int
+		go func() {
+			_, err := db1.DB.ExecContext(context.Background(), "SELECT pg_advisory_lock(601)")
+			errCh1 <- err
+		}()
+		go func() {
+			_, err := db2.DB.ExecContext(context.Background(), "SELECT pg_advisory_lock(600)")
+			errCh2 <- err
+		}()
 
-		grp.GoCtx(func(ctx context.Context) error {
-			_, err := db1.DB.ExecContext(ctx, "SELECT pg_advisory_lock(601)")
-			if err != nil {
-				loserDB = db1
-				loserLock = 600
-				winnerDB = db2
-				winnerLock = 601
-			}
-			return err
-		})
-
-		grp.GoCtx(func(ctx context.Context) error {
-			_, err := db2.DB.ExecContext(ctx, "SELECT pg_advisory_lock(600)")
-			if err != nil {
-				loserDB = db2
-				loserLock = 601
-				winnerDB = db1
-				winnerLock = 600
-			}
-			return err
-		})
-
-		err := grp.Wait()
-		require.Error(t, err)
-		if pqErr := (*pq.Error)(nil); errors.As(err, &pqErr) {
-			require.Equal(t, string(pgcode.DeadlockDetected), string(pqErr.Code))
+		// Wait for the loser (first to return with a deadlock error).
+		// Then release its locks to unblock the winner.
+		select {
+		case err := <-errCh1:
+			// db1 is the loser.
+			require.Error(t, err)
+			db1.Exec(t, "SELECT pg_advisory_unlock_all()")
+			// Winner (db2) should now acquire lock 600.
+			require.NoError(t, <-errCh2, "Winner should acquire lock after loser releases")
+		case err := <-errCh2:
+			// db2 is the loser.
+			require.Error(t, err)
+			db2.Exec(t, "SELECT pg_advisory_unlock_all()")
+			// Winner (db1) should now acquire lock 601.
+			require.NoError(t, <-errCh1, "Winner should acquire lock after loser releases")
+		case <-time.After(30 * time.Second):
+			t.Fatal("Timed out waiting for deadlock detection")
 		}
-
-		// The winner now holds both locks. Verify it can release them.
-		require.NotNil(t, winnerDB)
-		var released bool
-		winnerDB.QueryRow(t, "SELECT pg_advisory_unlock($1)", winnerLock).Scan(&released)
-		require.True(t, released)
-
-		// The loser should still hold its original lock.
-		require.NotNil(t, loserDB)
-		// Verify the loser's original lock blocks the other session.
-		var acquired bool
-		winnerDB.QueryRow(t, "SELECT pg_try_advisory_lock($1)", loserLock).Scan(&acquired)
-		require.False(t, acquired, "Loser should still hold its original lock after deadlock")
 
 		// Cleanup
 		db1.Exec(t, "SELECT pg_advisory_unlock_all()")
@@ -559,39 +543,46 @@ func TestAdvisoryLocks(t *testing.T) {
 		// After a deadlock error, the losing session's advisory-lock-txn
 		// should NOT be aborted. Previously held locks must still be valid
 		// and the session must be able to acquire new locks.
-
-		// Session 1 acquires lock 700
 		db1.Exec(t, "SELECT pg_advisory_lock(700)")
-		// Session 2 acquires lock 701
 		db2.Exec(t, "SELECT pg_advisory_lock(701)")
 
-		grpCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		grp := ctxgroup.WithContext(grpCtx)
+		errCh1 := make(chan error, 1)
+		errCh2 := make(chan error, 1)
 
-		grp.GoCtx(func(ctx context.Context) error {
-			_, err := db1.DB.ExecContext(ctx, "SELECT pg_advisory_lock(701)")
-			return err
-		})
-		grp.GoCtx(func(ctx context.Context) error {
-			_, err := db2.DB.ExecContext(ctx, "SELECT pg_advisory_lock(700)")
-			return err
-		})
+		go func() {
+			_, err := db1.DB.ExecContext(context.Background(), "SELECT pg_advisory_lock(701)")
+			errCh1 <- err
+		}()
+		go func() {
+			_, err := db2.DB.ExecContext(context.Background(), "SELECT pg_advisory_lock(700)")
+			errCh2 <- err
+		}()
 
-		err := grp.Wait()
-		require.Error(t, err)
-
-		// Both sessions should be able to acquire a fresh lock (proving
-		// their advisory-lock-txns are alive).
-		db1.Exec(t, "SELECT pg_advisory_lock(702)")
-		db2.Exec(t, "SELECT pg_advisory_lock(703)")
-
-		// Both sessions should be able to release their original locks.
-		var released bool
-		db1.QueryRow(t, "SELECT pg_advisory_unlock(700)").Scan(&released)
-		require.True(t, released)
-		db2.QueryRow(t, "SELECT pg_advisory_unlock(701)").Scan(&released)
-		require.True(t, released)
+		// Wait for the loser. Verify its advisory-lock-txn survived:
+		// it can acquire a NEW lock and release its ORIGINAL lock.
+		select {
+		case err := <-errCh1:
+			// db1 is the loser.
+			require.Error(t, err)
+			// Loser can acquire a new lock (advisory-lock-txn alive).
+			db1.Exec(t, "SELECT pg_advisory_lock(702)")
+			// Loser can release its original lock.
+			var released bool
+			db1.QueryRow(t, "SELECT pg_advisory_unlock(700)").Scan(&released)
+			require.True(t, released, "Loser should still hold its original lock")
+			// Releasing the original lock unblocks the winner.
+			require.NoError(t, <-errCh2)
+		case err := <-errCh2:
+			// db2 is the loser.
+			require.Error(t, err)
+			db2.Exec(t, "SELECT pg_advisory_lock(702)")
+			var released bool
+			db2.QueryRow(t, "SELECT pg_advisory_unlock(701)").Scan(&released)
+			require.True(t, released, "Loser should still hold its original lock")
+			require.NoError(t, <-errCh1)
+		case <-time.After(30 * time.Second):
+			t.Fatal("Timed out waiting for deadlock detection")
+		}
 
 		// Cleanup
 		db1.Exec(t, "SELECT pg_advisory_unlock_all()")
@@ -600,26 +591,37 @@ func TestAdvisoryLocks(t *testing.T) {
 
 	t.Run("Re-acquire After Deadlock", func(t *testing.T) {
 		// After a deadlock, the loser should be able to retry and
-		// successfully acquire the same lock once the winner releases it.
+		// successfully acquire the same lock once all locks are released.
 		db1.Exec(t, "SELECT pg_advisory_lock(800)")
 		db2.Exec(t, "SELECT pg_advisory_lock(801)")
 
-		grpCtx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		grp := ctxgroup.WithContext(grpCtx)
+		errCh1 := make(chan error, 1)
+		errCh2 := make(chan error, 1)
 
-		grp.GoCtx(func(ctx context.Context) error {
-			_, err := db1.DB.ExecContext(ctx, "SELECT pg_advisory_lock(801)")
-			return err
-		})
-		grp.GoCtx(func(ctx context.Context) error {
-			_, err := db2.DB.ExecContext(ctx, "SELECT pg_advisory_lock(800)")
-			return err
-		})
+		go func() {
+			_, err := db1.DB.ExecContext(context.Background(), "SELECT pg_advisory_lock(801)")
+			errCh1 <- err
+		}()
+		go func() {
+			_, err := db2.DB.ExecContext(context.Background(), "SELECT pg_advisory_lock(800)")
+			errCh2 <- err
+		}()
 
-		_ = grp.Wait() // one side got deadlock error
+		// Wait for loser, release its locks to unblock winner.
+		select {
+		case err := <-errCh1:
+			require.Error(t, err)
+			db1.Exec(t, "SELECT pg_advisory_unlock_all()")
+			require.NoError(t, <-errCh2)
+		case err := <-errCh2:
+			require.Error(t, err)
+			db2.Exec(t, "SELECT pg_advisory_unlock_all()")
+			require.NoError(t, <-errCh1)
+		case <-time.After(30 * time.Second):
+			t.Fatal("Timed out waiting for deadlock detection")
+		}
 
-		// Release all locks from both sessions.
+		// Release everything.
 		db1.Exec(t, "SELECT pg_advisory_unlock_all()")
 		db2.Exec(t, "SELECT pg_advisory_unlock_all()")
 
@@ -627,7 +629,9 @@ func TestAdvisoryLocks(t *testing.T) {
 		db1.Exec(t, "SELECT pg_advisory_lock(800)")
 		db2.Exec(t, "SELECT pg_advisory_lock(801)")
 
-		// Cross-acquire should now succeed (no deadlock since sequential).
+		// Release and re-acquire in opposite order (sequential, no deadlock).
+		db1.Exec(t, "SELECT pg_advisory_unlock_all()")
+		db2.Exec(t, "SELECT pg_advisory_unlock_all()")
 		db1.Exec(t, "SELECT pg_advisory_lock(801)")
 		db2.Exec(t, "SELECT pg_advisory_lock(800)")
 

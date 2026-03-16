@@ -116,6 +116,11 @@ func (m *MockTransactionalSender) SetOmitInRangefeeds() {
 	m.txn.OmitInRangefeeds = true
 }
 
+// SetAbortWaitingOnDeadlock is part of the TxnSender interface.
+func (m *MockTransactionalSender) SetAbortWaitingOnDeadlock() {
+	m.txn.AbortWaitingOnDeadlock = true
+}
+
 // SetBufferedWritesEnabled is part of the TxnSender interface.
 func (m *MockTransactionalSender) SetBufferedWritesEnabled(enabled bool) {}
 

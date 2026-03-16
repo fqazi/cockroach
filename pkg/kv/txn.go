@@ -579,6 +579,16 @@ func (txn *Txn) SetOmitInRangefeeds() {
 	txn.mu.sender.SetOmitInRangefeeds()
 }
 
+// SetAbortWaitingOnDeadlock configures the transaction to use the
+// "abort waiting" deadlock resolution policy. When this transaction is
+// involved in a deadlock, the waiter receives a WriteIntentError with
+// REASON_DEADLOCK instead of having a transaction in the cycle aborted.
+func (txn *Txn) SetAbortWaitingOnDeadlock() {
+	txn.mu.Lock()
+	defer txn.mu.Unlock()
+	txn.mu.sender.SetAbortWaitingOnDeadlock()
+}
+
 // NewBatch creates and returns a new empty batch object for use with the Txn.
 func (txn *Txn) NewBatch() *Batch {
 	return &Batch{txn: txn, AdmissionHeader: txn.AdmissionHeader()}

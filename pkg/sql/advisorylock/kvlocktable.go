@@ -141,6 +141,7 @@ func (m *kvLockTableManager) GetAllLocks() (map[int64]*descpb.AdvisoryLockTracki
 
 func NewManager(db *kv.DB, codec keys.SQLCodec, sessionID string) Manager {
 	lockTxn := db.NewTxn(context.Background(), "advisory-lock-txn")
+	lockTxn.SetAbortWaitingOnDeadlock()
 	// Disable pipelining so that GetForUpdate/GetForShare are not tracked as
 	// in-flight writes. Without this, AddIgnoredSeqNumRange during demotion
 	// causes QueryIntent to fail because the pipeliner still holds the old
@@ -474,6 +475,7 @@ func (m *kvLockTableManager) ReleaseAllLocks() error {
 		return err
 	}
 	m.lockTxn = m.db.NewTxn(context.Background(), "advisory-lock-txn")
+	m.lockTxn.SetAbortWaitingOnDeadlock()
 	_ = m.lockTxn.DisablePipelining()
 	m.locks = make(map[int64]*LockData)
 	return nil

@@ -137,6 +137,11 @@ type TxnSender interface {
 	// Transaction proto.
 	SetOmitInRangefeeds()
 
+	// SetAbortWaitingOnDeadlock sets the AbortWaitingOnDeadlock flag on the
+	// transaction's TxnMeta. When set, deadlocks are resolved by returning
+	// an error to the waiter instead of aborting a transaction in the cycle.
+	SetAbortWaitingOnDeadlock()
+
 	// SetBufferedWritesEnabled toggles whether the writes are buffered on the
 	// gateway node until the commit time. Buffered writes cannot be enabled on
 	// a txn that performed any requests. When disabling buffered writes, if
