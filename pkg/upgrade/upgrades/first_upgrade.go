@@ -19,6 +19,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
+	"github.com/cockroachdb/cockroach/pkg/sql/lexbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/upgrade"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
@@ -231,31 +232,69 @@ func FirstUpgradeFromReleasePrecondition(
 	// there are no corruptions now. Otherwise, we retry and do everything
 	// without an AOST clause henceforth.
 	withAOST := firstUpgradePreconditionUsesAOST
-	diagnose := func(tbl redact.SafeString) (count int, err error) {
-		withAOST := withAOST
-		for {
-			q := fmt.Sprintf("SELECT count(*) FROM \"\".crdb_internal.%s", tbl)
+	diagnoseInner := func(tbl redact.SafeString, withAOST bool) (count int, databases map[int]string, err error) {
+		// First get a list of databases.
+		err = d.DB.KV().Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
+			databases = make(map[int]string)
 			if withAOST {
-				q = q + " AS OF SYSTEM TIME '-10s'"
+				err := txn.SetFixedTimestamp(ctx, d.DB.KV().Clock().Now().AddDuration(time.Second*-30))
+				if err != nil {
+					return err
+				}
 			}
-			row, err := d.InternalExecutor.QueryRow(ctx, redact.Sprintf("query-%s", tbl), nil /* txn */, q)
-			if err == nil {
-				count = int(tree.MustBeDInt(row[0]))
+			allDatabases, err := d.InternalExecutor.QueryIterator(ctx, "query-all-databases", txn /* txn */, "SELECT name, id FROM crdb_internal.databases")
+			if err != nil {
+				return err
 			}
-			// In tests like "declarative_schema_changer/job-compatibility-mixed-version", its
-			// possible to hit BatchTimestampBeforeGCError, because the GC interval is
-			// set to a second. If we ever see BatchTimestampBeforeGCError re-run without
-			// AOST.
-			if withAOST && errors.HasType(err, &kvpb.BatchTimestampBeforeGCError{}) {
-				// Retry with the AOST removed.
-				withAOST = false
-				continue
+			defer func() {
+				_ = allDatabases.Close()
+			}()
+			for true {
+				hasNext, err := allDatabases.Next(ctx)
+				if err != nil {
+					return err
+				}
+				if !hasNext {
+					break
+				}
+				row := allDatabases.Cur()
+				databaseName := string(tree.MustBeDString(row[0]))
+				databaseID := int(tree.MustBeDInt(row[1]))
+				// Next query the target table for the database.
+				q := fmt.Sprintf("SELECT count(*) FROM %s.crdb_internal.%s", lexbase.EscapeSQLIdent(databaseName), string(tbl))
+				row, err = d.InternalExecutor.QueryRow(ctx, redact.Sprintf("query-%s", tbl), txn /* txn */, q)
+				if err != nil {
+					return err
+				}
+				dbCount := int(tree.MustBeDInt(row[0]))
+				if dbCount > 0 {
+					databases[databaseID] = databaseName
+					count += dbCount
+				}
+
 			}
-			return count, err
+			return nil
+
+		})
+		return count, databases, nil
+	}
+	diagnose := func(tbl redact.SafeString) (count int, databases map[int]string, err error) {
+		withAOST := withAOST
+		count, databases, err = diagnoseInner(tbl, withAOST)
+		if err == nil {
+			return count, databases, nil
 		}
+		// In tests like "declarative_schema_changer/job-compatibility-mixed-version", its
+		// possible to hit BatchTimestampBeforeGCError, because the GC interval is
+		// set to a second. If we ever see BatchTimestampBeforeGCError re-run without
+		// AOST.
+		if !withAOST || !errors.HasType(err, &kvpb.BatchTimestampBeforeGCError{}) {
+			return count, databases, err
+		}
+		return diagnoseInner(tbl, false /* withAOST */)
 	}
 	// Check for possibility of time travel.
-	if count, err := diagnose("databases"); err != nil {
+	if count, _, err := diagnose("databases"); err != nil {
 		return err
 	} else if count == 0 {
 		// We're looking back in time to before the cluster was bootstrapped
@@ -263,73 +302,76 @@ func FirstUpgradeFromReleasePrecondition(
 		withAOST = false
 	}
 	// Check for repairable catalog corruptions.
-	if totalCorruptions, err := diagnose("kv_repairable_catalog_corruptions"); err != nil {
+	if totalCorruptions, databases, err := diagnose("kv_repairable_catalog_corruptions"); err != nil {
 		return err
 	} else if totalCorruptions > 0 {
 		// Attempt to repair catalog corruptions in batches.
 		log.Dev.Infof(ctx, "beginning auto-repair of %d catalog corruptions detected during upgrade attempt", totalCorruptions)
-
 		var repairedCount int
 		const repairQuery = `
-SELECT
-	count(*)
-FROM
-	(
 		SELECT
-			crdb_internal.repair_catalog_corruption(id, corruption) AS was_repaired
+			count(*)
 		FROM
-			"".crdb_internal.kv_repairable_catalog_corruptions
-		LIMIT
-			$1
-	)
-WHERE
-	was_repaired`
-		batchSize := 100
-		// Any batch size below this will use high priority.
-		const HighPriBatchSize = 25
-		repairBatchTimeLimit := 1 * time.Minute
-		for {
-			var rowsUpdated tree.DInt
-			err := timeutil.RunWithTimeout(ctx, "descriptor-repair", repairBatchTimeLimit, func(ctx context.Context) error {
-				return d.DB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
-					// We explicitly specify a low retry limit because this operation is
-					// wrapped with its own retry function that will also take care of
-					// adjusting the batch size on each retry.
-					txn.KV().SetMaxAutoRetries(10)
-					if batchSize <= HighPriBatchSize {
-						if err = txn.KV().SetUserPriority(roachpb.MaxUserPriority); err != nil {
+			(
+				SELECT
+					crdb_internal.repair_catalog_corruption(id, corruption) AS was_repaired
+				FROM
+					crdb_internal.kv_repairable_catalog_corruptions
+				WHERE parent_id = $2 OR id = $2 -- Limit repair to one database at time.
+				LIMIT
+					$1
+			)
+		WHERE
+			was_repaired`
+		for databaseID, databaseName := range databases {
+			log.Dev.Infof(ctx, "repairing catalog corruptions in database %s", databaseName)
+			batchSize := 100
+			// Any batch size below this will use high priority.
+			const HighPriBatchSize = 25
+			repairBatchTimeLimit := 1 * time.Minute
+			for {
+				var rowsUpdated tree.DInt
+				err := timeutil.RunWithTimeout(ctx, "descriptor-repair", repairBatchTimeLimit, func(ctx context.Context) error {
+					return d.DB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
+						// We explicitly specify a low retry limit because this operation is
+						// wrapped with its own retry function that will also take care of
+						// adjusting the batch size on each retry.
+						txn.KV().SetMaxAutoRetries(10)
+						if batchSize <= HighPriBatchSize {
+							if err = txn.KV().SetUserPriority(roachpb.MaxUserPriority); err != nil {
+								return err
+							}
+						}
+						row, err := txn.QueryRow(
+							ctx, "repair-catalog-corruptions", txn.KV() /* txn */, repairQuery, batchSize, databaseID,
+						)
+						if err != nil {
 							return err
 						}
-					}
-					row, err := txn.QueryRow(
-						ctx, "repair-catalog-corruptions", txn.KV() /* txn */, repairQuery, batchSize,
-					)
-					if err != nil {
-						return err
-					}
-					rowsUpdated = tree.MustBeDInt(row[0])
-					return nil
+						rowsUpdated = tree.MustBeDInt(row[0])
+						return nil
+					})
 				})
-			})
-			if err != nil {
-				// If either the operation hits the retry limit or
-				// times out, then reduce the batch size.
-				if kv.IsAutoRetryLimitExhaustedError(err) ||
-					errors.HasType(err, (*timeutil.TimeoutError)(nil)) {
-					batchSize = max(batchSize/2, 1)
-					log.Dev.Infof(ctx, "reducing batch size of repair query to %d (hipri=%t)",
-						batchSize,
-						batchSize <= HighPriBatchSize)
-					continue
+				if err != nil {
+					// If either the operation hits the retry limit or
+					// times out, then reduce the batch size.
+					if kv.IsAutoRetryLimitExhaustedError(err) ||
+						errors.HasType(err, (*timeutil.TimeoutError)(nil)) {
+						batchSize = max(batchSize/2, 1)
+						log.Dev.Infof(ctx, "reducing batch size of repair query to %d (hipri=%t)",
+							batchSize,
+							batchSize <= HighPriBatchSize)
+						continue
+					}
+					// Otherwise, return any unknown errors.
+					return err
 				}
-				// Otherwise, return any unknown errors.
-				return err
+				if rowsUpdated == 0 {
+					break
+				}
+				repairedCount += int(rowsUpdated)
+				log.Dev.Infof(ctx, "repaired %d catalog corruptions", rowsUpdated)
 			}
-			if rowsUpdated == 0 {
-				break
-			}
-			repairedCount += int(rowsUpdated)
-			log.Dev.Infof(ctx, "repaired %d catalog corruptions", rowsUpdated)
 		}
 		if repairedCount > 0 {
 			// Repairs have actually been performed: stop all time travel henceforth.
@@ -338,7 +380,7 @@ WHERE
 		}
 	}
 	// Check for all known catalog corruptions.
-	if invalidObjectCount, err := diagnose("invalid_objects"); err != nil {
+	if invalidObjectCount, _, err := diagnose("invalid_objects"); err != nil {
 		return err
 	} else if invalidObjectCount == 0 {
 		return nil
@@ -350,7 +392,7 @@ WHERE
 	// Re-run the diagnosis without the clause, because we might not be seeing
 	// repairs which might have taken place recently.
 	withAOST = false
-	if invalidObjectCount, err := diagnose("invalid_objects"); err != nil {
+	if invalidObjectCount, _, err := diagnose("invalid_objects"); err != nil {
 		return err
 	} else if invalidObjectCount == 0 {
 		return nil

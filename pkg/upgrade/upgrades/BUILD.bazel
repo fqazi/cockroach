@@ -56,6 +56,7 @@ go_library(
         "//pkg/sql/catalog/tabledesc",
         "//pkg/sql/hintpb",
         "//pkg/sql/isql",
+        "//pkg/sql/lexbase",
         "//pkg/sql/sem/tree",
         "//pkg/sql/sessiondata",
         "//pkg/sql/sqlstats/sqlactivityjob",

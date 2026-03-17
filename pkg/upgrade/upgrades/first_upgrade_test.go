@@ -8,6 +8,7 @@ package upgrades_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -501,4 +502,97 @@ func TestFirstUpgradeRepairBatchSize(t *testing.T) {
 		sqlRunner.QueryStr(t, "SELECT count(*) FROM \"\".crdb_internal.kv_repairable_catalog_corruptions"),
 	)
 
+}
+
+func TestFirstUpgradeLargeSchema(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	var (
+		v0 = clusterversion.MinSupported.Version()
+		v1 = clusterversion.Latest.Version()
+	)
+
+	ctx := context.Background()
+	settings := cluster.MakeTestingClusterSettingsWithVersions(v1, v0, false /* initializeVersion */)
+	require.NoError(t, clusterversion.Initialize(ctx, v0, &settings.SV))
+	testServer, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
+		Settings: settings,
+		Knobs: base.TestingKnobs{
+			Server: &server.TestingKnobs{
+				DisableAutomaticVersionUpgrade: make(chan struct{}),
+				ClusterVersionOverride:         v0,
+			},
+		},
+	})
+	defer testServer.Stopper().Stop(ctx)
+
+	sqlRunner := sqlutils.MakeSQLRunner(sqlDB)
+
+	// Create 100 databases with 10 tables each.
+	// Note: Our current scaling limitation is now the actual repair query
+	// which creates an array of all IDs with:
+	//(SELECT array_agg(id) AS desc_id_array FROM system.descriptor).
+	numDatabases := 100
+	for db := range numDatabases {
+		s := strings.Builder{}
+		s.WriteString("BEGIN;\nSET LOCAL autocommit_before_ddl = false;\n")
+		dbName := fmt.Sprintf("db_%d", db)
+		s.WriteString(fmt.Sprintf("CREATE DATABASE %s;\n", dbName))
+		for tbl := range 10 {
+			tblName := fmt.Sprintf("tbl_%d", tbl)
+			s.WriteString(fmt.Sprintf("CREATE TABLE %s.%s(n int);\n", dbName, tblName))
+		}
+		s.WriteString("COMMIT;\n")
+		sqlRunner.Exec(t, s.String())
+	}
+
+	// Create a single database with corruption.
+	idb := testServer.InternalDB().(*sql.InternalDB)
+	sqlRunner.Exec(t, "CREATE DATABASE db_corrupt")
+	sqlRunner.Exec(t, "CREATE TABLE db_corrupt.tbl_corrupt(n int, INDEX(n))")
+
+	require.NoError(t, idb.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
+		db, err := txn.Descriptors().MutableByName(txn.KV()).Database(ctx, "db_corrupt")
+		if err != nil {
+			return err
+		}
+		// Add a dangling reference.
+		db.Schemas["fake_schema"] = descpb.DatabaseDescriptor_SchemaInfo{ID: 313141312}
+		txn.Descriptors().SkipValidationOnWrite()
+		return txn.Descriptors().WriteDesc(ctx, false, db, txn.KV())
+	}))
+
+	require.NoError(t, idb.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
+		db, err := txn.Descriptors().ByName(txn.KV()).Get().Database(ctx, "db_corrupt")
+		if err != nil {
+			return err
+		}
+		schema, err := txn.Descriptors().ByName(txn.KV()).Get().Schema(ctx, db, "public")
+		if err != nil {
+			return err
+		}
+		tbl, err := txn.Descriptors().MutableByName(txn.KV()).Table(ctx, db, schema, "tbl_corrupt")
+		if err != nil {
+			return err
+		}
+		// Add a dangling reference.
+		tbl.DependedOnBy = append(tbl.DependedOnBy, descpb.TableDescriptor_Reference{ID: 313123231})
+		txn.Descriptors().SkipValidationOnWrite()
+		return txn.Descriptors().WriteDesc(ctx, false, tbl, txn.KV())
+	}))
+
+	databaseID := sqlutils.QueryDatabaseID(t, sqlDB, "db_corrupt")
+	// Confirm the repairable descriptors exist. We will avoid scanning all of
+	// them avoid hitting the memory limit in testing.
+	require.Equal(t,
+		[][]string{{"true"}},
+		sqlRunner.QueryStr(t, "SELECT count(*)>0 FROM \"\".crdb_internal.kv_repairable_catalog_corruptions"))
+	// Upgrade to the latest version.
+	sqlRunner.Exec(t, "SET CLUSTER SETTING version = crdb_internal.node_executable_version()")
+	// Confirm that all descriptors are repaired.
+	require.Equal(t,
+		[][]string{{"0"}},
+		sqlRunner.QueryStr(t, "SELECT count(*) FROM \"\".crdb_internal.kv_repairable_catalog_corruptions WHERE parent_id=$1 or id=$1", databaseID),
+	)
 }
