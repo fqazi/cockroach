@@ -11,6 +11,7 @@ import (
 	"slices"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scop"
 	"github.com/cockroachdb/errors"
 )
@@ -19,6 +20,27 @@ func (i *immediateVisitor) AddEnumTypeValue(ctx context.Context, op scop.AddEnum
 	typ, err := i.checkOutType(ctx, op.TypeID)
 	if err != nil {
 		return err
+	}
+
+	// Check if it's already there.
+	for j := range typ.EnumMembers {
+		member := &typ.EnumMembers[j]
+		if member.LogicalRepresentation == op.LogicalRepresentation &&
+			bytes.Equal(member.PhysicalRepresentation, op.PhysicalRepresentation) {
+			if member.Capability == descpb.TypeDescriptor_EnumMember_READ_ONLY &&
+				member.Direction == descpb.TypeDescriptor_EnumMember_ADD {
+				return nil
+			}
+			// It might already be promoted, which is also fine for idempotency.
+			if member.Capability == descpb.TypeDescriptor_EnumMember_ALL &&
+				member.Direction == descpb.TypeDescriptor_EnumMember_NONE {
+				return nil
+			}
+			member.Capability = descpb.TypeDescriptor_EnumMember_READ_ONLY
+			member.Direction = descpb.TypeDescriptor_EnumMember_ADD
+			_, err = typedesc.UpdateCachedFieldsOnModifiedMutable(typ)
+			return err
+		}
 	}
 
 	insertIdx, _ := slices.BinarySearchFunc(typ.EnumMembers, op.PhysicalRepresentation,
@@ -37,7 +59,8 @@ func (i *immediateVisitor) AddEnumTypeValue(ctx context.Context, op scop.AddEnum
 	copy(typ.EnumMembers[insertIdx+1:], typ.EnumMembers[insertIdx:])
 	typ.EnumMembers[insertIdx] = newMember
 
-	return nil
+	_, err = typedesc.UpdateCachedFieldsOnModifiedMutable(typ)
+	return err
 }
 
 func (i *immediateVisitor) PromoteEnumTypeValue(
@@ -52,9 +75,14 @@ func (i *immediateVisitor) PromoteEnumTypeValue(
 		member := &typ.EnumMembers[j]
 		if member.LogicalRepresentation == op.LogicalRepresentation &&
 			bytes.Equal(member.PhysicalRepresentation, op.PhysicalRepresentation) {
+			if member.Capability == descpb.TypeDescriptor_EnumMember_ALL &&
+				member.Direction == descpb.TypeDescriptor_EnumMember_NONE {
+				return nil
+			}
 			member.Capability = descpb.TypeDescriptor_EnumMember_ALL
 			member.Direction = descpb.TypeDescriptor_EnumMember_NONE
-			return nil
+			_, err = typedesc.UpdateCachedFieldsOnModifiedMutable(typ)
+			return err
 		}
 	}
 
@@ -76,9 +104,14 @@ func (i *immediateVisitor) DemoteEnumTypeValue(
 		member := &typ.EnumMembers[j]
 		if member.LogicalRepresentation == op.LogicalRepresentation &&
 			bytes.Equal(member.PhysicalRepresentation, op.PhysicalRepresentation) {
+			if member.Capability == descpb.TypeDescriptor_EnumMember_READ_ONLY &&
+				member.Direction == descpb.TypeDescriptor_EnumMember_REMOVE {
+				return nil
+			}
 			member.Capability = descpb.TypeDescriptor_EnumMember_READ_ONLY
 			member.Direction = descpb.TypeDescriptor_EnumMember_REMOVE
-			return nil
+			_, err = typedesc.UpdateCachedFieldsOnModifiedMutable(typ)
+			return err
 		}
 	}
 
@@ -101,11 +134,9 @@ func (i *immediateVisitor) RemoveEnumTypeValue(
 		if member.LogicalRepresentation == op.LogicalRepresentation &&
 			bytes.Equal(member.PhysicalRepresentation, op.PhysicalRepresentation) {
 			typ.EnumMembers = append(typ.EnumMembers[:j], typ.EnumMembers[j+1:]...)
-			return nil
+			_, err = typedesc.UpdateCachedFieldsOnModifiedMutable(typ)
+			return err
 		}
 	}
-	return errors.AssertionFailedf(
-		"enum value %q not found in type descriptor %d",
-		op.LogicalRepresentation, op.TypeID,
-	)
+	return nil
 }
