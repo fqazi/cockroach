@@ -92,4 +92,23 @@ func TestMergeAndDestroy(t *testing.T) {
 	require.False(t, r0.Replicated.DoTimelyApplicationToAllReplicas)
 	require.NoError(t, r0.MergeAndDestroy(r4))
 	require.True(t, r0.Replicated.DoTimelyApplicationToAllReplicas)
+
+	// TakeStoreLocalSnapshot conflict.
+	var r5, r6 Result
+	r5.Local.TakeStoreLocalSnapshot = true
+	r6.Local.TakeStoreLocalSnapshot = true
+	require.NoError(t, r0.MergeAndDestroy(r5))
+	require.ErrorContains(t, r0.MergeAndDestroy(r6), "multiple TakeStoreLocalSnapshot")
+}
+
+func TestDetachTakeStoreLocalSnapshot(t *testing.T) {
+	var lr LocalResult
+	lr.TakeStoreLocalSnapshot = true
+	require.True(t, lr.DetachTakeStoreLocalSnapshot())
+	require.False(t, lr.TakeStoreLocalSnapshot)
+	// Second detach returns false.
+	require.False(t, lr.DetachTakeStoreLocalSnapshot())
+	// Nil receiver.
+	var nilLR *LocalResult
+	require.False(t, nilLR.DetachTakeStoreLocalSnapshot())
 }

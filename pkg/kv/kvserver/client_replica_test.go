@@ -213,8 +213,11 @@ func TestLeaseholdersRejectClockUpdateWithJump(t *testing.T) {
 	// The clock did not advance and the final command was not executed.
 	ts3 := s.Clock().Now()
 	require.Zero(t, ts3.GoTime().Sub(ts2.GoTime()))
-	valRes, err := storage.MVCCGet(context.Background(), store.StateEngine(), key, ts3,
+	repl := store.LookupReplica(roachpb.RKey(key))
+	snap := repl.NewCombinedSnapshot()
+	valRes, err := storage.MVCCGet(context.Background(), snap, key, ts3,
 		storage.MVCCGetOptions{})
+	snap.Close()
 	require.NoError(t, err)
 	require.Equal(t, incArgs.Increment*numCmds, mustGetInt(valRes.Value.ToPointer()))
 }
@@ -2295,7 +2298,7 @@ func TestLeaseNotUsedAfterRestart(t *testing.T) {
 			ServerArgs: base.TestServerArgs{
 				StoreSpecs: []base.StoreSpec{
 					{
-						InMemory:    true,
+						Type:        base.StoreTypeInMemory,
 						StickyVFSID: "1",
 					},
 				},
@@ -2976,7 +2979,7 @@ func TestLossQuorumCauseLeaderlessWatcherToSignalUnavailable(t *testing.T) {
 			Settings: st,
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -5133,7 +5136,7 @@ func TestTenantID(t *testing.T) {
 		Insecure: true,
 		StoreSpecs: []base.StoreSpec{
 			{
-				InMemory:    true,
+				Type:        base.StoreTypeInMemory,
 				StickyVFSID: "1",
 			},
 		},

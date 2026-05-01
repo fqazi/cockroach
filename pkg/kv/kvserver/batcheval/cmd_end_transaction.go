@@ -138,6 +138,14 @@ func declareKeysEndTxn(
 				// all concurrent reads and writes to the RHS because they will
 				// fail if applied after the split. (see
 				// https://github.com/cockroachdb/cockroach/issues/14881)
+				//
+				// The ReadOnly latch on RangeDescriptorKey (line above) and the
+				// ReadWrite latch on the range-local key prefix span (below)
+				// both serialize with RangeFlushPrepare's ReadWrite latch on
+				// RangeDescriptorKey. Since write latches are held until after
+				// raft application, the LHS FlushStartedCount read during split
+				// evaluation (to initialize the RHS) is guaranteed to reflect
+				// all completed RangeFlushPrepare commands.
 				latchSpans.AddNonMVCC(spanset.SpanReadOnly, roachpb.Span{
 					Key:    st.LeftDesc.StartKey.AsRawKey(),
 					EndKey: st.LeftDesc.EndKey.AsRawKey(),
@@ -1550,11 +1558,41 @@ func splitTriggerHelper(
 		// HardState via a call to synthesizeRaftState. Here, we only call
 		// writeInitialReplicaState which essentially writes a ReplicaState
 		// only.
+		// Load the LHS ApproxStoreLocalBytes so we can halve it for the RHS.
+		lhsStateLoader := kvstorage.MakeStateLoader(split.LeftDesc.RangeID)
+		lhsAS, err := lhsStateLoader.LoadRangeAppliedState(ctx, batch)
+		if err != nil {
+			return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "loading LHS RangeAppliedState for split")
+		}
+		// Copy the file number allocation state from LHS to RHS. This ensures
+		// that the RHS starts allocating file numbers from where the LHS left off,
+		// avoiding any potential collisions. Also advance past
+		// split.RsNextFileNum, which is the high-water mark from pebble's
+		// SplitLSM: it consumed file numbers internally (for manifests, virtual
+		// tables, RHS copies) that the Raft allocator doesn't know about.
+		fileNumAllocState, err := lhsStateLoader.LoadRangeFileNumAllocState(ctx, batch)
+		if err != nil {
+			return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "unable to fetch RangeFileNumAllocState from LHS")
+		}
+		nextFileNum := max(fileNumAllocState.NextFileNum, split.RsNextFileNum, kvstorage.InitialRangeFileNum)
 		if *h.AbsPostSplitRight(), err = kvstorage.WriteInitialReplicaState(
 			ctx, batch, *h.AbsPostSplitRight(), split.RightDesc, rightLease,
 			*in.GCThreshold, *in.GCHint, in.ReplicaVersion,
+			lhsAS.ApproxStoreLocalBytes/2, lhsAS.FlushStartedCount, nextFileNum,
 		); err != nil {
 			return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "unable to write initial Replica state")
+		}
+		// Advance the LHS allocator past the same high-water mark so
+		// subsequent GetFileNums on the LHS also avoids collisions.
+		// Pass AbsPostSplitLeft so the storage delta flows into
+		// DeltaPostSplitLeft correctly.
+		if nextFileNum > fileNumAllocState.NextFileNum {
+			fileNumAllocState.NextFileNum = nextFileNum
+			if err := lhsStateLoader.SetRangeFileNumAllocState(
+				ctx, batch, h.absPostSplitLeft, fileNumAllocState,
+			); err != nil {
+				return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "unable to update LHS RangeFileNumAllocState")
+			}
 		}
 	}
 
@@ -1661,6 +1699,26 @@ func mergeTrigger(
 	// it's only used at evaluation time and doesn't affect below-Raft state.
 	if merge.RightRangeIDLocalMVCCStats != (enginepb.MVCCStats{}) {
 		ms.Subtract(merge.RightRangeIDLocalMVCCStats)
+	}
+
+	// Advance the LHS RangeFileNumAllocState past the high-water mark from
+	// pebble's MergeLSM so that future file number allocations on the merged
+	// range don't collide with file numbers that MergeLSM allocated internally
+	// (for renumbered tables, virtual table nums, manifest).
+	if merge.MergedRsNextFileNum > 0 {
+		lhsStateLoader := kvstorage.MakeStateLoader(rec.GetRangeID())
+		fileNumAllocState, err := lhsStateLoader.LoadRangeFileNumAllocState(ctx, batch)
+		if err != nil {
+			return result.Result{}, errors.Wrap(err, "loading LHS RangeFileNumAllocState for merge")
+		}
+		if merge.MergedRsNextFileNum > fileNumAllocState.NextFileNum {
+			fileNumAllocState.NextFileNum = merge.MergedRsNextFileNum
+			if err := lhsStateLoader.SetRangeFileNumAllocState(
+				ctx, batch, ms, fileNumAllocState,
+			); err != nil {
+				return result.Result{}, errors.Wrap(err, "updating LHS RangeFileNumAllocState for merge")
+			}
+		}
 	}
 
 	var pd result.Result

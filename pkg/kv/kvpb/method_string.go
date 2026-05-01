@@ -63,8 +63,12 @@ func _() {
 	_ = x[IsSpanEmpty-47]
 	_ = x[Excise-48]
 	_ = x[FlushLockTable-49]
-	_ = x[MaxMethod-49]
-	_ = x[NumMethods-50]
+	_ = x[AllocateFileNumsForRange-50]
+	_ = x[SetRangeSharedManifestNum-51]
+	_ = x[CheckRangeSharedManifestNum-52]
+	_ = x[RangeFlushPrepare-53]
+	_ = x[MaxMethod-53]
+	_ = x[NumMethods-54]
 }
 
 func (i Method) String() string {
@@ -169,6 +173,14 @@ func (i Method) String() string {
 		return "Excise"
 	case FlushLockTable:
 		return "FlushLockTable"
+	case AllocateFileNumsForRange:
+		return "AllocateFileNumsForRange"
+	case SetRangeSharedManifestNum:
+		return "SetRangeSharedManifestNum"
+	case CheckRangeSharedManifestNum:
+		return "CheckRangeSharedManifestNum"
+	case RangeFlushPrepare:
+		return "RangeFlushPrepare"
 	case NumMethods:
 		return "NumMethods"
 	default:
@@ -177,56 +189,60 @@ func (i Method) String() string {
 }
 
 var StringToMethodMap = map[string]Method{
-	"Get":                    0,
-	"Put":                    1,
-	"ConditionalPut":         2,
-	"Increment":              3,
-	"Delete":                 4,
-	"DeleteRange":            5,
-	"ClearRange":             6,
-	"RevertRange":            7,
-	"Scan":                   8,
-	"ReverseScan":            9,
-	"EndTxn":                 10,
-	"AdminSplit":             11,
-	"AdminUnsplit":           12,
-	"AdminMerge":             13,
-	"AdminTransferLease":     14,
-	"AdminChangeReplicas":    15,
-	"AdminRelocateRange":     16,
-	"HeartbeatTxn":           17,
-	"GC":                     18,
-	"PushTxn":                19,
-	"RecoverTxn":             20,
-	"QueryLocks":             21,
-	"QueryTxn":               22,
-	"QueryIntent":            23,
-	"ResolveIntent":          24,
-	"ResolveIntentRange":     25,
-	"Merge":                  26,
-	"TruncateLog":            27,
-	"RequestLease":           28,
-	"TransferLease":          29,
-	"LeaseInfo":              30,
-	"ComputeChecksum":        31,
-	"CheckConsistency":       32,
-	"WriteBatch":             33,
-	"Export":                 34,
-	"AdminScatter":           35,
-	"AddSSTable":             36,
-	"LinkExternalSSTable":    37,
-	"Migrate":                38,
-	"RecomputeStats":         39,
-	"Refresh":                40,
-	"RefreshRange":           41,
-	"Subsume":                42,
-	"RangeStats":             43,
-	"QueryResolvedTimestamp": 44,
-	"Barrier":                45,
-	"Probe":                  46,
-	"IsSpanEmpty":            47,
-	"Excise":                 48,
-	"FlushLockTable":         49,
-	"MaxMethod":              49,
-	"NumMethods":             50,
+	"Get":                         0,
+	"Put":                         1,
+	"ConditionalPut":              2,
+	"Increment":                   3,
+	"Delete":                      4,
+	"DeleteRange":                 5,
+	"ClearRange":                  6,
+	"RevertRange":                 7,
+	"Scan":                        8,
+	"ReverseScan":                 9,
+	"EndTxn":                      10,
+	"AdminSplit":                  11,
+	"AdminUnsplit":                12,
+	"AdminMerge":                  13,
+	"AdminTransferLease":          14,
+	"AdminChangeReplicas":         15,
+	"AdminRelocateRange":          16,
+	"HeartbeatTxn":                17,
+	"GC":                          18,
+	"PushTxn":                     19,
+	"RecoverTxn":                  20,
+	"QueryLocks":                  21,
+	"QueryTxn":                    22,
+	"QueryIntent":                 23,
+	"ResolveIntent":               24,
+	"ResolveIntentRange":          25,
+	"Merge":                       26,
+	"TruncateLog":                 27,
+	"RequestLease":                28,
+	"TransferLease":               29,
+	"LeaseInfo":                   30,
+	"ComputeChecksum":             31,
+	"CheckConsistency":            32,
+	"WriteBatch":                  33,
+	"Export":                      34,
+	"AdminScatter":                35,
+	"AddSSTable":                  36,
+	"LinkExternalSSTable":         37,
+	"Migrate":                     38,
+	"RecomputeStats":              39,
+	"Refresh":                     40,
+	"RefreshRange":                41,
+	"Subsume":                     42,
+	"RangeStats":                  43,
+	"QueryResolvedTimestamp":      44,
+	"Barrier":                     45,
+	"Probe":                       46,
+	"IsSpanEmpty":                 47,
+	"Excise":                      48,
+	"FlushLockTable":              49,
+	"AllocateFileNumsForRange":    50,
+	"SetRangeSharedManifestNum":   51,
+	"CheckRangeSharedManifestNum": 52,
+	"RangeFlushPrepare":           53,
+	"MaxMethod":                   53,
+	"NumMethods":                  54,
 }

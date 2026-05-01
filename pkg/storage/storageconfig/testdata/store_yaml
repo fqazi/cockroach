@@ -74,6 +74,35 @@ invalid-field: foo
 yaml: unmarshal errors:
   line 3: field invalid-field not found in type storageconfig.Store
 
+from-yaml
+type: basalt
+----
+type: basalt
+
+from-yaml
+type: local
+path: /mnt/data1
+----
+path: /mnt/data1
+
+validate
+type: basalt
+----
+no path specified for basalt store
+
+validate
+type: basalt
+path: /mnt/data1
+----
+basalt store path must start with basalt://
+
+validate
+type: basalt
+path: basalt://ctrl:5000/store-1
+----
+type: basalt
+path: basalt://ctrl:5000/store-1
+
 validate
 path: foo
 size: 0

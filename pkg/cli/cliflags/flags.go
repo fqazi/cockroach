@@ -1134,13 +1134,84 @@ For example:
   --store=provisioned-rate=disk-name=sdb:bandwidth=250MiB/s
 
 </PRE>
-Commas are forbidden in all values, since they are used to separate fields.
-Also, if you use equal signs in the file path to a store, you must use the
+Commas are used to separate fields. Commas within basalt store paths
+(e.g. basalt://ctrl1:5000,ctrl2:5000/store-1) are handled automatically.
+If you use equal signs in the file path to a store, you must use the
 "path" field label.
 
 (default is 'cockroach-data' in current directory except for mt commands
 which use 'cockroach-data-tenant-X' for tenant 'X')
 `,
+	}
+
+	Basalt = FlagInfo{
+		Name: "basalt",
+		Description: `
+Defines a basalt alias-to-controller mapping. The format is
+<alias>@<controller1>,<controller2>,...
+This flag may be specified multiple times to define multiple aliases.
+For example:
+<PRE>
+
+  --basalt=prod@basalt-controller-lb.internal:5000
+  --basalt=prod@ctrl1:5000,ctrl2:5000,ctrl3:5000
+
+</PRE>
+Each alias can then be referenced in --store=basalt://<alias>/<store-name>.
+`,
+	}
+
+	BasaltClusterID = FlagInfo{
+		Name: "cluster-id",
+		Description: `
+UUID identifying the CockroachDB cluster in basalt's namespace. This is used
+to construct the basalt directory path: /<cluster-id>/<store-name>. Required
+when using basalt stores. For example:
+<PRE>
+
+  --cluster-id=a1b2c3d4-e5f6-7890-abcd-ef1234567890
+
+</PRE>
+`,
+	}
+
+	BasaltStoreKey = FlagInfo{
+		Name: "basalt-store-key",
+		Description: `
+Path to the active store key file for basalt encryption-at-rest, or "plain"
+for no encryption. Required to enable encryption on basalt stores.
+
+All nodes in the cluster must use the same store key. Each node generates its
+own data keys on basaltfs, encrypted by the store key. When a node reads a
+file written by another node, it decrypts the remote node's data keys using
+its own store key. A mismatch causes silent decryption failures.
+`,
+	}
+
+	BasaltStoreKeyOld = FlagInfo{
+		Name: "basalt-store-key-old",
+		Description: `
+Path to the previous store key file for basalt encryption-at-rest, or "plain".
+Used during key rotation to decrypt data encrypted with the old key. Defaults
+to "plain" if not specified.
+`,
+	}
+
+	BasaltNodeID = FlagInfo{
+		Name: "basalt-node-id",
+		Description: `
+Unique node identifier for per-node encryption directories within basalt. Each
+node manages its own data keys and file registry entries under a subdirectory
+named "n<node-id>". Required when --basalt-store-key is specified.
+`,
+	}
+
+	DisableRSEngine = FlagInfo{
+		Name: "disable-rsengine",
+		Description: `
+Disable the per-range Pebble-backed RSEngine. When basalt storage is
+configured, the RSEngine is enabled by default; set this flag to turn
+it off.`,
 	}
 
 	WALFailover = FlagInfo{

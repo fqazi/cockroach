@@ -1,0 +1,122 @@
+# Test Case 1: Single-store Basalt flow
+#
+# This tests the complete single-store Basalt workflow:
+# 1. Initialize cluster with Basalt configuration
+# 2. Get a scratch range (which initializes RSEngine with a manifest)
+# 3. Verify initial RSManifestState
+# 4. Flush to create SST files and new manifest
+# 5. Verify RSManifestState updated
+# 6. Verify MANIFEST and SST files created on Basalt filesystem
+# 7. Verify RSEngine state shows manifest tracking
+
+init stores=1
+----
+cluster started with 1 store(s)
+
+scratch-range
+----
+ok
+
+# Initial state: The scratch range RSEngine already has a manifest since it was
+# created via a split. The split alllocated 60 nums, so [7, 67), and used 66
+# as the manifest num. The ReplicaManifestCommitter allocated 60+100, to stash
+# some extra ones, so [7, 167).
+range-shared-meta-keys rangeID=1 store=1
+----
+RSManifestState:
+  disk_file_num: 66, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 167
+
+basalt-files
+----
+s1/
+s1/ranges/
+s1/ranges/r1:1/
+s1/ranges/r1:1/MANIFEST-000066:
+s1/ranges/r1:1/  manifest:66
+s1/scratch/
+s1/scratch/r1:1/
+
+# Flush creates SST files and a new manifest.
+flush rangeID=1 store=1
+----
+flushed
+
+# After flush: disk_file_num should be updated to new manifest number. The
+# flush allocates new file numbers for the SST and manifest. The scratch range
+# was the RHS of the split, so it has no stashed filenums, and the flush uses
+# [167, 227) and the ReplicaManifestCommitter allocates [167, 327).
+range-shared-meta-keys rangeID=1 store=1
+----
+RSManifestState:
+  disk_file_num: 226, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 327
+
+# Verify MANIFEST and SST files created on Basalt filesystem.
+# Range ID is remapped to synthetic ID 1 for deterministic output.
+basalt-files
+----
+s1/
+s1/ranges/
+s1/ranges/r1:1/
+s1/ranges/r1:1/000225.sst:
+s1/ranges/r1:1/  previous-manifest:66
+s1/ranges/r1:1/MANIFEST-000066:
+s1/ranges/r1:1/  manifest:66
+s1/ranges/r1:1/MANIFEST-000226:
+s1/ranges/r1:1/  manifest:226
+s1/ranges/r1:1/  000225.sst
+s1/scratch/
+s1/scratch/r1:1/
+
+# Verify RSEngine state shows manifest tracking.
+rs-engine-state rangeID=1 store=1
+----
+current-manifest: 226
+manifest 226: refcount=1 sstables=[000225.sst]
+
+# Another flush creates SST files and a new manifest. The
+# ReplicaManifestCommitter already has [227, 327) in its stash, so it gives
+# the flush [227, 287).
+flush rangeID=1 store=1
+----
+flushed
+
+range-shared-meta-keys rangeID=1 store=1
+----
+RSManifestState:
+  disk_file_num: 286, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 327
+
+basalt-files
+----
+s1/
+s1/ranges/
+s1/ranges/r1:1/
+s1/ranges/r1:1/000225.sst:
+s1/ranges/r1:1/  previous-manifest:66
+s1/ranges/r1:1/000285.sst:
+s1/ranges/r1:1/  previous-manifest:226
+s1/ranges/r1:1/MANIFEST-000066:
+s1/ranges/r1:1/  manifest:66
+s1/ranges/r1:1/MANIFEST-000226:
+s1/ranges/r1:1/  manifest:226
+s1/ranges/r1:1/  000225.sst
+s1/ranges/r1:1/MANIFEST-000286:
+s1/ranges/r1:1/  manifest:286
+s1/ranges/r1:1/  000225.sst
+s1/ranges/r1:1/  000285.sst
+s1/scratch/
+s1/scratch/r1:1/
+
+rs-engine-state rangeID=1 store=1
+----
+current-manifest: 286
+manifest 286: refcount=1 sstables=[000225.sst 000285.sst]
+
+stop
+----
+stopped

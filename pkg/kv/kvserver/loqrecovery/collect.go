@@ -158,6 +158,7 @@ func CollectStoresReplicaInfo(
 		nodes[ident.NodeID] = struct{}{}
 		// NB: since the engines are immutable in this path, there is no question
 		// whether to and in which order to grab state/raft engine snapshots.
+		// TODO(basalt): use combined snapshot for range-shared state visibility.
 		if err := visitStoreReplicas(
 			ctx, store.StateEngine(), store.LogEngine(), ident.StoreID, ident.NodeID,
 			func(info loqrecoverypb.ReplicaInfo) error {

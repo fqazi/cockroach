@@ -59,7 +59,7 @@ func TestDetailsRemoteNode(t *testing.T) {
 	tc := serverutils.StartCluster(t, 3, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			// Use in-memory stores
-			StoreSpecs: []base.StoreSpec{{InMemory: true}},
+			StoreSpecs: []base.StoreSpec{{Type: base.StoreTypeInMemory}},
 		},
 	})
 	defer tc.Stopper().Stop(ctx)

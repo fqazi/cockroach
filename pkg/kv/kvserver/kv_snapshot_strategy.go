@@ -106,6 +106,20 @@ func (kvSS *kvBatchSnapshotStrategy) Receive(
 		return noSnap, sendSnapshotError(ctx, s, stream, errors.New("cannot accept shared sstables"))
 	}
 
+	// RSManifestDiskFileNum is incompatible with SharedReplicate and
+	// ExternalReplicate modes. When using range-shared LSM, the flushed data
+	// is managed separately from the store-local engine.
+	if header.RSManifestDiskFileNum != uint64(storage.NoManifestNum) {
+		if header.SharedReplicate {
+			return noSnap, sendSnapshotError(ctx, s, stream,
+				errors.New("RSManifestDiskFileNum is incompatible with SharedReplicate"))
+		}
+		if header.ExternalReplicate {
+			return noSnap, sendSnapshotError(ctx, s, stream,
+				errors.New("RSManifestDiskFileNum is incompatible with ExternalReplicate"))
+		}
+	}
+
 	// We rely on the last keyRange passed into MultiSSTWriter being the user key
 	// span. If the sender signals that it can no longer do shared replication
 	// (with a TransitionFromSharedToRegularReplicate = true), we will have to
@@ -200,6 +214,9 @@ func (kvSS *kvBatchSnapshotStrategy) Receive(
 
 			timingTag.start("sst")
 			verifyCheckSum := snapshotChecksumVerification.Get(&s.ClusterSettings().SV)
+			if req.HaveDormantRangeDel && !msstw.HaveDormantKeys() {
+				msstw.DisableSizeBasedRollover()
+			}
 			// All batch operations are guaranteed to be point keys or range keys.
 			// When the snapshot contains shared or external SSTs, Pebble internal
 			// keys (DELS, RANGEDELs etc.), can also appear among the point and
@@ -228,12 +245,34 @@ func (kvSS *kvBatchSnapshotStrategy) Receive(
 				}
 
 				if err := msstw.ReadOne(
-					ctx, ek, header.SharedReplicate || header.ExternalReplicate, batchReader); err != nil {
+					ctx, ek, header.ExpectInternalKeys, batchReader, false /* isBelowDormant */); err != nil {
 					return noSnap, err
 				}
 			}
 			if err := batchReader.Error(); err != nil {
 				return noSnap, err
+			}
+			timingTag.stop("sst")
+		}
+		if len(req.BelowDormantKVBatch) > 0 {
+			recordBytesReceived(int64(len(req.BelowDormantKVBatch)))
+			batchReader, err := storage.NewBatchReader(req.BelowDormantKVBatch)
+			if err != nil {
+				return noSnap, errors.Wrap(err, "failed to decode below-dormant batch")
+			}
+			timingTag.start("sst")
+			for batchReader.Next() {
+				ek, err := batchReader.EngineKey()
+				if err != nil {
+					return noSnap, err
+				}
+				if err := msstw.ReadOne(
+					ctx, ek, true /* expectInternalKeys */, batchReader, true /* isBelowDormant */); err != nil {
+					return noSnap, err
+				}
+			}
+			if batchReader.Error() != nil {
+				return noSnap, batchReader.Error()
 			}
 			timingTag.stop("sst")
 		}
@@ -272,18 +311,20 @@ func (kvSS *kvBatchSnapshotStrategy) Receive(
 			}
 
 			inSnap := IncomingSnapshot{
-				SnapUUID:          snapUUID,
-				SSTStorageScratch: kvSS.scratch,
-				FromReplica:       header.RaftMessageRequest.FromReplica,
-				Desc:              header.State.Desc,
-				DataSize:          dataSize,
-				SSTSize:           sstSize,
-				SharedSize:        sharedSize,
-				raftAppliedIndex:  header.State.RaftAppliedIndex,
-				msgAppRespCh:      make(chan raftpb.Message, 1),
-				sharedSSTs:        sharedSSTs,
-				externalSSTs:      externalSSTs,
-				clearedSpans:      keyRanges,
+				SnapUUID:              snapUUID,
+				SSTStorageScratch:     kvSS.scratch,
+				FromReplica:           header.RaftMessageRequest.FromReplica,
+				Desc:                  header.State.Desc,
+				DataSize:              dataSize,
+				SSTSize:               sstSize,
+				SharedSize:            sharedSize,
+				raftAppliedIndex:      header.State.RaftAppliedIndex,
+				msgAppRespCh:          make(chan raftpb.Message, 1),
+				sharedSSTs:            sharedSSTs,
+				externalSSTs:          externalSSTs,
+				clearedSpans:          keyRanges,
+				RSManifestDiskFileNum: header.RSManifestDiskFileNum,
+				stackedSSTs:           msstw.StackedSSTs(),
 			}
 
 			timingTag.stop("totalTime")
@@ -332,24 +373,40 @@ func (kvSS *kvBatchSnapshotStrategy) Send(
 	// Iterate over all keys (point keys and range keys) and stream out batches of
 	// key-values.
 	var b storage.WriteBatch
+	var belowDormantB storage.WriteBatch
+	haveDormantRangeDel := false
 	var sharedSSTs []kvserverpb.SnapshotRequest_SharedTable
 	var externalSSTs []kvserverpb.SnapshotRequest_ExternalTable
 	var transitionFromSharedToRegularReplicate bool
+	useScanInternalForUserKeys := header.SharedReplicate || header.ExternalReplicate || snap.CanHaveDormantRangeDel
 	defer func() {
 		if b != nil {
 			b.Close()
 		}
+		if belowDormantB != nil {
+			belowDormantB.Close()
+		}
 	}()
 
 	flushBatch := func() error {
-		if err := kvSS.sendBatch(ctx, stream, b, sharedSSTs, externalSSTs, transitionFromSharedToRegularReplicate, timingTag); err != nil {
+		if err := kvSS.sendBatchWithDormant(ctx, stream, b, belowDormantB,
+			haveDormantRangeDel, sharedSSTs, externalSSTs,
+			transitionFromSharedToRegularReplicate, timingTag); err != nil {
 			return err
 		}
-		bLen := int64(b.Len())
+		var bLen int64
+		if b != nil {
+			bLen = int64(b.Len())
+			b.Close()
+			b = nil
+		}
+		if belowDormantB != nil {
+			bLen += int64(belowDormantB.Len())
+			belowDormantB.Close()
+			belowDormantB = nil
+		}
 		bytesSent += bLen
 		recordBytesSent(bLen)
-		b.Close()
-		b = nil
 		sharedSSTs = sharedSSTs[:0]
 		externalSSTs = externalSSTs[:0]
 		transitionFromSharedToRegularReplicate = false
@@ -357,7 +414,14 @@ func (kvSS *kvBatchSnapshotStrategy) Send(
 	}
 
 	maybeFlushBatch := func() error {
-		if int64(b.Len()) >= kvSS.batchSize {
+		var batchLen int64
+		if b != nil {
+			batchLen += int64(b.Len())
+		}
+		if belowDormantB != nil {
+			batchLen += int64(belowDormantB.Len())
+		}
+		if batchLen >= kvSS.batchSize {
 			return flushBatch()
 		}
 		return nil
@@ -416,9 +480,9 @@ func (kvSS *kvBatchSnapshotStrategy) Send(
 		Ranged: rditer.SelectRangedOptions{
 			SystemKeys: true,
 			LockTable:  true,
-			// In shared/external mode, the user span come from external SSTs and
-			// are not iterated over here.
-			UserKeys: !(header.SharedReplicate || header.ExternalReplicate),
+			// In shared/external/RS-engine mode, user keys are iterated via
+			// ScanInternal below.
+			UserKeys: !useScanInternalForUserKeys,
 		},
 		ReplicatedByRangeID:   true,
 		UnreplicatedByRangeID: false,
@@ -427,40 +491,57 @@ func (kvSS *kvBatchSnapshotStrategy) Send(
 	}
 
 	var valBuf []byte
-	// If snapshots containing shared files are allowed, and this range is a
-	// non-system range, take advantage of shared storage to minimize the amount
-	// of data we're iterating on and sending over the network.
-	if header.SharedReplicate || header.ExternalReplicate {
+	// Use ScanInternal for user keys when sending via shared/external files or
+	// when using a range-shared engine. ScanInternal exposes dormant range
+	// deletion information needed for correctness.
+	if useScanInternalForUserKeys {
+		rsEngine := snap.CanHaveDormantRangeDel
 		var sharedVisitor func(sst *pebble.SharedSSTMeta) error
-		if header.SharedReplicate {
-			sharedVisitor = func(sst *pebble.SharedSSTMeta) error {
-				sharedSSTCount++
-				snap.sharedBackings = append(snap.sharedBackings, sst.Backing)
-				backing, err := sst.Backing.Get()
-				if err != nil {
-					return err
-				}
-				ikeyToPb := func(ik pebble.InternalKey) *kvserverpb.SnapshotRequest_SharedTable_InternalKey {
-					return &kvserverpb.SnapshotRequest_SharedTable_InternalKey{
-						UserKey: ik.UserKey,
-						Trailer: uint64(ik.Trailer),
-					}
-				}
-				sharedSSTs = append(sharedSSTs, kvserverpb.SnapshotRequest_SharedTable{
-					Backing:          backing,
-					Smallest:         ikeyToPb(sst.Smallest),
-					Largest:          ikeyToPb(sst.Largest),
-					SmallestRangeKey: ikeyToPb(sst.SmallestRangeKey),
-					LargestRangeKey:  ikeyToPb(sst.LargestRangeKey),
-					SmallestPointKey: ikeyToPb(sst.SmallestPointKey),
-					LargestPointKey:  ikeyToPb(sst.LargestPointKey),
-					Level:            int32(sst.Level),
-					Size_:            sst.Size,
-				})
-				return nil
-			}
-		}
 		var externalVisitor func(sst *pebble.ExternalFile) error
+		var visitDormantRangeDel func(start, end []byte, seqNum pebble.SeqNum) error
+		if rsEngine {
+			// RS engine path: shared/external SSTs are not expected. Leave
+			// visitors nil; Pebble won't produce shared/external SSTs
+			// without them.
+			visitDormantRangeDel = func(start, end []byte, _ pebble.SeqNum) error {
+				haveDormantRangeDel = true
+				// The dormant range deletion itself is above BelowDormant
+				// keys, so it goes into the normal batch.
+				kvs++
+				if b == nil {
+					b = kvSS.newWriteBatch()
+				}
+				return b.ClearRawEncodedRangeDormant(start, end)
+			}
+		} else {
+			if header.SharedReplicate {
+				sharedVisitor = func(sst *pebble.SharedSSTMeta) error {
+					sharedSSTCount++
+					snap.sharedBackings = append(snap.sharedBackings, sst.Backing)
+					backing, err := sst.Backing.Get()
+					if err != nil {
+						return err
+					}
+					ikeyToPb := func(ik pebble.InternalKey) *kvserverpb.SnapshotRequest_SharedTable_InternalKey {
+						return &kvserverpb.SnapshotRequest_SharedTable_InternalKey{
+							UserKey: ik.UserKey,
+							Trailer: uint64(ik.Trailer),
+						}
+					}
+					sharedSSTs = append(sharedSSTs, kvserverpb.SnapshotRequest_SharedTable{
+						Backing:          backing,
+						Smallest:         ikeyToPb(sst.Smallest),
+						Largest:          ikeyToPb(sst.Largest),
+						SmallestRangeKey: ikeyToPb(sst.SmallestRangeKey),
+						LargestRangeKey:  ikeyToPb(sst.LargestRangeKey),
+						SmallestPointKey: ikeyToPb(sst.SmallestPointKey),
+						LargestPointKey:  ikeyToPb(sst.LargestPointKey),
+						Level:            int32(sst.Level),
+						Size_:            sst.Size,
+					})
+					return nil
+				}
+			}
 		if header.ExternalReplicate {
 			externalVisitor = func(sst *pebble.ExternalFile) error {
 				externalSSTCount++
@@ -478,14 +559,12 @@ func (kvSS *kvBatchSnapshotStrategy) Send(
 					Level:             int32(sst.Level),
 				})
 				return nil
+				}
 			}
 		}
 		kvsBefore := kvs
-		err := rditer.IterateReplicaKeySpansShared(ctx, snap.State.Desc, kvSS.st, kvSS.clusterID, snap.StateSnap, func(key *pebble.InternalKey, value pebble.LazyValue, _ pebble.IteratorLevel) error {
+		visitPointKey := func(key *pebble.InternalKey, value pebble.LazyValue, _ pebble.IteratorLevel, dormantPos pebble.DormantRelation) error {
 			kvs++
-			if b == nil {
-				b = kvSS.newWriteBatch()
-			}
 			var val []byte
 			switch key.Kind() {
 			case pebble.InternalKeyKindSet, pebble.InternalKeyKindSetWithDelete, pebble.InternalKeyKindMerge:
@@ -499,12 +578,42 @@ func (kvSS *kvBatchSnapshotStrategy) Send(
 					valBuf = val[:0]
 				}
 			}
+			if rsEngine && dormantPos == pebble.BelowDormant {
+				haveDormantRangeDel = true
+				if belowDormantB == nil {
+					belowDormantB = kvSS.newWriteBatch()
+				}
+				if err := belowDormantB.PutInternalPointKey(key, val); err != nil {
+					return err
+				}
+				return maybeFlushBatch()
+			}
+			if !rsEngine && (dormantPos == pebble.BelowDormant || dormantPos == pebble.AboveDormant) {
+				log.KvDistribution.Fatalf(ctx, "unexpected dormant relation %v in shared/external snapshot", dormantPos)
+			}
+			if b == nil {
+				b = kvSS.newWriteBatch()
+			}
 			if err := b.PutInternalPointKey(key, val); err != nil {
 				return err
 			}
 			return maybeFlushBatch()
-		}, func(start, end []byte, seqNum pebble.SeqNum) error {
+		}
+		visitRangeDel := func(start, end []byte, _ pebble.SeqNum, dormantPos pebble.DormantRelation) error {
 			kvs++
+			if rsEngine && dormantPos == pebble.BelowDormant {
+				haveDormantRangeDel = true
+				if belowDormantB == nil {
+					belowDormantB = kvSS.newWriteBatch()
+				}
+				if err := belowDormantB.ClearRawEncodedRange(start, end); err != nil {
+					return err
+				}
+				return maybeFlushBatch()
+			}
+			if !rsEngine && (dormantPos == pebble.BelowDormant || dormantPos == pebble.AboveDormant) {
+				log.KvDistribution.Fatalf(ctx, "unexpected dormant relation %v in shared/external snapshot", dormantPos)
+			}
 			if b == nil {
 				b = kvSS.newWriteBatch()
 			}
@@ -512,20 +621,23 @@ func (kvSS *kvBatchSnapshotStrategy) Send(
 				return err
 			}
 			return maybeFlushBatch()
-		}, func(start, end []byte, keys []rangekey.Key) error {
+		}
+		visitRangeKey := func(start, end []byte, keys []rangekey.Key) error {
 			if b == nil {
 				b = kvSS.newWriteBatch()
 			}
 			for i := range keys {
 				rangeKVs++
-				err := b.PutInternalRangeKey(start, end, keys[i])
-				if err != nil {
+				if err := b.PutInternalRangeKey(start, end, keys[i]); err != nil {
 					return err
 				}
 			}
 			return maybeFlushBatch()
-		}, sharedVisitor, externalVisitor)
-		if err != nil && errors.Is(err, pebble.ErrInvalidSkipSharedIteration) {
+		}
+		err := rditer.IterateReplicaKeySpansShared(ctx, snap.State.Desc, kvSS.st, kvSS.clusterID, snap.StateSnap,
+			visitPointKey, visitRangeDel, visitDormantRangeDel, visitRangeKey,
+			sharedVisitor, externalVisitor)
+		if !rsEngine && err != nil && errors.Is(err, pebble.ErrInvalidSkipSharedIteration) {
 			// IterateReplicaKeySpansShared will return ErrInvalidSkipSharedIteration
 			// before visiting user keys. This is a subtle contract.
 			// See also:
@@ -556,7 +668,7 @@ func (kvSS *kvBatchSnapshotStrategy) Send(
 			return 0, err
 		}
 	}
-	if b != nil {
+	if b != nil || belowDormantB != nil {
 		if err := flushBatch(); err != nil {
 			return 0, err
 		}
@@ -569,10 +681,12 @@ func (kvSS *kvBatchSnapshotStrategy) Send(
 	return bytesSent, nil
 }
 
-func (kvSS *kvBatchSnapshotStrategy) sendBatch(
+func (kvSS *kvBatchSnapshotStrategy) sendBatchWithDormant(
 	ctx context.Context,
 	stream outgoingSnapshotStream,
 	batch storage.WriteBatch,
+	belowDormantBatch storage.WriteBatch,
+	haveDormantRangeDel bool,
 	sharedSSTs []kvserverpb.SnapshotRequest_SharedTable,
 	externalSSTs []kvserverpb.SnapshotRequest_ExternalTable,
 	transitionToRegularReplicate bool,
@@ -584,13 +698,20 @@ func (kvSS *kvBatchSnapshotStrategy) sendBatch(
 	if err != nil {
 		return err
 	}
-	timerTag.start("send")
-	res := stream.Send(&kvserverpb.SnapshotRequest{
-		KVBatch:                                batch.Repr(),
+	req := &kvserverpb.SnapshotRequest{
 		SharedTables:                           sharedSSTs,
 		ExternalTables:                         externalSSTs,
 		TransitionFromSharedToRegularReplicate: transitionToRegularReplicate,
-	})
+		HaveDormantRangeDel:                    haveDormantRangeDel,
+	}
+	if batch != nil {
+		req.KVBatch = batch.Repr()
+	}
+	if belowDormantBatch != nil {
+		req.BelowDormantKVBatch = belowDormantBatch.Repr()
+	}
+	timerTag.start("send")
+	res := stream.Send(req)
 	timerTag.stop("send")
 	return res
 }

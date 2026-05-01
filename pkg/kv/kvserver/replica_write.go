@@ -535,7 +535,9 @@ func (r *Replica) evaluate1PC(
 		// Close the batch unless it's passed to the caller (when the evaluation
 		// succeeds). Also increment metrics.
 		if onePCRes.success != onePCSucceeded {
-			batch.Close()
+			if batch != nil {
+				batch.Close()
+			}
 			r.store.Metrics().OnePhaseCommitFailure.Inc(1)
 		} else {
 			r.store.Metrics().OnePhaseCommitSuccess.Inc(1)
@@ -751,9 +753,13 @@ func (r *Replica) evaluateWriteBatchWrapper(
 	ui uncertainty.Interval,
 	omitInRangefeeds bool,
 ) (storage.Batch, *kvpb.BatchResponse, result.Result, *kvpb.Error) {
-	batch, opLogger := r.newBatchedEngine(g)
+	batch, opLogger, err := r.newBatchedEngine(g)
+	if err != nil {
+		return nil, nil, result.Result{}, kvpb.NewError(err)
+	}
 	now := timeutil.Now()
-	br, res, pErr := evaluateBatch(ctx, idKey, batch, rec, ms, ba, g, st, ui, readWrite, omitInRangefeeds)
+	var rw storage.ReadWriter = batch
+	br, res, pErr := evaluateBatch(ctx, idKey, rw, rec, ms, ba, g, st, ui, readWrite, omitInRangefeeds)
 	r.store.metrics.ReplicaWriteBatchEvaluationLatency.RecordValue(timeutil.Since(now).Nanoseconds())
 	if pErr == nil {
 		if opLogger != nil {
@@ -769,7 +775,9 @@ func (r *Replica) evaluateWriteBatchWrapper(
 // are enabled, it also returns an engine.OpLoggerBatch. If non-nil, then this
 // OpLogger is attached to the returned engine.Batch, recording all operations.
 // Its recording should be attached to the Result of request evaluation.
-func (r *Replica) newBatchedEngine(g concurrency.Guard) (storage.Batch, *storage.OpLoggerBatch) {
+func (r *Replica) newBatchedEngine(
+	g concurrency.Guard,
+) (storage.Batch, *storage.OpLoggerBatch, error) {
 	batch := r.store.StateEngine().NewBatch()
 	if !batch.ConsistentIterators() {
 		// This is not currently needed for correctness, but future optimizations
@@ -821,8 +829,7 @@ func (r *Replica) newBatchedEngine(g concurrency.Guard) (storage.Batch, *storage
 		// assert on access timestamps using spanset.NewBatchAt.
 		batch = spanset.NewBatch(batch, g.LatchSpans())
 	}
-
-	return batch, opLogger
+	return batch, opLogger, nil
 }
 
 // isOnePhaseCommit returns true iff the BatchRequest contains all writes in the

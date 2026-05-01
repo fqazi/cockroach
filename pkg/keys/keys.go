@@ -410,6 +410,12 @@ func RangeVersionKey(rangeID roachpb.RangeID) roachpb.Key {
 	return MakeRangeIDPrefixBuf(rangeID).RangeVersionKey()
 }
 
+// RangeFileNumAllocKey returns a replicated range-ID local key for the file
+// number allocation state for a range's range-shared LSM.
+func RangeFileNumAllocKey(rangeID roachpb.RangeID) roachpb.Key {
+	return MakeRangeIDPrefixBuf(rangeID).RangeFileNumAllocKey()
+}
+
 // MakeRangeIDUnreplicatedPrefix creates a range-local key prefix from
 // rangeID for all unreplicated data.
 func MakeRangeIDUnreplicatedPrefix(rangeID roachpb.RangeID) roachpb.Key {
@@ -479,6 +485,12 @@ func RaftReplicaIDKey(rangeID roachpb.RangeID) roachpb.Key {
 // the range's last replica GC timestamp.
 func RangeLastReplicaGCTimestampKey(rangeID roachpb.RangeID) roachpb.Key {
 	return MakeRangeIDPrefixBuf(rangeID).RangeLastReplicaGCTimestampKey()
+}
+
+// RangeSharedManifestNumKey returns a range-local key for the range-shared
+// engine manifest number.
+func RangeSharedManifestNumKey(rangeID roachpb.RangeID) roachpb.Key {
+	return MakeRangeIDPrefixBuf(rangeID).RangeSharedManifestNumKey()
 }
 
 // MakeRangeKey creates a range-local key based on the range
@@ -1286,6 +1298,12 @@ func (b RangeIDPrefixBuf) RangeVersionKey() roachpb.Key {
 	return append(b.ReplicatedPrefix(), LocalRangeVersionSuffix...)
 }
 
+// RangeFileNumAllocKey returns a replicated range-ID local key for the file
+// number allocation state for a range's range-shared LSM.
+func (b RangeIDPrefixBuf) RangeFileNumAllocKey() roachpb.Key {
+	return append(b.ReplicatedPrefix(), LocalRangeFileNumAllocSuffix...)
+}
+
 // RangeTombstoneKey returns a system-local key for a range tombstone.
 func (b RangeIDPrefixBuf) RangeTombstoneKey() roachpb.Key {
 	return append(b.UnreplicatedPrefix(), LocalRangeTombstoneSuffix...)
@@ -1327,4 +1345,10 @@ func (b RangeIDPrefixBuf) RangeLastReplicaGCTimestampKey() roachpb.Key {
 // tombstone mvcc stats calculations during range tombstone GC.
 func (b RangeIDPrefixBuf) MVCCRangeKeyGCKey() roachpb.Key {
 	return append(b.UnreplicatedPrefix(), LocalRangeMVCCRangeKeyGCLockSuffix...)
+}
+
+// RangeSharedManifestNumKey returns a range-local key for the range-shared
+// engine manifest number.
+func (b RangeIDPrefixBuf) RangeSharedManifestNumKey() roachpb.Key {
+	return append(b.UnreplicatedPrefix(), LocalRangeSharedManifestNumSuffix...)
 }

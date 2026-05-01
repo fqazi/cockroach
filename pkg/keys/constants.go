@@ -100,6 +100,10 @@ var (
 	LocalRangeStatsLegacySuffix = []byte("stat")
 	// localTxnSpanGCThresholdSuffix is DEPRECATED and remains to prevent reuse.
 	localTxnSpanGCThresholdSuffix = []byte("tst-")
+	// LocalRangeFileNumAllocSuffix is the suffix for the file number allocation
+	// state for a range's range-shared LSM. This tracks the next available file
+	// number that can be allocated for MANIFESTs and SSTables in the RSEngine.
+	LocalRangeFileNumAllocSuffix = []byte("rfna")
 
 	// 2. Unreplicated Range-ID keys
 	//
@@ -137,6 +141,13 @@ var (
 	// localRangeLastVerificationTimestampSuffix is DEPRECATED and remains to
 	// prevent reuse.
 	localRangeLastVerificationTimestampSuffix = []byte("rlvt")
+	// LocalRangeSharedManifestNumSuffix is the suffix for the range-shared
+	// engine manifest number. This stores the DiskFileNum of the current
+	// MANIFEST for a replica's range-shared engine (RSEngine). This is a
+	// "state machine" engine key, though it sorts after RangeTombstoneKey
+	// (like RaftReplicaIDKey, this is a historical exception to the sort order
+	// rule described in the WARNING comment above).
+	LocalRangeSharedManifestNumSuffix = []byte("rsmn")
 
 	// 3. Range local keys
 	//

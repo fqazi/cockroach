@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -441,8 +442,10 @@ func TestDataKeyManagerIO(t *testing.T) {
 				d.ScanArgs(t, "dir", &dir)
 
 				require.Nil(t, dkm)
-				dkm = &DataKeyManager{fs: fs, dbDir: dir, rotationPeriod: 10}
-				err := dkm.Load(context.Background())
+				var err error
+				dkm, err = NewDataKeyManager(
+					context.Background(), fs, dir, 10*time.Second, false,
+				)
 				appendError(err)
 				if err != nil {
 					dkm = nil
@@ -472,8 +475,8 @@ func TestDataKeyManagerBlockedWriteAllowsRead(t *testing.T) {
 	ctx := context.Background()
 	mem := vfs.NewMem()
 	fs := &BlockingWriteFSForTesting{FS: mem}
-	dkm := &DataKeyManager{fs: fs, dbDir: "", rotationPeriod: 10000}
-	require.NoError(t, dkm.Load(ctx))
+	dkm, err := NewDataKeyManager(ctx, fs, "", 10000*time.Second, false)
+	require.NoError(t, err)
 	require.Equal(t, "", setActiveStoreKey(dkm, "foo", enginepb.EncryptionType_AES128_CTR))
 	activeKey, err := dkm.ActiveKeyForWriter(ctx)
 	require.NoError(t, err)
@@ -489,4 +492,213 @@ func TestDataKeyManagerBlockedWriteAllowsRead(t *testing.T) {
 	require.NotNil(t, dkm.ActiveKeyInfoForStats())
 	fs.WaitForBlockAndUnblock()
 	require.NoError(t, dkm.Close())
+}
+
+func TestNodeDataKeyManager(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	mem := vfs.NewMem()
+	ctx := context.Background()
+	const dataKeysDir = "/datakeys"
+	const rotationPeriod = 10000 * time.Second
+
+	prev := kmTimeNow
+	defer func() { kmTimeNow = prev }()
+	var unixTime int64
+	kmTimeNow = func() time.Time {
+		return timeutil.Unix(unixTime, 0)
+	}
+
+	// Track open managers keyed by node ID.
+	managers := make(map[roachpb.NodeID]*NodeDataKeyManager)
+	// Track the active data key ID per node, populated by
+	// set-active-store-key and rotate commands.
+	activeKeys := make(map[roachpb.NodeID]string)
+	// Assign stable aliases (k1, k2, ...) to data key IDs so that
+	// output is deterministic despite randomly generated key IDs.
+	keyAliases := make(map[string]string)
+	var nextAlias int
+	alias := func(keyID string) string {
+		if a, ok := keyAliases[keyID]; ok {
+			return a
+		}
+		nextAlias++
+		a := fmt.Sprintf("k%d", nextAlias)
+		keyAliases[keyID] = a
+		return a
+	}
+	// currentNode tracks the most recently opened node, used by
+	// commands that operate on an implicit "current" manager (close,
+	// set-active-store-key).
+	var currentNode roachpb.NodeID
+
+	datadriven.RunTest(t, datapathutils.TestDataPath(t, "node_data_key_manager"),
+		func(t *testing.T, d *datadriven.TestData) string {
+			switch d.Cmd {
+			case "open":
+				// open node=<N> store-key=<id>
+				// Creates a NodeDataKeyManager for the given node,
+				// sets the active store key, and generates a data
+				// key. This mirrors the real startup flow where the
+				// store key is provided at node startup.
+				var node int
+				var storeKeyID string
+				d.ScanArgs(t, "node", &node)
+				d.ScanArgs(t, "store-key", &storeKeyID)
+				nodeID := roachpb.NodeID(node)
+				if prev, ok := managers[nodeID]; ok {
+					require.NoError(t, prev.Close())
+					delete(managers, nodeID)
+				}
+				mgr, err := NewNodeDataKeyManager(
+					ctx, mem, dataKeysDir, nodeID,
+					rotationPeriod, false, /* readOnly */
+				)
+				require.NoError(t, err)
+				require.NoError(t, mgr.SetActiveStoreKeyInfo(ctx, &enginepb.KeyInfo{
+					EncryptionType: enginepb.EncryptionType_AES128_CTR,
+					KeyId:          storeKeyID,
+				}))
+				key, err := mgr.ActiveKeyForWriter(ctx)
+				require.NoError(t, err)
+				require.NotNil(t, key)
+				activeKeys[nodeID] = key.Info.KeyId
+				managers[nodeID] = mgr
+				currentNode = nodeID
+				return "ok\n"
+
+			case "close":
+				mgr := managers[currentNode]
+				require.NotNil(t, mgr)
+				require.NoError(t, mgr.Close())
+				delete(managers, currentNode)
+				currentNode = 0
+				return "ok\n"
+
+			case "close-node":
+				var node int
+				d.ScanArgs(t, "node", &node)
+				nodeID := roachpb.NodeID(node)
+				mgr, ok := managers[nodeID]
+				require.True(t, ok, "node %d not open", node)
+				require.NoError(t, mgr.Close())
+				delete(managers, nodeID)
+				if currentNode == nodeID {
+					currentNode = 0
+				}
+				return "ok\n"
+
+			case "get-key":
+				// get-key looks up a data key on a specific node's manager.
+				//   from=<N>         — which node performs the lookup (required)
+				//   use=n<N>-active  — look up using node N's active data key ID
+				//   id=<id>          — look up by explicit key ID
+				var fromNode int
+				d.ScanArgs(t, "from", &fromNode)
+				mgr, ok := managers[roachpb.NodeID(fromNode)]
+				require.True(t, ok, "node %d not open", fromNode)
+
+				var keyID string
+				if d.HasArg("id") {
+					d.ScanArgs(t, "id", &keyID)
+				} else {
+					var use string
+					d.ScanArgs(t, "use", &use)
+					var n int
+					_, err := fmt.Sscanf(use, "n%d-active", &n)
+					require.NoError(t, err, "invalid use=%s", use)
+					keyID = activeKeys[roachpb.NodeID(n)]
+				}
+				require.NotEmpty(t, keyID, "no key ID resolved")
+				key, err := mgr.GetKey(keyID)
+				if err != nil {
+					return "not found\n"
+				}
+				require.Equal(t, keyID, key.Info.KeyId)
+				return fmt.Sprintf("data-key=%s store-key=%s type=%s created=%d\n",
+					alias(key.Info.KeyId), key.Info.ParentKeyId,
+					key.Info.EncryptionType, key.Info.CreationTime)
+
+			case "rotate":
+				// Force a key rotation on the specified node by
+				// calling ActiveKeyForWriter after advancing time
+				// past the rotation period.
+				var node int
+				d.ScanArgs(t, "node", &node)
+				nodeID := roachpb.NodeID(node)
+				mgr, ok := managers[nodeID]
+				require.True(t, ok, "node %d not open", node)
+				prevKeyID := activeKeys[nodeID]
+				key, err := mgr.ActiveKeyForWriter(ctx)
+				require.NoError(t, err)
+				require.NotNil(t, key)
+				require.NotEqual(t, prevKeyID, key.Info.KeyId, "key did not rotate")
+				activeKeys[nodeID] = key.Info.KeyId
+				return "ok\n"
+
+			case "advance-time":
+				var secs int
+				d.ScanArgs(t, "secs", &secs)
+				unixTime += int64(secs)
+				return "ok\n"
+
+			case "remote-set-key":
+				// Write a data key directly to a remote node's
+				// registry, bypassing any open NodeDataKeyManager.
+				// This simulates a remote node writing a key after
+				// the local manager is already open.
+				var node int
+				var keyIDArg, keyData string
+				d.ScanArgs(t, "node", &node)
+				d.ScanArgs(t, "key-id", &keyIDArg)
+				d.ScanArgs(t, "key-data", &keyData)
+				nodeDir := mem.PathJoin(dataKeysDir, fmt.Sprintf("n%d", node))
+				require.NoError(t, mem.MkdirAll(nodeDir, 0755))
+
+				reg := makeRegistryProto()
+				reg.DataKeys[keyIDArg] = &enginepb.SecretKey{
+					Info: &enginepb.KeyInfo{
+						EncryptionType: enginepb.EncryptionType_AES128_CTR,
+						KeyId:          keyIDArg,
+						CreationTime:   kmTimeNow().Unix(),
+					},
+					Key: []byte(keyData),
+				}
+				b, err := protoutil.Marshal(reg)
+				require.NoError(t, err)
+
+				filename := fmt.Sprintf(
+					"%s_%06d_%s", keyRegistryFilename, 1, registryFormatMonolith)
+				writeToFile(t, mem, mem.PathJoin(nodeDir, filename), b)
+				marker, _, err := atomicfs.LocateMarker(mem, nodeDir, keysRegistryMarkerName)
+				require.NoError(t, err)
+				require.NoError(t, marker.Move(filename))
+				require.NoError(t, marker.Close())
+				return "ok\n"
+
+			case "corrupt-remote-registry":
+				// Write invalid data to a remote node's data keys
+				// registry. This simulates a remote node whose
+				// registry is unreadable (e.g. the file on shared
+				// storage is not yet fully written).
+				var node int
+				d.ScanArgs(t, "node", &node)
+				nodeDir := mem.PathJoin(dataKeysDir, fmt.Sprintf("n%d", node))
+				require.NoError(t, mem.MkdirAll(nodeDir, 0755))
+
+				filename := fmt.Sprintf(
+					"%s_%06d_%s", keyRegistryFilename, 1, registryFormatMonolith)
+				writeToFile(t, mem, mem.PathJoin(nodeDir, filename), []byte("corrupted"))
+				marker, _, err := atomicfs.LocateMarker(mem, nodeDir, keysRegistryMarkerName)
+				require.NoError(t, err)
+				require.NoError(t, marker.Move(filename))
+				require.NoError(t, marker.Close())
+				return "ok\n"
+
+			default:
+				t.Fatalf("unrecognized command: %s", d.Cmd)
+				return ""
+			}
+		})
 }

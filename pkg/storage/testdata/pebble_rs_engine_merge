@@ -1,0 +1,176 @@
+# Test empty merge (NoOp): RHS has no data.
+
+init
+----
+
+open range=r1 manifest=0
+----
+opened r1: manifest=0
+
+open range=r2 manifest=0
+----
+opened r2: manifest=0
+
+snapshot range=r1
+----
+snapshot r1-0
+
+snapshot range=r2
+----
+snapshot r2-0
+
+merge lhs-snapshot=r1-0 rhs-snapshot=r2-0
+----
+no-op
+
+close range=r2
+----
+closed: r2
+
+close range=r1
+----
+closed: r1
+
+# Test merge after split with colliding file numbers.
+# Three ingestions before the split put SSTs on both sides. After the split,
+# both ranges are reopened with independent file number allocators starting at
+# the same nextFileNum (110), mimicking production where each range has its own
+# RangeFileNumAllocState. This causes both ranges to allocate the same file
+# numbers (e.g., both get SST 110, manifest 111). The merge must renumber all
+# RHS files to avoid collisions — exercising MergeLSM's FileNum renumbering.
+# The final scan verifies all data is present and correctly ordered.
+
+init
+----
+
+open range=r1 manifest=0
+----
+opened r1: manifest=0
+
+# Three separate ingestions create three SSTs spanning the full key range.
+ingest range=r1
+set a val-a
+set b val-b
+----
+GetFileNums(2) => [100, 102)
+InstallNewManifest(current=0, new=MANIFEST-000101/101, files=[{000100.sst 100}])
+ingested: manifest=101
+
+ingest range=r1
+set m val-m
+set n val-n
+----
+GetFileNums(2) => [102, 104)
+InstallNewManifest(current=101, new=MANIFEST-000103/103, files=[{000102.sst 102}])
+ingested: manifest=103
+
+ingest range=r1
+set x val-x
+set z val-z
+----
+GetFileNums(2) => [104, 106)
+InstallNewManifest(current=103, new=MANIFEST-000105/105, files=[{000104.sst 104}])
+ingested: manifest=105
+
+snapshot range=r1
+----
+snapshot r1-105
+
+# Split at "m" — LHS gets SST with [a,b], RHS gets SSTs with [m,n] and [x,z].
+split snapshot=r1-105 key=m rhs-range=r2
+----
+lhs-manifest: MANIFEST-000108/108
+rhs-manifest: MANIFEST-000109/109
+rhs-files: [2 files]
+next-file-num: 110
+reopened r1: manifest=108
+opened r2: manifest=109
+
+scan range=r1
+----
+"a" = val-a
+"b" = val-b
+
+scan range=r2
+----
+"m" = val-m
+"n" = val-n
+"x" = val-x
+"z" = val-z
+
+# Close and reopen both ranges with independent file number allocators starting
+# at nextFileNum=110. This mimics production where each range has its own
+# RangeFileNumAllocState — both will allocate file numbers starting at 110.
+close range=r1
+----
+closed: r1
+
+close range=r2
+----
+closed: r2
+
+open range=r1 manifest=108 start-file-num=110
+----
+opened r1: manifest=108
+
+open range=r2 manifest=109 start-file-num=110
+----
+opened r2: manifest=109
+
+# Ingest into both sides. Both allocators start at 110, so both ranges produce
+# SST file 110 and manifest 111 — genuine file number collisions that MergeLSM
+# must resolve through renumbering.
+ingest range=r1
+set c val-c
+----
+GetFileNums(2) => [110, 112)
+InstallNewManifest(current=108, new=MANIFEST-000111/111, files=[{000110.sst 110}])
+ingested: manifest=111
+
+ingest range=r2
+set p val-p
+----
+GetFileNums(2) => [110, 112)
+InstallNewManifest(current=109, new=MANIFEST-000111/111, files=[{000110.sst 110}])
+ingested: manifest=111
+
+ingest range=r2
+set y val-y
+----
+GetFileNums(2) => [112, 114)
+InstallNewManifest(current=111, new=MANIFEST-000113/113, files=[{000112.sst 112}])
+ingested: manifest=113
+
+snapshot range=r1
+----
+snapshot r1-111
+
+snapshot range=r2
+----
+snapshot r2-113
+
+# Merge: RHS has SSTs with file numbers that collide with LHS (e.g., both have
+# file 110). MergeLSM renumbers all RHS files into LHS's file number space.
+merge lhs-snapshot=r1-111 rhs-snapshot=r2-113
+----
+merged-manifest: MANIFEST-000116/116
+merged-files: [4 files]
+next-file-num: 117
+reopened r1: manifest=116
+
+# Verify all data from both sides is present and ordered after reopen.
+scan range=r1
+----
+"a" = val-a
+"b" = val-b
+"c" = val-c
+"m" = val-m
+"n" = val-n
+"p" = val-p
+"x" = val-x
+"y" = val-y
+"z" = val-z
+
+close range=r1
+----
+closed: r1

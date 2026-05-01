@@ -73,7 +73,7 @@ func (r *Replica) executeReadOnlyBatch(
 	// If there are intents to be resolved virtually, use a storage batch in which
 	// the intent resolution will be evaluated before the read-only batch request.
 	if len(intentsToResolveVirtually) > 0 {
-		rw, _ = r.newBatchedEngine(g)
+		rw, _, _ = r.newBatchedEngine(g)
 	} else {
 		// TODO(irfansharif): It's unfortunate that in this read-only code path,
 		// we're stuck with a ReadWriter because of the way evaluateBatch is
@@ -184,7 +184,8 @@ func (r *Replica) executeReadOnlyBatch(
 		}
 		break
 	}
-	if err := rw.PinEngineStateForIterators(readCategory); err != nil {
+	rw, err = r.NewCombinedReadOnly(readCategory)
+	if err != nil {
 		return nil, g, nil, kvpb.NewError(err)
 	}
 

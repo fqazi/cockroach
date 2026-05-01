@@ -163,7 +163,7 @@ func runCircuitBreakerTestForKey(
 			},
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},

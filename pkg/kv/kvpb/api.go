@@ -990,6 +990,18 @@ func (*IsSpanEmptyRequest) Method() Method { return IsSpanEmpty }
 // Method implements the Request interface.
 func (*FlushLockTableRequest) Method() Method { return FlushLockTable }
 
+// Method implements the Request interface.
+func (*AllocateFileNumsForRangeRequest) Method() Method { return AllocateFileNumsForRange }
+
+// Method implements the Request interface.
+func (*SetRangeSharedManifestNumRequest) Method() Method { return SetRangeSharedManifestNum }
+
+// Method implements the Request interface.
+func (*CheckRangeSharedManifestNumRequest) Method() Method { return CheckRangeSharedManifestNum }
+
+// Method implements the Request interface.
+func (*RangeFlushPrepareRequest) Method() Method { return RangeFlushPrepare }
+
 // ShallowCopy implements the Request interface.
 func (gr *GetRequest) ShallowCopy() Request {
 	shallowCopy := *gr
@@ -1284,6 +1296,30 @@ func (r *FlushLockTableRequest) ShallowCopy() Request {
 	return &shallowCopy
 }
 
+// ShallowCopy implements the Request interface.
+func (r *AllocateFileNumsForRangeRequest) ShallowCopy() Request {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Request interface.
+func (r *SetRangeSharedManifestNumRequest) ShallowCopy() Request {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Request interface.
+func (r *CheckRangeSharedManifestNumRequest) ShallowCopy() Request {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Request interface.
+func (r *RangeFlushPrepareRequest) ShallowCopy() Request {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
 // ShallowCopy implements the Response interface.
 func (gr *GetResponse) ShallowCopy() Response {
 	shallowCopy := *gr
@@ -1572,6 +1608,30 @@ func (r *IsSpanEmptyResponse) ShallowCopy() Response {
 
 // ShallowCopy implements the Response interface.
 func (r *FlushLockTableResponse) ShallowCopy() Response {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Response interface.
+func (r *AllocateFileNumsForRangeResponse) ShallowCopy() Response {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Response interface.
+func (r *SetRangeSharedManifestNumResponse) ShallowCopy() Response {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Response interface.
+func (r *CheckRangeSharedManifestNumResponse) ShallowCopy() Response {
+	shallowCopy := *r
+	return &shallowCopy
+}
+
+// ShallowCopy implements the Response interface.
+func (r *RangeFlushPrepareResponse) ShallowCopy() Response {
 	shallowCopy := *r
 	return &shallowCopy
 }
@@ -2107,6 +2167,14 @@ func (r *BarrierRequest) flags() flag {
 }
 func (*IsSpanEmptyRequest) flags() flag { return isRead | isRange }
 func (*FlushLockTableRequest) flags() flag {
+	return isWrite | isRange | isAlone | isUnsplittable
+}
+func (*AllocateFileNumsForRangeRequest) flags() flag { return isWrite }
+func (*SetRangeSharedManifestNumRequest) flags() flag {
+	return isWrite | isRange | isAlone | isUnsplittable
+}
+func (*CheckRangeSharedManifestNumRequest) flags() flag { return isRead }
+func (*RangeFlushPrepareRequest) flags() flag {
 	return isWrite | isRange | isAlone | isUnsplittable
 }
 

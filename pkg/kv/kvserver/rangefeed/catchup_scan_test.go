@@ -154,7 +154,9 @@ func TestCatchupScan(t *testing.T) {
 		testutils.RunTrueAndFalse(t, "withDiff", func(t *testing.T, withDiff bool) {
 			testutils.RunTrueAndFalse(t, "withFiltering", func(t *testing.T, withFiltering bool) {
 				span := roachpb.Span{Key: testKey1, EndKey: roachpb.KeyMax}
-				snap := NewCatchUpSnapshot(eng, span, ts1, nil, nil, 0)
+				// TODO(basalt): this uses a standalone engine; needs two engines +
+				// storage.MakeCombinedReader to test the combined path.
+				snap := NewCatchUpSnapshot(eng.NewSnapshot(), span, ts1, nil, nil, 0)
 				defer snap.Close()
 				var events []kvpb.RangeFeedValue
 				// ts1 here is exclusive, so we do not want the versions at ts1.
@@ -231,7 +233,9 @@ func TestCatchupScanOriginID(t *testing.T) {
 
 	testutils.RunTrueAndFalse(t, "withOmitRmote", func(t *testing.T, omitRemote bool) {
 		span := roachpb.Span{Key: a1.Key.Key, EndKey: roachpb.KeyMax}
-		snap := NewCatchUpSnapshot(eng, span, exclusiveStartTime, nil, nil, 0)
+		// TODO(basalt): this uses a standalone engine; needs two engines +
+		// storage.MakeCombinedReader to test the combined path.
+		snap := NewCatchUpSnapshot(eng.NewSnapshot(), span, exclusiveStartTime, nil, nil, 0)
 		require.NoError(t, err)
 		defer snap.Close()
 		var events []kvpb.RangeFeedValue
@@ -266,7 +270,9 @@ func TestCatchupScanInlineError(t *testing.T) {
 
 	// Run a catchup scan across the span and watch it error.
 	span := roachpb.Span{Key: keys.LocalMax, EndKey: keys.MaxKey}
-	snap := NewCatchUpSnapshot(eng, span, hlc.Timestamp{}, nil, nil, 0)
+	// TODO(basalt): this uses a standalone engine; needs two engines +
+	// storage.MakeCombinedReader to test the combined path.
+	snap := NewCatchUpSnapshot(eng.NewSnapshot(), span, hlc.Timestamp{}, nil, nil, 0)
 	require.NoError(t, err)
 	defer snap.Close()
 
@@ -312,7 +318,9 @@ func TestCatchupScanSeesOldIntent(t *testing.T) {
 
 	// Run a catchup scan across the span and watch it succeed.
 	span := roachpb.Span{Key: keys.LocalMax, EndKey: keys.MaxKey}
-	snap := NewCatchUpSnapshot(eng, span, tsCutoff, nil, nil, 0)
+	// TODO(basalt): this uses a standalone engine; needs two engines +
+	// storage.MakeCombinedReader to test the combined path.
+	snap := NewCatchUpSnapshot(eng.NewSnapshot(), span, tsCutoff, nil, nil, 0)
 	require.NoError(t, err)
 	defer snap.Close()
 

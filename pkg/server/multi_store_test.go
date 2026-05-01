@@ -69,7 +69,7 @@ func TestAddNewStoresToExistingNodes(t *testing.T) {
 				id := fmt.Sprintf("s%d.%d", srvIdx+1, storeIdx+1)
 				serverArgs.StoreSpecs = append(
 					serverArgs.StoreSpecs,
-					base.StoreSpec{InMemory: true, StickyVFSID: id},
+					base.StoreSpec{Type: base.StoreTypeInMemory, StickyVFSID: id},
 				)
 			}
 			tcArgs.ServerArgsPerNode[srvIdx] = serverArgs
@@ -147,7 +147,7 @@ func TestMultiStoreIDAlloc(t *testing.T) {
 	numStoresPerNode := 3
 	var storeSpecs []base.StoreSpec
 	for i := 0; i < numStoresPerNode; i++ {
-		storeSpecs = append(storeSpecs, base.StoreSpec{InMemory: true})
+		storeSpecs = append(storeSpecs, base.StoreSpec{Type: base.StoreTypeInMemory})
 	}
 	tcArgs := base.TestClusterArgs{
 		ParallelStart:   true,

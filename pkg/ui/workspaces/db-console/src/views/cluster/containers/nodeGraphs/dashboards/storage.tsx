@@ -193,6 +193,77 @@ export default function (props: GraphDashboardProps) {
     </LineGraph>,
 
     <LineGraph
+      title="Compaction Scheduler Duration"
+      sources={storeSources}
+      isKvGraph={true}
+      tenantSource={tenantSource}
+      tooltip={`The cumulative time spent performing compactions by engine type.
+          The rate of these values gives the effective compaction concurrency
+          per engine type.`}
+      showMetricsInTooltip={true}
+    >
+      <Axis units={AxisUnits.Duration} label="duration">
+        {multipleStoreMetrics(
+          [
+            {
+              prefix: "store-local",
+              name: "cr.store.storage.compaction-scheduler.duration.store-local",
+              nonNegativeRate: true,
+              downsampler: TimeSeriesQueryAggregator.MAX,
+              aggregator: TimeSeriesQueryAggregator.SUM,
+            },
+            {
+              prefix: "range-shared",
+              name: "cr.store.storage.compaction-scheduler.duration.range-shared",
+              nonNegativeRate: true,
+              downsampler: TimeSeriesQueryAggregator.MAX,
+              aggregator: TimeSeriesQueryAggregator.SUM,
+            },
+            {
+              prefix: "range-flusher",
+              name: "cr.store.storage.compaction-scheduler.duration.range-flusher",
+              nonNegativeRate: true,
+              downsampler: TimeSeriesQueryAggregator.MAX,
+              aggregator: TimeSeriesQueryAggregator.SUM,
+            },
+          ],
+          nodeIDs,
+          storeIDsByNodeID,
+        )}
+      </Axis>
+    </LineGraph>,
+
+    <LineGraph
+      title="Compaction Scheduler Running"
+      sources={storeSources}
+      isKvGraph={true}
+      tenantSource={tenantSource}
+      tooltip={`The number of in-flight compactions by engine type.`}
+      showMetricsInTooltip={true}
+    >
+      <Axis label="compactions">
+        {multipleStoreMetrics(
+          [
+            {
+              prefix: "store-local",
+              name: "cr.store.storage.compaction-scheduler.running.store-local",
+            },
+            {
+              prefix: "range-shared",
+              name: "cr.store.storage.compaction-scheduler.running.range-shared",
+            },
+            {
+              prefix: "range-flusher",
+              name: "cr.store.storage.compaction-scheduler.running.range-flusher",
+            },
+          ],
+          nodeIDs,
+          storeIDsByNodeID,
+        )}
+      </Axis>
+    </LineGraph>,
+
+    <LineGraph
       title="Level Compaction Scores"
       sources={storeSources}
       isKvGraph={true}

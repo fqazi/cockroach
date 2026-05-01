@@ -28,7 +28,7 @@ func TestStoreYAMLOutput(t *testing.T) {
 		"mem": {
 			Path:        "",
 			Size:        BytesSize(1024 * 1024 * 1024),
-			InMemory:    true,
+			Type:        StoreTypeInMemory,
 			StickyVFSID: "foo",
 		},
 		"misc": {
@@ -113,7 +113,7 @@ func TestStoreYAMLRoundTrip(t *testing.T) {
 func randStore(rng *rand.Rand) Store {
 	var s Store
 	if rng.IntN(2) == 0 {
-		s.InMemory = true
+		s.Type = StoreTypeInMemory
 		s.Size = randSize(rng, MinimumStoreSize, 100<<30, 1, 100)
 		if rng.IntN(2) == 0 {
 			s.StickyVFSID = "foo"

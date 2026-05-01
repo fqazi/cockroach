@@ -31,7 +31,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/abortspan"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
@@ -233,9 +232,11 @@ func TestStoreSplitAbortSpan(t *testing.T) {
 		}
 	}
 
-	collect := func(as *abortspan.AbortSpan) []roachpb.AbortSpanEntry {
+	collect := func(repl *kvserver.Replica) []roachpb.AbortSpanEntry {
+		snap := repl.NewCombinedSnapshot()
+		defer snap.Close()
 		var results []roachpb.AbortSpanEntry
-		if err := as.Iterate(ctx, store.StateEngine(), func(_ roachpb.Key, entry roachpb.AbortSpanEntry) error {
+		if err := repl.AbortSpan().Iterate(ctx, snap, func(_ roachpb.Key, entry roachpb.AbortSpanEntry) error {
 			entry.Priority = 0 // don't care about that
 			results = append(results, entry)
 			return nil
@@ -252,8 +253,8 @@ func TestStoreSplitAbortSpan(t *testing.T) {
 		return results
 	}
 
-	l := collect(store.LookupReplica(keys.MustAddr(left)).AbortSpan())
-	r := collect(store.LookupReplica(keys.MustAddr(right)).AbortSpan())
+	l := collect(store.LookupReplica(keys.MustAddr(left)))
+	r := collect(store.LookupReplica(keys.MustAddr(right)))
 
 	if !reflect.DeepEqual(expL, l) {
 		t.Fatalf("left hand side: expected %+v, got %+v", expL, l)
@@ -374,12 +375,15 @@ func TestStoreRangeSplitIntents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []roachpb.Key{keys.RangeDescriptorKey(roachpb.RKeyMin), keys.RangeDescriptorKey(splitKeyAddr)} {
+	for _, rk := range []roachpb.RKey{roachpb.RKeyMin, splitKeyAddr} {
+		repl := store.LookupReplica(rk)
+		snap := repl.NewCombinedSnapshot()
 		if _, err := storage.MVCCGet(
-			ctx, store.StateEngine(), key, store.Clock().Now(), storage.MVCCGetOptions{},
+			ctx, snap, keys.RangeDescriptorKey(rk), store.Clock().Now(), storage.MVCCGetOptions{},
 		); err != nil {
-			t.Errorf("failed to read consistent range descriptor for key %s: %+v", key, err)
+			t.Errorf("failed to read consistent range descriptor for key %s: %+v", rk, err)
 		}
+		snap.Close()
 	}
 
 	txnPrefix := func(key roachpb.Key) roachpb.Key {
@@ -389,7 +393,13 @@ func TestStoreRangeSplitIntents(t *testing.T) {
 		}
 		return keys.MakeRangeKey(rk, keys.LocalTransactionSuffix, nil)
 	}
-	// Verify the transaction record is gone.
+	// Verify the transaction record is gone. This iterates across local key
+	// prefixes for all ranges, which span multiple replicas. Each replica may
+	// have a different RSEngine, but for now all replicas share the same
+	// store-local engine which contains all transaction records. When RSEngine
+	// is active, transaction records (range local keys) will move there and
+	// this scan will need restructuring.
+	// TODO(basalt): use per-replica combined readers for cross-range scans.
 	start := storage.MakeMVCCMetadataKey(keys.MakeRangeKeyPrefix(roachpb.RKeyMin))
 	end := storage.MakeMVCCMetadataKey(keys.MakeRangeKeyPrefix(roachpb.RKeyMax))
 	iter, err := store.StateEngine().NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{UpperBound: end.Key})
@@ -666,7 +676,9 @@ func TestStoreRangeSplitIdempotency(t *testing.T) {
 	originalRepl := store.LookupReplica(roachpb.RKey(splitKey))
 	require.NotNil(t, originalRepl)
 	// Get the original stats for key and value bytes.
-	ms, err := kvstorage.MakeStateLoader(originalRepl.RangeID).LoadMVCCStats(ctx, store.StateEngine())
+	snap := originalRepl.NewCombinedSnapshot()
+	ms, err := kvstorage.MakeStateLoader(originalRepl.RangeID).LoadMVCCStats(ctx, snap)
+	snap.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,12 +695,15 @@ func TestStoreRangeSplitIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []roachpb.Key{keys.RangeDescriptorKey(roachpb.RKeyMin), keys.RangeDescriptorKey(splitKeyAddr)} {
+	for _, rk := range []roachpb.RKey{roachpb.RKeyMin, splitKeyAddr} {
+		repl := store.LookupReplica(rk)
+		snap := repl.NewCombinedSnapshot()
 		if _, err := storage.MVCCGet(
-			context.Background(), store.StateEngine(), key, store.Clock().Now(), storage.MVCCGetOptions{},
+			context.Background(), snap, keys.RangeDescriptorKey(rk), store.Clock().Now(), storage.MVCCGetOptions{},
 		); err != nil {
 			t.Fatal(err)
 		}
+		snap.Close()
 	}
 
 	rngDesc := originalRepl.Desc()
@@ -739,12 +754,16 @@ func TestStoreRangeSplitIdempotency(t *testing.T) {
 
 	// Compare stats of split ranges to ensure they are non zero and
 	// exceed the original range when summed.
-	left, err := kvstorage.MakeStateLoader(originalRepl.RangeID).LoadMVCCStats(ctx, store.StateEngine())
+	snapL := originalRepl.NewCombinedSnapshot()
+	left, err := kvstorage.MakeStateLoader(originalRepl.RangeID).LoadMVCCStats(ctx, snapL)
+	snapL.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
 	lKeyBytes, lValBytes := left.KeyBytes, left.ValBytes
-	right, err := kvstorage.MakeStateLoader(newRng.RangeID).LoadMVCCStats(ctx, store.StateEngine())
+	snapR := newRng.NewCombinedSnapshot()
+	right, err := kvstorage.MakeStateLoader(newRng.RangeID).LoadMVCCStats(ctx, snapR)
+	snapR.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -797,7 +816,9 @@ func TestStoreRangeSplitMergeStats(t *testing.T) {
 
 	// Verify empty range has empty stats.
 	repl := store.LookupReplica(roachpb.RKey(keyPrefix))
-	assertRangeStats(t, "empty stats", store.StateEngine(), repl.RangeID, enginepb.MVCCStats{})
+	snap := repl.NewCombinedSnapshot()
+	assertRangeStats(t, "empty stats", snap, repl.RangeID, enginepb.MVCCStats{})
+	snap.Close()
 
 	// Write random data.
 	splitKey := kvserver.WriteRandomDataToRange(t, store, repl.RangeID, keyPrefix)
@@ -809,13 +830,13 @@ func TestStoreRangeSplitMergeStats(t *testing.T) {
 	// See: https://github.com/cockroachdb/cockroach/issues/129601#issuecomment-2309865742
 	repl.RaftLock()
 	replMS := repl.GetMVCCStats()
-	snap := store.StateEngine().NewSnapshot()
-	defer snap.Close()
+	snap = repl.NewCombinedSnapshot()
 	repl.RaftUnlock()
 
 	ms, err := kvstorage.MakeStateLoader(repl.RangeID).LoadMVCCStats(ctx, snap)
 	require.NoError(t, err)
 	assertRecomputedStatsExceptSys(t, "before split", snap, repl.Desc(), ms, start.WallTime)
+	snap.Close()
 
 	require.Equal(t, replMS, ms, "in-memory and on-disk stats diverge")
 
@@ -825,12 +846,12 @@ func TestStoreRangeSplitMergeStats(t *testing.T) {
 	_, pErr = repl.AdminSplit(ctx, *adminSplitArgs(splitKey), "test")
 	require.NoError(t, pErr.GoError())
 
-	snap = store.StateEngine().NewSnapshot()
-	defer snap.Close()
-	msLeft, err := kvstorage.MakeStateLoader(repl.RangeID).LoadMVCCStats(ctx, snap)
+	snapLeft := repl.NewCombinedSnapshot()
+	msLeft, err := kvstorage.MakeStateLoader(repl.RangeID).LoadMVCCStats(ctx, snapLeft)
 	require.NoError(t, err)
 	replRight := store.LookupReplica(splitKey)
-	msRight, err := kvstorage.MakeStateLoader(replRight.RangeID).LoadMVCCStats(ctx, snap)
+	snapRight := replRight.NewCombinedSnapshot()
+	msRight, err := kvstorage.MakeStateLoader(replRight.RangeID).LoadMVCCStats(ctx, snapRight)
 	require.NoError(t, err)
 
 	// Stats should both have the new timestamp.
@@ -866,8 +887,10 @@ func TestStoreRangeSplitMergeStats(t *testing.T) {
 	require.GreaterOrEqual(t, msLeft.GCBytesAge+msRight.GCBytesAge, ms.GCBytesAge)
 
 	// Stats should agree with re-computation.
-	assertRecomputedStatsExceptSys(t, "LHS after split", snap, repl.Desc(), msLeft, s.Clock().PhysicalNow())
-	assertRecomputedStatsExceptSys(t, "RHS after split", snap, replRight.Desc(), msRight, s.Clock().PhysicalNow())
+	assertRecomputedStatsExceptSys(t, "LHS after split", snapLeft, repl.Desc(), msLeft, s.Clock().PhysicalNow())
+	assertRecomputedStatsExceptSys(t, "RHS after split", snapRight, replRight.Desc(), msRight, s.Clock().PhysicalNow())
+	snapLeft.Close()
+	snapRight.Close()
 	// Expect estimates if the cluster setting is enabled and neither side is empty.
 	expectEstimates := kvserver.EnableEstimatedMVCCStatsInSplit.Get(&store.ClusterSettings().SV) &&
 		msLeft.Total() > 0 && msRight.Total() > 0
@@ -886,12 +909,12 @@ func TestStoreRangeSplitMergeStats(t *testing.T) {
 	require.NoError(t, pErr.GoError())
 
 	repl = store.LookupReplica(roachpb.RKey(keyPrefix))
-	snap = store.StateEngine().NewSnapshot()
-	defer snap.Close()
+	snap = repl.NewCombinedSnapshot()
 
 	msMerged, err := kvstorage.MakeStateLoader(repl.RangeID).LoadMVCCStats(ctx, snap)
 	require.NoError(t, err)
 	assertRecomputedStatsExceptSys(t, "in-mem after merge", snap, repl.Desc(), msMerged, s.Clock().PhysicalNow())
+	snap.Close()
 
 	msMerged.SysBytes, msMerged.SysCount, msMerged.AbortSpanBytes = 0, 0, 0
 	ms.AgeTo(msMerged.LastUpdateNanos)
@@ -1006,12 +1029,12 @@ func TestStoreRangeSplitWithConcurrentWrites(t *testing.T) {
 					// Wait for the split to complete.
 					require.Nil(t, g.Wait())
 
-					snap := store.StateEngine().NewSnapshot()
-					defer snap.Close()
-					lhsStats, err := kvstorage.MakeStateLoader(lhsRepl.RangeID).LoadMVCCStats(ctx, snap)
+					snapL := lhsRepl.NewCombinedSnapshot()
+					lhsStats, err := kvstorage.MakeStateLoader(lhsRepl.RangeID).LoadMVCCStats(ctx, snapL)
 					require.NoError(t, err)
 					rhsRepl := store.LookupReplica(splitKeyAddr)
-					rhsStats, err := kvstorage.MakeStateLoader(rhsRepl.RangeID).LoadMVCCStats(ctx, snap)
+					snapR := rhsRepl.NewCombinedSnapshot()
+					rhsStats, err := kvstorage.MakeStateLoader(rhsRepl.RangeID).LoadMVCCStats(ctx, snapR)
 					require.NoError(t, err)
 					// If the split is producing estimates and neither of the tight count
 					// and bytes thresholds is set, expect non-zero ContainsEstimates.
@@ -1021,9 +1044,11 @@ func TestStoreRangeSplitWithConcurrentWrites(t *testing.T) {
 						require.Greater(t, rhsStats.ContainsEstimates, int64(0))
 					} else {
 						// Otherwise, the stats should agree with re-computation.
-						assertRecomputedStatsExceptSys(t, "LHS after split", snap, lhsRepl.Desc(), lhsStats, s.Clock().PhysicalNow())
-						assertRecomputedStatsExceptSys(t, "RHS after split", snap, rhsRepl.Desc(), rhsStats, s.Clock().PhysicalNow())
+						assertRecomputedStatsExceptSys(t, "LHS after split", snapL, lhsRepl.Desc(), lhsStats, s.Clock().PhysicalNow())
+						assertRecomputedStatsExceptSys(t, "RHS after split", snapR, rhsRepl.Desc(), rhsStats, s.Clock().PhysicalNow())
 					}
+					snapL.Close()
+					snapR.Close()
 
 					// If we used estimated stats while splitting the range, the stats on disk
 					// will not match the stats recomputed from the range. We expect both of the
@@ -1042,27 +1067,29 @@ func TestStoreRangeSplitWithConcurrentWrites(t *testing.T) {
 					_, pErr = rhsRepl.AdminSplit(ctx, *adminSplitArgs(splitKeyRight), "test")
 					require.NoError(t, pErr.GoError())
 
-					snap = store.StateEngine().NewSnapshot()
-					defer snap.Close()
-					lhs1Stats, err := kvstorage.MakeStateLoader(lhsRepl.RangeID).LoadMVCCStats(ctx, snap)
+					snapLHS1 := lhsRepl.NewCombinedSnapshot()
+					lhs1Stats, err := kvstorage.MakeStateLoader(lhsRepl.RangeID).LoadMVCCStats(ctx, snapLHS1)
 					require.NoError(t, err)
 					lhs2Repl := store.LookupReplica(splitKeyLeftAddr)
-					lhs2Stats, err := kvstorage.MakeStateLoader(lhs2Repl.RangeID).LoadMVCCStats(ctx, snap)
+					snapLHS2 := lhs2Repl.NewCombinedSnapshot()
+					lhs2Stats, err := kvstorage.MakeStateLoader(lhs2Repl.RangeID).LoadMVCCStats(ctx, snapLHS2)
 					require.NoError(t, err)
-					rhs1Stats, err := kvstorage.MakeStateLoader(rhsRepl.RangeID).LoadMVCCStats(ctx, snap)
+					snapRHS1 := rhsRepl.NewCombinedSnapshot()
+					rhs1Stats, err := kvstorage.MakeStateLoader(rhsRepl.RangeID).LoadMVCCStats(ctx, snapRHS1)
 					require.NoError(t, err)
 					rhs2Repl := store.LookupReplica(splitKeyRightAddr)
-					rhs2Stats, err := kvstorage.MakeStateLoader(rhs2Repl.RangeID).LoadMVCCStats(ctx, snap)
+					snapRHS2 := rhs2Repl.NewCombinedSnapshot()
+					rhs2Stats, err := kvstorage.MakeStateLoader(rhs2Repl.RangeID).LoadMVCCStats(ctx, snapRHS2)
 					require.NoError(t, err)
 
 					// Stats should agree with re-computation unless we're producing
 					// estimates and not re-computing stats at the beginning of splits.
 					expectIncorrectStats := expectContainsEstimates && !recompute
 					if !expectIncorrectStats {
-						assertRecomputedStatsExceptSys(t, "LHS1 after second split", snap, lhsRepl.Desc(), lhs1Stats, s.Clock().PhysicalNow())
-						assertRecomputedStatsExceptSys(t, "LHS2 after second split", snap, lhs2Repl.Desc(), lhs2Stats, s.Clock().PhysicalNow())
-						assertRecomputedStatsExceptSys(t, "RHS1 after second split", snap, rhsRepl.Desc(), rhs1Stats, s.Clock().PhysicalNow())
-						assertRecomputedStatsExceptSys(t, "RHS2 after second split", snap, rhs2Repl.Desc(), rhs2Stats, s.Clock().PhysicalNow())
+						assertRecomputedStatsExceptSys(t, "LHS1 after second split", snapLHS1, lhsRepl.Desc(), lhs1Stats, s.Clock().PhysicalNow())
+						assertRecomputedStatsExceptSys(t, "LHS2 after second split", snapLHS2, lhs2Repl.Desc(), lhs2Stats, s.Clock().PhysicalNow())
+						assertRecomputedStatsExceptSys(t, "RHS1 after second split", snapRHS1, rhsRepl.Desc(), rhs1Stats, s.Clock().PhysicalNow())
+						assertRecomputedStatsExceptSys(t, "RHS2 after second split", snapRHS2, rhs2Repl.Desc(), rhs2Stats, s.Clock().PhysicalNow())
 					} else {
 						require.Greater(t, lhs1Stats.ContainsEstimates, int64(0))
 						require.Greater(t, lhs2Stats.ContainsEstimates, int64(0))
@@ -1071,6 +1098,10 @@ func TestStoreRangeSplitWithConcurrentWrites(t *testing.T) {
 						require.Equal(t, int64(0), rhs1Stats.ContainsEstimates)
 						require.Equal(t, int64(0), rhs2Stats.ContainsEstimates)
 					}
+					snapLHS1.Close()
+					snapLHS2.Close()
+					snapRHS1.Close()
+					snapRHS2.Close()
 				})
 			})
 		})
@@ -1342,7 +1373,9 @@ func TestStoreRangeSplitStatsWithMerges(t *testing.T) {
 	// NOTE that this value is expected to change over time, depending on what
 	// we store in the sys-local keyspace. Update it accordingly for this test.
 	empty := enginepb.MVCCStats{LastUpdateNanos: start.WallTime}
-	assertRangeStats(t, "empty stats", store.StateEngine(), repl.RangeID, empty)
+	snap := repl.NewCombinedSnapshot()
+	assertRangeStats(t, "empty stats", snap, repl.RangeID, empty)
+	snap.Close()
 
 	// Write random TimeSeries data.
 	midKey := writeRandomTimeSeriesDataToRange(t, store, repl.RangeID, keyPrefix)
@@ -1353,12 +1386,12 @@ func TestStoreRangeSplitStatsWithMerges(t *testing.T) {
 	_, pErr = repl.AdminSplit(ctx, *adminSplitArgs(midKey), "test")
 	require.NoError(t, pErr.GoError())
 
-	snap := store.StateEngine().NewSnapshot()
-	defer snap.Close()
-	msLeft, err := kvstorage.MakeStateLoader(repl.RangeID).LoadMVCCStats(ctx, snap)
+	snapLeft := repl.NewCombinedSnapshot()
+	msLeft, err := kvstorage.MakeStateLoader(repl.RangeID).LoadMVCCStats(ctx, snapLeft)
 	require.NoError(t, err)
 	replRight := store.LookupReplica(midKey)
-	msRight, err := kvstorage.MakeStateLoader(replRight.RangeID).LoadMVCCStats(ctx, snap)
+	snapRight := replRight.NewCombinedSnapshot()
+	msRight, err := kvstorage.MakeStateLoader(replRight.RangeID).LoadMVCCStats(ctx, snapRight)
 	require.NoError(t, err)
 
 	// Stats should both have the new timestamp.
@@ -1371,9 +1404,11 @@ func TestStoreRangeSplitStatsWithMerges(t *testing.T) {
 	estimates := kvserver.EnableEstimatedMVCCStatsInSplit.Get(&store.ClusterSettings().SV)
 	recompute := kvserver.EnableMVCCStatsRecomputationInSplit.Get(&store.ClusterSettings().SV)
 	if !estimates || (estimates && recompute) {
-		assertRecomputedStatsExceptSys(t, "LHS after split", snap, repl.Desc(), msLeft, s.Clock().PhysicalNow())
-		assertRecomputedStatsExceptSys(t, "RHS after split", snap, replRight.Desc(), msRight, s.Clock().PhysicalNow())
+		assertRecomputedStatsExceptSys(t, "LHS after split", snapLeft, repl.Desc(), msLeft, s.Clock().PhysicalNow())
+		assertRecomputedStatsExceptSys(t, "RHS after split", snapRight, replRight.Desc(), msRight, s.Clock().PhysicalNow())
 	}
+	snapLeft.Close()
+	snapRight.Close()
 }
 
 // fillRange writes keys with the given prefix and associated values
@@ -1389,7 +1424,13 @@ func fillRange(
 	src := rand.New(rand.NewSource(0))
 	var key []byte
 	for {
-		ms, err := kvstorage.MakeStateLoader(rangeID).LoadMVCCStats(context.Background(), store.StateEngine())
+		repl, err := store.GetReplica(rangeID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snap := repl.NewCombinedSnapshot()
+		ms, err := kvstorage.MakeStateLoader(rangeID).LoadMVCCStats(context.Background(), snap)
+		snap.Close()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1781,7 +1822,7 @@ func runSetupSplitSnapshotRace(
 		stickyServerArgs[i] = base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -2338,7 +2379,7 @@ func TestStoreSplitGCThreshold(t *testing.T) {
 		t.Fatalf("expected RHS's GCThreshold is equal to %v, but got %v", specifiedGCThreshold, gcThreshold)
 	}
 
-	repl.AssertState(ctx, store.StateEngine(), store.LogEngine())
+	repl.AssertStateWithCombinedSnapshot(ctx)
 }
 
 func TestStoreSplitGCHint(t *testing.T) {
@@ -2400,7 +2441,7 @@ func TestStoreSplitGCHint(t *testing.T) {
 	gcHint = repl.GetGCHint()
 	require.False(t, gcHint.IsEmpty(), "GC hint is empty after range delete")
 
-	repl.AssertState(ctx, store.StateEngine(), store.LogEngine())
+	repl.AssertStateWithCombinedSnapshot(ctx)
 }
 
 // TestStoreRangeSplitRaceUninitializedRHS reproduces #7600 (before it was
@@ -4464,7 +4505,9 @@ func TestSplitWithExternalFilesFastStats(t *testing.T) {
 
 			originalRepl := store.LookupReplica(roachpb.RKey(splitKey))
 			require.NotNil(t, originalRepl)
-			origStats, err := kvstorage.MakeStateLoader(originalRepl.RangeID).LoadMVCCStats(ctx, store.StateEngine())
+			snap := originalRepl.NewCombinedSnapshot()
+			origStats, err := kvstorage.MakeStateLoader(originalRepl.RangeID).LoadMVCCStats(ctx, snap)
+			snap.Close()
 			require.NoError(t, err)
 			require.Greater(t, origStats.ContainsEstimates, int64(0), "range expected to have estimated stats")
 
@@ -4474,8 +4517,6 @@ func TestSplitWithExternalFilesFastStats(t *testing.T) {
 				t.Fatal(pErr)
 			}
 
-			snap := store.StateEngine().NewSnapshot()
-			defer snap.Close()
 			lhsRepl := store.LookupReplica(originalRepl.Desc().StartKey)
 			rhsRepl := store.LookupReplica(roachpb.RKey(splitKey))
 
@@ -4483,9 +4524,11 @@ func TestSplitWithExternalFilesFastStats(t *testing.T) {
 				t.Errorf("ranges mismatched, wanted %q=%q=%q", lhsRepl.Desc().EndKey, splitKey, rhsRepl.Desc().StartKey)
 			}
 
-			lhsStats, err := kvstorage.MakeStateLoader(lhsRepl.RangeID).LoadMVCCStats(ctx, snap)
+			snapL := lhsRepl.NewCombinedSnapshot()
+			lhsStats, err := kvstorage.MakeStateLoader(lhsRepl.RangeID).LoadMVCCStats(ctx, snapL)
 			require.NoError(t, err)
-			rhsStats, err := kvstorage.MakeStateLoader(rhsRepl.RangeID).LoadMVCCStats(ctx, snap)
+			snapR := rhsRepl.NewCombinedSnapshot()
+			rhsStats, err := kvstorage.MakeStateLoader(rhsRepl.RangeID).LoadMVCCStats(ctx, snapR)
 			require.NoError(t, err)
 
 			if fastStats {
@@ -4496,10 +4539,12 @@ func TestSplitWithExternalFilesFastStats(t *testing.T) {
 				recompute := kvserver.EnableMVCCStatsRecomputationInSplit.Get(&store.ClusterSettings().SV)
 				if !estimates || (estimates && recompute) {
 					now := s.Clock().Now()
-					assertRecomputedStatsExceptSys(t, "lhs after split", snap, lhsRepl.Desc(), lhsStats, now.WallTime)
-					assertRecomputedStatsExceptSys(t, "rhs after split", snap, rhsRepl.Desc(), rhsStats, now.WallTime)
+					assertRecomputedStatsExceptSys(t, "lhs after split", snapL, lhsRepl.Desc(), lhsStats, now.WallTime)
+					assertRecomputedStatsExceptSys(t, "rhs after split", snapR, rhsRepl.Desc(), rhsStats, now.WallTime)
 				}
 			}
+			snapL.Close()
+			snapR.Close()
 
 			// Read back our values, just to be sure.
 			for _, v := range expKVs {

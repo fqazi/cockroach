@@ -136,7 +136,7 @@ func TestDataDriven(t *testing.T) {
 					},
 				},
 				StoreSpecs: []base.StoreSpec{
-					{InMemory: true, Attributes: []string{attr}},
+					{Type: base.StoreTypeInMemory, Attributes: []string{attr}},
 				},
 			}
 		}

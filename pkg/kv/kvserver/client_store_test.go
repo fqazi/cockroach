@@ -150,7 +150,7 @@ func TestStoreLoadReplicaQuiescent(t *testing.T) {
 				},
 				StoreSpecs: []base.StoreSpec{
 					{
-						InMemory:    true,
+						Type:        base.StoreTypeInMemory,
 						StickyVFSID: "test",
 					},
 				},

@@ -80,9 +80,10 @@ type CatchUpSnapshot struct {
 	iterRecreateDuration time.Duration
 }
 
-// NewCatchUpSnapshot returns a CatchUpSnapshot for the given Engine over the
-// given key/time span, where span represents a global key range. startTime is
-// exclusive.
+// NewCatchUpSnapshot returns a CatchUpSnapshot for the given snapshot Reader
+// over the given key/time span, where span represents a global key range.
+// startTime is exclusive. The CatchUpSnapshot takes ownership of the Reader
+// and closes it when Close is called.
 //
 // NB: startTime is exclusive, i.e. the first possible event will be emitted at
 // Timestamp.Next().
@@ -91,7 +92,7 @@ type CatchUpSnapshot struct {
 // MVCCIncrementalIterator should be closed and reopened (see the
 // storage.snapshot.recreate_iter_duration cluster setting for details).
 func NewCatchUpSnapshot(
-	eng storage.Engine,
+	snap storage.Reader,
 	span roachpb.Span,
 	startTime hlc.Timestamp,
 	closer func(),
@@ -111,9 +112,6 @@ func NewCatchUpSnapshot(
 		IntentPolicy: storage.MVCCIncrementalIterIntentPolicyEmit,
 		ReadCategory: fs.RangefeedReadCategory,
 	}
-	// TODO(sumeer): create a snapshot over span and the lock table spans
-	// derived from it.
-	snap := eng.NewSnapshot()
 	return &CatchUpSnapshot{
 		snap:                 EngSnapshotAdapter{snap},
 		iterOpts:             iterOpts,

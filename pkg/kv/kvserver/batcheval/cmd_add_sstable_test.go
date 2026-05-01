@@ -1219,7 +1219,7 @@ func TestDBAddSSTable(t *testing.T) {
 		defer log.Scope(t).Close(t)
 		ctx := context.Background()
 		storeSpec := base.DefaultTestStoreSpec
-		storeSpec.InMemory = false
+		storeSpec.Type = base.StoreTypeLocal
 		storeSpec.Path = t.TempDir()
 		srv, _, db := serverutils.StartServer(t, base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{storeSpec},
@@ -1696,7 +1696,9 @@ func TestAddSSTableSSTTimestampToRequestTimestampRespectsClosedTS(t *testing.T) 
 	require.True(t, closedTS.LessEq(writeTS), "timestamp %s below closed timestamp %s", result.Timestamp, closedTS)
 
 	// Check that the value was in fact written at the write timestamp.
-	kvs, err := storage.Scan(context.Background(), store.StateEngine(), key, key.Next(), 0)
+	snap := r.NewCombinedSnapshot()
+	kvs, err := storage.Scan(context.Background(), snap, key, key.Next(), 0)
+	snap.Close()
 	require.NoError(t, err)
 	require.Len(t, kvs, 1)
 	require.Equal(t, storage.MVCCKey{Key: key, Timestamp: writeTS}, kvs[0].Key)

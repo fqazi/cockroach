@@ -367,6 +367,18 @@ func (r *Replica) AssertState(
 	r.assertStateRaftMuLockedReplicaMuRLocked(ctx, stateRO, raftRO)
 }
 
+// AssertStateWithCombinedSnapshot takes a combined snapshot while holding
+// raftMu, to ensure on-disk state is consistent with in-memory state.
+func (r *Replica) AssertStateWithCombinedSnapshot(ctx context.Context) {
+	r.raftMu.Lock()
+	defer r.raftMu.Unlock()
+	snap := r.NewCombinedSnapshot()
+	defer snap.Close()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	r.assertStateRaftMuLockedReplicaMuRLocked(ctx, snap, r.store.LogEngine())
+}
+
 func (r *Replica) RaftLock() {
 	r.raftMu.Lock()
 }

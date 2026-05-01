@@ -82,6 +82,8 @@ func (s StateLoader) Load(
 	ms := as.RangeStats.ToStats()
 	r.Stats = &ms
 	r.RaftClosedTimestamp = as.RaftClosedTimestamp
+	r.ApproxStoreLocalBytes = as.ApproxStoreLocalBytes
+	r.FlushStartedCount = as.FlushStartedCount
 
 	// Invariant: TruncatedState == nil. The field is being phased out. The
 	// RaftTruncatedState must be loaded separately.
@@ -366,6 +368,53 @@ func (s StateLoader) SetRangeTombstone(
 	// "Blind" because ms == nil and timestamp.IsEmpty().
 	return storage.MVCCBlindPutProto(ctx, stateWO, s.RangeTombstoneKey(),
 		hlc.Timestamp{}, &ts, storage.MVCCWriteOptions{})
+}
+
+// LoadRSManifestState loads the range-shared engine manifest state.
+// Returns empty RSManifestState if the key doesn't exist.
+func (s StateLoader) LoadRSManifestState(
+	ctx context.Context, stateRO StateRO,
+) (kvserverpb.RSManifestState, error) {
+	var state kvserverpb.RSManifestState
+	_, err := storage.MVCCGetProto(
+		ctx, stateRO, s.RangeSharedManifestNumKey(), hlc.Timestamp{}, &state,
+		storage.MVCCGetOptions{},
+	)
+	return state, err
+}
+
+// SetRSManifestState writes the range-shared engine manifest state.
+func (s StateLoader) SetRSManifestState(
+	ctx context.Context, stateWO StateWO, state kvserverpb.RSManifestState,
+) error {
+	// "Blind" because ms == nil and timestamp.IsEmpty().
+	return storage.MVCCBlindPutProto(ctx, stateWO, s.RangeSharedManifestNumKey(),
+		hlc.Timestamp{}, &state, storage.MVCCWriteOptions{})
+}
+
+// LoadRangeFileNumAllocState loads the file number allocation state for the
+// range-shared LSM. Returns empty state if the key doesn't exist.
+func (s StateLoader) LoadRangeFileNumAllocState(
+	ctx context.Context, stateRO StateRO,
+) (kvserverpb.RangeFileNumAllocState, error) {
+	var state kvserverpb.RangeFileNumAllocState
+	_, err := storage.MVCCGetProto(
+		ctx, stateRO, s.RangeFileNumAllocKey(), hlc.Timestamp{}, &state,
+		storage.MVCCGetOptions{},
+	)
+	return state, err
+}
+
+// SetRangeFileNumAllocState writes the file number allocation state for the
+// range-shared LSM.
+func (s StateLoader) SetRangeFileNumAllocState(
+	ctx context.Context,
+	stateRW StateRW,
+	ms *enginepb.MVCCStats,
+	state kvserverpb.RangeFileNumAllocState,
+) error {
+	return storage.MVCCPutProto(ctx, stateRW, s.RangeFileNumAllocKey(),
+		hlc.Timestamp{}, &state, storage.MVCCWriteOptions{Stats: ms})
 }
 
 // UninitializedReplicaState returns the ReplicaState of an uninitialized

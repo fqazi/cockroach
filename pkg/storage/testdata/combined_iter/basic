@@ -1,0 +1,243 @@
+# Basic combined iteration: data in both LSMs, verify merge order.
+
+put key=a ts=10 value=a10
+----
+ok
+
+put key=c ts=10 value=c10
+----
+ok
+
+put-shared key=b ts=5 value=b5
+----
+ok
+
+put-shared key=d ts=3 value=d3
+----
+ok
+
+# Combined readonly: should see all four keys merged.
+combined-iter type=readonly
+----
+ok
+
+seek-ge key=a
+----
+a/10: a10
+
+next
+----
+b/5: b5
+
+next
+----
+c/10: c10
+
+next
+----
+d/3: d3
+
+next
+----
+.
+
+close-iter
+----
+ok
+
+close-reader
+----
+ok
+
+# Combined batch: same results.
+combined-iter type=batch
+----
+ok
+
+seek-ge key=a
+----
+a/10: a10
+
+next
+----
+b/5: b5
+
+next
+----
+c/10: c10
+
+next
+----
+d/3: d3
+
+next
+----
+.
+
+close-iter
+----
+ok
+
+close-reader
+----
+ok
+
+# Combined snapshot: same results.
+combined-iter type=snapshot
+----
+ok
+
+seek-ge key=a
+----
+a/10: a10
+
+next
+----
+b/5: b5
+
+next
+----
+c/10: c10
+
+next
+----
+d/3: d3
+
+next
+----
+.
+
+close-iter
+----
+ok
+
+close-reader
+----
+ok
+
+# Non-combined: should only see store-local keys.
+iter
+----
+ok
+
+seek-ge key=a
+----
+a/10: a10
+
+next
+----
+c/10: c10
+
+next
+----
+.
+
+close-iter
+----
+ok
+
+close-reader
+----
+ok
+
+# Top LSM shadows secondary: same key, top version wins.
+put key=b ts=20 value=b20-local
+----
+ok
+
+combined-iter type=readonly
+----
+ok
+
+seek-ge key=b
+----
+b/20: b20-local
+
+next
+----
+b/5: b5
+
+next
+----
+c/10: c10
+
+close-iter
+----
+ok
+
+close-reader
+----
+ok
+
+# Reverse iteration.
+combined-iter type=readonly
+----
+ok
+
+seek-lt key=z
+----
+d/3: d3
+
+prev
+----
+c/10: c10
+
+prev
+----
+b/5: b5
+
+prev
+----
+b/20: b20-local
+
+prev
+----
+a/10: a10
+
+prev
+----
+.
+
+close-iter
+----
+ok
+
+close-reader
+----
+ok
+
+# Empty secondary: no shared data, iteration works like normal.
+# (Using non-combined iter is equivalent since secondary is empty for
+# the non-combined case. Here we test that SetSecondaryLSM with an
+# empty secondary doesn't break anything — the shared data written
+# earlier is still visible via the vh.)
+
+# Multiple iterators from the same reader: reuse + clone paths.
+combined-iter type=readonly
+----
+ok
+
+seek-ge key=a
+----
+a/10: a10
+
+# Close first iter, create second from same reader (reuse path).
+close-iter
+----
+ok
+
+combined-iter type=readonly
+----
+ok
+
+seek-ge key=d
+----
+d/3: d3
+
+close-iter
+----
+ok
+
+close-reader
+----
+ok

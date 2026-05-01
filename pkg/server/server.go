@@ -318,6 +318,11 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 		return nil, errors.Wrap(err, "failed to create engines")
 	}
 	stopper.AddCloser(&engines)
+	if cfg.compactionScheduler != nil {
+		stopper.AddCloser(stop.CloserFn(func() {
+			cfg.compactionScheduler.Close()
+		}))
+	}
 
 	// Loss of quorum recovery store is created and pending plan is applied to
 	// engines as soon as engines are created and before any data is read in a
@@ -1021,6 +1026,26 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 	}
 	if storeTestingKnobs := cfg.TestingKnobs.Store; storeTestingKnobs != nil {
 		storeCfg.TestingKnobs = *storeTestingKnobs.(*kvserver.StoreTestingKnobs)
+		if storeCfg.TestingKnobs.BasaltFS != nil {
+			storeCfg.BasaltFS = storeCfg.TestingKnobs.BasaltFS
+		}
+		if storeCfg.TestingKnobs.OpenRSEngine != nil {
+			storeCfg.OpenRSEngine = storeCfg.TestingKnobs.OpenRSEngine
+		}
+	}
+	// In production, populate BasaltFS and OpenRSEngine from the
+	// cluster-scoped FS created during CreateEngines. Testing knobs take
+	// precedence.
+	if storeCfg.BasaltFS == nil && cfg.basaltFS != nil {
+		storeCfg.BasaltFS = cfg.basaltFS
+	}
+	if storeCfg.OpenRSEngine == nil && storeCfg.BasaltFS != nil && !cfg.DisableRSEngine {
+		storeCfg.OpenRSEngine = storage.OpenRSEngine
+	} else if cfg.DisableRSEngine {
+		storeCfg.BasaltFS = nil
+	}
+	if cfg.compactionScheduler != nil {
+		storeCfg.CompactionScheduler = cfg.compactionScheduler
 	}
 	storeCfg.SetDefaults(len(engines))
 
@@ -1801,8 +1826,9 @@ func (s *topLevelServer) PreStart(ctx context.Context) error {
 	}.Iter()
 
 	encryptedStore := false
+	listenerFilesWritten := false
 	for _, storeSpec := range s.cfg.Stores.Specs {
-		if storeSpec.InMemory {
+		if !storeSpec.IsLocal() {
 			continue
 		}
 		if storeSpec.IsEncrypted() {
@@ -1815,8 +1841,25 @@ func (s *topLevelServer) PreStart(ctx context.Context) error {
 				return errors.Wrapf(err, "failed to write %s", file)
 			}
 		}
+		listenerFilesWritten = true
 		// TODO(knz): Do we really want to write the listener files
 		// in _every_ store directory? Not just the first one?
+	}
+	// If no local stores are configured (e.g. all in-memory, basalt, or
+	// remote), fall back to writing listener files to the log directory
+	// (parent of the heap profile directory), or the heap profile
+	// directory itself as a last resort.
+	if !listenerFilesWritten && s.cfg.HeapProfileDirName != "" {
+		fallbackDir := filepath.Dir(s.cfg.HeapProfileDirName)
+		if err := os.MkdirAll(fallbackDir, 0755); err != nil {
+			return errors.Wrapf(err, "creating listener file directory %s", fallbackDir)
+		}
+		for name, val := range listenerFiles {
+			file := filepath.Join(fallbackDir, name)
+			if err := os.WriteFile(file, []byte(val), 0644); err != nil {
+				return errors.Wrapf(err, "failed to write %s", file)
+			}
+		}
 	}
 
 	if s.cfg.DelayedBootstrapFn != nil {

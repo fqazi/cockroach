@@ -59,13 +59,17 @@ func (s *spanSetEngine) NewBatch() storage.Batch {
 	return NewBatch(s.e.NewBatch(), s.spans)
 }
 
-// NewBatch implements the storage.EngineWithoutRW interface.
-func (s *spanSetEngine) NewReader(durability storage.DurabilityRequirement) storage.Reader {
+// NewReader implements the storage.Engine interface.
+func (s *spanSetEngine) NewReader(
+	durability storage.DurabilityRequirement,
+) storage.ReaderWithCombinedIteration {
 	return NewReader(s.e.NewReader(durability), s.spans, hlc.Timestamp{})
 }
 
-// NewReadOnly implements the storage.EngineWithoutRW interface.
-func (s *spanSetEngine) NewReadOnly(durability storage.DurabilityRequirement) storage.ReadWriter {
+// NewReadOnly implements the storage.Engine interface.
+func (s *spanSetEngine) NewReadOnly(
+	durability storage.DurabilityRequirement,
+) storage.ReadWriterWithCombinedIteration {
 	return NewReadWriterAt(s.e.NewReadOnly(durability), s.spans, hlc.Timestamp{})
 }
 
@@ -128,8 +132,8 @@ func (s *spanSetEngine) ApproximateDiskBytes(
 	return s.e.ApproximateDiskBytes(from, to)
 }
 
-// NewSnapshot implements the storage.EngineWithoutRW interface.
-func (s *spanSetEngine) NewSnapshot(keyRanges ...roachpb.Span) storage.Reader {
+// NewSnapshot implements the storage.Engine interface.
+func (s *spanSetEngine) NewSnapshot(keyRanges ...roachpb.Span) storage.ReaderWithCombinedIteration {
 	for _, span := range keyRanges {
 		if err := s.spans.CheckAllowed(SpanReadOnly, TrickySpan{Key: span.Key, EndKey: span.EndKey}); err != nil {
 			panic(err)
@@ -253,6 +257,16 @@ func (s *spanSetEngine) IngestAndExciseFiles(
 		return pebble.IngestOperationStats{}, err
 	}
 	return s.e.IngestAndExciseFiles(ctx, paths, shared, external, exciseSpan)
+}
+
+// IngestAndExciseStacked implements the storage.EngineWithoutRW interface.
+func (s *spanSetEngine) IngestAndExciseStacked(
+	ctx context.Context, ssts []pebble.StackedLocalSST, exciseSpan roachpb.Span,
+) (pebble.IngestOperationStats, error) {
+	if err := s.spans.CheckAllowed(SpanReadWrite, TrickySpan{Key: exciseSpan.Key, EndKey: exciseSpan.EndKey}); err != nil {
+		return pebble.IngestOperationStats{}, err
+	}
+	return s.e.IngestAndExciseStacked(ctx, ssts, exciseSpan)
 }
 
 // IngestExternalFiles implements the storage.EngineWithoutRW interface.

@@ -1,0 +1,202 @@
+# Single-node reopen persistence: entries survive close and reopen.
+# This also exercises SkipFileDeletionElision — file1 and file2 do not
+# exist as actual files under /registry/n1/, yet the entries persist
+# because per-node registries set SkipFileDeletionElision.
+
+open node=1
+----
+ok
+
+set file=file1 settings=foo-settings
+----
+ok
+
+set file=file2 settings=bar-settings
+----
+ok
+
+close
+----
+ok
+
+open node=1
+----
+ok
+
+get file=file1
+----
+foo-settings
+
+get file=file2
+----
+bar-settings
+
+close
+----
+ok
+
+# Multi-node merge: n2 writes an entry, n3 sees entries from all nodes.
+
+open node=2
+----
+ok
+
+set file=file3 settings=n2-settings
+----
+ok
+
+close
+----
+ok
+
+open node=3
+----
+ok
+
+list
+----
+file=file1 settings=foo-settings
+file=file2 settings=bar-settings
+file=file3 settings=n2-settings
+
+close
+----
+ok
+
+# Cross-node copy: n3 copies an entry originating from n1 into its
+# own local registry, and the copy survives reopen.
+
+open node=3
+----
+ok
+
+copy src=file1 dst=local-copy
+----
+ok
+
+get file=local-copy
+----
+foo-settings
+
+close
+----
+ok
+
+open node=3
+----
+ok
+
+get file=local-copy
+----
+foo-settings
+
+close
+----
+ok
+
+# Cache miss: n1 writes a new entry after n2 is already open. n2's
+# GetFileEntry triggers a cache-miss refresh and discovers the entry.
+
+open node=2
+----
+ok
+
+remote-set node=1 file=late-file settings=late-settings
+----
+ok
+
+get file=late-file
+----
+late-settings
+
+close
+----
+ok
+
+# Delete remote entry: n3 deletes an entry that came from n2.
+# The delete removes file3 from n3's merged map, but a subsequent
+# GetFileEntry triggers a cache-miss refresh that re-reads n2's
+# registry and rediscovers the entry. This means deletes of remote
+# entries are effectively no-ops — the authoritative copy in the
+# remote registry always wins.
+#
+# TODO(basalt): Implement tombstone tracking so that deletes of
+# remote entries persist across refreshes and propagate to other
+# nodes. Without tombstones, orphaned registry entries from deleted
+# files accumulate indefinitely in remote node registries.
+
+open node=3
+----
+ok
+
+get file=file3
+----
+n2-settings
+
+delete file=file3
+----
+ok
+
+get file=file3
+----
+n2-settings
+
+close
+----
+ok
+
+# A new node scanning all directories also sees file3 from n2's
+# registry.
+
+open node=5
+----
+ok
+
+get file=file3
+----
+n2-settings
+
+close
+----
+ok
+
+# Non-node entries in registryDir do not cause errors when
+# scanning for node directories.
+
+mkdir
+/registry/metadata
+/registry/tmp
+----
+ok
+
+mkfile
+/registry/some-file
+----
+ok
+
+open node=4
+----
+ok
+
+get file=file1
+----
+foo-settings
+
+close
+----
+ok
+
+# parseNodeID cases.
+
+parse-node-id name=n1
+----
+id=1
+
+parse-node-id name=n0
+----
+err
+
+parse-node-id name=n-1
+----
+err
+

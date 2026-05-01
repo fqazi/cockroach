@@ -1,6 +1,6 @@
-exports_files(["testdata/errcheck_excludes.txt"])
-
 load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+exports_files(["testdata/errcheck_excludes.txt"])
 
 # gazelle:build_tags lint
 # gazelle:build_tags nightly

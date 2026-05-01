@@ -159,6 +159,16 @@ message ReplicaState {
   // the RangeForceFlushKey.
   roachpb.ForceFlushIndex force_flush_index = 16 [(gogoproto.nullable) = false];
 
+  // ApproxStoreLocalBytes is an estimate of bytes written to the store-local
+  // engine for this range. It increases with each applied write and decreases
+  // on flush commit (when data moves to the range-shared engine). Derived from
+  // RangeAppliedState.ApproxStoreLocalBytes.
+  int64 approx_store_local_bytes = 17;
+
+  // FlushStartedCount is the number of range flushes that have been started
+  // (prepared). Derived from RangeAppliedState.FlushStartedCount.
+  uint64 flush_started_count = 18;
+
   reserved 8, 9, 10;
 }
 
@@ -260,6 +270,62 @@ message RangeAppliedState {
   // want a mixed version cluster (v21.2 and v22.1) to have divergent replica
   // state simply because we have introduced this field.
   uint64 raft_applied_index_term = 5 [(gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/kv/kvpb.RaftTerm"];
+
+  // ApproxStoreLocalBytes is a monotonically increasing estimate of bytes
+  // accumulated in the store-local engine for this range since the last range
+  // flush. On each applied command, WriteBatch size + ingested SST size is
+  // added; the counter is never decremented by normal writes.
+  //
+  // Monotonic increase avoids the "barrier problem" at RANGEDEL_OFF boundaries.
+  // Example: SET foo#90 writes b1 bytes before RANGEDEL_OFF, then DEL foo#110
+  // writes b2 bytes after RANGEDEL_OFF. If we tracked net bytes, the DEL would
+  // subtract b1, but those bytes are already "claimed" by the flush prepare
+  // snapshot. Monotonic increase counts b1+b2, and flush commit subtracts the
+  // value captured at flush prepare.
+  //
+  // This field lives in RangeAppliedState rather than MVCCStats to avoid
+  // interaction with the consistency checker, which can't recompute a
+  // monotonically-increasing counter from a scan.
+  //
+  // In proto3, value 0 is not serialized, so adding this field is safe for
+  // mixed-version clusters as long as it remains 0 until all replicas understand
+  // it (same pattern as RaftAppliedIndexTerm).
+  //
+  // TODO(basalt): gate the increment on a cluster version.
+  int64 approx_store_local_bytes = 6;
+
+  // FlushStartedCount is the number of range flushes that have been started
+  // (prepared) for this range. It is incremented by flush prepare. Flush
+  // commit validates that FlushStartedCount matches the value returned by its
+  // corresponding prepare, ensuring that no other prepare has intervened.
+  uint64 flush_started_count = 7;
+}
+
+// RSManifestState stores the range-shared engine manifest state for a
+// replica. This is persisted in order to track which MANIFEST file an
+// RSEngine should open.
+message RSManifestState {
+  option (gogoproto.equal) = true;
+
+  // disk_file_num is the MANIFEST file number for the range-shared engine.
+  // A value of 0 indicates no range-shared engine is configured.
+  uint64 disk_file_num = 1;
+
+  // replica_id is the ReplicaID associated with this range-shared engine.
+  // Used to construct the Basalt directory path.
+  int32 replica_id = 2 [(gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.ReplicaID"];
+}
+
+// RangeFileNumAllocState tracks the file number allocation state for a range's
+// range-shared LSM. This is used to allocate file numbers for MANIFESTs and
+// SSTables in the RSEngine.
+message RangeFileNumAllocState {
+  option (gogoproto.equal) = true;
+
+  // next_file_num is the exclusive upper bound of allocated file numbers.
+  // The next allocation will start from this value. A value of 0 indicates
+  // the state has not been initialized.
+  uint64 next_file_num = 1;
 }
 
 // MVCCPersistentStats is convertible to MVCCStats, but uses signed variable

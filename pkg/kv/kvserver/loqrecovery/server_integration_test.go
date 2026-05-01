@@ -137,7 +137,7 @@ func TestStreamRestart(t *testing.T) {
 	var failCount atomic.Int64
 	tc := testcluster.NewTestCluster(t, 3, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
-			StoreSpecs: []base.StoreSpec{{InMemory: true}},
+			StoreSpecs: []base.StoreSpec{{Type: base.StoreTypeInMemory}},
 			Insecure:   true,
 			Knobs: base.TestingKnobs{
 				LOQRecovery: &loqrecovery.TestingKnobs{
@@ -761,7 +761,7 @@ func prepTestCluster(
 			},
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},

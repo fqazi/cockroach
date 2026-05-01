@@ -150,7 +150,6 @@ func (sm *replicaStateMachine) NewBatch() apply.Batch {
 	// it is more efficient. If there are exceptions, sparingly use NewReader or
 	// NewBatch (if it needs to read its own writes, which is unlikely).
 	b.batch = r.store.batchFactory.NewBatch()
-
 	r.mu.RLock()
 	b.state = r.shMu.state
 	b.truncState = r.asLogStorage().shMu.trunc
@@ -353,6 +352,11 @@ func (sm *replicaStateMachine) handleNonTrivialReplicatedEvalResult(
 	if rResult.ComputeChecksum != nil {
 		sm.r.handleComputeChecksumResult(ctx, rResult.ComputeChecksum)
 		rResult.ComputeChecksum = nil
+	}
+
+	if rResult.RSManifestInstall != nil {
+		sm.r.handleRSManifestInstallResult(ctx, rResult.RSManifestInstall)
+		rResult.RSManifestInstall = nil
 	}
 
 	// NB: we intentionally never zero out rResult.IsProbe because probes are

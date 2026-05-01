@@ -357,13 +357,16 @@ func mergeWithData(t *testing.T, retries int64) {
 	}
 
 	// Verify no intents remains on range descriptor keys.
+	mergedRepl := store.LookupReplica(lhsDesc.StartKey.Next())
+	snap := mergedRepl.NewCombinedSnapshot()
 	for _, key := range []roachpb.Key{keys.RangeDescriptorKey(lhsDesc.StartKey), keys.RangeDescriptorKey(rhsDesc.StartKey)} {
 		if _, err := storage.MVCCGet(
-			ctx, store.StateEngine(), key, store.Clock().Now(), storage.MVCCGetOptions{},
+			ctx, snap, key, store.Clock().Now(), storage.MVCCGetOptions{},
 		); err != nil {
 			t.Fatal(err)
 		}
 	}
+	snap.Close()
 
 	// Verify the merge by looking up keys from both ranges.
 	lhsRepl := store.LookupReplica(lhsDesc.StartKey.Next())
@@ -1072,10 +1075,11 @@ func TestStoreRangeMergeLastRange(t *testing.T) {
 		return true
 	})
 
-	// Merge last range.
+	// Merge last range. The merge fails early because LookupReplica finds no
+	// RHS replica when EndKey is RKeyMax.
 	_, pErr := kv.SendWrapped(ctx, store.TestSender(), adminMergeArgs(lastKey.AsRawKey()))
-	if !testutils.IsPError(pErr, "cannot merge final range") {
-		t.Fatalf("expected 'cannot merge final range' error; got %s", pErr)
+	if !testutils.IsPError(pErr, "RHS replica not found for merge") {
+		t.Fatalf("expected 'RHS replica not found for merge' error; got %s", pErr)
 	}
 }
 
@@ -1364,16 +1368,20 @@ func TestStoreRangeMergeStats(t *testing.T) {
 	// merge below.
 
 	// Get the range stats for both ranges now that we have data.
-	snap := store.StateEngine().NewSnapshot()
-	defer snap.Close()
-	msA, err := kvstorage.MakeStateLoader(lhsDesc.RangeID).LoadMVCCStats(ctx, snap)
+	replA := store.LookupReplica(lhsDesc.StartKey)
+	snapA := replA.NewCombinedSnapshot()
+	msA, err := kvstorage.MakeStateLoader(lhsDesc.RangeID).LoadMVCCStats(ctx, snapA)
 	require.NoError(t, err)
-	msB, err := kvstorage.MakeStateLoader(rhsDesc.RangeID).LoadMVCCStats(ctx, snap)
+	replB := store.LookupReplica(rhsDesc.StartKey)
+	snapB := replB.NewCombinedSnapshot()
+	msB, err := kvstorage.MakeStateLoader(rhsDesc.RangeID).LoadMVCCStats(ctx, snapB)
 	require.NoError(t, err)
 
 	// Stats should agree with recomputation.
-	assertRecomputedStatsExceptSys(t, "range A before split", snap, lhsDesc, msA, store.Clock().PhysicalNow())
-	assertRecomputedStatsExceptSys(t, "range B before split", snap, rhsDesc, msB, store.Clock().PhysicalNow())
+	assertRecomputedStatsExceptSys(t, "range A before split", snapA, lhsDesc, msA, store.Clock().PhysicalNow())
+	assertRecomputedStatsExceptSys(t, "range B before split", snapB, rhsDesc, msB, store.Clock().PhysicalNow())
+	snapA.Close()
+	snapB.Close()
 
 	// Merge the b range back into the a range.
 	args := adminMergeArgs(lhsDesc.StartKey.AsRawKey())
@@ -1382,15 +1390,15 @@ func TestStoreRangeMergeStats(t *testing.T) {
 	replMerged := store.LookupReplica(lhsDesc.StartKey)
 
 	// Get the range stats for the merged range and verify.
-	snap = store.StateEngine().NewSnapshot()
-	defer snap.Close()
-	msMerged, err := kvstorage.MakeStateLoader(replMerged.RangeID).LoadMVCCStats(ctx, snap)
+	snapM := replMerged.NewCombinedSnapshot()
+	msMerged, err := kvstorage.MakeStateLoader(replMerged.RangeID).LoadMVCCStats(ctx, snapM)
 	require.NoError(t, err)
 
 	// Merged stats should agree with recomputation.
 	nowNanos := tc.Servers[0].Clock().Now().WallTime
 	msMerged.AgeTo(nowNanos)
-	assertRecomputedStatsExceptSys(t, "merged range", snap, replMerged.Desc(), msMerged, nowNanos)
+	assertRecomputedStatsExceptSys(t, "merged range", snapM, replMerged.Desc(), msMerged, nowNanos)
+	snapM.Close()
 }
 
 func TestStoreRangeMergeInFlightTxns(t *testing.T) {
@@ -1720,6 +1728,7 @@ func TestStoreRangeMergeSplitRace_SplitWins(t *testing.T) {
 			ServerArgs: base.TestServerArgs{
 				Knobs: base.TestingKnobs{
 					Store: &kvserver.StoreTestingKnobs{
+						DisableBasalt:        true,
 						TestingRequestFilter: testingRequestFilter,
 					},
 				},
@@ -1752,6 +1761,129 @@ func TestStoreRangeMergeSplitRace_SplitWins(t *testing.T) {
 	if mergePostSplitTS.LessEq(splitTS) {
 		t.Fatalf("expected merge to finish after concurrent split, %v <= %v", mergePostSplitTS, splitTS)
 	}
+}
+
+// TestStoreFlushStartedCountSplitMerge verifies that FlushStartedCount is
+// properly propagated through splits and merges. Specifically:
+//   - A split copies the LHS FlushStartedCount to the RHS.
+//   - A merge takes the max of LHS and RHS FlushStartedCount.
+//
+// This prevents a concurrent flush on the RHS (between a split and merge)
+// from being invisible to a flush commit on the merged range.
+func TestStoreFlushStartedCountSplitMerge(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	ctx := context.Background()
+	tc := testcluster.StartTestCluster(t, 1,
+		base.TestClusterArgs{
+			ReplicationMode: base.ReplicationManual,
+		})
+	defer tc.Stopper().Stop(ctx)
+	scratch := tc.ScratchRange(t)
+	store := tc.GetFirstStoreFromServer(t, 0)
+	db := tc.Servers[0].DB()
+	loadFlushStartedCount := func(rangeID roachpb.RangeID) uint64 {
+		as, err := kvstorage.MakeStateLoader(rangeID).LoadRangeAppliedState(ctx, store.StateEngine())
+		require.NoError(t, err)
+		return as.FlushStartedCount
+	}
+	// Write data and flush to create a range-shared manifest and increment
+	// FlushStartedCount.
+	for i := 0; i < 5; i++ {
+		require.NoError(t, db.Put(ctx, testutils.MakeKey(scratch, []byte(fmt.Sprintf("a%d", i))), "value"))
+	}
+	repl := store.LookupReplica(roachpb.RKey(scratch))
+	require.NotNil(t, repl)
+	require.NoError(t, repl.ManifestCommitter().RangeFlush())
+	require.Equal(t, uint64(1), loadFlushStartedCount(repl.RangeID))
+	// Split. Both LHS and RHS should inherit FlushStartedCount=1.
+	splitKey := testutils.MakeKey(scratch, []byte("b"))
+	_, pErr := kv.SendWrapped(ctx, store.TestSender(), adminSplitArgs(splitKey))
+	require.Nil(t, pErr)
+	lhsRepl := store.LookupReplica(roachpb.RKey(scratch))
+	rhsRepl := store.LookupReplica(roachpb.RKey(testutils.MakeKey(scratch, []byte("c"))))
+	require.NotNil(t, lhsRepl)
+	require.NotNil(t, rhsRepl)
+	require.Equal(t, uint64(1), loadFlushStartedCount(lhsRepl.RangeID))
+	require.Equal(t, uint64(1), loadFlushStartedCount(rhsRepl.RangeID))
+	// Write data to RHS and flush, incrementing its FlushStartedCount to 2.
+	for i := 0; i < 5; i++ {
+		require.NoError(t, db.Put(ctx, testutils.MakeKey(scratch, []byte(fmt.Sprintf("c%d", i))), "rhs-value"))
+	}
+	require.NoError(t, rhsRepl.ManifestCommitter().RangeFlush())
+	require.Equal(t, uint64(2), loadFlushStartedCount(rhsRepl.RangeID))
+	require.Equal(t, uint64(1), loadFlushStartedCount(lhsRepl.RangeID))
+	// Merge. The merged range should have FlushStartedCount=max(1,2)=2.
+	mergeArgs := adminMergeArgs(lhsRepl.Desc().StartKey.AsRawKey())
+	_, pErr = kv.SendWrapped(ctx, store.TestSender(), mergeArgs)
+	require.Nil(t, pErr)
+	mergedRepl := store.LookupReplica(roachpb.RKey(scratch))
+	require.NotNil(t, mergedRepl)
+	require.Equal(t, uint64(2), loadFlushStartedCount(mergedRepl.RangeID))
+}
+
+// TestStoreRangeMergeSplitRace_BasaltManifestMismatch validates that a
+// concurrent split on the RHS during a merge is detected by the RHS manifest
+// number check. The merge calls prepareMergeManifests before the transaction,
+// capturing the RHS manifest number. A concurrent split changes the RHS
+// manifest, and the merge's CheckRangeSharedManifestNumRequest catches the
+// mismatch.
+func TestStoreRangeMergeSplitRace_BasaltManifestMismatch(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	ctx := context.Background()
+	var distSender kv.Sender
+	var lhsDescKey atomic.Value
+	var launchSplit int64
+	testingRequestFilter := func(_ context.Context, ba *kvpb.BatchRequest) *kvpb.Error {
+		for _, req := range ba.Requests {
+			if get := req.GetGet(); get != nil && get.KeyLockingStrength != lock.None {
+				if v := lhsDescKey.Load(); v != nil && v.(roachpb.Key).Equal(get.Key) {
+					if atomic.CompareAndSwapInt64(&launchSplit, 1, 0) {
+						_, pErr := kv.SendWrapped(ctx, distSender, adminSplitArgs(scratchKey("c")))
+						return pErr
+					}
+				}
+			}
+		}
+		return nil
+	}
+	tc := testcluster.StartTestCluster(t, 1,
+		base.TestClusterArgs{
+			ReplicationMode: base.ReplicationManual,
+			ServerArgs: base.TestServerArgs{
+				Knobs: base.TestingKnobs{
+					Store: &kvserver.StoreTestingKnobs{
+						TestingRequestFilter: testingRequestFilter,
+					},
+				},
+			},
+		})
+	defer tc.Stopper().Stop(ctx)
+	scratch := tc.ScratchRange(t)
+	store := tc.GetFirstStoreFromServer(t, 0)
+	distSender = tc.Servers[0].DistSenderI().(kv.Sender)
+	db := tc.Servers[0].DB()
+	lhsDesc, _, err := createSplitRanges(ctx, scratch, store)
+	require.NoError(t, err)
+	// Write data to both ranges and flush to create RS manifests.
+	for i := 0; i < 5; i++ {
+		require.NoError(t, db.Put(ctx, scratchKey(fmt.Sprintf("a%d", i)), "lhs-value"))
+		require.NoError(t, db.Put(ctx, scratchKey(fmt.Sprintf("c%d", i)), "rhs-value"))
+	}
+	lhsRepl := store.LookupReplica(scratchRKey("a"))
+	require.NotNil(t, lhsRepl)
+	require.NoError(t, lhsRepl.ManifestCommitter().RangeFlush())
+	rhsRepl := store.LookupReplica(scratchRKey("c"))
+	require.NotNil(t, rhsRepl)
+	require.NoError(t, rhsRepl.ManifestCommitter().RangeFlush())
+	// Set up the race: split on RHS during merge's locking read on LHS.
+	lhsDescKey.Store(keys.RangeDescriptorKey(lhsDesc.StartKey))
+	atomic.StoreInt64(&launchSplit, 1)
+	mergeArgs := adminMergeArgs(lhsDesc.StartKey.AsRawKey())
+	_, pErr := kv.SendWrapped(ctx, distSender, mergeArgs)
+	require.NotNil(t, pErr, "merge should fail due to manifest mismatch")
+	require.Contains(t, pErr.String(), "manifest number mismatch")
 }
 
 func checkConsistencyArgs(desc *roachpb.RangeDescriptor) *kvpb.CheckConsistencyRequest {
@@ -3884,23 +4016,23 @@ func TestStoreRangeMergeRaftSnapshot(t *testing.T) {
 				return nil
 			}
 
-			// The seven to nine SSTs we are expecting to ingest are in the
-			// following order:
-			// - Replicated range-id local keys of the range in the snapshot.
-			// - Range-local keys of the range in the snapshot.
-			// - Two SSTs for the lock table keys of the range in the snapshot.
-			// - User keys of the range in the snapshot.
-			// - Unreplicated range-id local keys of the range in the snapshot.
-			// - SST to clear range-id local keys of the subsumed replica with
+			// The SSTs we are expecting to ingest are in the following order:
+			// - [0] Replicated range-id local keys of the range in the snapshot.
+			// - [1] Range-local keys of the range in the snapshot.
+			// - [2,3] Two SSTs for the lock table keys of the range in the snapshot.
+			// - [4] User keys of the range in the snapshot.
+			// - [5] Unreplicated range-id local keys of the range in the snapshot.
+			// - [6] RSManifestState for the range-shared engine.
+			// - [7] SST to clear range-id local keys of the subsumed replica with
 			//   RangeID 3.
-			// - SST to clear range-id local keys of the subsumed replica with
+			// - [8] SST to clear range-id local keys of the subsumed replica with
 			//   RangeID 4.
-			// - SST to clear the user keys of the subsumed replicas.
+			// - [9] SST to clear the user keys of the subsumed replicas.
 			//
 			// NOTE: There are no range-local keys or lock table keys, in [d,
 			// /Max) in the store we're sending a snapshot to, so we aren't
 			// expecting SSTs to clear those keys.
-			require.Len(t, sstNames, 9)
+			require.Len(t, sstNames, 10)
 
 			// Only try to predict SSTs for:
 			// - The user keys in the snapshot
@@ -3915,8 +4047,9 @@ func TestStoreRangeMergeRaftSnapshot(t *testing.T) {
 			var sstNamesSubset []string
 			// The SST with the user keys in the snapshot.
 			sstNamesSubset = append(sstNamesSubset, sstNames[4])
-			// Remaining ones from the predict list above.
-			sstNamesSubset = append(sstNamesSubset, sstNames[6:]...)
+			// SSTs to clear subsumed replicas (indices 7-9). Index 6 is the
+			// RSManifestState SST which is not predicted here.
+			sstNamesSubset = append(sstNamesSubset, sstNames[7:]...)
 
 			// Construct the expected SSTs and ensure that they are byte-by-byte
 			// equal. This verification ensures that the SSTs have the same
@@ -5553,7 +5686,7 @@ func TestStoreMergeGCHint(t *testing.T) {
 				require.Greater(t, gcHint.LatestRangeDeleteTimestamp.WallTime, beforeSecondDel,
 					"highest timestamp wasn't picked up")
 			}
-			repl.AssertState(ctx, store.StateEngine(), store.LogEngine())
+			repl.AssertStateWithCombinedSnapshot(ctx)
 		})
 	}
 }

@@ -1,5 +1,5 @@
 diff --git a/internal/buildtags/BUILD.bazel b/internal/buildtags/BUILD.bazel
-index a556ba52..db4fbfc1 100644
+index a556ba5..db4fbfc 100644
 --- a/internal/buildtags/BUILD.bazel
 +++ b/internal/buildtags/BUILD.bazel
 @@ -5,17 +5,29 @@ go_library(
@@ -7,7 +7,6 @@ index a556ba52..db4fbfc1 100644
          "cgo_off.go",
          "cgo_on.go",
 -        "invariants_off.go",
-         "iterv2_off.go",
          "race_off.go",
          "race_on.go",
          "slow_build_off.go",
@@ -21,7 +20,7 @@ index a556ba52..db4fbfc1 100644
      importpath = "github.com/cockroachdb/pebble/internal/buildtags",
      visibility = ["//:__subpackages__"],
  )
- 
+
 +REMOVE_GO_BUILD_CONSTRAINTS = "cat $< | grep -v '//go:build' | grep -v '// +build' > $@"
 +
 +# In crdb-test mode, we unconditionally enable invariants.
@@ -36,10 +35,9 @@ index a556ba52..db4fbfc1 100644
      name = "go_default_library",
      actual = ":buildtags",
 diff --git a/internal/invariants/BUILD.bazel b/internal/invariants/BUILD.bazel
-index ecd28d22..84dc2a7d 100644
 --- a/internal/invariants/BUILD.bazel
 +++ b/internal/invariants/BUILD.bazel
-@@ -4,9 +4,10 @@ go_library(
+@@ -4,17 +4,28 @@ go_library(
      name = "invariants",
      srcs = [
          "invariants.go",
@@ -53,10 +51,11 @@ index ecd28d22..84dc2a7d 100644
      importpath = "github.com/cockroachdb/pebble/internal/invariants",
      visibility = ["//:__subpackages__"],
      deps = [
-@@ -15,6 +16,16 @@ go_library(
+         "//internal/buildtags",
+         "@com_github_cockroachdb_errors//:errors",
      ],
  )
- 
+
 +REMOVE_GO_BUILD_CONSTRAINTS = "cat $< | grep -v '//go:build' | grep -v '// +build' > $@"
 +
 +# In crdb-test mode, we unconditionally enable invariants.
@@ -71,7 +70,6 @@ index ecd28d22..84dc2a7d 100644
      name = "go_default_library",
      actual = ":invariants",
 diff --git a/internal/treesteps/BUILD.bazel b/internal/treesteps/BUILD.bazel
-index d013830b..387e6c6f 100644
 --- a/internal/treesteps/BUILD.bazel
 +++ b/internal/treesteps/BUILD.bazel
 @@ -5,8 +5,10 @@ go_library(
@@ -87,10 +85,12 @@ index d013830b..387e6c6f 100644
      importpath = "github.com/cockroachdb/pebble/internal/treesteps",
      visibility = ["//:__subpackages__"],
      deps = [
-@@ -16,6 +18,16 @@ go_library(
+@@ -14,6 +16,16 @@ go_library(
+         "@com_github_cockroachdb_crlib//crstrings",
+         "@com_github_cockroachdb_errors//:errors",
      ],
  )
- 
+
 +REMOVE_GO_BUILD_CONSTRAINTS = "cat $< | grep -v '//go:build' | grep -v '// +build' > $@"
 +
 +# In crdb-test mode, we unconditionally enable invariants.
@@ -105,7 +105,6 @@ index d013830b..387e6c6f 100644
      name = "go_default_library",
      actual = ":treesteps",
 diff --git a/objstorage/objstorageprovider/objiotracing/BUILD.bazel b/objstorage/objstorageprovider/objiotracing/BUILD.bazel
-index 17135474..19882470 100644
 --- a/objstorage/objstorageprovider/objiotracing/BUILD.bazel
 +++ b/objstorage/objstorageprovider/objiotracing/BUILD.bazel
 @@ -5,6 +5,7 @@ go_library(

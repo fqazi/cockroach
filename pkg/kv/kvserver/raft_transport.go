@@ -564,7 +564,12 @@ func (t *RaftTransport) raftSnapshot(stream RPCMultiRaft_RaftSnapshotStream) err
 			rmr.FromReplica, rmr.ToReplica)
 		return kvpb.NewStoreNotFoundError(rmr.ToReplica.StoreID)
 	}
-	return incomingMessageHandler.HandleSnapshot(ctx, req.Header, stream)
+	err = incomingMessageHandler.HandleSnapshot(ctx, req.Header, stream)
+	if err != nil {
+		log.KvExec.Warningf(ctx, "raftSnapshot handler returned error for r%d: %v (type: %T)",
+			req.Header.State.Desc.RangeID, err, err)
+	}
+	return err
 }
 
 // ListenIncomingRaftMessages registers a IncomingRaftMessageHandler to receive proxied messages.

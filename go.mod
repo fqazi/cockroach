@@ -40,7 +40,7 @@ require (
 	google.golang.org/api v0.126.0
 	google.golang.org/genproto v0.0.0-20230530153820-e85fd2cbaebc
 	google.golang.org/grpc v1.57.2
-	google.golang.org/protobuf v1.35.1
+	google.golang.org/protobuf v1.36.11
 	storj.io/drpc v0.0.34
 )
 
@@ -222,9 +222,9 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/pkg/errors v0.9.1
 	github.com/pmezard/go-difflib v1.0.0
-	github.com/prometheus/client_golang v1.16.0
-	github.com/prometheus/client_model v0.3.0
-	github.com/prometheus/common v0.42.0
+	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_model v0.6.2
+	github.com/prometheus/common v0.66.1
 	github.com/prometheus/prometheus v1.8.2-0.20210914090109-37468d88dce8
 	github.com/rcrowley/go-metrics v0.0.0-20201227073835-cf1acfcdf475
 	github.com/robfig/cron/v3 v3.0.1
@@ -289,7 +289,7 @@ require (
 	github.com/Masterminds/semver v1.5.0 // indirect
 	github.com/Masterminds/sprig v2.22.0+incompatible // indirect
 	github.com/Microsoft/go-winio v0.5.2 // indirect
-	github.com/RaduBerinde/axisds/v3 v3.0.0-20260318150237-54e03a7b4b4a // indirect
+	github.com/RaduBerinde/axisds/v2 v2.0.0 // indirect
 	github.com/RaduBerinde/tdigest v0.0.0-20251022152254-90e030c3a314 // indirect
 	github.com/abbot/go-http-auth v0.4.1-0.20181019201920-860ed7f246ff // indirect
 	github.com/aclements/go-moremath v0.0.0-20210112150236-f10218a38794 // indirect
@@ -322,6 +322,7 @@ require (
 	github.com/chenzhuoyu/base64x v0.0.0-20221115062448-fe3a3abad311 // indirect
 	github.com/cockroachdb/crlfmt v0.0.0-20221214225007-b2fc5c302548 // indirect
 	github.com/cockroachdb/go-test-teamcity v0.0.0-20191211140407-cff980ad0a55 // indirect
+	github.com/cockroachdb/goodhistogram v0.0.0-20260414185238-a6c7282f4470 // indirect
 	github.com/cockroachdb/stress v0.0.0-20220803192808-1806698b1b7b // indirect
 	github.com/cockroachdb/swiss v0.0.0-20251224182025-b0f6560f979b // indirect
 	github.com/cockroachdb/tools v0.0.0-20211112185054-642e51449b40 // indirect
@@ -448,7 +449,7 @@ require (
 	github.com/pierrec/lz4 v2.5.2+incompatible // indirect
 	github.com/pkg/profile v1.6.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
-	github.com/prometheus/procfs v0.10.1 // indirect
+	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/pseudomuto/protoc-gen-doc v1.3.2 // indirect
 	github.com/pseudomuto/protokit v0.2.0 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
@@ -499,13 +500,15 @@ require (
 	gonum.org/v1/plot v0.14.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	google.golang.org/genproto/googleapis/bytestream v0.0.0-20230530153820-e85fd2cbaebc // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20230530153820-e85fd2cbaebc // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20251029180050-ab9386a59fda // indirect
 	sigs.k8s.io/yaml v1.3.0 // indirect
 )
 
 require (
 	github.com/DataDog/zstd v1.5.7 // indirect
 	github.com/andybalholm/cascadia v1.2.0 // indirect
+	github.com/cockroachdb/basaltclient v0.0.0-20260424174444-5e65c7b5a2ef
+	github.com/cockroachdb/basaltfs v0.0.0-20260424175100-76f78281d501
 	github.com/containerd/console v1.0.3 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
 	github.com/dgryski/go-metro v0.0.0-20250106013310-edb8663e5e33 // indirect
@@ -574,3 +577,13 @@ replace github.com/prometheus/client_golang => github.com/cockroachdb/client_gol
 replace github.com/snowflakedb/gosnowflake => github.com/cockroachdb/gosnowflake v1.6.25
 
 replace github.com/knz/strtime => github.com/cockroachdb/strtime v0.0.0-20260422145425-b760b890ce68
+
+replace github.com/cockroachdb/pebble => github.com/cockroachdb/pebble-private v0.0.0-20260429183326-0f12733a8186
+
+// basaltclient pulls in client_model v0.6.2 which dropped XXX_unrecognized.
+// pkg/util/metric/metric.go still uses that field, so pin to v0.3.0.
+// prometheus/common's newer versions need v0.6.2's Unit field, so also pin
+// it to v0.42.0 which is compatible with client_model v0.3.0.
+replace github.com/prometheus/client_model => github.com/prometheus/client_model v0.3.0
+
+replace github.com/prometheus/common => github.com/prometheus/common v0.42.0

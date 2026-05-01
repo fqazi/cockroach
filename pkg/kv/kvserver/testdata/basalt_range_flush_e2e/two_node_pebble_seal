@@ -1,0 +1,126 @@
+# Test two-node replication with seal-aware VFS.
+#
+# This test reproduces the BasaltFS "unsealed manifest" crash:
+# files created with Create() report size=0 until Close() seals them.
+# Without the pebble seal fix, the manifest is hardlinked while still
+# unsealed, causing the follower to read 0 bytes and crash with
+# "pebble: malformed manifest file".
+
+init engine=pebble-seal stores=2
+----
+cluster started with 2 store(s)
+
+scratch-range
+----
+ok
+
+put key=a value=val-a
+----
+ok
+
+range-flush rangeID=1
+----
+flushed
+
+rs-engine-state rangeID=1 store=1
+----
+current-manifest: 8
+files: 1
+
+range-shared-meta-keys rangeID=1 store=1
+----
+RSManifestState:
+  disk_file_num: 8, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 109
+
+scan-rs-engine rangeID=1 store=1
+----
+000007.sst:
+  a => val-a
+
+# Add replica to store 2. This triggers a Raft snapshot which
+# replicates the RS engine state (manifest + SST files).
+add-replica rangeID=1 store=2
+----
+added replica to store 2, replicas: 2
+
+rs-engine-state rangeID=1 store=2
+----
+current-manifest: 8
+files: 1
+
+# Verify RSManifestState replicated to store 2 via Raft snapshot.
+range-shared-meta-keys rangeID=1 store=1
+----
+RSManifestState:
+  disk_file_num: 8, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 109
+
+range-shared-meta-keys rangeID=1 store=2
+----
+RSManifestState:
+  disk_file_num: 8, replica_id: 2
+RangeFileNumAllocState:
+  next_file_num: 109
+
+scan-rs-engine rangeID=1 store=2
+----
+000007.sst:
+  a => val-a
+
+# Write more data and flush again on the leaseholder.
+# The manifest change should replicate to the follower via Raft.
+put key=b value=val-b
+----
+ok
+
+range-flush rangeID=1
+----
+flushed
+
+# Wait for the follower to receive the manifest update via Raft.
+# The manifest replication is asynchronous, so we must poll.
+wait-for-manifest rangeID=1 store=2 manifest=10
+----
+ok
+
+rs-engine-state rangeID=1 store=1
+----
+current-manifest: 10
+files: 2
+
+rs-engine-state rangeID=1 store=2
+----
+current-manifest: 10
+files: 2
+
+# Verify RSManifestState on both stores after second flush.
+range-shared-meta-keys rangeID=1 store=1
+----
+RSManifestState:
+  disk_file_num: 10, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 109
+
+range-shared-meta-keys rangeID=1 store=2
+----
+RSManifestState:
+  disk_file_num: 10, replica_id: 2
+RangeFileNumAllocState:
+  next_file_num: 109
+
+scan-rs-engine rangeID=1 store=1
+----
+000007.sst:
+  a => val-a
+000009.sst:
+  b => val-b
+
+scan-rs-engine rangeID=1 store=2
+----
+000007.sst:
+  a => val-a
+000009.sst:
+  b => val-b

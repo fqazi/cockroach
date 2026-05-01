@@ -325,7 +325,7 @@ func (cfg kvnemesisTestCfg) testClusterArgs(
 				}
 				perNodeServerArgs.StoreSpecs = append(
 					perNodeServerArgs.StoreSpecs,
-					base.StoreSpec{InMemory: true, StickyVFSID: strconv.Itoa(nodeId)},
+					base.StoreSpec{Type: base.StoreTypeInMemory, StickyVFSID: strconv.Itoa(nodeId)},
 				)
 				perNode[i] = perNodeServerArgs
 			}

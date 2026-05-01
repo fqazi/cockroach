@@ -621,8 +621,8 @@ func TestAdminRelocateRangeLaterallyAmongStores(t *testing.T) {
 	args := base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{
-				{InMemory: true},
-				{InMemory: true},
+				{Type: base.StoreTypeInMemory},
+				{Type: base.StoreTypeInMemory},
 			},
 		},
 		ReplicationMode: base.ReplicationManual,

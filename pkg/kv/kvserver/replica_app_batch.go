@@ -71,6 +71,21 @@ type replicaAppBatch struct {
 	// their application to state machine is synced.
 	changeTruncatesSideloadedFiles bool
 
+	// pendingRSManifestNum is the manifest number for a new RSEngine that
+	// will be opened and swapped into rsStateMu during ApplyToStateMachine.
+	// Set during runPostAddTriggersReplicaOnly for RSManifestInstall, Split,
+	// or Merge triggers. Zero means no RSEngine swap is needed. The old
+	// engine is quiesced (pebble.DB closed) before the new engine is opened
+	// since two pebble instances cannot share a directory.
+	pendingRSManifestNum uint64
+
+	// pendingRSManifestFileEntry and pendingRSManifestName carry the
+	// MANIFEST's encryption metadata from the Raft proposal. Before
+	// opening the new RSEngine, the file entry is installed into the
+	// local file registry so the encrypted FS can decrypt the MANIFEST.
+	pendingRSManifestFileEntry []byte
+	pendingRSManifestName      string
+
 	start                   time.Time // time at NewBatch()
 	followerStoreWriteBytes kvadmission.FollowerStoreWriteBytes
 
@@ -321,6 +336,33 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 		res.Excise = nil
 	}
 
+	if rsInstall := res.RSManifestInstall; rsInstall != nil {
+		// Write the RSManifestState to the batch. This is an unreplicated
+		// range-ID local key, but it's written during application of a replicated
+		// result. Each replica writes its own RSManifestState with its own
+		// replicaID (accessed via b.r.replicaID).
+		rsState := kvserverpb.RSManifestState{
+			DiskFileNum: rsInstall.NextManifestNum,
+			ReplicaId:   b.r.replicaID,
+		}
+		if err := b.r.raftMu.stateLoader.SetRSManifestState(ctx, kvstorage.StateRW(b.batch.State()), rsState); err != nil {
+			return errors.Wrap(err, "writing RSManifestState")
+		}
+		// FlushStartedCount is incremented separately via
+		// IncrementFlushStartedCount (set by flush prepare).
+		if rsInstall.FlushedApproxStoreLocalBytes != 0 {
+			// Subtract the bytes that were flushed to the range-shared engine.
+			b.state.ApproxStoreLocalBytes -= rsInstall.FlushedApproxStoreLocalBytes
+			if b.state.ApproxStoreLocalBytes < 0 {
+				log.KvExec.Warningf(ctx, "ApproxStoreLocalBytes went negative (%d) after flush "+
+					"commit (flushed %d bytes)", b.state.ApproxStoreLocalBytes,
+					rsInstall.FlushedApproxStoreLocalBytes)
+			}
+		}
+		// Don't nil out RSManifestInstall here - it's still needed for
+		// handleNonTrivialReplicatedEvalResult to update in-memory state.
+	}
+
 	if res.Split != nil {
 		// Splits require a new HardState to be written for the new RHS replica,
 		// atomically with the main batch. This cannot be constructed at evaluation
@@ -338,11 +380,25 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 		if err != nil {
 			log.KvExec.Fatalf(ctx, "unable to validate split: %s", err)
 		}
-
+		// Write LHS RSManifestState if this split includes range-shared manifest.
+		if res.Split.SplitTrigger.LHSRSManifestNum > 0 {
+			rsState := kvserverpb.RSManifestState{
+				DiskFileNum: res.Split.SplitTrigger.LHSRSManifestNum,
+				ReplicaId:   b.r.replicaID,
+			}
+			if err := b.r.raftMu.stateLoader.SetRSManifestState(
+				ctx, kvstorage.StateRW(b.batch.State()), rsState,
+			); err != nil {
+				return errors.Wrap(err, "writing LHS RSManifestState for split")
+			}
+		}
 		// TODO(arul): consider passing in a kvstorage.Batch to splitPreApply
 		// instead. That way, we don't need to get the WagWriter out of the batch
 		// here, and can instead just have an AddEvent method on the type instead.
 		splitPreApply(ctx, kvstorage.StateRW(b.batch.State()), b.RaftRW(), b.batch.WagWriter(), in)
+		// Halve the LHS ApproxStoreLocalBytes; the RHS was initialized with
+		// the other half in splitTriggerHelper.
+		b.state.ApproxStoreLocalBytes /= 2
 
 		// The rangefeed processor will no longer be provided logical ops for
 		// its entire range, so it needs to be shut down and all registrations
@@ -370,6 +426,19 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 		// its unlock method in cmd.splitMergeUnlock.
 		rhsRepl.raftMu.AssertHeld()
 
+		// Write merged RSManifestState if this merge includes range-shared manifest.
+		if merge.MergedRSManifestNum > 0 {
+			rsState := kvserverpb.RSManifestState{
+				DiskFileNum: merge.MergedRSManifestNum,
+				ReplicaId:   b.r.replicaID,
+			}
+			if err := b.r.raftMu.stateLoader.SetRSManifestState(
+				ctx, kvstorage.StateRW(b.batch.State()), rsState,
+			); err != nil {
+				return errors.Wrap(err, "writing merged RSManifestState")
+			}
+		}
+
 		// We mark the replica as destroyed so that new commands are not
 		// accepted. This destroy status will be detected after the batch
 		// commits by handleMergeResult() to finish the removal.
@@ -381,6 +450,19 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 		rhsRepl.mu.Unlock()
 		rhsRepl.readOnlyCmdMu.Unlock()
 
+		// Absorb the RHS ApproxStoreLocalBytes and FlushStartedCount into the
+		// LHS before SubsumeReplica deletes the RHS state. FlushStartedCount
+		// takes the max so that a flush on the RHS between a split and merge
+		// is visible to a concurrent flush commit on the merged range.
+		rhsSL := kvstorage.MakeStateLoader(merge.RightDesc.RangeID)
+		rhsAS, err := rhsSL.LoadRangeAppliedState(ctx, b.batch.State())
+		if err != nil {
+			return errors.Wrapf(err, "loading RHS RangeAppliedState for merge")
+		}
+		b.state.ApproxStoreLocalBytes += rhsAS.ApproxStoreLocalBytes
+		if rhsAS.FlushStartedCount > b.state.FlushStartedCount {
+			b.state.FlushStartedCount = rhsAS.FlushStartedCount
+		}
 		if err := kvstorage.SubsumeReplica(
 			ctx, b.ReadWriter(), b.batch.WagWriter(), rhsRepl.destroyInfoRaftMuLocked(),
 		); err != nil {
@@ -409,6 +491,19 @@ func (b *replicaAppBatch) runPostAddTriggersReplicaOnly(
 		rhsRepl.disconnectRangefeedWithReason(
 			kvpb.RangeFeedRetryError_REASON_RANGE_MERGED,
 		)
+	}
+
+	// Record the manifest number for the new RSEngine. The actual open/close
+	// happens in ApplyToStateMachine under rsStateMu.Lock(). Only one of these
+	// triggers can be present at a time.
+	if rsInstall := res.RSManifestInstall; rsInstall != nil {
+		b.pendingRSManifestNum = rsInstall.NextManifestNum
+		b.pendingRSManifestFileEntry = rsInstall.ManifestFileEntry
+		b.pendingRSManifestName = rsInstall.ManifestName
+	} else if res.Split != nil && res.Split.SplitTrigger.LHSRSManifestNum > 0 {
+		b.pendingRSManifestNum = res.Split.SplitTrigger.LHSRSManifestNum
+	} else if res.Merge != nil && res.Merge.MergedRSManifestNum > 0 {
+		b.pendingRSManifestNum = res.Merge.MergedRSManifestNum
 	}
 
 	if res.State != nil && res.State.GCThreshold != nil {
@@ -595,6 +690,14 @@ func (b *replicaAppBatch) stageTrivialReplicatedEvalResult(
 	deltaStats := res.Delta.ToStats()
 	b.state.Stats.Add(deltaStats)
 
+	// TODO(basalt): gate the increment on a cluster version.
+	writeBytes, ingestedBytes := cmd.getStoreWriteByteSizes()
+	b.state.ApproxStoreLocalBytes += writeBytes + ingestedBytes
+	if res.IncrementFlushStartedCount {
+		b.state.FlushStartedCount++
+		res.IncrementFlushStartedCount = false
+	}
+
 	if res.DoTimelyApplicationToAllReplicas {
 		// Update the pending ForceFlushIndex of this batch. Writing is deferred to
 		// addAppliedStateToBatch, following the same pattern as AppliedState
@@ -653,11 +756,60 @@ func (b *replicaAppBatch) ApplyToStateMachine(ctx context.Context) error {
 	// asynchronously when sure that the state machine engine has synced the
 	// application of this command. I.e. the loosely coupled truncation migration
 	// mentioned above likely needs to be done first.
+	//
+	// If pendingRSManifestNum is set, prepare the manifest transition
+	// outside rsStateMu. The container handles quiescing the old engine
+	// and opening the new one. Only the state batch commit and the
+	// manifest install run under rsStateMu.Lock().
+	if b.pendingRSManifestNum > 0 {
+		// Install the MANIFEST's encryption metadata from the Raft
+		// proposal into the local file registry BEFORE opening the
+		// RSEngine. On shared storage (basaltfs), the leaseholder's
+		// sealed registry file may not be visible for tens of seconds,
+		// but the Raft proposal arrives immediately.
+		b.r.installManifestFileEntry(ctx, b.pendingRSManifestName, b.pendingRSManifestFileEntry)
+		rsEngine := b.r.rsStateMu.rsEngine
+		if rsEngine == nil {
+			log.KvExec.Fatalf(ctx, "unexpectedly missing RSEngine for manifest %d", b.pendingRSManifestNum)
+		}
+		manifestNum := storage.DiskFileNum(b.pendingRSManifestNum)
+		if err := rsEngine.PrepareExternalManifest(manifestNum); err != nil {
+			log.KvExec.Fatalf(ctx, "PrepareExternalManifest(%d): %v", manifestNum, err)
+		}
+	}
+	if b.pendingRSManifestNum > 0 {
+		b.r.rsStateMu.Lock()
+	}
 	sync := b.changeRemovesReplica || b.changeTruncatesSideloadedFiles
 	if err := b.batch.Commit(sync); err != nil {
+		if b.pendingRSManifestNum > 0 {
+			// PrepareExternalManifest already quiesced the old engine and
+			// opened a new one; we cannot cleanly roll back.
+			log.KvExec.Fatalf(ctx, "unable to commit Raft entry batch: %v", err)
+		}
 		return errors.Wrapf(err, "unable to commit Raft entry batch")
 	}
 	b.batch.Close()
+	if b.pendingRSManifestNum > 0 {
+		rsEngine := b.r.rsStateMu.rsEngine
+		if rsEngine == nil {
+			panic(errors.AssertionFailedf(
+				"unexpectedly missing RSEngine after batch commit for manifest %d", b.pendingRSManifestNum))
+		}
+		manifestNum := storage.DiskFileNum(b.pendingRSManifestNum)
+		rsEngine.InstallPreparedManifest(manifestNum)
+		// Re-enable compactions if this replica is the leaseholder.
+		//
+		// TODO(basalt): this CompactionToggle placement looks wrong. The caller of
+		// the BatchRequest should enable compactions when the BatchRequest
+		// evaluation or txn completes, whether successful or failed.
+		if b.state.Lease != nil &&
+			b.state.Lease.Replica.ReplicaID == b.r.replicaID {
+			rsEngine.CompactionToggle(true)
+		}
+		b.r.rsStateMu.Unlock()
+		b.pendingRSManifestNum = 0
+	}
 
 	// Update the replica's applied indexes, mvcc stats and closed timestamp.
 	r := b.r
@@ -677,6 +829,9 @@ func (b *replicaAppBatch) ApplyToStateMachine(ctx context.Context) error {
 	}
 	r.mu.closedTimestampSetter = b.closedTimestampSetter
 	closedTimestampUpdated := r.shMu.state.RaftClosedTimestamp.Forward(b.state.RaftClosedTimestamp)
+
+	r.shMu.state.ApproxStoreLocalBytes = b.state.ApproxStoreLocalBytes
+	r.shMu.state.FlushStartedCount = b.state.FlushStartedCount
 
 	if b.state.ForceFlushIndex != r.shMu.state.ForceFlushIndex {
 		r.shMu.state.ForceFlushIndex = b.state.ForceFlushIndex
@@ -708,6 +863,20 @@ func (b *replicaAppBatch) ApplyToStateMachine(ctx context.Context) error {
 
 	// Record the number of keys written to the replica.
 	b.r.loadStats.RecordWriteKeys(float64(b.ab.numMutations))
+
+	// Notify the range flusher if this range has accumulated enough
+	// store-local bytes. The Swap prevents redundant notifications.
+	// Timeseries ranges are excluded because they contain MERGE keys
+	// incompatible with range flush's ScanInternal. Only notify on the
+	// leaseholder to avoid flooding the queue with entries that will
+	// immediately fail with "not the leaseholder".
+	if r.store.rangeFlusher != nil && !rangeContainsTimeseriesData(b.state.Desc.StartKey) &&
+		b.state.Lease.Replica.ReplicaID == r.replicaID {
+		threshold := rangeFlushBytesThreshold.Get(&r.store.ClusterSettings().SV)
+		if b.state.ApproxStoreLocalBytes >= threshold && !r.rangeFlushNotified.Swap(true) {
+			r.store.rangeFlusher.enqueueAndNotify(r.RangeID, b.state.ApproxStoreLocalBytes)
+		}
+	}
 
 	now := crtime.NowMono()
 	if needsSplitBySize && r.splitQueueThrottle.ShouldProcess(now) {
@@ -785,9 +954,11 @@ func (b *replicaAppBatch) verifySysBytes(ctx context.Context) error {
 	// or a merge -- that's because the state is read when the batch is
 	// initialized, but the descriptor isn't updated until side effects are
 	// applied via handleNonTrivialReplicatedEvalResult.
+	snap := b.r.NewCombinedSnapshot()
+	defer snap.Close()
 	var desc roachpb.RangeDescriptor
 	descKey := keys.RangeDescriptorKey(b.state.Desc.StartKey)
-	ok, err := storage.MVCCGetProto(ctx, b.r.store.StateEngine(), descKey,
+	ok, err := storage.MVCCGetProto(ctx, snap, descKey,
 		hlc.MaxTimestamp, &desc, storage.MVCCGetOptions{
 			Inconsistent: true, ReadCategory: fs.UnknownReadCategory})
 	if err != nil {
@@ -796,7 +967,6 @@ func (b *replicaAppBatch) verifySysBytes(ctx context.Context) error {
 	if !ok {
 		return errors.Errorf("range descriptor not found at key %s", descKey)
 	}
-
 	// Compute stats for only the key spans that contribute to SysBytes:
 	// 1. Replicated range-ID local keys.
 	// 2. Range-local keys.
@@ -810,7 +980,7 @@ func (b *replicaAppBatch) verifySysBytes(ctx context.Context) error {
 	var computedSysBytes, computedSysCount int64
 	for _, span := range sysKeySpans {
 		ms, err := storage.ComputeStats(
-			ctx, b.r.store.StateEngine(), fs.UnknownReadCategory,
+			ctx, snap, fs.UnknownReadCategory,
 			span.Key, span.EndKey, 0 /* nowNanos */)
 		if err != nil {
 			return err

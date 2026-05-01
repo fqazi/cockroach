@@ -1001,8 +1001,10 @@ distsender_rpc_adminsplit_sent: distsender.rpc.adminsplit.sent
 distsender_rpc_admintransferlease_sent: distsender.rpc.admintransferlease.sent
 distsender_rpc_adminunsplit_sent: distsender.rpc.adminunsplit.sent
 distsender_rpc_adminverifyprotectedtimestamp_sent: distsender.rpc.adminverifyprotectedtimestamp.sent
+distsender_rpc_allocatefilenumsforrange_sent: distsender.rpc.allocatefilenumsforrange.sent
 distsender_rpc_barrier_sent: distsender.rpc.barrier.sent
 distsender_rpc_checkconsistency_sent: distsender.rpc.checkconsistency.sent
+distsender_rpc_checkrangesharedmanifestnum_sent: distsender.rpc.checkrangesharedmanifestnum.sent
 distsender_rpc_clearrange_sent: distsender.rpc.clearrange.sent
 distsender_rpc_computechecksum_sent: distsender.rpc.computechecksum.sent
 distsender_rpc_conditionalput_sent: distsender.rpc.conditionalput.sent
@@ -1080,6 +1082,7 @@ distsender_rpc_queryintent_sent: distsender.rpc.queryintent.sent
 distsender_rpc_querylocks_sent: distsender.rpc.querylocks.sent
 distsender_rpc_queryresolvedtimestamp_sent: distsender.rpc.queryresolvedtimestamp.sent
 distsender_rpc_querytxn_sent: distsender.rpc.querytxn.sent
+distsender_rpc_rangeflushprepare_sent: distsender.rpc.rangeflushprepare.sent
 distsender_rpc_rangestats_sent: distsender.rpc.rangestats.sent
 distsender_rpc_recomputestats_sent: distsender.rpc.recomputestats.sent
 distsender_rpc_recovertxn_sent: distsender.rpc.recovertxn.sent
@@ -1094,6 +1097,7 @@ distsender_rpc_scan_sent: distsender.rpc.scan.sent
 distsender_rpc_sent: distsender.rpc.sent.total
 distsender_rpc_sent_local: distsender.rpc.sent.local
 distsender_rpc_sent_nextreplicaerror: distsender.rpc.sent.nextreplicaerror
+distsender_rpc_setrangesharedmanifestnum_sent: distsender.rpc.setrangesharedmanifestnum.sent
 distsender_rpc_subsume_sent: distsender.rpc.subsume.sent
 distsender_rpc_transferlease_sent: distsender.rpc.transferlease.sent
 distsender_rpc_truncatelog_sent: distsender.rpc.truncatelog.sent
@@ -2066,6 +2070,8 @@ raftlog_size_max: raftlog.size.max
 raftlog_size_total: raftlog.size.total
 raftlog_truncated: raftlog.truncated
 range_adds: range.adds
+range_flush_bytes_flushed: range_flush.bytes_flushed
+range_flush_bytes_queued: range_flush.bytes_queued
 range_merges: range.merges
 range_raftleaderremovals: range.raftleaderremovals
 range_raftleadertransfers: range.raftleadertransfers
@@ -2228,8 +2234,10 @@ rpc_method_adminsplit_recv: rpc.method.adminsplit.recv
 rpc_method_admintransferlease_recv: rpc.method.admintransferlease.recv
 rpc_method_adminunsplit_recv: rpc.method.adminunsplit.recv
 rpc_method_adminverifyprotectedtimestamp_recv: rpc.method.adminverifyprotectedtimestamp.recv
+rpc_method_allocatefilenumsforrange_recv: rpc.method.allocatefilenumsforrange.recv
 rpc_method_barrier_recv: rpc.method.barrier.recv
 rpc_method_checkconsistency_recv: rpc.method.checkconsistency.recv
+rpc_method_checkrangesharedmanifestnum_recv: rpc.method.checkrangesharedmanifestnum.recv
 rpc_method_clearrange_recv: rpc.method.clearrange.recv
 rpc_method_computechecksum_recv: rpc.method.computechecksum.recv
 rpc_method_conditionalput_recv: rpc.method.conditionalput.recv
@@ -2255,6 +2263,7 @@ rpc_method_queryintent_recv: rpc.method.queryintent.recv
 rpc_method_querylocks_recv: rpc.method.querylocks.recv
 rpc_method_queryresolvedtimestamp_recv: rpc.method.queryresolvedtimestamp.recv
 rpc_method_querytxn_recv: rpc.method.querytxn.recv
+rpc_method_rangeflushprepare_recv: rpc.method.rangeflushprepare.recv
 rpc_method_rangestats_recv: rpc.method.rangestats.recv
 rpc_method_recomputestats_recv: rpc.method.recomputestats.recv
 rpc_method_recovertxn_recv: rpc.method.recovertxn.recv
@@ -2266,6 +2275,7 @@ rpc_method_resolveintentrange_recv: rpc.method.resolveintentrange.recv
 rpc_method_reversescan_recv: rpc.method.reversescan.recv
 rpc_method_revertrange_recv: rpc.method.revertrange.recv
 rpc_method_scan_recv: rpc.method.scan.recv
+rpc_method_setrangesharedmanifestnum_recv: rpc.method.setrangesharedmanifestnum.recv
 rpc_method_subsume_recv: rpc.method.subsume.recv
 rpc_method_transferlease_recv: rpc.method.transferlease.recv
 rpc_method_truncatelog_recv: rpc.method.truncatelog.recv
@@ -2801,6 +2811,12 @@ storage_category_raft_snapshot_bytes_written: storage.category_raft_snapshot.byt
 storage_category_sql_col_spill_bytes_written: storage.category_sql_col_spill.bytes_written
 storage_category_unspecified_bytes_written: storage.category_unspecified.bytes_written
 storage_checkpoints: storage.checkpoints
+storage_compaction_scheduler_duration_range_flusher: storage.compaction_scheduler.duration.range_flusher
+storage_compaction_scheduler_duration_range_shared: storage.compaction_scheduler.duration.range_shared
+storage_compaction_scheduler_duration_store_local: storage.compaction_scheduler.duration.store_local
+storage_compaction_scheduler_running_range_flusher: storage.compaction_scheduler.running.range_flusher
+storage_compaction_scheduler_running_range_shared: storage.compaction_scheduler.running.range_shared
+storage_compaction_scheduler_running_store_local: storage.compaction_scheduler.running.store_local
 storage_compactions_cancelled_bytes: storage.compactions.cancelled.bytes
 storage_compactions_cancelled_count: storage.compactions.cancelled.count
 storage_compactions_duration: storage.compactions.duration

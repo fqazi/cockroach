@@ -1047,10 +1047,21 @@ func (sp StoreProperties) SafeFormat(w redact.SafePrinter, _ rune) {
 	}
 	if sp.FileStoreProperties != nil {
 		w.SafeString(" fs:{")
-		w.Printf("bdev=%s", redact.SafeString(sp.FileStoreProperties.BlockDevice))
-		w.Printf(" fstype=%s", redact.SafeString(sp.FileStoreProperties.FsType))
-		w.Printf(" mountpoint=%s", redact.SafeString(sp.FileStoreProperties.MountPoint))
-		w.Printf(" mountopts=%s", redact.SafeString(sp.FileStoreProperties.MountOptions))
+		first := true
+		maybeField := func(key, val string) {
+			if val == "" {
+				return
+			}
+			if !first {
+				w.SafeRune(' ')
+			}
+			first = false
+			w.Printf("%s=%s", redact.SafeString(key), redact.SafeString(val))
+		}
+		maybeField("bdev", sp.FileStoreProperties.BlockDevice)
+		maybeField("fstype", sp.FileStoreProperties.FsType)
+		maybeField("mountpoint", sp.FileStoreProperties.MountPoint)
+		maybeField("mountopts", sp.FileStoreProperties.MountOptions)
 		w.SafeString("}")
 	}
 }

@@ -16,8 +16,12 @@ import (
 )
 
 func computeStoreProperties(ctx context.Context, cfg engineConfig) roachpb.StoreProperties {
+	dir := cfg.env.Dir
+	if cfg.basaltPath != "" {
+		dir = cfg.basaltPath
+	}
 	props := roachpb.StoreProperties{
-		Dir:       cfg.env.Dir,
+		Dir:       dir,
 		ReadOnly:  cfg.env.IsReadOnly(),
 		Encrypted: cfg.env.Encryption != nil,
 	}
@@ -26,8 +30,18 @@ func computeStoreProperties(ctx context.Context, cfg engineConfig) roachpb.Store
 		*props.WalFailoverPath = cfg.opts.WALFailover.Secondary.Dirname
 	}
 
-	// In-memory store?
+	// In-memory store: no filesystem properties to report.
 	if cfg.env.Dir == "" {
+		return props
+	}
+
+	// Basalt store: report the basalt URI as the path with fstype "basalt"
+	// rather than detecting local filesystem properties.
+	if cfg.basaltPath != "" {
+		props.FileStoreProperties = &roachpb.FileStoreProperties{
+			Path:   cfg.basaltPath,
+			FsType: "basalt",
+		}
 		return props
 	}
 

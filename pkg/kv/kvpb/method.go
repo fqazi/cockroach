@@ -172,6 +172,22 @@ const (
 	// in-memory lock table to the replicated lock table.
 	FlushLockTable
 
+	// AllocateFileNumsForRange allocates file numbers for a range's
+	// range-shared LSM. These file numbers are used for MANIFESTs and
+	// SSTables in the RSEngine.
+	AllocateFileNumsForRange
+
+	// SetRangeSharedManifestNum updates the range-shared manifest number.
+	// Used by InstallNewManifest to atomically switch to a new manifest.
+	SetRangeSharedManifestNum
+	// CheckRangeSharedManifestNum verifies the range-shared manifest number
+	// and descriptor generation. Used by split/merge transactions.
+	CheckRangeSharedManifestNum
+
+	// RangeFlushPrepare is the first phase of a range flush. It increments
+	// FlushStartedCount and triggers a store-local snapshot.
+	RangeFlushPrepare
+
 	// MaxMethod is the maximum method.
 	MaxMethod Method = iota - 1
 	// NumMethods represents the total number of API methods.

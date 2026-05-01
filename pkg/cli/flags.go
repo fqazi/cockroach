@@ -62,6 +62,11 @@ var serverHTTPAdvertiseAddr, serverHTTPAdvertisePort string
 var localityAdvertiseHosts localityList
 var startBackground bool
 var storeSpecs base.StoreSpecList
+var basaltAliasSpecs []string
+var basaltClusterID string
+var basaltStoreKey string
+var basaltStoreKeyOld string
+var basaltNodeID int
 var goMemLimit int64
 var tenantIDFile string
 var localityFile string
@@ -94,6 +99,11 @@ func initPreFlagsDefaults() {
 	startBackground = false
 
 	storeSpecs = base.StoreSpecList{}
+	basaltAliasSpecs = nil
+	basaltClusterID = ""
+	basaltStoreKey = ""
+	basaltStoreKeyOld = ""
+	basaltNodeID = 0
 
 	goMemLimit = 0
 
@@ -530,6 +540,12 @@ func init() {
 		cliflagcfg.StringFlag(f, &localityFile, cliflags.LocalityFile)
 
 		cliflagcfg.VarFlag(f, &storeSpecs, cliflags.Store)
+		cliflagcfg.StringArrayFlag(f, &basaltAliasSpecs, cliflags.Basalt)
+		cliflagcfg.StringFlag(f, &basaltClusterID, cliflags.BasaltClusterID)
+		cliflagcfg.StringFlag(f, &basaltStoreKey, cliflags.BasaltStoreKey)
+		cliflagcfg.StringFlag(f, &basaltStoreKeyOld, cliflags.BasaltStoreKeyOld)
+		cliflagcfg.IntFlag(f, &basaltNodeID, cliflags.BasaltNodeID)
+		cliflagcfg.BoolFlag(f, &serverCfg.DisableRSEngine, cliflags.DisableRSEngine)
 
 		// deprecatedStorageEngine is only kept for backwards compatibility.
 		cliflagcfg.StringFlag(f, &deprecatedStorageEngine, cliflags.StorageEngine)
@@ -1528,13 +1544,23 @@ func extraStoreFlagInit(cmd *cobra.Command) error {
 	if fs.Changed(cliflags.Store.Name) {
 		serverCfg.Stores = storeSpecs
 	}
+	if fs.Changed(cliflags.Basalt.Name) || fs.Changed(cliflags.BasaltClusterID.Name) ||
+		fs.Changed(cliflags.BasaltStoreKey.Name) || fs.Changed(cliflags.BasaltNodeID.Name) {
+		serverCfg.StorageConfig.BasaltConfig = storageconfig.BasaltConfig{
+			AliasSpecs:  basaltAliasSpecs,
+			ClusterID:   basaltClusterID,
+			StoreKey:    basaltStoreKey,
+			StoreKeyOld: basaltStoreKeyOld,
+			NodeID:      int32(basaltNodeID),
+		}
+	}
 	// Convert all the store paths to absolute paths. We want this to
 	// ensure canonical directories across invocations; and also to
 	// benefit from the check in GetAbsoluteFSPath() that the user
 	// didn't mistakenly assume a heading '~' would get translated by
 	// CockroachDB. (The shell should be responsible for that.)
 	for i, ss := range serverCfg.Stores.Specs {
-		if ss.InMemory {
+		if !ss.IsLocal() {
 			continue
 		}
 		absPath, err := base.GetAbsoluteFSPath("path", ss.Path)
@@ -1564,7 +1590,7 @@ func extraStoreFlagInit(cmd *cobra.Command) error {
 	if !fs.Changed(cliflags.ExternalIODir.Name) {
 		// Try to find a directory from the store configuration.
 		for _, ss := range serverCfg.Stores.Specs {
-			if ss.InMemory {
+			if !ss.IsLocal() {
 				continue
 			}
 			startCtx.externalIODir = filepath.Join(ss.Path, "extern")

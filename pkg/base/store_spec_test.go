@@ -127,12 +127,12 @@ target_file_size=2097152`
 		{"ballast-size=20GiB,path=/mnt/hda1,ballast-size=20GiB", "ballast-size field was used twice in store definition", StoreSpec{}},
 
 		// type
-		{"type=mem,size=20GiB", "", StoreSpec{Size: storageconfig.BytesSize(21474836480), InMemory: true}},
-		{"size=20GiB,type=mem", "", StoreSpec{Size: storageconfig.BytesSize(21474836480), InMemory: true}},
-		{"size=20.5GiB,type=mem", "", StoreSpec{Size: storageconfig.BytesSize(22011707392), InMemory: true}},
+		{"type=mem,size=20GiB", "", StoreSpec{Size: storageconfig.BytesSize(21474836480), Type: storageconfig.StoreTypeInMemory}},
+		{"size=20GiB,type=mem", "", StoreSpec{Size: storageconfig.BytesSize(21474836480), Type: storageconfig.StoreTypeInMemory}},
+		{"size=20.5GiB,type=mem", "", StoreSpec{Size: storageconfig.BytesSize(22011707392), Type: storageconfig.StoreTypeInMemory}},
 		{"size=20GiB,type=mem,attrs=mem", "", StoreSpec{
 			Size:       storageconfig.BytesSize(21474836480),
-			InMemory:   true,
+			Type:       storageconfig.StoreTypeInMemory,
 			Attributes: []string{"mem"},
 		}},
 		{"type=mem,size=20", "store size (20 B) must be at least 640 MiB", StoreSpec{}},
@@ -141,6 +141,21 @@ target_file_size=2097152`
 		{"path=/mnt/hda1,type=mem", "path specified for in memory store", StoreSpec{}},
 		{"path=/mnt/hda1,type=other", "other is not a valid store type", StoreSpec{}},
 		{"path=/mnt/hda1,type=mem,size=20GiB", "path specified for in memory store", StoreSpec{}},
+		{"type=basalt", "no path specified for basalt store", StoreSpec{}},
+		{"type=basalt,path=/mnt/hda1", "basalt store path must start with basalt://", StoreSpec{}},
+		{"basalt://ctrl:5000/store-1", "",
+			StoreSpec{Type: storageconfig.StoreTypeBasalt, Path: "basalt://ctrl:5000/store-1"}},
+		{"type=basalt,path=basalt://ctrl:5000/store-1", "",
+			StoreSpec{Type: storageconfig.StoreTypeBasalt, Path: "basalt://ctrl:5000/store-1"}},
+		// basalt with multiple controller addresses (commas in path)
+		{"basalt://ctrl1:1234,ctrl2:5678/s1", "",
+			StoreSpec{Type: storageconfig.StoreTypeBasalt, Path: "basalt://ctrl1:1234,ctrl2:5678/s1"}},
+		{"basalt://ctrl1:1234,ctrl2:5678,ctrl3:9012/s1", "",
+			StoreSpec{Type: storageconfig.StoreTypeBasalt, Path: "basalt://ctrl1:1234,ctrl2:5678,ctrl3:9012/s1"}},
+		{"path=basalt://ctrl1:1234,ctrl2:5678/s1,size=20GiB", "",
+			StoreSpec{Type: storageconfig.StoreTypeBasalt, Path: "basalt://ctrl1:1234,ctrl2:5678/s1",
+				Size: storageconfig.BytesSize(21474836480)}},
+		{"path=/mnt/hda1,type=local", "", StoreSpec{Path: "/mnt/hda1"}},
 
 		// provisioned rate
 		{"path=/mnt/hda1,provisioned-rate=bandwidth=200MiB/s", "",
@@ -163,7 +178,7 @@ target_file_size=2097152`
 		}},
 		{"type=mem,attrs=hdd:ssd,size=20GiB", "", StoreSpec{
 			Size:       storageconfig.BytesSize(21474836480),
-			InMemory:   true,
+			Type:       storageconfig.StoreTypeInMemory,
 			Attributes: []string{"hdd", "ssd"},
 		}},
 
@@ -232,7 +247,7 @@ func TestStoreSpecListPreventedStartupMessage(t *testing.T) {
 
 	ssl := base.StoreSpecList{
 		Specs: []base.StoreSpec{
-			{Path: "foo", InMemory: true},
+			{Path: "foo", Type: storageconfig.StoreTypeInMemory},
 			{Path: okStoreDir},
 			{Path: boomStoreDir},
 		},

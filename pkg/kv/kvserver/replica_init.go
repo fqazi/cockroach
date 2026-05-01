@@ -28,6 +28,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc/rpcbase"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
@@ -281,6 +282,7 @@ func newUninitializedReplicaWithoutRaftGroup(store *Store, id roachpb.FullReplic
 		Knobs:                  r.store.TestingKnobs().FlowControlTestingKnobs,
 	})
 	r.RefreshPolicy(nil)
+
 	return r
 }
 
@@ -322,6 +324,32 @@ func (r *Replica) initRaftMuLockedReplicaMuLocked(
 	if r.shMu.state.ForceFlushIndex != (roachpb.ForceFlushIndex{}) {
 		r.flowControlV2.ForceFlushIndexChangedLocked(context.TODO(), r.shMu.state.ForceFlushIndex.Index)
 	}
+
+	// Initialize RSEngine container if the replica uses a range-shared engine.
+	basaltFS := r.store.cfg.BasaltFS
+	openRSEngine := r.store.cfg.OpenRSEngine
+	if (basaltFS == nil) != (openRSEngine == nil) {
+		return errors.AssertionFailedf("BasaltFS and OpenRSEngine must both be nil or both be non-nil")
+	}
+	if basaltFS != nil {
+		containerOpts := storage.RSEngineContainerOptions{
+			ManifestChangeCommitter: r.ManifestCommitter(),
+			BasaltFS:                basaltFS,
+			BasaltDir:               BasaltDir(basaltFS, r.store.StoreID(), r.RangeID, s.ReplicaID),
+			BasaltScratchPathDir:    BasaltScratchDir(basaltFS, r.store.StoreID(), r.RangeID, s.ReplicaID),
+			LogCtx:                  r.AnnotateCtx(context.Background()),
+			OpenRSEngineFunc:        openRSEngine,
+			CompactionScheduler:     r.store.cfg.CompactionScheduler,
+			Stopper:                 r.store.Stopper(),
+		}
+		rsEngine, err := storage.NewRSEngineContainer(
+			storage.DiskFileNum(s.RSManifestNum), containerOpts)
+		if err != nil {
+			return err
+		}
+		r.rsStateMu.rsEngine = rsEngine
+	}
+
 	// TODO(pav-kv): make a method to initialize the log storage.
 	ls := r.asLogStorage()
 	ls.shMu.trunc = s.TruncState

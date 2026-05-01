@@ -1,0 +1,170 @@
+# Test Case 2: Two-store Basalt flow with replication
+#
+# This tests Basalt behavior across multiple replicas:
+# 1. Initialize 2-store cluster with Basalt configuration
+# 2. Get a scratch range on store 1
+# 3. Flush on leaseholder (store 1) to create SST files
+# 4. Add replica to store 2 (triggers Raft snapshot)
+# 5. Verify RSManifestState replicated to both stores
+# 6. Verify Basalt files on both stores
+
+init stores=2
+----
+cluster started with 2 store(s)
+
+scratch-range
+----
+ok
+
+# Initial state on store 1. The scratch range RSEngine already has a manifest
+# since it was created via a split. The split alllocated 60 nums, so [7, 67),
+# and used 66 as the manifest num. The ReplicaManifestCommitter allocated
+# 60+100, to stash some extra ones, so [7, 167).
+range-shared-meta-keys rangeID=1 store=1
+----
+RSManifestState:
+  disk_file_num: 66, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 167
+
+basalt-files
+----
+s1/
+s1/ranges/
+s1/ranges/r1:1/
+s1/ranges/r1:1/MANIFEST-000066:
+s1/ranges/r1:1/  manifest:66
+s1/scratch/
+s1/scratch/r1:1/
+s2/
+s2/ranges/
+s2/scratch/
+
+# Flush on store 1 to create initial SST and another manifest.
+flush rangeID=1 store=1
+----
+flushed
+
+range-shared-meta-keys rangeID=1 store=1
+----
+RSManifestState:
+  disk_file_num: 226, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 327
+
+# Add replica to store 2. This triggers a Raft snapshot which includes
+# the RSManifestState and RangeFileNumAllocState.
+add-replica rangeID=1 store=2
+----
+added replica to store 2, replicas: 2
+
+# Verify RSManifestState is replicated to store 2 (same as store 1).
+range-shared-meta-keys rangeID=1 store=2
+----
+RSManifestState:
+  disk_file_num: 226, replica_id: 2
+RangeFileNumAllocState:
+  next_file_num: 327
+
+# Verify RSEngine state on store 2 shows same manifest as store 1.
+rs-engine-state rangeID=1 store=2
+----
+current-manifest: 226
+manifest 226: refcount=1 sstables=[000225.sst]
+
+# Verify Basalt files. The scratch range has synthetic ID 1.
+# Both stores have files for the replicated range.
+basalt-files
+----
+s1/
+s1/ranges/
+s1/ranges/r1:1/
+s1/ranges/r1:1/000225.sst:
+s1/ranges/r1:1/  previous-manifest:66
+s1/ranges/r1:1/MANIFEST-000066:
+s1/ranges/r1:1/  manifest:66
+s1/ranges/r1:1/MANIFEST-000226:
+s1/ranges/r1:1/  manifest:226
+s1/ranges/r1:1/  000225.sst
+s1/scratch/
+s1/scratch/r1:1/
+s2/
+s2/ranges/
+s2/ranges/r1:2/
+s2/ranges/r1:2/000225.sst:
+s2/ranges/r1:2/  previous-manifest:66
+s2/ranges/r1:2/MANIFEST-000226:
+s2/ranges/r1:2/  manifest:226
+s2/ranges/r1:2/  000225.sst
+s2/scratch/
+s2/scratch/r1:2/
+
+# Flush again. The flush should be replicated.
+flush rangeID=1 store=1
+----
+flushed
+
+range-shared-meta-keys rangeID=1 store=1
+----
+RSManifestState:
+  disk_file_num: 286, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 327
+
+range-shared-meta-keys rangeID=1 store=2
+----
+RSManifestState:
+  disk_file_num: 286, replica_id: 2
+RangeFileNumAllocState:
+  next_file_num: 327
+
+rs-engine-state rangeID=1 store=1
+----
+current-manifest: 286
+manifest 286: refcount=1 sstables=[000225.sst 000285.sst]
+
+rs-engine-state rangeID=1 store=2
+----
+current-manifest: 286
+manifest 286: refcount=1 sstables=[000225.sst 000285.sst]
+
+basalt-files
+----
+s1/
+s1/ranges/
+s1/ranges/r1:1/
+s1/ranges/r1:1/000225.sst:
+s1/ranges/r1:1/  previous-manifest:66
+s1/ranges/r1:1/000285.sst:
+s1/ranges/r1:1/  previous-manifest:226
+s1/ranges/r1:1/MANIFEST-000066:
+s1/ranges/r1:1/  manifest:66
+s1/ranges/r1:1/MANIFEST-000226:
+s1/ranges/r1:1/  manifest:226
+s1/ranges/r1:1/  000225.sst
+s1/ranges/r1:1/MANIFEST-000286:
+s1/ranges/r1:1/  manifest:286
+s1/ranges/r1:1/  000225.sst
+s1/ranges/r1:1/  000285.sst
+s1/scratch/
+s1/scratch/r1:1/
+s2/
+s2/ranges/
+s2/ranges/r1:2/
+s2/ranges/r1:2/000225.sst:
+s2/ranges/r1:2/  previous-manifest:66
+s2/ranges/r1:2/000285.sst:
+s2/ranges/r1:2/  previous-manifest:226
+s2/ranges/r1:2/MANIFEST-000226:
+s2/ranges/r1:2/  manifest:226
+s2/ranges/r1:2/  000225.sst
+s2/ranges/r1:2/MANIFEST-000286:
+s2/ranges/r1:2/  manifest:286
+s2/ranges/r1:2/  000225.sst
+s2/ranges/r1:2/  000285.sst
+s2/scratch/
+s2/scratch/r1:2/
+
+stop
+----
+stopped

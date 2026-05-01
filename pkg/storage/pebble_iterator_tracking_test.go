@@ -62,7 +62,7 @@ func TestPebbleIteratorTracking(t *testing.T) {
 			LowerBound: []byte("a"),
 			UpperBound: []byte("z"),
 		}
-		iter, err := newPebbleIterator(context.Background(), p.db, iterOpts, StandardDurability, p)
+		iter, err := newPebbleIterator(context.Background(), p.db, iterOpts, StandardDurability, p, pebble.LSMVersionHandle{})
 		require.NoError(t, err)
 		defer iter.Close()
 		time.Sleep(15 * time.Minute)

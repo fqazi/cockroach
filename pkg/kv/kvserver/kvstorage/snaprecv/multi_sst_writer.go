@@ -21,6 +21,11 @@ import (
 
 // MultiSSTWriter is a wrapper around an SSTWriter and SSTSnapshotStorageScratch
 // that handles chunking SSTs and persisting them to disk.
+//
+// When dormant range deletions are present, MultiSSTWriter produces aligned
+// upper+lower SST pairs. The upper SST contains normal and dormant RANGEDEL
+// keys; the lower SST contains BelowDormant keys. These are ingested as
+// StackedLocalSST pairs via IngestAndExciseStacked.
 type MultiSSTWriter struct {
 	st      *cluster.Settings
 	scratch *SSTSnapshotStorageScratch
@@ -61,6 +66,30 @@ type MultiSSTWriter struct {
 	// rangeDelFrag is like rangeKeyFrag, but for range deletions (i.e. operations
 	// that simply clear out all keys in a span).
 	rangeDelFrag rangedel.Fragmenter
+	// currLowerSST is the SST writer for BelowDormant keys. Lazily opened when
+	// the first BelowDormant key arrives. Nil when no BelowDormant keys have
+	// been seen for the current upper SST.
+	currLowerSST *storage.SSTWriter
+	// lowerRangeDelFrag fragments BelowDormant range deletions for the lower SST.
+	lowerRangeDelFrag rangedel.Fragmenter
+	// lowerDataSize and lowerSSTSize track sizes for lower SSTs (excluding the
+	// current one).
+	lowerDataSize, lowerSSTSize int64
+	// lowerSSTFiles tracks the file index within scratch.ssts for each lower SST
+	// that was finalized. Used to build StackedLocalSST pairs in Finish.
+	lowerSSTFiles []lowerSSTEntry
+	// haveDormantKeys is set to true once any dormant range deletion or
+	// BelowDormant key is seen.
+	haveDormantKeys bool
+}
+
+// lowerSSTEntry records the scratch file index for a finalized lower SST and
+// the index of the corresponding upper SST in scratch.ssts.
+type lowerSSTEntry struct {
+	// upperSSTIdx is the scratch file index of the corresponding upper SST.
+	upperSSTIdx int
+	// lowerSSTIdx is the scratch file index of this lower SST.
+	lowerSSTIdx int
 }
 
 type MultiSSTWriterOptions struct {
@@ -74,6 +103,57 @@ type MultiSSTWriterOptions struct {
 	// This does not affect other SSTs.
 	MaxSSTSize int64
 }
+
+// TODO(basalt): make correctness more robust.
+//
+// The correctness of the size based rollover logic in MultiSSTWriter is very
+// subtle, and relies on some properties that are not properly documented.
+// Specifically, consider the case of a RANGEDEL [b, d), RANGEKEY [b, d), and
+// point key b. There is no promise on what order these will show up in the
+// ReadOne stream. They may even be split across different batches and so
+// arrive in different ReadOne calls. But we can't afford to have a size-based
+// rollover in between any of these keys since we will have overlapping SSTs.
+//
+// One observation is that size-based rollover only happens on the MVCC span,
+// where every point key is of the form b@ts. This will sort after the
+// rangedel and rangekey spans that start at b (TODO(sumeer): we also fragment
+// rangedels and rangekeys at user key boundaries, so there can be spans like
+// [b@4, d) after fragmentation -- so we may also be relying on the fact that
+// ScanInternal defragments spans).
+//
+// So then we only have to concern ourselves with rollover in between a
+// RANGEDEL [b, d) and a RANGEKEY [b, d). This doesn't happen because size
+// based rollover uses currSST.DataSize, which increases when data is actually
+// written to the SSTWriter — i.e., via PutEngineKey, ClearEngineKey (point
+// keys), and the fragmenter emit callbacks (emitRangeDel →
+// ClearRawEncodedRange, emitRangeKey → PutInternalRangeKey). Range deletions
+// and range keys are not written directly to the SST. They go into their
+// respective fragmenters, which only emit (and thus increase DataSize) when:
+//
+// 1. A new span with a different start key is Add'd (triggering fragmentation
+// of previously buffered spans)
+//
+// 2. Truncate is called during finalizeSST
+//
+// 3. Finish is called at the end
+//
+// So for rangedel [b, d) followed by rangekey [b, d) (same start key):
+// rangeDelFrag.Add(...) buffers the span without emitting (assuming no prior
+// pending span with a different start key). DataSize is unchanged. The
+// subsequent rolloverSST in putRangeKeyWithEnc sees the same DataSize — no
+// rollover between them.
+//
+// The one scenario where DataSize could change between them is if
+// rangeDelFrag.Add([b, d)) triggers emission of a previously buffered span
+// (e.g., an earlier [a, c) gets fragmented and [a, b) is emitted). But even
+// then, the rollover split would be at key b (the rangekey's start), and
+// Truncate(b) would keep the pending rangedel [b, d) in the fragmenter (since
+// its start key >= the truncation point). Both the rangedel and rangekey end
+// up in the new SST. Correct.
+//
+// So effectively, rollover is driven by point key writes and fragmenter
+// emissions from start-key changes, and the fragmenters ensure range
+// deletions/keys at the same position can't be separated across SSTs.
 
 // NewMultiSSTWriter returns an initialized MultiSSTWriter.
 func NewMultiSSTWriter(
@@ -113,26 +193,88 @@ func NewMultiSSTWriter(
 	return msstw, nil
 }
 
+// DisableSizeBasedRollover disables size-based SST splitting. Called by the
+// receiver when HaveDormantRangeDel is first seen on the stream. Once dormant
+// keys exist, we cannot split the MVCC SST because the lower SST must be
+// aligned with its upper SST partner.
+//
+// This should not result in huge sstables since the size of the range in the
+// store-local LSM compared to the range-shared LSM will be very small.
+func (msstw *MultiSSTWriter) DisableSizeBasedRollover() {
+	msstw.maxSSTSize = 0
+}
+
+// initLowerSST lazily creates the lower SST writer for BelowDormant keys.
+func (msstw *MultiSSTWriter) initLowerSST(ctx context.Context) error {
+	newSSTFile, err := msstw.scratch.NewFile(ctx, msstw.sstChunkSize)
+	if err != nil {
+		return errors.Wrap(err, "failed to create lower sst file")
+	}
+	lowerSST := storage.MakeIngestionSSTWriter(ctx, msstw.st, newSSTFile)
+	msstw.currLowerSST = &lowerSST
+	msstw.lowerRangeDelFrag = rangedel.Fragmenter{
+		Cmp:    storage.EngineComparer.Compare,
+		Format: storage.EngineComparer.FormatKey,
+		Emit:   msstw.emitLowerRangeDel,
+	}
+	return nil
+}
+
+func (msstw *MultiSSTWriter) emitLowerRangeDel(span rangedel.Span) {
+	// Lower SST only has normal range deletions (BelowDormant rangedels).
+	if err := msstw.currLowerSST.ClearRawEncodedRange(span.Start, span.End); err != nil {
+		panic(fmt.Sprintf("failed to put range del in lower sst: %s", err))
+	}
+}
+
+// finalizeLowerSST finishes the lower SST and records its file index.
+// upperSSTIdx is the index of the corresponding upper SST in scratch.ssts.
+func (msstw *MultiSSTWriter) finalizeLowerSST(upperSSTIdx int) error {
+	if msstw.currLowerSST == nil {
+		return nil
+	}
+	msstw.lowerRangeDelFrag.Finish()
+	if err := msstw.currLowerSST.Finish(); err != nil {
+		return errors.Wrap(err, "failed to finish lower sst")
+	}
+	msstw.lowerDataSize += msstw.currLowerSST.DataSize
+	lowerMeta := msstw.currLowerSST.Meta
+	msstw.lowerSSTSize += int64(lowerMeta.Size)
+	// The lower SST file was the last file allocated via scratch.NewFile,
+	// so its index is len(scratch.ssts)-1.
+	msstw.lowerSSTFiles = append(msstw.lowerSSTFiles, lowerSSTEntry{
+		upperSSTIdx: upperSSTIdx,
+		lowerSSTIdx: len(msstw.scratch.ssts) - 1,
+	})
+	msstw.currLowerSST.Close()
+	msstw.currLowerSST = nil
+	return nil
+}
+
 func (msstw *MultiSSTWriter) ReadOne(
 	ctx context.Context,
 	ek storage.EngineKey,
-	sharedOrExternal bool, // may receive shared or external SSTs
+	expectInternalKeys bool,
 	batchReader *storage.BatchReader,
+	isBelowDormant bool,
 ) error {
+	if isBelowDormant {
+		return msstw.readOneBelowDormant(ctx, ek, batchReader)
+	}
 	switch batchReader.KeyKind() {
 	case pebble.InternalKeyKindSet, pebble.InternalKeyKindSetWithDelete:
 		if err := msstw.put(ctx, ek, batchReader.Value()); err != nil {
 			return errors.Wrapf(err, "writing sst for raft snapshot")
 		}
 	case pebble.InternalKeyKindDelete, pebble.InternalKeyKindDeleteSized:
-		if !sharedOrExternal {
+		if !expectInternalKeys {
 			return errors.AssertionFailedf("unexpected batch entry key kind %d", batchReader.KeyKind())
 		}
 		if err := msstw.putInternalPointKey(ctx, batchReader.Key(), batchReader.KeyKind(), nil); err != nil {
 			return errors.Wrapf(err, "writing sst for raft snapshot")
 		}
 	case pebble.InternalKeyKindRangeDelete:
-		if !sharedOrExternal {
+		if !expectInternalKeys {
 			return errors.AssertionFailedf("unexpected batch entry key kind %d", batchReader.KeyKind())
 		}
 		start := batchReader.Key()
@@ -143,9 +285,20 @@ func (msstw *MultiSSTWriter) ReadOne(
 		if err := msstw.putInternalRangeDelete(ctx, start, end); err != nil {
 			return errors.Wrapf(err, "writing sst for raft snapshot")
 		}
-
+	case pebble.InternalKeyKindRangeDeleteDormant:
+		if !expectInternalKeys {
+			return errors.AssertionFailedf("unexpected batch entry key kind %d", batchReader.KeyKind())
+		}
+		start := batchReader.Key()
+		end, err := batchReader.EndKey()
+		if err != nil {
+			return err
+		}
+		if err := msstw.putInternalRangeDormantDelete(ctx, start, end); err != nil {
+			return errors.Wrapf(err, "writing sst for raft snapshot")
+		}
 	case pebble.InternalKeyKindRangeKeyUnset, pebble.InternalKeyKindRangeKeyDelete:
-		if !sharedOrExternal {
+		if !expectInternalKeys {
 			return errors.AssertionFailedf("unexpected batch entry key kind %d", batchReader.KeyKind())
 		}
 		start := batchReader.Key()
@@ -185,6 +338,48 @@ func (msstw *MultiSSTWriter) ReadOne(
 	return nil
 }
 
+// readOneBelowDormant handles a single BelowDormant key, writing it to the
+// lower SST. BelowDormant data contains only point keys and range deletions
+// (no range keys or dormant rangedels).
+func (msstw *MultiSSTWriter) readOneBelowDormant(
+	ctx context.Context, ek storage.EngineKey, batchReader *storage.BatchReader,
+) error {
+	if !msstw.currSpanIsMVCCSpan() {
+		return errors.AssertionFailedf("BelowDormant key %s outside MVCC span", ek)
+	}
+	msstw.haveDormantKeys = true
+	if msstw.currLowerSST == nil {
+		if err := msstw.initLowerSST(ctx); err != nil {
+			return err
+		}
+	}
+	switch batchReader.KeyKind() {
+	case pebble.InternalKeyKindSet, pebble.InternalKeyKindSetWithDelete:
+		if err := msstw.currLowerSST.PutEngineKey(ek, batchReader.Value()); err != nil {
+			return errors.Wrap(err, "writing lower sst for raft snapshot")
+		}
+	case pebble.InternalKeyKindDelete, pebble.InternalKeyKindDeleteSized:
+		if err := msstw.currLowerSST.ClearEngineKey(ek, storage.ClearOptions{}); err != nil {
+			return errors.Wrap(err, "writing lower sst for raft snapshot")
+		}
+	case pebble.InternalKeyKindRangeDelete:
+		start := batchReader.Key()
+		end, err := batchReader.EndKey()
+		if err != nil {
+			return err
+		}
+		msstw.lowerRangeDelFrag.Add(rangedel.Span{
+			Start: start, End: end, Keys: []rangedel.Key{{
+				Trailer: pebble.MakeInternalKeyTrailer(0, pebble.InternalKeyKindRangeDelete),
+			}},
+		})
+	default:
+		return errors.AssertionFailedf(
+			"unexpected BelowDormant key kind %d", batchReader.KeyKind())
+	}
+	return nil
+}
+
 // EstimatedDataSize returns the sum of lengths of keys and values passed
 // to any past or current SST. This is monotonically increasing.
 //
@@ -202,8 +397,8 @@ func (msstw *MultiSSTWriter) emitRangeKey(key rangekey.Span) {
 	}
 }
 
-func (msstw *MultiSSTWriter) emitRangeDel(key rangedel.Span) {
-	if err := msstw.currSST.ClearRawEncodedRange(key.Start, key.End); err != nil {
+func (msstw *MultiSSTWriter) emitRangeDel(span rangedel.Span) {
+	if err := msstw.currSST.AddRangeDeleteSpan(span); err != nil {
 		panic(fmt.Sprintf("failed to put range del in sst: %s", err))
 	}
 }
@@ -280,6 +475,23 @@ func (msstw *MultiSSTWriter) finalizeSST(ctx context.Context, nextKey *storage.E
 		msstw.rangeDelFrag.Truncate(currEngineSpan.End.Encode())
 	}
 
+	// Record the upper SST's index in scratch.ssts before finishing it, since
+	// finishing the lower SST will allocate... actually, the upper SST file was
+	// already allocated. The index of the upper SST's file is the file index
+	// before the lower SST was created. We track this by noting that
+	// initSST's NewFile call created the file, and initLowerSST's NewFile call
+	// (if any) created the next one. The upper SST's file index in scratch.ssts
+	// is: if no lower SST exists, it's len(scratch.ssts)-1. If a lower SST
+	// exists, it's len(scratch.ssts)-2 (since initLowerSST added one more file).
+	upperSSTIdx := len(msstw.scratch.ssts) - 1
+	if msstw.currLowerSST != nil {
+		upperSSTIdx = len(msstw.scratch.ssts) - 2
+	}
+	// Finalize the lower SST (if any) before finishing the upper SST so we
+	// have the file index mapping.
+	if err := msstw.finalizeLowerSST(upperSSTIdx); err != nil {
+		return err
+	}
 	err := msstw.currSST.Finish()
 	if err != nil {
 		return errors.Wrap(err, "failed to finish sst")
@@ -443,7 +655,33 @@ func (msstw *MultiSSTWriter) putInternalRangeDelete(ctx context.Context, start, 
 	if err := msstw.rolloverSST(ctx, decodedStart, decodedEnd); err != nil {
 		return err
 	}
-	msstw.rangeDelFrag.Add(rangedel.Span{Start: start, End: end})
+	msstw.rangeDelFrag.Add(rangedel.Span{
+		Start: start, End: end, Keys: []rangedel.Key{{
+			Trailer: pebble.MakeInternalKeyTrailer(0, pebble.InternalKeyKindRangeDelete),
+		}},
+	})
+	return nil
+}
+
+// putInternalRangeDormantDelete adds a dormant range deletion to the upper
+// SST's range deletion fragmenter. The fragmenter produces spans containing
+// mixed normal/dormant RANGEDEL keys that are written via AddRangeDeleteSpan.
+func (msstw *MultiSSTWriter) putInternalRangeDormantDelete(
+	ctx context.Context, start, end []byte,
+) error {
+	decodedStart, decodedEnd, err := decodeRangeStartEnd(start, end)
+	if err != nil {
+		return err
+	}
+	if err := msstw.rolloverSST(ctx, decodedStart, decodedEnd); err != nil {
+		return err
+	}
+	msstw.haveDormantKeys = true
+	msstw.rangeDelFrag.Add(rangedel.Span{
+		Start: start, End: end, Keys: []rangedel.Key{{
+			Trailer: pebble.MakeInternalKeyTrailer(0, pebble.InternalKeyKindRangeDeleteDormant),
+		}},
+	})
 	return nil
 }
 
@@ -526,9 +764,47 @@ func (msstw *MultiSSTWriter) Finish(ctx context.Context) (dataSize, sstSize int6
 			}
 		}
 	}
-	return msstw.dataSize, msstw.sstSize, nil
+	return msstw.dataSize + msstw.lowerDataSize,
+		msstw.sstSize + msstw.lowerSSTSize, nil
+}
+
+// StackedSSTs returns the list of StackedLocalSST pairs built from the upper
+// and lower SST files. Must be called after Finish. For SSTs without a paired
+// lower SST, LowerSST.Path is empty.
+func (msstw *MultiSSTWriter) StackedSSTs() []pebble.StackedLocalSST {
+	allSSTs := msstw.scratch.SSTs()
+	// Build a set of lower SST file indices for quick lookup.
+	lowerByUpper := make(map[int]int, len(msstw.lowerSSTFiles))
+	lowerIdxSet := make(map[int]struct{}, len(msstw.lowerSSTFiles))
+	for _, entry := range msstw.lowerSSTFiles {
+		lowerByUpper[entry.upperSSTIdx] = entry.lowerSSTIdx
+		lowerIdxSet[entry.lowerSSTIdx] = struct{}{}
+	}
+	var result []pebble.StackedLocalSST
+	for i, path := range allSSTs {
+		if _, isLower := lowerIdxSet[i]; isLower {
+			continue // skip lower SSTs; they are paired with their upper SST
+		}
+		entry := pebble.StackedLocalSST{
+			UpperSST: pebble.LocalSST{Path: path},
+		}
+		if lowerIdx, ok := lowerByUpper[i]; ok {
+			entry.LowerSST = pebble.LocalSST{Path: allSSTs[lowerIdx]}
+		}
+		result = append(result, entry)
+	}
+	return result
+}
+
+// HaveDormantKeys returns true if any dormant range deletion or BelowDormant
+// key was written through this writer.
+func (msstw *MultiSSTWriter) HaveDormantKeys() bool {
+	return msstw.haveDormantKeys
 }
 
 func (msstw *MultiSSTWriter) Close() {
 	msstw.currSST.Close()
+	if msstw.currLowerSST != nil {
+		msstw.currLowerSST.Close()
+	}
 }

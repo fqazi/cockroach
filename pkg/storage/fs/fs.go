@@ -104,9 +104,12 @@ func InitEnvFromStoreSpec(
 	stickyRegistry StickyRegistry,
 	diskWriteStats disk.WriteStatsManager,
 ) (*Env, error) {
+	if spec.IsBasalt() {
+		return initBasaltEnv(ctx, spec, cfg)
+	}
 	fs := vfs.Default
 	dir := spec.Path
-	if spec.InMemory {
+	if spec.IsInMemory() {
 		if spec.StickyVFSID != "" {
 			if stickyRegistry == nil {
 				return nil, errors.Errorf("missing StickyVFSRegistry")
@@ -126,6 +129,9 @@ type EnvConfig struct {
 	RW                RWMode
 	EncryptionOptions *storageconfig.EncryptionOptions
 	Version           clusterversion.Handle
+	// Basalt is non-nil when basalt stores are configured. It holds the
+	// shared basalt resources used by all basalt stores on this node.
+	Basalt *BasaltEnvConfig
 }
 
 // InitEnv initializes a new virtual filesystem environment.
@@ -189,10 +195,14 @@ func InitEnv(
 	// (which in turn will invoke Env.onDiskSlowFunc if set).
 	e.UnencryptedFS, e.diskHealthChecksCloser = vfs.WithDiskHealthChecks(
 		e.UnencryptedFS, diskHealthCheckInterval, statsCollector, e.onDiskSlow)
-	// If we encounter ENOSPC, exit with an informative exit code.
-	e.UnencryptedFS = vfs.OnDiskFull(e.UnencryptedFS, func() {
-		exit.WithCode(exit.DiskFull())
-	})
+	// If we encounter ENOSPC, exit with an informative exit code. Basalt
+	// stores perform I/O over gRPC to remote blob servers where ENOSPC
+	// cannot occur, so the wrapping is unnecessary.
+	if cfg.Basalt == nil {
+		e.UnencryptedFS = vfs.OnDiskFull(e.UnencryptedFS, func() {
+			exit.WithCode(exit.DiskFull())
+		})
+	}
 
 	// Acquire the database lock in the store directory to ensure that no other
 	// process is simultaneously accessing the same store. We manually acquire
@@ -240,7 +250,7 @@ type Env struct {
 	// Registry is non-nil if encryption-at-rest has ever been enabled on the
 	// store. The registry maintains a mapping of all encrypted keys and the
 	// corresponding data key with which they're encrypted.
-	Registry *FileRegistry
+	Registry FileRegistrar
 	// Encryption is non-nil if encryption-at-rest has ever been enabled on
 	// the store. It provides access to encryption-at-rest stats, etc.
 	Encryption *EncryptionEnv
@@ -270,6 +280,9 @@ func (e *Env) Ref() {
 
 // Assert that Env implements vfs.FS.
 var _ vfs.FS = (*Env)(nil)
+
+// TODO(pmattis): uncomment after Pebble bump lands with vfs.AtomicRenamer.
+// var _ vfs.AtomicRenamer = (*Env)(nil)
 
 // IsReadOnly returns true if the environment is opened in read-only mode.
 func (e *Env) IsReadOnly() bool {
@@ -340,6 +353,30 @@ func InMemory() *Env {
 		panic(err)
 	}
 	return e
+}
+
+// NewBasicEnv creates a minimal Env backed by the provided VFS, without disk
+// health checks, directory locks, or encryption. This is intended for use with
+// remote/disaggregated storage backends (e.g. basalt) where disk-level
+// concerns are handled by the storage backend.
+//
+// The caller is responsible for ensuring the provided VFS and any resources it
+// depends on outlive the Env. Register cleanup callbacks via OnClose.
+func NewBasicEnv(vfsFS vfs.FS, dir string) *Env {
+	e := &Env{
+		Dir:           dir,
+		UnencryptedFS: vfsFS,
+		defaultFS:     vfsFS,
+		rw:            ReadWrite,
+	}
+	e.refs.Store(1)
+	return e
+}
+
+// OnClose registers a function to be called when the Env is closed. This is
+// useful for cleaning up resources associated with the Env's underlying VFS.
+func (e *Env) OnClose(fn func()) {
+	e.onClose = append(e.onClose, fn)
 }
 
 // MustInitPhysicalTestingEnv initializes an Env that reads/writees from the
@@ -416,6 +453,14 @@ func (e *Env) RemoveAll(name string) error {
 		return errReadOnly()
 	}
 	return e.defaultFS.RemoveAll(name)
+}
+
+// AtomicRename implements vfs.AtomicRenamer, delegating to the underlying FS.
+func (e *Env) AtomicRename() bool {
+	if ar, ok := e.defaultFS.(vfs.AtomicRenamer); ok {
+		return ar.AtomicRename()
+	}
+	return false
 }
 
 // Rename renames a file. It overwrites the file at newname if one exists,

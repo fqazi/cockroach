@@ -1923,19 +1923,19 @@ func TestTransferLeaseToLaggingNode(t *testing.T) {
 			0: {
 				ScanMaxIdleTime: time.Millisecond,
 				StoreSpecs: []base.StoreSpec{{
-					InMemory: true, Attributes: []string{"n1"},
+					Type: base.StoreTypeInMemory, Attributes: []string{"n1"},
 				}},
 			},
 			1: {
 				ScanMaxIdleTime: time.Millisecond,
 				StoreSpecs: []base.StoreSpec{{
-					InMemory: true, Attributes: []string{"n2"},
+					Type: base.StoreTypeInMemory, Attributes: []string{"n2"},
 				}},
 			},
 			2: {
 				ScanMaxIdleTime: time.Millisecond,
 				StoreSpecs: []base.StoreSpec{{
-					InMemory: true, Attributes: []string{"n3"},
+					Type: base.StoreTypeInMemory, Attributes: []string{"n3"},
 				}},
 			},
 		},

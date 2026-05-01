@@ -47,7 +47,7 @@ func TestShowTraceReplica(t *testing.T) {
 					DefaultSystemZoneConfigOverride: &zoneConfig,
 				},
 			},
-			StoreSpecs: []base.StoreSpec{{InMemory: true, Attributes: []string{node}}},
+			StoreSpecs: []base.StoreSpec{{Type: base.StoreTypeInMemory, Attributes: []string{node}}},
 		}
 	}
 	tcArgs := base.TestClusterArgs{ServerArgsPerNode: map[int]base.TestServerArgs{

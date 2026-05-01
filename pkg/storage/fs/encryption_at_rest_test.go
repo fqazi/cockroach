@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -295,9 +296,19 @@ func (ptfs *plainTestFS) restart() error { return nil }
 
 func (ptfs *plainTestFS) syncDir(t *testing.T) {}
 
-// encryptedTestFS is the encrypted FS being tested.
+// encryptedTestFS is the store-scoped encrypted FS being tested.
 type encryptedTestFS struct {
 	// The base strict FS which is wrapped for error injection and encryption.
+	mem        *vfs.MemFS
+	encOptions *storageconfig.EncryptionOptions
+	errorProb  float64
+	errorRand  *rand.Rand
+
+	encEnv *EncryptionEnv
+}
+
+// clusterEncryptedTestFS is the cluster-scoped encrypted FS being tested.
+type clusterEncryptedTestFS struct {
 	mem        *vfs.MemFS
 	encOptions *storageconfig.EncryptionOptions
 	errorProb  float64
@@ -379,6 +390,80 @@ func makeEncryptedTestFS(t *testing.T, errorProb float64, errorRand *rand.Rand) 
 	}
 	require.NoError(t, etfs.restart())
 	return etfs
+}
+
+func (cetfs *clusterEncryptedTestFS) fs() vfs.FS {
+	return cetfs.encEnv.FS
+}
+
+func (cetfs *clusterEncryptedTestFS) syncDir(t *testing.T) {
+	// Sync root and intermediate directories. In production, directories
+	// persist across restarts; for CrashClone we must explicitly sync
+	// parent directories so that n1/ subdirectories survive.
+	for _, name := range []string{"/", "/registry", "/datakeys"} {
+		dir, err := cetfs.mem.OpenDir(name)
+		require.NoError(t, err)
+		require.NoError(t, dir.Sync())
+		require.NoError(t, dir.Close())
+	}
+}
+
+func (cetfs *clusterEncryptedTestFS) restart() error {
+	if cetfs.encEnv != nil {
+		cetfs.encEnv.Closer.Close()
+		cetfs.encEnv = nil
+	}
+	cetfs.mem = cetfs.mem.CrashClone(vfs.CrashCloneCfg{})
+	ei := &errorInjector{prob: cetfs.errorProb, rand: cetfs.errorRand}
+	fsMeta := errorfs.Wrap(cetfs.mem, ei)
+	encEnv, _, err := NewClusterEncryptedEnv(
+		context.Background(), fsMeta, fsMeta, "/registry", "/datakeys", 1, false, cetfs.encOptions,
+	)
+	if err != nil {
+		return err
+	}
+	cetfs.encEnv = encEnv
+	// Sync intermediate directories so n1/ subdirectories survive
+	// CrashClone. In production, directories persist across restarts.
+	for _, name := range []string{"/", "/registry", "/datakeys"} {
+		dir, err := cetfs.mem.OpenDir(name)
+		if err != nil {
+			return err
+		}
+		if err := errors.CombineErrors(dir.Sync(), dir.Close()); err != nil {
+			return err
+		}
+	}
+	ei.startErrors()
+	return nil
+}
+
+func makeClusterEncryptedTestFS(
+	t *testing.T, errorProb float64, errorRand *rand.Rand,
+) *clusterEncryptedTestFS {
+	mem := vfs.NewCrashableMem()
+	keyFile128 := "111111111111111111111111111111111234567890123456"
+	writeToFile(t, mem, "16.key", []byte(keyFile128))
+	dir, err := mem.OpenDir("/")
+	require.NoError(t, err)
+	require.NoError(t, dir.Sync())
+	require.NoError(t, dir.Close())
+
+	var encOptions storageconfig.EncryptionOptions
+	encOptions.KeySource = storageconfig.EncryptionKeyFromFiles
+	encOptions.KeyFiles = &storageconfig.EncryptionKeyFiles{
+		CurrentKey: "16.key",
+		OldKey:     "plain",
+	}
+	encOptions.RotationPeriod = 100000 * time.Second
+	cetfs := &clusterEncryptedTestFS{
+		mem:        mem,
+		encOptions: &encOptions,
+		errorProb:  errorProb,
+		errorRand:  errorRand,
+	}
+	require.NoError(t, cetfs.restart())
+	return cetfs
 }
 
 // fsTest is used by the various operations.
@@ -690,6 +775,31 @@ func makeOps(rng *rand.Rand, numOps int) []fsTestOp {
 
 var seed = flag.Uint64("seed", 0, "a pseudorandom number generator seed")
 
+func runRandomizedEncryptedFSTest(t *testing.T, encFS testFS) {
+	t.Helper()
+	rng := rand.New(rand.NewSource(int64(*seed)))
+	// Advance rng past the errorProb draws so ops are identical across subtests.
+	rng.Float64()
+	rng.Float64()
+	ptfs := &plainTestFS{vfs: vfs.NewMem()}
+	pTest := fsTest{t: t, fs: ptfs}
+	eTest := fsTest{t: t, fs: encFS}
+	ops := makeOps(rng, 500)
+	for i := range ops {
+		fmt.Fprintf(&pTest.output, "%d: ", i)
+		ops[i].run(&pTest)
+		fmt.Fprintf(&eTest.output, "%d: ", i)
+		ops[i].run(&eTest)
+	}
+	expectedStr := pTest.output.String()
+	actualStr := eTest.output.String()
+	if expectedStr != actualStr {
+		t.Logf("---- expected\n%s\n", expectedStr)
+		t.Logf("---- actual\n%s\n", actualStr)
+	}
+	require.Equal(t, expectedStr, actualStr)
+}
+
 func TestEncryptedFSRandomizedWithErrors(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
@@ -703,24 +813,293 @@ func TestEncryptedFSRandomizedWithErrors(t *testing.T) {
 	if rng.Float64() < 0.9 {
 		errorProb = rng.Float64() / 8
 	}
-	ptfs := &plainTestFS{vfs: vfs.NewMem()}
-	etfs := makeEncryptedTestFS(t, errorProb, rng)
-	pTest := fsTest{t: t, fs: ptfs}
-	eTest := fsTest{t: t, fs: etfs}
-	ops := makeOps(rng, 500)
-	for i := range ops {
-		fmt.Fprintf(&pTest.output, "%d: ", i)
-		ops[i].run(&pTest)
-		fmt.Fprintf(&eTest.output, "%d: ", i)
-		ops[i].run(&eTest)
+
+	t.Run("store-scoped", func(t *testing.T) {
+		etfs := makeEncryptedTestFS(t, errorProb, rand.New(rand.NewSource(int64(*seed)+1)))
+		runRandomizedEncryptedFSTest(t, etfs)
+	})
+	t.Run("cluster-scoped", func(t *testing.T) {
+		cetfs := makeClusterEncryptedTestFS(t, errorProb, rand.New(rand.NewSource(int64(*seed)+2)))
+		runRandomizedEncryptedFSTest(t, cetfs)
+	})
+}
+
+// TestClusterEncryptedMultiNode verifies that two nodes sharing a
+// filesystem can read each other's encrypted files. This exercises
+// cross-node key discovery (NodeDataKeyManager.refreshRemoteKeys) and
+// cross-node registry merging (NodeFileRegistry).
+func TestClusterEncryptedMultiNode(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	ctx := context.Background()
+
+	// Shared FS simulating basaltfs.
+	sharedFS := vfs.NewMem()
+
+	// Local FS for store key files (same key for both nodes).
+	localFS := vfs.NewMem()
+	writeToFile(t, localFS, "16.key", []byte(keyFile128))
+
+	encOptions := &storageconfig.EncryptionOptions{
+		KeySource:      storageconfig.EncryptionKeyFromFiles,
+		KeyFiles:       &storageconfig.EncryptionKeyFiles{CurrentKey: "16.key", OldKey: "plain"},
+		RotationPeriod: 100000 * time.Second,
 	}
-	expectedStr := pTest.output.String()
-	actualStr := eTest.output.String()
-	if true || expectedStr != actualStr {
-		t.Logf("---- expected\n%s\n", expectedStr)
-		t.Logf("---- actual\n%s\n", actualStr)
+
+	// openEnvs opens encryption environments for node 1 and node 2 on
+	// the shared FS. The caller is responsible for closing them.
+	openEnvs := func() (env1, env2 *EncryptionEnv) {
+		var err error
+		env1, _, err = NewClusterEncryptedEnv(
+			ctx, sharedFS, localFS, "registry", "datakeys",
+			roachpb.NodeID(1), false, encOptions,
+		)
+		require.NoError(t, err)
+		env2, _, err = NewClusterEncryptedEnv(
+			ctx, sharedFS, localFS, "registry", "datakeys",
+			roachpb.NodeID(2), false, encOptions,
+		)
+		require.NoError(t, err)
+		return env1, env2
 	}
-	require.Equal(t, pTest.output.String(), eTest.output.String())
+
+	env1, env2 := openEnvs()
+
+	// Use string constants for plaintext so we can produce fresh byte
+	// slices for each operation. encryptedFile.Write encrypts the
+	// provided buffer in-place, so the caller's slice is mutated.
+	const text1 = "hello from node 1, this is secret data"
+	const text2 = "hello from node 2, also secret"
+
+	// Node 1 writes an encrypted file.
+	{
+		f, err := env1.FS.Create("testfile1", UnspecifiedWriteCategory)
+		require.NoError(t, err)
+		_, err = f.Write([]byte(text1))
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+	}
+	// Seal pending registry entries so node 2 can discover the
+	// encryption metadata. In production, this is done by
+	// InstallNewManifest before sending the Raft proposal.
+	env1.FS.(RegistrySealer).SealPendingRegistryEntries()
+
+	// Verify the raw bytes on the shared FS differ from plaintext,
+	// confirming encryption is active.
+	{
+		rawF, err := sharedFS.Open("testfile1")
+		require.NoError(t, err)
+		rawBytes, err := io.ReadAll(rawF)
+		require.NoError(t, err)
+		require.NoError(t, rawF.Close())
+		require.NotEqual(t, []byte(text1), rawBytes, "file should be encrypted on disk")
+	}
+
+	// Node 2 reads node 1's file — exercises cross-node key discovery.
+	{
+		f, err := env2.FS.Open("testfile1")
+		require.NoError(t, err)
+		decrypted, err := io.ReadAll(f)
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+		require.Equal(t, []byte(text1), decrypted)
+	}
+
+	// Node 2 writes, node 1 reads — verifying bidirectional access.
+	{
+		f, err := env2.FS.Create("testfile2", UnspecifiedWriteCategory)
+		require.NoError(t, err)
+		_, err = f.Write([]byte(text2))
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+	}
+	env2.FS.(RegistrySealer).SealPendingRegistryEntries()
+	{
+		rawF, err := sharedFS.Open("testfile2")
+		require.NoError(t, err)
+		rawBytes, err := io.ReadAll(rawF)
+		require.NoError(t, err)
+		require.NoError(t, rawF.Close())
+		require.NotEqual(t, []byte(text2), rawBytes, "file should be encrypted on disk")
+	}
+	{
+		f, err := env1.FS.Open("testfile2")
+		require.NoError(t, err)
+		decrypted, err := io.ReadAll(f)
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+		require.Equal(t, []byte(text2), decrypted)
+	}
+
+	// Restart: close both environments, re-open on the same shared FS,
+	// and verify all data remains readable.
+	env1.Closer.Close()
+	env2.Closer.Close()
+
+	env1, env2 = openEnvs()
+	defer env1.Closer.Close()
+	defer env2.Closer.Close()
+
+	// Both files should be readable from both nodes after restart.
+	for _, tc := range []struct {
+		name      string
+		env       *EncryptionEnv
+		file      string
+		plaintext string
+	}{
+		{"node1-reads-testfile1", env1, "testfile1", text1},
+		{"node1-reads-testfile2", env1, "testfile2", text2},
+		{"node2-reads-testfile1", env2, "testfile1", text1},
+		{"node2-reads-testfile2", env2, "testfile2", text2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := tc.env.FS.Open(tc.file)
+			require.NoError(t, err)
+			got, err := io.ReadAll(f)
+			require.NoError(t, err)
+			require.NoError(t, f.Close())
+			require.Equal(t, []byte(tc.plaintext), got)
+		})
+	}
+}
+
+// TestInitBasaltEnvEncryption verifies that NewBasaltStoreEncryptedEnv
+// creates independent per-store encryption envs. Each store gets its
+// own DataKeyManager and FileRegistry, so their encryption domains are
+// isolated — one store cannot decrypt another store's files.
+func TestInitBasaltEnvEncryption(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	ctx := context.Background()
+
+	// Local FS for store key files (shared by both stores).
+	localFS := vfs.NewMem()
+	writeToFile(t, localFS, "16.key", []byte(keyFile128))
+
+	encOptions := &storageconfig.EncryptionOptions{
+		KeySource:      storageconfig.EncryptionKeyFromFiles,
+		KeyFiles:       &storageconfig.EncryptionKeyFiles{CurrentKey: "16.key", OldKey: "plain"},
+		RotationPeriod: 100000 * time.Second,
+	}
+
+	// Create two separate in-memory filesystems, one per store. In
+	// production each store has its own basaltfs.FS rooted at the
+	// store directory.
+	storeFS1 := vfs.NewMem()
+	storeFS2 := vfs.NewMem()
+
+	// Create per-store encryption envs via NewBasaltStoreEncryptedEnv.
+	// In production, dbDir is "." since basaltfs.FS is rooted at the
+	// store directory. For vfs.NewMem() we use "" (the FS root).
+	encEnv1, registry1, err := NewBasaltStoreEncryptedEnv(
+		ctx, storeFS1, localFS, "", false, encOptions,
+	)
+	require.NoError(t, err)
+	env1 := NewBasicEnv(encEnv1.FS, "")
+	env1.Encryption = encEnv1
+	env1.Registry = registry1
+	defer env1.Close()
+
+	encEnv2, registry2, err := NewBasaltStoreEncryptedEnv(
+		ctx, storeFS2, localFS, "", false, encOptions,
+	)
+	require.NoError(t, err)
+	env2 := NewBasicEnv(encEnv2.FS, "")
+	env2.Encryption = encEnv2
+	env2.Registry = registry2
+	defer env2.Close()
+
+	const text1 = "secret1"
+	const text2 = "secret2"
+
+	// Write through each store's encrypted FS.
+	{
+		f, err := env1.Create("testfile", UnspecifiedWriteCategory)
+		require.NoError(t, err)
+		_, err = f.Write([]byte(text1))
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+	}
+	{
+		f, err := env2.Create("testfile", UnspecifiedWriteCategory)
+		require.NoError(t, err)
+		_, err = f.Write([]byte(text2))
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+	}
+
+	// Verify raw bytes on each FS are encrypted (differ from plaintext).
+	{
+		rawF, err := storeFS1.Open("testfile")
+		require.NoError(t, err)
+		rawBytes, err := io.ReadAll(rawF)
+		require.NoError(t, err)
+		require.NoError(t, rawF.Close())
+		require.NotEqual(t, []byte(text1), rawBytes, "store-1 testfile should be encrypted")
+	}
+	{
+		rawF, err := storeFS2.Open("testfile")
+		require.NoError(t, err)
+		rawBytes, err := io.ReadAll(rawF)
+		require.NoError(t, err)
+		require.NoError(t, rawF.Close())
+		require.NotEqual(t, []byte(text2), rawBytes, "store-2 testfile should be encrypted")
+	}
+
+	// Read back through each store's encrypted FS and verify decryption.
+	{
+		f, err := env1.Open("testfile")
+		require.NoError(t, err)
+		got, err := io.ReadAll(f)
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+		require.Equal(t, []byte(text1), got)
+	}
+	{
+		f, err := env2.Open("testfile")
+		require.NoError(t, err)
+		got, err := io.ReadAll(f)
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+		require.Equal(t, []byte(text2), got)
+	}
+
+	// Verify per-store registry isolation. Each store has its own
+	// FileRegistry, so entries are independent.
+	store1Entries := env1.Registry.List()
+	store2Entries := env2.Registry.List()
+	require.Contains(t, store1Entries, "testfile",
+		"store-1 registry should have testfile entry")
+	require.Contains(t, store2Entries, "testfile",
+		"store-2 registry should have testfile entry")
+
+	// Verify encryption isolation: reading store-1's raw ciphertext
+	// through store-2's encrypted FS produces garbled output, since
+	// store-2's registry has no entry for store-1's file.
+	{
+		// Read the raw ciphertext from store-1's underlying FS.
+		rawF, err := storeFS1.Open("testfile")
+		require.NoError(t, err)
+		rawBytes, err := io.ReadAll(rawF)
+		require.NoError(t, err)
+		require.NoError(t, rawF.Close())
+
+		// Write the raw ciphertext into store-2's underlying FS under
+		// a different name, so store-2's registry has no entry for it.
+		wf, err := storeFS2.Create("foreign", UnspecifiedWriteCategory)
+		require.NoError(t, err)
+		_, err = wf.Write(rawBytes)
+		require.NoError(t, err)
+		require.NoError(t, wf.Close())
+
+		// Reading "foreign" through store-2's encrypted FS treats it as
+		// plaintext (no registry entry), returning the raw ciphertext.
+		f, err := env2.Open("foreign")
+		require.NoError(t, err)
+		got, err := io.ReadAll(f)
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+		require.NotEqual(t, []byte(text1), got,
+			"store-2 should not be able to decrypt store-1's file")
+	}
 }
 
 // TestEncryptedFSUpgradeFromBuggyAlgorithmString is an end-to-end test for the

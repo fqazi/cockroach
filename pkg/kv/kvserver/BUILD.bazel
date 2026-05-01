@@ -1,6 +1,6 @@
-load("@rules_proto//proto:defs.bzl", "proto_library")
-load("@io_bazel_rules_go//proto:def.bzl", "go_proto_library")
 load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+load("@io_bazel_rules_go//proto:def.bzl", "go_proto_library")
+load("@rules_proto//proto:defs.bzl", "proto_library")
 load("//build:STRINGER.bzl", "stringer")
 
 go_library(
@@ -8,6 +8,9 @@ go_library(
     srcs = [
         "addressing.go",
         "app_batch.go",
+        "basalt_hardlink.go",
+        "basalt_paths.go",
+        "basalt_split_merge.go",
         "consistency_queue.go",
         "doc.go",
         "flow_control_raft_transport.go",
@@ -45,6 +48,7 @@ go_library(
         "replica_batch_updates.go",
         "replica_circuit_breaker.go",
         "replica_closedts.go",
+        "replica_combined_engine.go",
         "replica_command.go",
         "replica_consistency.go",
         "replica_destroy.go",
@@ -55,6 +59,7 @@ go_library(
         "replica_gc_queue.go",
         "replica_gossip.go",
         "replica_init.go",
+        "replica_manifest_committer.go",
         "replica_metrics.go",
         "replica_placeholder.go",
         "replica_proposal.go",
@@ -95,6 +100,7 @@ go_library(
         "store_init.go",
         "store_merge.go",
         "store_raft.go",
+        "store_range_flusher.go",
         "store_rangefeed.go",
         "store_rebalancer.go",
         "store_remove_replica.go",
@@ -108,7 +114,6 @@ go_library(
         "stores_store_liveness.go",
         "testing_knobs.go",
         "ts_maintenance_queue.go",
-        ":gen-raftleadertransferoutcome-stringer",  # keep
         ":gen-refreshraftreason-stringer",  # keep
     ],
     embed = [":kvserver_go_proto"],
@@ -257,11 +262,14 @@ go_library(
         "@com_github_cockroachdb_crlib//crstrings",
         "@com_github_cockroachdb_crlib//crtime",
         "@com_github_cockroachdb_errors//:errors",
+        "@com_github_cockroachdb_errors//oserror",
         "@com_github_cockroachdb_logtags//:logtags",
         "@com_github_cockroachdb_pebble//:pebble",
         "@com_github_cockroachdb_pebble//objstorage",
+        "@com_github_cockroachdb_pebble//objstorage/objstorageprovider",
         "@com_github_cockroachdb_pebble//objstorage/remote",
         "@com_github_cockroachdb_pebble//rangekey",
+        "@com_github_cockroachdb_pebble//sstable",
         "@com_github_cockroachdb_pebble//sstable/block",
         "@com_github_cockroachdb_pebble//vfs",
         "@com_github_cockroachdb_redact//:redact",
@@ -283,6 +291,9 @@ go_test(
     srcs = [
         "addressing_test.go",
         "allocator_impl_test.go",
+        "basalt_e2e_test.go",
+        "basalt_paths_test.go",
+        "basalt_range_flush_e2e_test.go",
         "batch_spanset_test.go",
         "below_raft_protos_test.go",
         "client_atomic_membership_change_test.go",
@@ -349,6 +360,7 @@ go_test(
         "replica_circuit_breaker_test.go",
         "replica_closedts_internal_test.go",
         "replica_closedts_test.go",
+        "replica_combined_engine_test.go",
         "replica_command_test.go",
         "replica_consistency_test.go",
         "replica_evaluate_test.go",
@@ -359,6 +371,7 @@ go_test(
         "replica_lease_renewal_test.go",
         "replica_lifecycle_datadriven_test.go",
         "replica_load_bench_test.go",
+        "replica_manifest_committer_test.go",
         "replica_metrics_test.go",
         "replica_probe_test.go",
         "replica_proposal_bench_test.go",
@@ -372,6 +385,7 @@ go_test(
         "replica_rangefeed_test.go",
         "replica_rankings_test.go",
         "replica_read_test.go",
+        "replica_rsengine_test.go",
         "replica_sideload_test.go",
         "replica_split_load_test.go",
         "replica_store_liveness_test.go",
@@ -392,6 +406,7 @@ go_test(
         "store_gossip_test.go",
         "store_pool_test.go",
         "store_raft_test.go",
+        "store_range_flusher_test.go",
         "store_rangefeed_test.go",
         "store_rebalancer_test.go",
         "store_replica_btree_test.go",
@@ -580,6 +595,9 @@ go_test(
         "@com_github_cockroachdb_errors//oserror",
         "@com_github_cockroachdb_logtags//:logtags",
         "@com_github_cockroachdb_pebble//:pebble",
+        "@com_github_cockroachdb_pebble//objstorage",
+        "@com_github_cockroachdb_pebble//sstable",
+        "@com_github_cockroachdb_pebble//sstable/blockiter",
         "@com_github_cockroachdb_pebble//vfs",
         "@com_github_cockroachdb_redact//:redact",
         "@com_github_dustin_go_humanize//:go-humanize",
@@ -637,12 +655,6 @@ go_proto_library(
         "//pkg/util/uuid",  # keep
         "@com_github_gogo_protobuf//gogoproto",
     ],
-)
-
-stringer(
-    name = "gen-raftleadertransferoutcome-stringer",
-    src = "replica_raft.go",
-    typ = "raftLeaderTransferOutcome",
 )
 
 stringer(

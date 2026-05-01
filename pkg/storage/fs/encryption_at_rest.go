@@ -9,8 +9,8 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/storageconfig"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -68,7 +68,7 @@ import (
 // it.
 var NewEncryptedEnv = func(
 	unencryptedFS vfs.FS,
-	fr *FileRegistry,
+	fr FileRegistrar,
 	dbDir string,
 	readOnly bool,
 	options *storageconfig.EncryptionOptions,
@@ -92,13 +92,10 @@ var NewEncryptedEnv = func(
 			keyManager: storeKeyManager,
 		},
 	}
-	dataKeyManager := &DataKeyManager{
-		fs:             storeFS,
-		dbDir:          dbDir,
-		rotationPeriod: int64((options.RotationPeriod + time.Second - 1) / time.Second),
-		readOnly:       readOnly,
-	}
-	if err := dataKeyManager.Load(context.TODO()); err != nil {
+	dataKeyManager, err := NewDataKeyManager(
+		context.TODO(), storeFS, dbDir, options.RotationPeriod, readOnly,
+	)
+	if err != nil {
 		return nil, err
 	}
 	dataFS := &encryptedFS{
@@ -130,6 +127,247 @@ var NewEncryptedEnv = func(
 	}, nil
 }
 
+// multiCloser is an io.Closer that closes multiple closers in order.
+// If any closer returns an error, the first error is returned after
+// all closers have been called.
+type multiCloser []io.Closer
+
+func (mc multiCloser) Close() error {
+	var firstErr error
+	for _, c := range mc {
+		if err := c.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// NewClusterEncryptedEnv creates a multi-node EncryptionEnv for
+// cluster-scoped encryption on shared storage (e.g. basaltfs). It
+// wires together a per-node NodeDataKeyManager (on the shared FS), a
+// sharded NodeFileRegistry (on the shared FS), and a per-node
+// StoreKeyManager (from local key files).
+//
+// This is used for RSEngine encryption, where files may be hardlinked
+// across nodes and require cross-node key discovery. Store-local Pebble
+// files use independent per-store encryption via NewBasaltStoreEncryptedEnv
+// instead.
+//
+// sharedFS is the shared filesystem (e.g. basaltfs) used for the file
+// registry and data key storage. localFS is used to read store key files
+// from local disk (typically vfs.Default). registryDir is the parent
+// directory for sharded registry entries (e.g.
+// "encryption/registry/"). dataKeysDir is the parent directory for
+// per-node data key directories (e.g. "encryption/datakeys/").
+//
+// Each node manages its own data keys independently in a subdirectory
+// named "n<nodeID>" under dataKeysDir. Cross-node key discovery
+// happens on demand via cache-miss reads, mirroring the
+// NodeFileRegistry pattern.
+//
+// All nodes must use the same store key. Each node's data keys are
+// encrypted by the store key via the storeFS layer. When a node reads
+// a file written by another node, it decrypts the remote node's data
+// keys using its own store key — a mismatch causes silent decryption
+// failure. TODO(annie): add store key fingerprint validation.
+//
+// The returned FileRegistrar is the NodeFileRegistry; callers that
+// need to inspect the registry (e.g. for stats) can use it directly.
+func NewClusterEncryptedEnv(
+	ctx context.Context,
+	sharedFS vfs.FS,
+	localFS vfs.FS,
+	registryDir string,
+	dataKeysDir string,
+	nodeID roachpb.NodeID,
+	readOnly bool,
+	storeKeyOptions *storageconfig.EncryptionOptions,
+) (*EncryptionEnv, FileRegistrar, error) {
+	if storeKeyOptions.KeySource != storageconfig.EncryptionKeyFromFiles {
+		return nil, nil, fmt.Errorf("unknown encryption key source: %d", storeKeyOptions.KeySource)
+	}
+
+	// Create the node file registry on the shared FS.
+	nodeRegistry, err := NewNodeFileRegistry(
+		ctx, sharedFS, registryDir, nodeID, readOnly,
+	)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "creating node file registry")
+	}
+
+	// Create the StoreKeyManager from local key files. The store key files
+	// live on local disk (localFS), not on the shared FS.
+	storeKeyManager := &StoreKeyManager{
+		fs:                localFS,
+		activeKeyFilename: storeKeyOptions.KeyFiles.CurrentKey,
+		oldKeyFilename:    storeKeyOptions.KeyFiles.OldKey,
+	}
+	if err := storeKeyManager.Load(ctx); err != nil {
+		_ = nodeRegistry.Close()
+		return nil, nil, errors.Wrap(err, "loading store key manager")
+	}
+
+	// Create the store-encrypted FS for reading/writing data keys.
+	storeFS := &encryptedFS{
+		FS:           sharedFS,
+		fileRegistry: nodeRegistry,
+		streamCreator: &FileCipherStreamCreator{
+			envType:    enginepb.EnvType_Store,
+			keyManager: storeKeyManager,
+		},
+	}
+
+	// Create the NodeDataKeyManager on the store-encrypted FS.
+	nodeDataKeyManager, err := NewNodeDataKeyManager(
+		ctx, storeFS, dataKeysDir, nodeID,
+		storeKeyOptions.RotationPeriod, readOnly,
+	)
+	if err != nil {
+		_ = nodeRegistry.Close()
+		return nil, nil, errors.Wrap(err, "creating node data key manager")
+	}
+
+	// Create the data-encrypted FS for reading/writing data files.
+	dataFS := &encryptedFS{
+		FS:           sharedFS,
+		fileRegistry: nodeRegistry,
+		streamCreator: &FileCipherStreamCreator{
+			envType:    enginepb.EnvType_Data,
+			keyManager: nodeDataKeyManager,
+		},
+	}
+
+	if !readOnly {
+		key, err := storeKeyManager.ActiveKeyForWriter(ctx)
+		if err != nil {
+			_ = nodeDataKeyManager.Close()
+			_ = nodeRegistry.Close()
+			return nil, nil, errors.Wrap(err, "getting active store key")
+		}
+		if err := nodeDataKeyManager.SetActiveStoreKeyInfo(ctx, key.Info); err != nil {
+			_ = nodeDataKeyManager.Close()
+			_ = nodeRegistry.Close()
+			return nil, nil, errors.Wrap(err, "setting active store key info")
+		}
+	}
+
+	env := &EncryptionEnv{
+		Closer: multiCloser{nodeDataKeyManager, nodeRegistry},
+		FS:     dataFS,
+		StatsHandler: &encryptionStatsHandler{
+			storeKM: storeKeyManager,
+			dataKM:  nodeDataKeyManager.localKM,
+		},
+	}
+	return env, nodeRegistry, nil
+}
+
+// NewBasaltStoreEncryptedEnv creates a per-store EncryptionEnv for basalt
+// stores on shared storage. Unlike NewClusterEncryptedEnv, this uses a plain
+// DataKeyManager + FileRegistry (no cross-node key discovery), because
+// store-local Pebble files are only ever read/written by the owning node.
+//
+// sharedFS is the shared filesystem (e.g. basaltfs) used for the file registry,
+// data key storage, and data encryption. localFS is used to read store key
+// files from local disk (typically vfs.Default). dbDir is the store's directory
+// within the shared FS (e.g. "store-1").
+func NewBasaltStoreEncryptedEnv(
+	ctx context.Context,
+	sharedFS vfs.FS,
+	localFS vfs.FS,
+	dbDir string,
+	readOnly bool,
+	storeKeyOptions *storageconfig.EncryptionOptions,
+) (*EncryptionEnv, FileRegistrar, error) {
+	if storeKeyOptions.KeySource != storageconfig.EncryptionKeyFromFiles {
+		return nil, nil, fmt.Errorf("unknown encryption key source: %d", storeKeyOptions.KeySource)
+	}
+
+	// Create the file registry on the shared FS within the store directory.
+	// SealAfterWrite and SyncDir are required on basaltfs: writes are
+	// batched in memory and flushed to a sealed snapshot file via
+	// SealPending(), and directory syncs ensure marker visibility.
+	fileRegistry := &FileRegistry{
+		FS:                  sharedFS,
+		DBDir:               dbDir,
+		ReadOnly:            readOnly,
+		NumOldRegistryFiles: defaultNumOldFileRegistryFiles,
+		CanElideEntry:       elidePlaintext,
+		SyncDir:             true,
+		SealAfterWrite:      true,
+	}
+	if err := fileRegistry.Load(ctx); err != nil {
+		return nil, nil, errors.Wrap(err, "creating store file registry")
+	}
+
+	// Create the StoreKeyManager from local key files on local disk.
+	storeKeyManager := &StoreKeyManager{
+		fs:                localFS,
+		activeKeyFilename: storeKeyOptions.KeyFiles.CurrentKey,
+		oldKeyFilename:    storeKeyOptions.KeyFiles.OldKey,
+	}
+	if err := storeKeyManager.Load(ctx); err != nil {
+		_ = fileRegistry.Close()
+		return nil, nil, errors.Wrap(err, "loading store key manager")
+	}
+
+	// Create the store-encrypted FS for reading/writing data keys.
+	storeFS := &encryptedFS{
+		FS:           sharedFS,
+		fileRegistry: fileRegistry,
+		streamCreator: &FileCipherStreamCreator{
+			envType:    enginepb.EnvType_Store,
+			keyManager: storeKeyManager,
+		},
+	}
+
+	// Create the DataKeyManager on the store-encrypted FS.
+	dataKeyManager, err := NewDataKeyManager(
+		ctx, storeFS, dbDir, storeKeyOptions.RotationPeriod, readOnly,
+	)
+	if err != nil {
+		_ = fileRegistry.Close()
+		return nil, nil, errors.Wrap(err, "creating data key manager")
+	}
+
+	// Create the data-encrypted FS for reading/writing data files.
+	dataFS := &encryptedFS{
+		FS:           sharedFS,
+		fileRegistry: fileRegistry,
+		streamCreator: &FileCipherStreamCreator{
+			envType:    enginepb.EnvType_Data,
+			keyManager: dataKeyManager,
+		},
+	}
+
+	if !readOnly {
+		key, err := storeKeyManager.ActiveKeyForWriter(ctx)
+		if err != nil {
+			_ = dataKeyManager.Close()
+			_ = fileRegistry.Close()
+			return nil, nil, errors.Wrap(err, "getting active store key")
+		}
+		if err := dataKeyManager.SetActiveStoreKeyInfo(ctx, key.Info); err != nil {
+			_ = dataKeyManager.Close()
+			_ = fileRegistry.Close()
+			return nil, nil, errors.Wrap(err, "setting active store key info")
+		}
+	}
+
+	// Only close the DataKeyManager here; the FileRegistry is returned
+	// separately and closed by Env.Registry.Close() (see Env.Close).
+	// This mirrors the pattern used by NewEncryptedEnv.
+	env := &EncryptionEnv{
+		Closer: dataKeyManager,
+		FS:     dataFS,
+		StatsHandler: &encryptionStatsHandler{
+			storeKM: storeKeyManager,
+			dataKM:  dataKeyManager,
+		},
+	}
+	return env, fileRegistry, nil
+}
+
 // resolveEncryptedEnvOptions creates the EncryptionEnv and associated file
 // registry if this store has encryption-at-rest enabled; otherwise returns a
 // nil EncryptionEnv.
@@ -139,7 +377,7 @@ func resolveEncryptedEnvOptions(
 	dir string,
 	encryptionOpts *storageconfig.EncryptionOptions,
 	rw RWMode,
-) (*FileRegistry, *EncryptionEnv, error) {
+) (FileRegistrar, *EncryptionEnv, error) {
 	if encryptionOpts == nil {
 		// There's no encryption config. This is valid if the user doesn't
 		// intend to use encryption-at-rest, and the store has never had
@@ -153,14 +391,8 @@ func resolveEncryptedEnvOptions(
 		return nil, nil, nil
 	}
 
-	fileRegistry := &FileRegistry{
-		FS:                  unencryptedFS,
-		DBDir:               dir,
-		ReadOnly:            rw == ReadOnly,
-		NumOldRegistryFiles: defaultNumOldFileRegistryFiles,
-		CanElideEntry:       elidePlaintext,
-	}
-	if err := fileRegistry.Load(ctx); err != nil {
+	fileRegistry, err := NewFileRegistry(ctx, unencryptedFS, dir, rw == ReadOnly)
+	if err != nil {
 		return nil, nil, err
 	}
 	env, err := NewEncryptedEnv(unencryptedFS, fileRegistry, dir, rw == ReadOnly, encryptionOpts)
@@ -226,11 +458,56 @@ type EnvStats struct {
 	EncryptionStatus []byte
 }
 
+// RegistrySealer is implemented by filesystems that buffer registry
+// entries and need an explicit seal to make them visible to other
+// nodes. On shared filesystems (basaltfs), files are only visible
+// after sealing; this interface lets callers flush pending entries at
+// the right time (e.g. before a Raft proposal).
+type RegistrySealer interface {
+	SealPendingRegistryEntries()
+}
+
+// FileEntryProvider exposes the file registry's GetFileEntry and
+// SetFileEntry operations. This is implemented by encryptedFS to allow
+// callers with only a vfs.FS handle to install encryption entries
+// received via Raft (e.g. the MANIFEST FileEntry in RSManifestInstall).
+type FileEntryProvider interface {
+	GetFileEntry(name string) *enginepb.FileEntry
+	SetFileEntry(name string, entry *enginepb.FileEntry) error
+}
+
 // encryptedFS implements vfs.FS.
 type encryptedFS struct {
 	vfs.FS
-	fileRegistry  *FileRegistry
+	fileRegistry  FileRegistrar
 	streamCreator *FileCipherStreamCreator
+}
+
+// SealPendingRegistryEntries seals any pending file registry entries so
+// they become visible to other nodes on shared storage. This is a
+// no-op if the underlying registry does not use SealAfterWrite.
+func (fs *encryptedFS) SealPendingRegistryEntries() {
+	type sealer interface {
+		SealPending()
+	}
+	if s, ok := fs.fileRegistry.(sealer); ok {
+		s.SealPending()
+	}
+}
+
+var _ RegistrySealer = (*encryptedFS)(nil)
+var _ FileEntryProvider = (*encryptedFS)(nil)
+
+// GetFileEntry returns the file entry for the named file from the
+// underlying file registry. Returns nil if no entry exists.
+func (fs *encryptedFS) GetFileEntry(name string) *enginepb.FileEntry {
+	return fs.fileRegistry.GetFileEntry(name)
+}
+
+// SetFileEntry writes the file entry for the named file into the
+// underlying file registry.
+func (fs *encryptedFS) SetFileEntry(name string, entry *enginepb.FileEntry) error {
+	return fs.fileRegistry.SetFileEntry(name, entry)
 }
 
 // registerNewEncryption creates new encryption settings and registers them

@@ -59,6 +59,9 @@ type LocalResult struct {
 	// LeaseAppliedIndex field with the lease applied index of the
 	// SubsumeRequest itself.
 	RepopulateSubsumeResponseLAI bool
+	// TakeStoreLocalSnapshot signals prepareLocalResult to take a snapshot
+	// of the store-local engine. Used by RangeFlushPrepare.
+	TakeStoreLocalSnapshot bool
 
 	// When set (in which case we better be the first range), call
 	// GossipFirstRange if the Replica holds the lease.
@@ -88,6 +91,7 @@ func (lResult *LocalResult) IsZero() bool {
 		lResult.EndTxns == nil &&
 		!lResult.PopulateBarrierResponse &&
 		!lResult.RepopulateSubsumeResponseLAI &&
+		!lResult.TakeStoreLocalSnapshot &&
 		!lResult.GossipFirstRange &&
 		!lResult.MaybeGossipSystemConfig &&
 		!lResult.MaybeGossipSystemConfigIfHaveFailure &&
@@ -103,6 +107,7 @@ func (lResult *LocalResult) String() string {
 		"#encountered intents: %d, #acquired locks: %d, #resolved locks: %d "+
 		"#updated txns: %d #end txns: %d, "+
 		"PopulateBarrierResponse:%t RepopulateSubsumeResponse:%t "+
+		"TakeStoreLocalSnapshot:%t "+
 		"GossipFirstRange:%t MaybeGossipSystemConfig:%t "+
 		"MaybeGossipSystemConfigIfHaveFailure:%t MaybeAddToSplitQueue:%t "+
 		"MaybeGossipNodeLiveness:%s",
@@ -110,6 +115,7 @@ func (lResult *LocalResult) String() string {
 		len(lResult.EncounteredIntents), len(lResult.AcquiredLocks), len(lResult.ResolvedLocks),
 		len(lResult.UpdatedTxns), len(lResult.EndTxns),
 		lResult.PopulateBarrierResponse, lResult.RepopulateSubsumeResponseLAI,
+		lResult.TakeStoreLocalSnapshot,
 		lResult.GossipFirstRange, lResult.MaybeGossipSystemConfig,
 		lResult.MaybeGossipSystemConfigIfHaveFailure, lResult.MaybeAddToSplitQueue,
 		lResult.MaybeGossipNodeLiveness)
@@ -118,10 +124,13 @@ func (lResult *LocalResult) String() string {
 // RequiresRaft returns true if the local result needs to go via Raft, e.g. in
 // order to apply side effects under Raft.
 func (lResult *LocalResult) RequiresRaft() bool {
-	// Gossip triggers require raftMu to be held.
+	// Gossip triggers require raftMu to be held. TakeStoreLocalSnapshot
+	// needs to happen at application time under raftMu so the snapshot
+	// captures a consistent state machine view.
 	return lResult.MaybeGossipNodeLiveness != nil ||
 		lResult.MaybeGossipSystemConfig ||
-		lResult.MaybeGossipSystemConfigIfHaveFailure
+		lResult.MaybeGossipSystemConfigIfHaveFailure ||
+		lResult.TakeStoreLocalSnapshot
 }
 
 // DetachEncounteredIntents returns (and removes) those encountered
@@ -177,6 +186,17 @@ func (lResult *LocalResult) DetachPopulateBarrierResponse() bool {
 	}
 	r := lResult.PopulateBarrierResponse
 	lResult.PopulateBarrierResponse = false
+	return r
+}
+
+// DetachTakeStoreLocalSnapshot returns (and removes) the
+// TakeStoreLocalSnapshot value from the local result.
+func (lResult *LocalResult) DetachTakeStoreLocalSnapshot() bool {
+	if lResult == nil {
+		return false
+	}
+	r := lResult.TakeStoreLocalSnapshot
+	lResult.TakeStoreLocalSnapshot = false
 	return r
 }
 
@@ -412,6 +432,18 @@ func (p *Result) MergeAndDestroy(q Result) error {
 	}
 	q.Replicated.DoTimelyApplicationToAllReplicas = false
 
+	if q.Replicated.IncrementFlushStartedCount {
+		p.Replicated.IncrementFlushStartedCount = true
+	}
+	q.Replicated.IncrementFlushStartedCount = false
+
+	if p.Replicated.RSManifestInstall == nil {
+		p.Replicated.RSManifestInstall = q.Replicated.RSManifestInstall
+	} else if q.Replicated.RSManifestInstall != nil {
+		return errors.AssertionFailedf("conflicting RSManifestInstall")
+	}
+	q.Replicated.RSManifestInstall = nil
+
 	if p.Local.EncounteredIntents == nil {
 		p.Local.EncounteredIntents = q.Local.EncounteredIntents
 	} else {
@@ -469,6 +501,13 @@ func (p *Result) MergeAndDestroy(q Result) error {
 		return errors.AssertionFailedf("multiple RepopulateSubsumeResponseLAI results")
 	}
 	q.Local.RepopulateSubsumeResponseLAI = false
+
+	if !p.Local.TakeStoreLocalSnapshot {
+		p.Local.TakeStoreLocalSnapshot = q.Local.TakeStoreLocalSnapshot
+	} else if q.Local.TakeStoreLocalSnapshot {
+		return errors.AssertionFailedf("multiple TakeStoreLocalSnapshot results")
+	}
+	q.Local.TakeStoreLocalSnapshot = false
 
 	if p.Local.MaybeGossipNodeLiveness == nil {
 		p.Local.MaybeGossipNodeLiveness = q.Local.MaybeGossipNodeLiveness

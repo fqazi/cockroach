@@ -204,6 +204,18 @@ message SnapshotRequest {
     // file contents.
     bool external_replicate = 13;
 
+    // rs_manifest_disk_file_num is the MANIFEST file number for the range-shared
+    // engine. When non-zero, indicates this snapshot uses the range-shared LSM
+    // and shared_replicate/external_replicate must be false.
+    uint64 rs_manifest_disk_file_num = 15 [(gogoproto.customname) = "RSManifestDiskFileNum"];
+
+    // If true, the snapshot KV batches may contain internal key kinds
+    // (e.g. DEL, RANGEKEYDEL, RANGEKEYDORMANTDEL) in addition to the
+    // standard SET/SETWITHDELETE kinds. This is set whenever the sender
+    // uses ScanInternal to iterate user keys, which happens for shared,
+    // external, or range-shared engine snapshots.
+    bool expect_internal_keys = 16;
+
     reserved 1, 4, 6, 7, 8, 9, 14;
   }
 
@@ -316,6 +328,17 @@ message SnapshotRequest {
   bool transition_from_shared_to_regular_replicate = 6;
 
   repeated ExternalTable external_tables = 7 [(gogoproto.nullable) = false];
+
+  // BelowDormantKVBatch is a BatchRepr containing keys that sit below an
+  // unactivated dormant range deletion. These keys overlap with KVBatch
+  // keys but at a lower level in the LSM.
+  bytes below_dormant_kv_batch = 8 [(gogoproto.customname) = "BelowDormantKVBatch"];
+
+  // HaveDormantRangeDel transitions from false to true once the sender
+  // encounters a dormant range deletion or BelowDormant key. Once true it
+  // stays true for all subsequent messages. The receiver uses this to
+  // disable size-based SST rollover.
+  bool have_dormant_range_del = 9;
 
   reserved 3;
 }

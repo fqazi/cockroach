@@ -38,6 +38,10 @@ const (
 	//
 	// https://github.com/cockroachdb/cockroach/issues/70894#issuecomment-1881165404
 	InitialLeaseAppliedIndex = 10
+
+	// InitialRangeFileNum is the initial value for the next file number to
+	// allocate for a range's range-shared LSM.
+	InitialRangeFileNum = 7
 )
 
 // WriteInitialReplicaState sets up a new Range, but without writing an
@@ -56,11 +60,16 @@ func WriteInitialReplicaState(
 	gcThreshold hlc.Timestamp,
 	gcHint roachpb.GCHint,
 	replicaVersion roachpb.Version,
+	approxStoreLocalBytes int64,
+	flushStartedCount uint64,
+	initialFileNum uint64,
 ) (enginepb.MVCCStats, error) {
 	s := kvserverpb.ReplicaState{
-		RaftAppliedIndex:     RaftInitialLogIndex,
-		RaftAppliedIndexTerm: RaftInitialLogTerm,
-		LeaseAppliedIndex:    InitialLeaseAppliedIndex,
+		RaftAppliedIndex:      RaftInitialLogIndex,
+		RaftAppliedIndexTerm:  RaftInitialLogTerm,
+		LeaseAppliedIndex:     InitialLeaseAppliedIndex,
+		ApproxStoreLocalBytes: approxStoreLocalBytes,
+		FlushStartedCount:     flushStartedCount,
 		Desc: &roachpb.RangeDescriptor{
 			RangeID: desc.RangeID,
 		},
@@ -97,13 +106,16 @@ func WriteInitialReplicaState(
 	} else if (existingVersion != roachpb.Version{}) {
 		log.KvExec.Fatalf(ctx, "expected trivial version, but found %+v", existingVersion)
 	}
-
-	newMS, err := rsl.Save(ctx, stateRW, s)
-	if err != nil {
-		return enginepb.MVCCStats{}, err
+	// Initialize the file number allocation state for the range-shared LSM.
+	// This must be written before Save() so the stats include this key when
+	// the RangeAppliedState is persisted.
+	fileNumAllocState := kvserverpb.RangeFileNumAllocState{
+		NextFileNum: initialFileNum,
 	}
-
-	return newMS, nil
+	if err := rsl.SetRangeFileNumAllocState(ctx, stateRW, &ms, fileNumAllocState); err != nil {
+		return enginepb.MVCCStats{}, errors.Wrap(err, "unable to set initial RangeFileNumAllocState")
+	}
+	return rsl.Save(ctx, stateRW, s)
 }
 
 // WriteInitialRangeState writes the initial range state. It's called during
@@ -123,7 +135,7 @@ func WriteInitialRangeState(
 
 	if _, err := WriteInitialReplicaState(
 		ctx, stateRW, initialMS, desc, initialLease, initialGCThreshold, initialGCHint,
-		replicaVersion,
+		replicaVersion, 0 /* approxStoreLocalBytes */, 0 /* flushStartedCount */, InitialRangeFileNum,
 	); err != nil {
 		return err
 	}

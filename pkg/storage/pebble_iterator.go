@@ -58,6 +58,12 @@ type pebbleIterator struct {
 
 	// parent is a pointer to the Engine from which the iterator was constructed.
 	parent *Pebble
+	// secondaryLSM is the handle for combined iteration with a secondary LSM.
+	// Stored here so that setOptions can include a clone in pebble.IterOptions
+	// on every reconfiguration (Pebble's SetOptions takes ownership each time).
+	// This field is NOT owned by the pebbleIterator — it's a reference to the
+	// reader's handle. The reader is responsible for closing it.
+	secondaryLSM pebble.LSMVersionHandle
 
 	// Set to true to govern whether to call SeekPrefixGE or SeekGE. Skips
 	// SSTables based on MVCC/Engine key when true.
@@ -87,38 +93,54 @@ var pebbleIterPool = sync.Pool{
 }
 
 // newPebbleIterator creates a new Pebble iterator for the given Pebble reader.
+// If secondaryLSM is set, a clone is made and set in the iterator options;
+// the pebble iterator takes ownership of the clone.
 func newPebbleIterator(
 	ctx context.Context,
 	handle pebble.Reader,
 	opts IterOptions,
 	durability DurabilityRequirement,
 	parent *Pebble,
+	secondaryLSM pebble.LSMVersionHandle,
 ) (*pebbleIterator, error) {
 	p := pebbleIterPool.Get().(*pebbleIterator)
 	p.reusable = false // defensive
-	p.init(ctx, nil, opts, durability, parent)
+	p.init(ctx, nil, opts, durability, parent, secondaryLSM)
+	if p.secondaryLSM.IsSet() {
+		p.options.SecondaryLSM = p.secondaryLSM.Clone()
+	}
 	iter, err := handle.NewIterWithContext(ctx, &p.options)
 	if err != nil {
+		p.options.SecondaryLSM.Close()
 		return nil, err
 	}
 	p.iter = pebbleiter.MaybeWrap(iter)
 	return p, nil
 }
 
-// newPebbleIteratorByCloning creates a new Pebble iterator by cloning the given
-// iterator and reconfiguring it.
+// newPebbleIteratorByCloning creates a new Pebble iterator by cloning the
+// given iterator and reconfiguring it. If secondaryLSM is set, a clone is
+// made and set in the iterator options.
 func newPebbleIteratorByCloning(
-	ctx context.Context, cloneCtx CloneContext, opts IterOptions, durability DurabilityRequirement,
+	ctx context.Context,
+	cloneCtx CloneContext,
+	opts IterOptions,
+	durability DurabilityRequirement,
+	secondaryLSM pebble.LSMVersionHandle,
 ) *pebbleIterator {
-	var err error
 	p := pebbleIterPool.Get().(*pebbleIterator)
 	p.reusable = false // defensive
-	p.init(ctx, nil, opts, durability, cloneCtx.engine)
+	p.init(ctx, nil, opts, durability, cloneCtx.engine, secondaryLSM)
+	if p.secondaryLSM.IsSet() {
+		p.options.SecondaryLSM = p.secondaryLSM.Clone()
+	}
+	var err error
 	p.iter, err = cloneCtx.rawIter.CloneWithContext(ctx, pebble.CloneOptions{
 		IterOptions:      &p.options,
 		RefreshBatchView: true,
 	})
 	if err != nil {
+		p.options.SecondaryLSM.Close()
 		p.Close()
 		panic(err)
 	}
@@ -131,7 +153,7 @@ func newPebbleSSTIterator(
 ) (*pebbleIterator, error) {
 	p := pebbleIterPool.Get().(*pebbleIterator)
 	p.reusable = false // defensive
-	p.init(context.Background(), nil, opts, StandardDurability, nil)
+	p.init(context.Background(), nil, opts, StandardDurability, nil, pebble.LSMVersionHandle{})
 
 	iter, err := pebble.NewExternalIter(DefaultPebbleOptions(), &p.options, files)
 	if err != nil {
@@ -145,12 +167,14 @@ func newPebbleSSTIterator(
 // init resets this pebbleIterator for use with the specified arguments,
 // reconfiguring the given iter. It is valid to pass a nil iter and then create
 // p.iter using p.options, to avoid redundant reconfiguration via SetOptions().
+// secondaryLSM is stored (not cloned) for use by setOptions.
 func (p *pebbleIterator) init(
 	ctx context.Context,
 	iter pebbleiter.Iterator,
 	opts IterOptions,
 	durability DurabilityRequirement,
 	statsReporter *Pebble,
+	secondaryLSM pebble.LSMVersionHandle,
 ) {
 	*p = pebbleIterator{
 		iter:               iter,
@@ -159,6 +183,7 @@ func (p *pebbleIterator) init(
 		upperBoundBuf:      p.upperBoundBuf,
 		rangeKeyMaskingBuf: p.rangeKeyMaskingBuf,
 		parent:             statsReporter,
+		secondaryLSM:       secondaryLSM,
 		reusable:           p.reusable,
 	}
 	p.setOptions(ctx, opts, durability)
@@ -171,6 +196,10 @@ func (p *pebbleIterator) init(
 // 1. iter != nil && !clone: use and reconfigure the given raw Pebble iterator.
 // 2. iter != nil && clone: clone and reconfigure the given raw Pebble iterator.
 // 3. iter == nil: create a new iterator from handle.
+//
+// For cases 2 and 3, if secondaryLSM is set, a clone of the handle is made
+// and set in the iterator options. On the direct-reuse path (case 1), no
+// clone is needed — the existing iterator already has SecondaryLSM.
 func (p *pebbleIterator) initReuseOrCreate(
 	ctx context.Context,
 	handle pebble.Reader,
@@ -179,16 +208,20 @@ func (p *pebbleIterator) initReuseOrCreate(
 	opts IterOptions,
 	durability DurabilityRequirement,
 	statsReporter *Pebble,
+	secondaryLSM pebble.LSMVersionHandle,
 ) error {
 	if iter != nil && !clone {
-		p.init(ctx, iter, opts, durability, statsReporter)
+		p.init(ctx, iter, opts, durability, statsReporter, secondaryLSM)
 		return nil
 	}
-
-	p.init(ctx, nil, opts, durability, statsReporter)
+	p.init(ctx, nil, opts, durability, statsReporter, secondaryLSM)
+	if p.secondaryLSM.IsSet() {
+		p.options.SecondaryLSM = p.secondaryLSM.Clone()
+	}
 	if iter == nil {
 		innerIter, err := handle.NewIterWithContext(ctx, &p.options)
 		if err != nil {
+			p.options.SecondaryLSM.Close()
 			return err
 		}
 		p.iter = pebbleiter.MaybeWrap(innerIter)
@@ -199,6 +232,7 @@ func (p *pebbleIterator) initReuseOrCreate(
 			RefreshBatchView: true,
 		})
 		if err != nil {
+			p.options.SecondaryLSM.Close()
 			p.Close()
 			return err
 		}
@@ -207,7 +241,9 @@ func (p *pebbleIterator) initReuseOrCreate(
 }
 
 // setOptions updates the options for a pebbleIterator. If p.iter is non-nil, it
-// updates the options on the existing iterator too, and set the context.
+// updates the options on the existing iterator too, and sets the context.
+// If p.secondaryLSM is set, a clone is included in the options for combined
+// iteration. The pebble iterator takes ownership of each clone.
 func (p *pebbleIterator) setOptions(
 	ctx context.Context, opts IterOptions, durability DurabilityRequirement,
 ) {
@@ -303,6 +339,9 @@ func (p *pebbleIterator) setOptions(
 	// Set the new iterator options. We unconditionally do so, since Pebble will
 	// optimize noop changes as needed, and it may affect batch write visibility.
 	if p.iter != nil {
+		if p.secondaryLSM.IsSet() {
+			p.options.SecondaryLSM = p.secondaryLSM.Clone()
+		}
 		p.iter.SetContext(ctx)
 		p.iter.SetOptions(&p.options)
 	}

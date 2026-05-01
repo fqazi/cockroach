@@ -355,8 +355,11 @@ func TestReliableIntentCleanup(t *testing.T) {
 				started            = timeutil.Now()
 			)
 			for {
-				result, err := storage.MVCCScan(ctx, store.StateEngine(), prefix, prefix.PrefixEnd(),
+				repl := store.LookupReplica(roachpb.RKey(prefix))
+				snap := repl.NewCombinedSnapshot()
+				result, err := storage.MVCCScan(ctx, snap, prefix, prefix.PrefixEnd(),
 					hlc.MaxTimestamp, storage.MVCCScanOptions{Inconsistent: true})
+				snap.Close()
 				require.NoError(t, err)
 				intentCount := len(result.Intents)
 				if intentCount == 0 {
@@ -388,8 +391,11 @@ func TestReliableIntentCleanup(t *testing.T) {
 			var txnEntry roachpb.Transaction
 			if !assert.Eventually(t, func() bool {
 				key := keys.TransactionKey(txnKey, txnID)
-				ok, err := storage.MVCCGetProto(ctx, store.StateEngine(), key, hlc.MaxTimestamp, &txnEntry,
+				repl := store.LookupReplica(roachpb.RKey(txnKey))
+				snap := repl.NewCombinedSnapshot()
+				ok, err := storage.MVCCGetProto(ctx, snap, key, hlc.MaxTimestamp, &txnEntry,
 					storage.MVCCGetOptions{})
+				snap.Close()
 				require.NoError(t, err)
 				return !ok
 			}, time.Minute, 100*time.Millisecond, "txn record cleanup timed out") {

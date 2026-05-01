@@ -590,6 +590,7 @@ func (s *Store) receiveSnapshot(
 	}
 	inSnap, err := ss.Receive(ctx, s, stream, *header, recordBytesReceived)
 	if err != nil {
+		_ = sendSnapshotError(ctx, s, stream, err)
 		return err
 	}
 	inSnap.placeholder = placeholder
@@ -702,6 +703,9 @@ func SendEmptySnapshot(
 		hlc.Timestamp{}, // gcThreshold
 		roachpb.GCHint{},
 		st.Version.ActiveVersionOrEmpty(ctx).Version,
+		0, // approxStoreLocalBytes
+		0, // flushStartedCount
+		kvstorage.InitialRangeFileNum,
 	)
 	if err != nil {
 		return err
@@ -734,6 +738,7 @@ func SendEmptySnapshot(
 		sl,
 		engSnapshot,
 		desc.StartKey,
+		0, // rsManifestNum: no RSEngine for initial replica
 	)
 	if err != nil {
 		// Close() is not idempotent, and will be done by outgoingSnap.Close() if
@@ -762,9 +767,11 @@ func SendEmptySnapshot(
 	}
 
 	header := kvserverpb.SnapshotRequest_Header{
-		State:              state,
-		RaftMessageRequest: req,
-		RangeSize:          ms.Total(),
+		State:                 state,
+		RaftMessageRequest:    req,
+		RangeSize:             ms.Total(),
+		RSManifestDiskFileNum: outgoingSnap.RSManifestDiskFileNum,
+		ExpectInternalKeys:    outgoingSnap.CanHaveDormantRangeDel,
 	}
 
 	stream, err := mrc.RaftSnapshot(ctx)

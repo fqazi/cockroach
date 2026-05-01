@@ -350,9 +350,11 @@ func (tc *testContext) addBogusReplicaToRangeDesc(
 
 	tc.repl.raftMu.Lock()
 	tc.repl.setDescRaftMuLocked(ctx, &newDesc)
+	snap := tc.repl.NewCombinedSnapshot()
 	tc.repl.mu.RLock()
-	tc.repl.assertStateRaftMuLockedReplicaMuRLocked(ctx, tc.stateEng, tc.raftEng)
+	tc.repl.assertStateRaftMuLockedReplicaMuRLocked(ctx, snap, tc.raftEng)
 	tc.repl.mu.RUnlock()
+	snap.Close()
 	tc.repl.raftMu.Unlock()
 	return newReplica, nil
 }
@@ -985,6 +987,7 @@ func TestReplicaLease(t *testing.T) {
 	for _, lease := range []roachpb.Lease{
 		{Start: start, Expiration: &hlc.Timestamp{}},
 	} {
+		// TODO(basalt): this out-of-band write bypasses raft.
 		if _, err := batcheval.RequestLease(ctx, tc.store.StateEngine(),
 			batcheval.CommandArgs{
 				EvalCtx: NewReplicaEvalContext(
@@ -1826,6 +1829,7 @@ func TestOptimizePuts(t *testing.T) {
 	}
 
 	for i, c := range testCases {
+		// TODO(basalt): these out-of-band reads/writes bypass raft.
 		if c.exEndKey != nil {
 			require.NoError(t, storage.MVCCDeleteRangeUsingTombstone(ctx, tc.stateEng, nil,
 				c.exKey, c.exEndKey, hlc.MinTimestamp, hlc.ClockTimestamp{}, nil, nil, false, 0, 0, nil))
@@ -3143,6 +3147,7 @@ func TestReplicaTSCacheForwardsIntentTS(t *testing.T) {
 			if _, pErr := tc.SendWrappedWith(kvpb.Header{Txn: txnOld}, &pArgs); pErr != nil {
 				t.Fatal(pErr)
 			}
+			// TODO(basalt): use combined reader.
 			iter, err := tc.stateEng.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{Prefix: true})
 			if err != nil {
 				t.Fatal(err)
@@ -3441,6 +3446,7 @@ func TestReplicaAbortSpanReadError(t *testing.T) {
 	}
 
 	// Overwrite Abort span entry with garbage for the last op.
+	// TODO(basalt): this out-of-band write bypasses raft.
 	key := keys.AbortSpanKey(tc.repl.RangeID, txn.ID)
 	_, err := storage.MVCCPut(
 		ctx, tc.stateEng, key, hlc.Timestamp{},
@@ -3478,6 +3484,7 @@ func TestReplicaAbortSpanOnlyWithIntent(t *testing.T) {
 		Timestamp: txn.WriteTimestamp,
 		Priority:  0,
 	}
+	// TODO(basalt): this out-of-band write bypasses raft.
 	if err := tc.repl.abortSpan.Put(ctx, tc.stateEng, nil, txn.ID, &entry); err != nil {
 		t.Fatal(err)
 	}
@@ -4483,6 +4490,7 @@ func TestEndTxnWithErrors(t *testing.T) {
 	for _, test := range testCases {
 		t.Run("", func(t *testing.T) {
 			// Establish existing txn state by writing directly to range engine.
+			// TODO(basalt): this out-of-band write bypasses raft.
 			existTxn := txn.Clone()
 			existTxn.Key = test.key
 			existTxn.Status = test.existStatus
@@ -4529,6 +4537,7 @@ func TestEndTxnWithErrorAndSyncIntentResolution(t *testing.T) {
 	txn := newTransaction("test", roachpb.Key("a"), 1, tc.Clock())
 
 	// Establish existing txn state by writing directly to range engine.
+	// TODO(basalt): this out-of-band write bypasses raft.
 	existTxn := txn.Clone()
 	existTxn.Status = roachpb.ABORTED
 	existTxnRec := existTxn.AsRecord()
@@ -4598,14 +4607,18 @@ func TestEndTxnRollbackAbortedTransaction(t *testing.T) {
 		if populateAbortSpan {
 			var txnRecord roachpb.Transaction
 			txnKey := keys.TransactionKey(txn.Key, txn.ID)
+			snap := tc.repl.NewCombinedSnapshot()
 			if ok, err := storage.MVCCGetProto(
-				ctx, tc.repl.store.StateEngine(),
+				ctx, snap,
 				txnKey, hlc.Timestamp{}, &txnRecord, storage.MVCCGetOptions{},
 			); err != nil {
+				snap.Close()
 				t.Fatal(err)
 			} else if ok {
+				snap.Close()
 				t.Fatalf("unexpected txn record %v", txnRecord)
 			}
+			snap.Close()
 
 			if pErr := tc.store.intentResolver.ResolveIntents(ctx,
 				[]roachpb.LockUpdate{
@@ -4751,8 +4764,10 @@ func TestBatchRetryCantCommitIntents(t *testing.T) {
 	// Verify txn record is cleaned.
 	var readTxn roachpb.Transaction
 	txnKey := keys.TransactionKey(txn.Key, txn.ID)
-	ok, err := storage.MVCCGetProto(ctx, tc.repl.store.StateEngine(), txnKey,
+	snap := tc.repl.NewCombinedSnapshot()
+	ok, err := storage.MVCCGetProto(ctx, snap, txnKey,
 		hlc.Timestamp{}, &readTxn, storage.MVCCGetOptions{})
+	snap.Close()
 	if err != nil || ok {
 		t.Errorf("expected transaction record to be cleared (%t): %+v", ok, err)
 	}
@@ -4848,8 +4863,10 @@ func TestEndTxnLocalGC(t *testing.T) {
 		}
 		var readTxn roachpb.Transaction
 		txnKey := keys.TransactionKey(txn.Key, txn.ID)
-		ok, err := storage.MVCCGetProto(ctx, tc.repl.store.StateEngine(), txnKey, hlc.Timestamp{},
+		snap := tc.repl.NewCombinedSnapshot()
+		ok, err := storage.MVCCGetProto(ctx, snap, txnKey, hlc.Timestamp{},
 			&readTxn, storage.MVCCGetOptions{})
+		snap.Close()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4982,6 +4999,7 @@ func TestEndTxnDirectGC(t *testing.T) {
 			rightRepl, txn := setupResolutionTest(t, tc, testKey, splitKey, false /* generate AbortSpan entry */)
 
 			testutils.SucceedsSoon(t, func() error {
+				// TODO(basalt): batcheval.Get bypasses raft, use combined reader.
 				var gr kvpb.GetResponse
 				if _, err := batcheval.Get(
 					ctx, tc.stateEng, batcheval.CommandArgs{
@@ -5001,16 +5019,24 @@ func TestEndTxnDirectGC(t *testing.T) {
 				}
 
 				var entry roachpb.AbortSpanEntry
-				if aborted, err := tc.repl.abortSpan.Get(ctx, tc.stateEng, txn.ID, &entry); err != nil {
+				snap := tc.repl.NewCombinedSnapshot()
+				if aborted, err := tc.repl.abortSpan.Get(ctx, snap, txn.ID, &entry); err != nil {
+					snap.Close()
 					t.Fatal(err)
 				} else if aborted {
+					snap.Close()
 					return errors.Errorf("%d: AbortSpan still populated: %v", i, entry)
 				}
-				if aborted, err := rightRepl.abortSpan.Get(ctx, tc.stateEng, txn.ID, &entry); err != nil {
+				snap.Close()
+				rightSnap := rightRepl.NewCombinedSnapshot()
+				if aborted, err := rightRepl.abortSpan.Get(ctx, rightSnap, txn.ID, &entry); err != nil {
+					rightSnap.Close()
 					t.Fatal(err)
 				} else if aborted {
+					rightSnap.Close()
 					t.Fatalf("%d: right-hand side AbortSpan still populated: %v", i, entry)
 				}
+				rightSnap.Close()
 
 				return nil
 			})
@@ -5095,11 +5121,15 @@ func TestEndTxnDirectGC_1PC(t *testing.T) {
 			}
 
 			var entry roachpb.AbortSpanEntry
-			if aborted, err := tc.repl.abortSpan.Get(ctx, tc.stateEng, txn.ID, &entry); err != nil {
+			snap := tc.repl.NewCombinedSnapshot()
+			if aborted, err := tc.repl.abortSpan.Get(ctx, snap, txn.ID, &entry); err != nil {
+				snap.Close()
 				t.Fatal(err)
 			} else if aborted {
+				snap.Close()
 				t.Fatalf("commit=%t: AbortSpan still populated: %v", commit, entry)
 			}
+			snap.Close()
 		}()
 	}
 }
@@ -5367,13 +5397,16 @@ func TestAbortSpanError(t *testing.T) {
 		Timestamp: ts,
 		Priority:  priority,
 	}
+	// TODO(basalt): this out-of-band write bypasses raft.
 	if err := tc.repl.abortSpan.Put(ctx, tc.stateEng, nil, txn.ID, &entry); err != nil {
 		t.Fatal(err)
 	}
 
 	ec := newEvalContextImpl(ctx, tc.repl, false /* requireClosedTS */, kvpb.AdmissionHeader{})
 	rec := &SpanSetReplicaEvalContext{ec, *allSpans()}
-	pErr := checkIfTxnAborted(ctx, rec, tc.stateEng, txn)
+	snap := tc.repl.NewCombinedSnapshot()
+	defer snap.Close()
+	pErr := checkIfTxnAborted(ctx, rec, snap, txn)
 	if _, ok := pErr.GetDetail().(*kvpb.TransactionAbortedError); ok {
 		expected := txn.Clone()
 		expected.WriteTimestamp = txn.WriteTimestamp
@@ -5755,6 +5788,7 @@ func TestResolveIntentPushTxnReplyTxn(t *testing.T) {
 	defer stopper.Stop(ctx)
 	tc.Start(ctx, t, stopper)
 
+	// TODO(basalt): this out-of-band write bypasses raft.
 	b := tc.stateEng.NewBatch()
 	defer b.Close()
 
@@ -6255,7 +6289,9 @@ func TestRangeStatsComputation(t *testing.T) {
 
 	baseStats := tc.repl.GetMVCCStats()
 
-	require.NoError(t, verifyRangeStats(tc.stateEng, tc.repl.RangeID, baseStats))
+	snap := tc.repl.NewCombinedSnapshot()
+	require.NoError(t, verifyRangeStats(snap, tc.repl.RangeID, baseStats))
+	snap.Close()
 
 	// Put a value.
 	pArgs := putArgs([]byte("a"), []byte("value1"))
@@ -6273,9 +6309,12 @@ func TestRangeStatsComputation(t *testing.T) {
 		ValCount:  1,
 	})
 
-	if err := verifyRangeStats(tc.stateEng, tc.repl.RangeID, expMS); err != nil {
+	snap = tc.repl.NewCombinedSnapshot()
+	if err := verifyRangeStats(snap, tc.repl.RangeID, expMS); err != nil {
+		snap.Close()
 		t.Fatal(err)
 	}
+	snap.Close()
 
 	// Put a 2nd value transactionally.
 	pArgs = putArgs([]byte("b"), []byte("value2"))
@@ -6307,9 +6346,12 @@ func TestRangeStatsComputation(t *testing.T) {
 		IntentCount: 1,
 		LockCount:   1,
 	})
-	if err := verifyRangeStats(tc.stateEng, tc.repl.RangeID, expMS); err != nil {
+	snap = tc.repl.NewCombinedSnapshot()
+	if err := verifyRangeStats(snap, tc.repl.RangeID, expMS); err != nil {
+		snap.Close()
 		t.Fatal(err)
 	}
+	snap.Close()
 
 	// Resolve the 2nd value.
 	rArgs := &kvpb.ResolveIntentRequest{
@@ -6333,9 +6375,12 @@ func TestRangeStatsComputation(t *testing.T) {
 		KeyCount:  2,
 		ValCount:  2,
 	})
-	if err := verifyRangeStats(tc.stateEng, tc.repl.RangeID, expMS); err != nil {
+	snap = tc.repl.NewCombinedSnapshot()
+	if err := verifyRangeStats(snap, tc.repl.RangeID, expMS); err != nil {
+		snap.Close()
 		t.Fatal(err)
 	}
+	snap.Close()
 
 	// Delete the 1st value.
 	dArgs := deleteArgs([]byte("a"))
@@ -6352,9 +6397,12 @@ func TestRangeStatsComputation(t *testing.T) {
 		KeyCount:  2,
 		ValCount:  3,
 	})
-	if err := verifyRangeStats(tc.stateEng, tc.repl.RangeID, expMS); err != nil {
+	snap = tc.repl.NewCombinedSnapshot()
+	if err := verifyRangeStats(snap, tc.repl.RangeID, expMS); err != nil {
+		snap.Close()
 		t.Fatal(err)
 	}
+	snap.Close()
 }
 
 // TestMerge verifies that the Merge command is behaving as expected. Time
@@ -6979,6 +7027,8 @@ func TestReplicaDestroy(t *testing.T) {
 
 	// TODO(sep-raft-log): iterate the engines separately here. The state engine
 	// should have only the tombstone, and the log engine should have no keys.
+	// TODO(basalt): use combined reader (replica is destroyed, so can't use
+	// Replica.NewCombinedSnapshot).
 	engSnapshot := tc.repl.store.TODOBothEngines().NewSnapshot()
 	defer engSnapshot.Close()
 
@@ -10235,8 +10285,11 @@ func TestReplicaRecomputeStats(t *testing.T) {
 	disturbMS := enginepb.NewPopulatedMVCCStats(rnd, false)
 	disturbMS.ContainsEstimates = 0
 	ms.Add(*disturbMS)
+	// TODO(basalt): this out-of-band write bypasses raft.
 	err := repl.raftMu.stateLoader.SetMVCCStats(ctx, tc.stateEng, ms)
-	repl.assertStateRaftMuLockedReplicaMuRLocked(ctx, tc.stateEng, tc.raftEng)
+	snap := repl.NewCombinedSnapshot()
+	repl.assertStateRaftMuLockedReplicaMuRLocked(ctx, snap, tc.raftEng)
+	snap.Close()
 	repl.mu.Unlock()
 	repl.raftMu.Unlock()
 
@@ -10326,7 +10379,7 @@ func TestReplicaServersideRefreshes(t *testing.T) {
 
 		// Check that we didn't mess up the stats.
 		// Regression test for #31870.
-		snap := tc.stateEng.NewSnapshot()
+		snap := tc.repl.NewCombinedSnapshot()
 		defer snap.Close()
 		res, err := CalcReplicaDigest(ctx, *tc.repl.Desc(), snap, kvpb.ChecksumMode_CHECK_FULL,
 			quotapool.NewRateLimiter("test", quotapool.Inf(), 0), nil /* settings */)
@@ -10935,6 +10988,7 @@ func TestReplicaPushed1PC(t *testing.T) {
 	txn := roachpb.MakeTransaction("test", k, isolation.Serializable, roachpb.NormalUserPriority, ts1, 0, 0, 0, false /* omitInRangefeeds */)
 
 	// Write a value outside the transaction.
+	// TODO(basalt): this out-of-band write bypasses raft.
 	tc.manualClock.Advance(10)
 	ts2 := tc.Clock().Now()
 	if _, err := storage.MVCCPut(ctx, tc.stateEng, k, ts2, roachpb.MakeValueFromString("one"), storage.MVCCWriteOptions{}); err != nil {
@@ -13604,12 +13658,15 @@ func TestTxnRecordLifecycleTransitions(t *testing.T) {
 				}
 
 				var foundRecord roachpb.TransactionRecord
+				snap := tc.repl.NewCombinedSnapshot()
 				if found, err := storage.MVCCGetProto(
-					ctx, tc.repl.store.StateEngine(), keys.TransactionKey(txn.Key, txn.ID),
+					ctx, snap, keys.TransactionKey(txn.Key, txn.ID),
 					hlc.Timestamp{}, &foundRecord, storage.MVCCGetOptions{},
 				); err != nil {
+					snap.Close()
 					t.Fatal(err)
 				} else if found {
+					snap.Close()
 					if c.expTxn == nil {
 						t.Fatalf("expected no txn record, found %v", found)
 					}
@@ -13619,6 +13676,7 @@ func TestTxnRecordLifecycleTransitions(t *testing.T) {
 							strings.Join(pretty.Diff(foundRecord, expRecord), "\n"))
 					}
 				} else {
+					snap.Close()
 					if c.expTxn != nil {
 						t.Fatalf("expected txn record, found no txn record")
 					}

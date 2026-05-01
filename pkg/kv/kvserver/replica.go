@@ -338,6 +338,10 @@ func (mu *ReplicaMutex) TracedRLock(ctx context.Context) {
 	(*syncutil.RWMutex)(mu).TracedRLock(ctx)
 }
 
+func (mu *ReplicaMutex) TryRLock() bool {
+	return (*syncutil.RWMutex)(mu).TryRLock()
+}
+
 func (mu *ReplicaMutex) AssertHeld() {
 	(*syncutil.RWMutex)(mu).AssertHeld()
 }
@@ -408,6 +412,75 @@ type Replica struct {
 	// RWMutex.
 	readOnlyCmdMu syncutil.RWMutex
 
+	// rsStateMu protects rsEngine. It ensures atomicity between pinning
+	// store-local engine state and getting RSEngine snapshot during evaluation
+	// (readers hold RLock), and between the state batch commit and RSEngine
+	// pointer swap during raft/snapshot application (writers hold Lock). This is
+	// necessary because state machine application writes RANGEDEL-TURN-ON (which
+	// activates RANGEDEL-OFF to shadow store-local data) atomically with
+	// switching to a new RSEngine that contains the flushed data. Without this
+	// mutex, a reader could see the RANGEDEL-TURN-ON but have an old/no
+	// RSEngine, leading to data appearing deleted without the replacement data
+	// being visible.
+	//
+	// Lock ordering: raftMu < rsStateMu, readOnlyCmdMu < rsStateMu, mu < rsStateMu
+	rsStateMu struct {
+		syncutil.RWMutex
+		// rsEngine is the range-shared engine for this replica. nil if not using
+		// range-shared LSM or replica is uninitialized. RSEngine tracks its own
+		// manifest number internally via CurrentManifestNum().
+		rsEngine storage.RSEngine
+	}
+
+	// rangeFlushMu protects range flush state. Only one range flush can be
+	// in progress at a time.
+	//
+	// Lease-transfer hazard: when a lease transfers during a range flush,
+	// a FlushPrepare from the old leaseholder can be rerouted (via
+	// DistSender) to the new leaseholder, which may also start its own
+	// flush. Both FlushPrepare raft commands are then proposed by the
+	// same node; when both apply, prepareLocalResult runs for each.
+	// Without protection the second would overwrite the snapshot stored
+	// by the first, leaking it. Two defenses prevent this:
+	//
+	//  1. prepareLocalResult skips snapshot creation when snapshot is
+	//     already non-nil, preventing the overwrite and the leak.
+	//  2. flushStartedCount is stored alongside the snapshot to make the
+	//     snapshot-to-FlushPrepare correspondence explicit. RangeFlush
+	//     validates that the stored count matches the FlushPrepare
+	//     response before using the snapshot. Without this field, the
+	//     code silently assumes the snapshot belongs to the local
+	//     FlushPrepare, which breaks under lease-transfer rerouting.
+	//
+	// Lock ordering: raftMu < rangeFlushMu
+	rangeFlushMu struct {
+		syncutil.Mutex
+		ongoingFlush bool
+		// flushCount is incremented on each flush to generate unique scratch
+		// filenames, avoiding collisions if a previous flush's scratch file
+		// has not yet been cleaned up.
+		flushCount uint64
+		// snapshot is set by prepareLocalResult during RangeFlushPrepare
+		// application (under raftMu) and consumed by RangeFlush after
+		// kv.SendWrappedWith returns.
+		snapshot storage.Reader
+		// flushStartedCount is the value of
+		// r.shMu.state.FlushStartedCount at the time snapshot was
+		// created. RangeFlush compares it against the FlushPrepare
+		// response to verify that the snapshot belongs to the correct
+		// FlushPrepare. See the lease-transfer hazard comment above.
+		flushStartedCount uint64
+		// approxStoreLocalBytes is captured at the same time as snapshot
+		// (during application of RangeFlushPrepare). It represents the
+		// bytes accumulated in the store-local engine at that point and
+		// is subtracted during flush commit.
+		approxStoreLocalBytes int64
+	}
+
+	// rsFileNumStash holds pre-allocated file numbers for the range-shared LSM.
+	// Accessed via the ReplicaManifestCommitter type alias.
+	rsFileNumStash fileNumStash
+
 	// rangeStr is a string representation of a RangeDescriptor that can be
 	// atomically read and updated without needing to acquire the replica.mu lock.
 	// All updates to state.Desc should be duplicated here.
@@ -420,6 +493,11 @@ type Replica struct {
 	// The field can be accessed atomically without needing to acquire the
 	// replica.mu lock. All updates to state.Desc should be duplicated here.
 	isInitialized atomic.Bool
+
+	// rangeFlushNotified is set when the replica has notified the rangeFlusher
+	// that it has exceeded the flush threshold. Prevents redundant notifications.
+	// Reset on successful flush or periodic scan.
+	rangeFlushNotified atomic.Bool
 
 	// connectionClass controls the ConnectionClass used to send raft messages.
 	connectionClass atomicConnectionClass
@@ -1118,6 +1196,13 @@ func (r *Replica) ReplicaID() roachpb.ReplicaID {
 // ID returns the FullReplicaID for the Replica.
 func (r *Replica) ID() roachpb.FullReplicaID {
 	return roachpb.FullReplicaID{RangeID: r.RangeID, ReplicaID: r.replicaID}
+}
+
+// TestingRSEngine returns the RSEngine for testing. Returns nil if not configured.
+func (r *Replica) TestingRSEngine() storage.RSEngine {
+	r.rsStateMu.RLock()
+	defer r.rsStateMu.RUnlock()
+	return r.rsStateMu.rsEngine
 }
 
 // LogStorageRaftMuLocked returns the Replica's log storage.
@@ -1841,7 +1926,9 @@ func (r *Replica) getQueueLastProcessed(ctx context.Context, queue string) (hlc.
 	key := keys.QueueLastProcessedKey(r.Desc().StartKey, queue)
 	var timestamp hlc.Timestamp
 	if r.store != nil {
-		_, err := storage.MVCCGetProto(ctx, r.store.StateEngine(), key, hlc.Timestamp{}, &timestamp,
+		snap := r.NewCombinedSnapshot()
+		defer snap.Close()
+		_, err := storage.MVCCGetProto(ctx, snap, key, hlc.Timestamp{}, &timestamp,
 			storage.MVCCGetOptions{})
 		if err != nil {
 			log.VErrEventf(ctx, 2, "last processed timestamp unavailable: %s", err)
@@ -2545,7 +2632,9 @@ func (r *Replica) maybeWatchForMergeLocked(ctx context.Context) (bool, error) {
 	// if one exists, regardless of what timestamp it is written at.
 	desc := r.descRLocked()
 	descKey := keys.RangeDescriptorKey(desc.StartKey)
-	intentRes, err := storage.MVCCGet(ctx, r.store.StateEngine(), descKey, hlc.MaxTimestamp,
+	snap := r.NewCombinedSnapshot()
+	defer snap.Close()
+	intentRes, err := storage.MVCCGet(ctx, snap, descKey, hlc.MaxTimestamp,
 		storage.MVCCGetOptions{Inconsistent: true})
 	if err != nil {
 		return false, err
@@ -2553,7 +2642,7 @@ func (r *Replica) maybeWatchForMergeLocked(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	valRes, err := storage.MVCCGetAsTxn(
-		ctx, r.store.StateEngine(), descKey, intentRes.Intent.Txn.WriteTimestamp, intentRes.Intent.Txn)
+		ctx, snap, descKey, intentRes.Intent.Txn.WriteTimestamp, intentRes.Intent.Txn)
 	if err != nil {
 		return false, err
 	} else if valRes.Value.IsPresent() {

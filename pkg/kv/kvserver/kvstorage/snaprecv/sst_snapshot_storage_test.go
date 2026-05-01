@@ -598,12 +598,11 @@ func newOnDiskEngine(ctx context.Context, t *testing.T) (func(), storage.Engine)
 	return cleanup, eng
 }
 
-// TestMultiSSTWriterReadOneSharedOrExternal tests the ReadOne method with
-// sharedOrExternal=true, which allows internal key kinds like DEL, RangeDEL,
-// RangeKeyUnset, and RangeKeyDelete. This is required for shared/external SST
-// snapshots where such internal keys can be overlaid over points in those
-// SSTs.
-func TestMultiSSTWriterReadOneSharedOrExternal(t *testing.T) {
+// TestMultiSSTWriterReadOneExpectInternalKeys tests the ReadOne method with
+// expectInternalKeys=true, which allows internal key kinds like DEL,
+// RangeDEL, RangeKeyUnset, and RangeKeyDelete. This is required for
+// shared/external/RS-engine snapshots where ScanInternal is used.
+func TestMultiSSTWriterReadOneExpectInternalKeys(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
@@ -649,7 +648,7 @@ func TestMultiSSTWriterReadOneSharedOrExternal(t *testing.T) {
 		return br
 	}
 
-	// Test 1: Normal point SET should work with sharedOrExternal=false.
+	// Test 1: Normal point SET should work with expectInternalKeys=false.
 	t.Run("point-set", func(t *testing.T) {
 		mvccKey := storage.MVCCKey{Key: roachpb.Key("e"), Timestamp: now}
 		encodedKey := storage.EncodeMVCCKey(mvccKey)
@@ -663,10 +662,10 @@ func TestMultiSSTWriterReadOneSharedOrExternal(t *testing.T) {
 		require.True(t, br.Next())
 		ek, err := br.EngineKey()
 		require.NoError(t, err)
-		require.NoError(t, msstw.ReadOne(ctx, ek, false /* sharedOrExternal */, br))
+		require.NoError(t, msstw.ReadOne(ctx, ek, false /* expectInternalKeys */, br, false /* isBelowDormant */))
 	})
 
-	// Test 2: Point DELETE should fail with sharedOrExternal=false.
+	// Test 2: Point DELETE should fail with expectInternalKeys=false.
 	t.Run("point-delete-fails-without-shared", func(t *testing.T) {
 		mvccKey := storage.MVCCKey{Key: roachpb.Key("f"), Timestamp: now}
 		encodedKey := storage.EncodeMVCCKey(mvccKey)
@@ -680,12 +679,12 @@ func TestMultiSSTWriterReadOneSharedOrExternal(t *testing.T) {
 		require.True(t, br.Next())
 		ek, err := br.EngineKey()
 		require.NoError(t, err)
-		err = msstw.ReadOne(ctx, ek, false /* sharedOrExternal */, br)
+		err = msstw.ReadOne(ctx, ek, false /* expectInternalKeys */, br, false /* isBelowDormant */)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "unexpected batch entry key kind")
 	})
 
-	// Test 3: Point DELETE should succeed with sharedOrExternal=true.
+	// Test 3: Point DELETE should succeed with expectInternalKeys=true.
 	t.Run("point-delete-succeeds-with-shared", func(t *testing.T) {
 		mvccKey := storage.MVCCKey{Key: roachpb.Key("g"), Timestamp: now}
 		encodedKey := storage.EncodeMVCCKey(mvccKey)
@@ -699,10 +698,10 @@ func TestMultiSSTWriterReadOneSharedOrExternal(t *testing.T) {
 		require.True(t, br.Next())
 		ek, err := br.EngineKey()
 		require.NoError(t, err)
-		require.NoError(t, msstw.ReadOne(ctx, ek, true /* sharedOrExternal */, br))
+		require.NoError(t, msstw.ReadOne(ctx, ek, true /* expectInternalKeys */, br, false /* isBelowDormant */))
 	})
 
-	// Test 4: RangeDelete should fail with sharedOrExternal=false.
+	// Test 4: RangeDelete should fail with expectInternalKeys=false.
 	t.Run("range-delete-fails-without-shared", func(t *testing.T) {
 		startKey := storage.EncodeMVCCKey(storage.MVCCKey{Key: roachpb.Key("h")})
 		endKey := storage.EncodeMVCCKey(storage.MVCCKey{Key: roachpb.Key("i")})
@@ -712,12 +711,12 @@ func TestMultiSSTWriterReadOneSharedOrExternal(t *testing.T) {
 		require.True(t, br.Next())
 		ek, err := br.EngineKey()
 		require.NoError(t, err)
-		err = msstw.ReadOne(ctx, ek, false /* sharedOrExternal */, br)
+		err = msstw.ReadOne(ctx, ek, false /* expectInternalKeys */, br, false /* isBelowDormant */)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "unexpected batch entry key kind")
 	})
 
-	// Test 5: RangeDelete should succeed with sharedOrExternal=true.
+	// Test 5: RangeDelete should succeed with expectInternalKeys=true.
 	t.Run("range-delete-succeeds-with-shared", func(t *testing.T) {
 		startKey := storage.EncodeMVCCKey(storage.MVCCKey{Key: roachpb.Key("j")})
 		endKey := storage.EncodeMVCCKey(storage.MVCCKey{Key: roachpb.Key("k")})
@@ -727,7 +726,7 @@ func TestMultiSSTWriterReadOneSharedOrExternal(t *testing.T) {
 		require.True(t, br.Next())
 		ek, err := br.EngineKey()
 		require.NoError(t, err)
-		require.NoError(t, msstw.ReadOne(ctx, ek, true /* sharedOrExternal */, br))
+		require.NoError(t, msstw.ReadOne(ctx, ek, true /* expectInternalKeys */, br, false /* isBelowDormant */))
 	})
 
 	// Finish the writer to ensure the SSTs are valid.

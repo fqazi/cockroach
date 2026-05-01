@@ -6,6 +6,7 @@
 package storageconfig
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/cockroachdb/crlib/crhumanize"
@@ -15,9 +16,10 @@ import (
 
 // Store contains the configuration for a store.
 type Store struct {
-	// Type of store (on disk or in memory). The default type is on-disk.
-	InMemory InMemory `yaml:"type,omitempty"`
-	// Path of the store. On disk stores must have a path; in-memory stores must
+	// Type of store (local on-disk, in-memory, or basalt). The default type is
+	// local on-disk.
+	Type StoreType `yaml:"type,omitempty"`
+	// Path of the store. Local stores must have a path; in-memory stores must
 	// not have a path.
 	Path string `yaml:"path,omitempty"`
 	// Size of the store. If it is a percentage, it is relative to the total size
@@ -51,6 +53,15 @@ func (s *Store) IsEncrypted() bool {
 	return s.EncryptionOptions != nil
 }
 
+// IsInMemory returns true if this is an in-memory store.
+func (s *Store) IsInMemory() bool { return s.Type == StoreTypeInMemory }
+
+// IsLocal returns true if this is a local on-disk store.
+func (s *Store) IsLocal() bool { return s.Type == StoreTypeLocal }
+
+// IsBasalt returns true if this is a basalt object storage store.
+func (s *Store) IsBasalt() bool { return s.Type == StoreTypeBasalt }
+
 // MinimumStoreSize is the smallest size in bytes that a store can have. This
 // number is based on config's defaultZoneConfig's RangeMaxBytes, which is
 // extremely stable. To avoid adding the dependency on config here, it is just
@@ -70,8 +81,9 @@ func (s *Store) Validate() error {
 	if s.BallastSize.IsPercent() && s.BallastSize.Percent() > 50 {
 		return errors.Newf("ballast size (%s) must be at most 50%%", s.BallastSize)
 	}
-	if s.InMemory {
-		// Only in memory stores don't use a path and require a size.
+	switch s.Type {
+	case StoreTypeInMemory:
+		// In-memory stores don't use a path and require a size.
 		if s.Path != "" {
 			return errors.Newf("path specified for in memory store")
 		}
@@ -81,13 +93,29 @@ func (s *Store) Validate() error {
 		if s.BallastSize.IsSet() {
 			return errors.Newf("ballast-size specified for in memory store")
 		}
-	} else {
-		// On disk stores must have a path.
+	case StoreTypeLocal:
+		// Local on-disk stores must have a path.
 		if s.Path == "" {
 			return errors.Newf("no path specified")
 		}
 		if s.StickyVFSID != "" {
 			return errors.Newf("on-disk store cannot use a sticky VFS ID")
+		}
+	case StoreTypeBasalt:
+		if s.Path == "" {
+			return errors.Newf("no path specified for basalt store")
+		}
+		if !strings.HasPrefix(s.Path, "basalt://") {
+			return errors.Newf("basalt store path must start with basalt://")
+		}
+		if s.EncryptionOptions != nil {
+			return errors.Newf("encryption is not supported for basalt stores")
+		}
+		if s.BallastSize.IsSet() {
+			return errors.Newf("ballast-size is not supported for basalt stores")
+		}
+		if s.StickyVFSID != "" {
+			return errors.Newf("sticky VFS ID is not supported for basalt stores")
 		}
 	}
 	if s.EncryptionOptions != nil {
@@ -99,34 +127,62 @@ func (s *Store) Validate() error {
 	return nil
 }
 
-// InMemory is a boolean type used for the InMemory field, which is marshaled as
-// "type: mem" for in-memory stores.
-//
-// TODO(radu): replace this with a StoreType enum (which unfortunately will
-// result in a lot of diffs, especially in testing code).
-type InMemory bool
+// StoreType identifies the type of a store.
+type StoreType int
 
-var _ yaml.IsZeroer = InMemory(false)
-var _ yaml.Marshaler = InMemory(false)
-var _ yaml.Unmarshaler = (*InMemory)(nil)
+const (
+	// StoreTypeLocal is a local on-disk store (the default/zero value).
+	StoreTypeLocal StoreType = iota
+	// StoreTypeInMemory is an in-memory store.
+	StoreTypeInMemory
+	// StoreTypeBasalt is a basalt object storage store (future).
+	StoreTypeBasalt
+)
 
-func (s InMemory) IsZero() bool {
-	return !bool(s)
-}
+var _ yaml.IsZeroer = StoreType(0)
+var _ yaml.Marshaler = StoreType(0)
+var _ yaml.Unmarshaler = (*StoreType)(nil)
 
-func (s InMemory) MarshalYAML() (any, error) {
-	if s {
-		return "mem", nil
+func (s StoreType) String() string {
+	switch s {
+	case StoreTypeLocal:
+		return "local"
+	case StoreTypeInMemory:
+		return "mem"
+	case StoreTypeBasalt:
+		return "basalt"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(s))
 	}
-	return "", nil
 }
 
-func (s *InMemory) UnmarshalYAML(value *yaml.Node) error {
-	if value.Value == "" {
-		*s = false
-	} else if strings.EqualFold(value.Value, "mem") {
-		*s = true
-	} else {
+// IsZero implements yaml.IsZeroer. Local (the default) is the zero value.
+func (s StoreType) IsZero() bool {
+	return s == StoreTypeLocal
+}
+
+func (s StoreType) MarshalYAML() (any, error) {
+	switch s {
+	case StoreTypeLocal:
+		return "", nil
+	case StoreTypeInMemory:
+		return "mem", nil
+	case StoreTypeBasalt:
+		return "basalt", nil
+	default:
+		return nil, errors.Newf("unknown store type: %d", int(s))
+	}
+}
+
+func (s *StoreType) UnmarshalYAML(value *yaml.Node) error {
+	switch {
+	case value.Value == "" || strings.EqualFold(value.Value, "local"):
+		*s = StoreTypeLocal
+	case strings.EqualFold(value.Value, "mem"):
+		*s = StoreTypeInMemory
+	case strings.EqualFold(value.Value, "basalt"):
+		*s = StoreTypeBasalt
+	default:
 		return errors.Newf("unknown store type: %q", value.Value)
 	}
 	return nil

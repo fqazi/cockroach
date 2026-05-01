@@ -586,8 +586,9 @@ type Reader interface {
 	// ConsistentIterators.
 	ScanInternal(
 		ctx context.Context, lower, upper roachpb.Key,
-		visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-		visitRangeDel func(start, end []byte, seqNum pebble.SeqNum) error,
+		visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel, dormantPos pebble.DormantRelation) error,
+		visitRangeDel func(start, end []byte, seqNum pebble.SeqNum, dormantPos pebble.DormantRelation) error,
+		visitDormantRangeDel func(start, end []byte, seqNum pebble.SeqNum) error,
 		visitRangeKey func(start, end []byte, keys []rangekey.Key) error,
 		visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 		visitExternalFile func(sst *pebble.ExternalFile) error,
@@ -609,6 +610,11 @@ type Reader interface {
 	// is somewhere in the time interval between the creation of the Reader and
 	// the first call to PinEngineStateForIterators.
 	// REQUIRES: ConsistentIterators returns true.
+	//
+	// TODO(basalt): make it return a bool if the pinning happened as a result
+	// of this call. During proposal evaluation, we need that for atomicity of
+	// pinning the state and getting a snapshot from the RSEngine. Those callers
+	// will assert that the return value is true.
 	PinEngineStateForIterators(readCategory fs.ReadCategory) error
 }
 
@@ -669,6 +675,17 @@ type Writer interface {
 	// from the storage engine. It is safe to modify the contents of the arguments
 	// after it returns.
 	ClearRawRange(start, end roachpb.Key, pointKeys, rangeKeys bool) error
+	// ClearRawRangeDormant marks a range of point keys for deletion. The
+	// operation becomes effective only when a subsequent ClearRawRangeActivate is
+	// issued.
+	//
+	// If a later ClearRawRangeActivate only partially overlaps the [start, end)
+	// range, only the overlapping part becomes activated.
+	ClearRawRangeDormant(start, end roachpb.Key) error
+	// ClearRawRangeActivate activates any dormant deletions overlapping
+	// [start, end). Once these dormant deletions become active, point keys
+	// "underneath" them disappear.
+	ClearRawRangeActivate(start, end roachpb.Key) error
 	// ClearMVCCRange removes MVCC point and/or range keys (including intents)
 	// from start (inclusive) to end (exclusive) using Pebble range tombstones.
 	//
@@ -855,6 +872,17 @@ type InternalWriter interface {
 	//
 	// It is safe to modify the contents of the arguments after it returns.
 	ClearRawEncodedRange(start, end []byte) error
+	// ClearRawEncodedRangeDormant is similar to ClearRawRangeDormant, except it
+	// takes pre-encoded start, end keys and bypasses the EngineKey encoding step.
+	//
+	// It is safe to modify the contents of the arguments after it returns.
+	ClearRawEncodedRangeDormant(start, end []byte) error
+	// ClearRawEncodedRangeActivate is similar to ClearRawRangeActivate, except
+	// it takes pre-encoded start, end keys and bypasses the EngineKey encoding
+	// step.
+	//
+	// It is safe to modify the contents of the arguments after it returns.
+	ClearRawEncodedRangeActivate(start, end []byte) error
 
 	// PutInternalRangeKey adds an InternalRangeKey to this batch. This is a very
 	// low-level method that should be used sparingly.
@@ -897,6 +925,28 @@ type ClearOptions struct {
 type ReadWriter interface {
 	Reader
 	Writer
+}
+
+// ReaderWithCombinedIteration is a Reader that can be configured with a
+// secondary LSM for combined iteration. All keys in the primary (top) LSM
+// are logically newer than all keys in the secondary LSM.
+//
+// This is not part of the Reader interface because storage.Pebble implements
+// Reader and is used concurrently. The single-threaded reader types
+// (pebbleReadOnly, pebbleBatch, pebbleSnapshot) implement this.
+type ReaderWithCombinedIteration interface {
+	Reader
+	// SetSecondaryLSM configures a secondary LSM for combined iteration.
+	// The receiver takes ownership of the LSMVersionHandle and will close
+	// it when the reader is closed.
+	SetSecondaryLSM(pebble.LSMVersionHandle)
+}
+
+// ReadWriterWithCombinedIteration is a ReadWriter that supports combined
+// iteration with a secondary LSM.
+type ReadWriterWithCombinedIteration interface {
+	Writer
+	ReaderWithCombinedIteration
 }
 
 // DurabilityRequirement is an advanced option. If in doubt, use
@@ -965,7 +1015,7 @@ type Engine interface {
 	// All iterators created from a read-only engine are guaranteed to provide a
 	// consistent snapshot of the underlying engine. See the comment on the
 	// Reader interface and the Reader.ConsistentIterators method.
-	NewReader(durability DurabilityRequirement) Reader
+	NewReader(durability DurabilityRequirement) ReaderWithCombinedIteration
 	// NewReadOnly returns a new instance of a ReadWriter that wraps this
 	// engine, and with the given durability requirement. This wrapper panics
 	// when unexpected operations (e.g., write operations) are executed on it
@@ -978,7 +1028,7 @@ type Engine interface {
 	//
 	// TODO(sumeer,jackson): Remove this method and force the caller to operate
 	// explicitly with a separate WriteBatch and Reader.
-	NewReadOnly(durability DurabilityRequirement) ReadWriter
+	NewReadOnly(durability DurabilityRequirement) ReadWriterWithCombinedIteration
 	// NewUnindexedBatch returns a new instance of a batched engine which wraps
 	// this engine. It is unindexed, in that writes to the batch are not
 	// visible to reads until after it commits. The batch accumulates all
@@ -1027,7 +1077,7 @@ type Engine interface {
 	// flush.
 	//
 	// Note that snapshots must be closed before the Engine is closed.
-	NewSnapshot(keyRanges ...roachpb.Span) Reader
+	NewSnapshot(keyRanges ...roachpb.Span) ReaderWithCombinedIteration
 	// IngestLocalFiles atomically links a slice of files into the RocksDB
 	// log-structured merge-tree.
 	IngestLocalFiles(ctx context.Context, paths []string) error
@@ -1048,6 +1098,15 @@ type Engine interface {
 		paths []string,
 		shared []pebble.SharedSSTMeta,
 		external []pebble.ExternalFile,
+		exciseSpan roachpb.Span,
+	) (pebble.IngestOperationStats, error)
+	// IngestAndExciseStacked is like IngestAndExciseFiles but takes stacked
+	// local SST pairs. Each StackedLocalSST may contain an upper and lower SST
+	// that overlap in key space. The lower SST (BelowDormant keys) is placed
+	// below the upper SST in the LSM.
+	IngestAndExciseStacked(
+		ctx context.Context,
+		ssts []pebble.StackedLocalSST,
 		exciseSpan roachpb.Span,
 	) (pebble.IngestOperationStats, error)
 	// IngestExternalFiles is a variant of IngestLocalFiles that takes external
@@ -1155,7 +1214,7 @@ type Batch interface {
 	// iterator creation. To guarantee that they see all the mutations, the
 	// iterator has to be repositioned using a seek operation, after the
 	// mutations were done.
-	Reader
+	ReaderWithCombinedIteration
 	WriteBatch
 	// NewBatchOnlyMVCCIterator returns a new instance of MVCCIterator that only
 	// sees the mutations in the batch (not the engine). It does not interleave

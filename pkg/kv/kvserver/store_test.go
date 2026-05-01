@@ -4527,6 +4527,7 @@ func TestSplitPreApplyWithSeparatedEngines(t *testing.T) {
 		initClosedTimestamp: hlc.Timestamp{WallTime: 100},
 	}
 
+	// TODO(basalt): this out-of-band write bypasses raft.
 	stateBatch := e.StateEngine().NewBatch()
 	defer stateBatch.Close()
 	raftBatch := e.LogEngine().NewBatch()
@@ -4578,7 +4579,7 @@ func TestNewNodeCapacityProviderCluster(t *testing.T) {
 	numStoresPerNode := 2
 	var storeSpecs []base.StoreSpec
 	for i := 0; i < numStoresPerNode; i++ {
-		storeSpecs = append(storeSpecs, base.StoreSpec{InMemory: true})
+		storeSpecs = append(storeSpecs, base.StoreSpec{Type: base.StoreTypeInMemory})
 	}
 	serverArgs := base.TestServerArgs{
 		Knobs: base.TestingKnobs{

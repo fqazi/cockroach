@@ -47,7 +47,9 @@ func runCatchUpBenchmark(b *testing.B, emk engineMaker, opts benchOptions) (numE
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		func() {
-			snap := rangefeed.NewCatchUpSnapshot(eng, span, opts.ts, nil, nil, 0)
+			// TODO(basalt): this uses a standalone engine; needs two engines +
+			// storage.MakeCombinedReader to test the combined path.
+			snap := rangefeed.NewCatchUpSnapshot(eng.NewSnapshot(), span, opts.ts, nil, nil, 0)
 			defer snap.Close()
 			counter := 0
 			err := snap.CatchUpScan(ctx, func(*kvpb.RangeFeedEvent) error {

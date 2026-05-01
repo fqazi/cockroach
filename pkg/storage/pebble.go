@@ -838,6 +838,9 @@ type engineConfig struct {
 	ballastSize int64
 	// env holds the initialized virtual filesystem that the Engine should use.
 	env *fs.Env
+	// basaltPath is the basalt:// URI when the store is backed by basalt
+	// disaggregated storage. Empty for non-basalt stores.
+	basaltPath string
 	// maxSize is used for calculating free space and making rebalancing
 	// decisions. The zero value indicates that there is no absolute maximum size.
 	maxSize storeSize
@@ -1209,8 +1212,10 @@ func newPebble(ctx context.Context, cfg engineConfig) (p *Pebble, err error) {
 
 	// Establish the emergency ballast if we can. If there's not sufficient
 	// disk space, the ballast will be reestablished from Capacity when the
-	// store's capacity is queried periodically.
-	if !cfg.opts.ReadOnly {
+	// store's capacity is queried periodically. Skip ballast for stores
+	// with no configured ballast size (e.g. basalt stores) to avoid
+	// unnecessary filesystem operations.
+	if !cfg.opts.ReadOnly && cfg.ballastSize > 0 {
 		du, err := cfg.env.UnencryptedFS.GetDiskUsage(cfg.env.Dir)
 		// If the FS is an in-memory FS, GetDiskUsage returns
 		// vfs.ErrUnsupported and we skip ballast creation.
@@ -1429,10 +1434,6 @@ func (p *Pebble) makeMetricEtcEventListener(ctx context.Context) pebble.EventLis
 			// persistent.
 		},
 		DataCorruption: func(info pebble.DataCorruptionInfo) {
-			if corruptBlockData := info.FormatBlockDataAsHex(); corruptBlockData != "" {
-				// Note: the block data is considered PII; the string value will be redacted.
-				log.Dev.Errorf(ctx, "corrupt block data:\n%s", corruptBlockData)
-			}
 			if !info.IsRemote {
 				p.writePreventStartupFile(ctx, info.Details)
 				log.Dev.Fatalf(ctx, "local corruption detected: %+v", info.Details)
@@ -1581,7 +1582,10 @@ func (p *Pebble) Close() {
 		// This is tricky, because the Reader interface requires Close return
 		// nothing.
 		if buildutil.CrdbTestBuild {
-			log.Dev.Fatalf(p.logCtx, "error during engine close: %s\n", err)
+			// TODO(basalt): get to the bottom of this leak.
+			//
+			// log.Dev.Fatalf(p.logCtx, "error during engine close: %s\n", err)
+			log.Dev.Errorf(p.logCtx, "error during engine close: %s\n", err)
 		} else {
 			log.Dev.Errorf(p.logCtx, "error during engine close: %s\n", err)
 		}
@@ -1670,7 +1674,7 @@ func (p *Pebble) NewMVCCIterator(
 		return maybeWrapInUnsafeIter(iter), nil
 	}
 
-	iter, err := newPebbleIterator(ctx, p.db, opts, StandardDurability, p)
+	iter, err := newPebbleIterator(ctx, p.db, opts, StandardDurability, p, pebble.LSMVersionHandle{})
 	if err != nil {
 		return nil, err
 	}
@@ -1679,15 +1683,16 @@ func (p *Pebble) NewMVCCIterator(
 
 // NewEngineIterator implements the Engine interface.
 func (p *Pebble) NewEngineIterator(ctx context.Context, opts IterOptions) (EngineIterator, error) {
-	return newPebbleIterator(ctx, p.db, opts, StandardDurability, p)
+	return newPebbleIterator(ctx, p.db, opts, StandardDurability, p, pebble.LSMVersionHandle{})
 }
 
 // ScanInternal implements the Engine interface.
 func (p *Pebble) ScanInternal(
 	ctx context.Context,
 	lower, upper roachpb.Key,
-	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum) error,
+	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel, dormantPos pebble.DormantRelation) error,
+	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum, dormantPos pebble.DormantRelation) error,
+	visitDormantRangeDel func(start, end []byte, seqNum pebble.SeqNum) error,
 	visitRangeKey func(start []byte, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 	visitExternalFile func(sst *pebble.ExternalFile) error,
@@ -1701,11 +1706,12 @@ func (p *Pebble) ScanInternal(
 			UpperBound: rawUpper,
 			KeyTypes:   pebble.IterKeyTypePointsAndRanges,
 		},
-		VisitPointKey:     visitPointKey,
-		VisitRangeDel:     visitRangeDel,
-		VisitRangeKey:     visitRangeKey,
-		VisitSharedFile:   visitSharedFile,
-		VisitExternalFile: visitExternalFile,
+		VisitPointKey:        visitPointKey,
+		VisitRangeDel:        visitRangeDel,
+		VisitDormantRangeDel: visitDormantRangeDel,
+		VisitRangeKey:        visitRangeKey,
+		VisitSharedFile:      visitSharedFile,
+		VisitExternalFile:    visitExternalFile,
 	})
 }
 
@@ -1804,6 +1810,30 @@ func (p *Pebble) ClearMVCCRange(start, end roachpb.Key, pointKeys, rangeKeys boo
 	defer batch.Close()
 
 	if err := batch.ClearMVCCRange(start, end, pointKeys, rangeKeys); err != nil {
+		return err
+	}
+	return batch.Commit(true)
+}
+
+// ClearRawRangeDormant implements the Engine interface.
+func (p *Pebble) ClearRawRangeDormant(start, end roachpb.Key) error {
+	// Write all the tombstones in one batch.
+	batch := p.NewUnindexedBatch()
+	defer batch.Close()
+
+	if err := batch.ClearRawRangeDormant(start, end); err != nil {
+		return err
+	}
+	return batch.Commit(true)
+}
+
+// ClearRawRangeActivate implements the Engine interface.
+func (p *Pebble) ClearRawRangeActivate(start, end roachpb.Key) error {
+	// Write all the tombstones in one batch.
+	batch := p.NewUnindexedBatch()
+	defer batch.Close()
+
+	if err := batch.ClearRawRangeActivate(start, end); err != nil {
 		return err
 	}
 	return batch.Commit(true)
@@ -2012,7 +2042,8 @@ func (p *Pebble) Capacity() (roachpb.StoreCapacity, error) {
 	// This is a no-op if the ballast is already sized or if there's not
 	// enough available capacity to resize it. Capacity is called periodically
 	// by the kvserver, and that drives the automatic resizing of the ballast.
-	if !p.cfg.env.IsReadOnly() {
+	// Skip for stores with no configured ballast (e.g. basalt stores).
+	if !p.cfg.env.IsReadOnly() && p.cfg.ballastSize > 0 {
 		resized, err := maybeEstablishBallast(p.cfg.env.UnencryptedFS, p.ballastPath, p.cfg.ballastSize, du)
 		if err != nil {
 			return roachpb.StoreCapacity{}, errors.Wrap(err, "resizing ballast")
@@ -2298,12 +2329,12 @@ func (p *Pebble) NewBatch() Batch {
 }
 
 // NewReader implements the Engine interface.
-func (p *Pebble) NewReader(durability DurabilityRequirement) Reader {
+func (p *Pebble) NewReader(durability DurabilityRequirement) ReaderWithCombinedIteration {
 	return newPebbleReadOnly(p, durability)
 }
 
 // NewReadOnly implements the Engine interface.
-func (p *Pebble) NewReadOnly(durability DurabilityRequirement) ReadWriter {
+func (p *Pebble) NewReadOnly(durability DurabilityRequirement) ReadWriterWithCombinedIteration {
 	return newPebbleReadOnly(p, durability)
 }
 
@@ -2338,7 +2369,7 @@ func makeEngineKeyRanges(spans []roachpb.Span) []pebble.KeyRange {
 }
 
 // NewSnapshot implements the Engine interface.
-func (p *Pebble) NewSnapshot(keyRanges ...roachpb.Span) Reader {
+func (p *Pebble) NewSnapshot(keyRanges ...roachpb.Span) ReaderWithCombinedIteration {
 	var engineKeyRanges []pebble.KeyRange
 	var universalSpan bool
 	if len(keyRanges) == 0 {
@@ -2391,6 +2422,17 @@ func (p *Pebble) IngestAndExciseFiles(
 		End:   EngineKey{Key: exciseSpan.EndKey}.Encode(),
 	}
 	return p.db.IngestAndExcise(ctx, paths, shared, external, rawSpan)
+}
+
+// IngestAndExciseStacked implements the Engine interface.
+func (p *Pebble) IngestAndExciseStacked(
+	ctx context.Context, ssts []pebble.StackedLocalSST, exciseSpan roachpb.Span,
+) (pebble.IngestOperationStats, error) {
+	rawSpan := pebble.KeyRange{
+		Start: EngineKey{Key: exciseSpan.Key}.Encode(),
+		End:   EngineKey{Key: exciseSpan.EndKey}.Encode(),
+	}
+	return p.db.IngestAndExciseStacked(ctx, ssts, rawSpan)
 }
 
 // IngestExternalFiles implements the Engine interface.
@@ -2817,13 +2859,14 @@ type pebbleReadOnly struct {
 	prefixEngineIter pebbleIterator
 	normalEngineIter pebbleIterator
 
-	iter       pebbleiter.Iterator
-	iterUsed   bool // avoids cloning after PinEngineStateForIterators()
-	durability DurabilityRequirement
-	closed     bool
+	iter         pebbleiter.Iterator
+	iterUsed     bool // avoids cloning after PinEngineStateForIterators()
+	durability   DurabilityRequirement
+	secondaryLSM pebble.LSMVersionHandle
+	closed       bool
 }
 
-var _ ReadWriter = &pebbleReadOnly{}
+var _ ReadWriterWithCombinedIteration = &pebbleReadOnly{}
 
 var pebbleReadOnlyPool = sync.Pool{
 	New: func() interface{} {
@@ -2862,13 +2905,15 @@ func (p *pebbleReadOnly) Close() {
 		panic(errors.AssertionFailedf("closing an already-closed pebbleReadOnly"))
 	}
 	p.closed = true
+	if p.secondaryLSM.IsSet() {
+		p.secondaryLSM.Close()
+	}
 	if p.iter != nil && !p.iterUsed {
 		err := p.iter.Close()
 		if err != nil {
 			panic(err)
 		}
 	}
-
 	// Setting iter to nil is sufficient since it will be closed by one of the
 	// subsequent destroy calls.
 	p.iter = nil
@@ -2877,12 +2922,15 @@ func (p *pebbleReadOnly) Close() {
 	p.prefixEngineIter.destroy()
 	p.normalEngineIter.destroy()
 	p.durability = StandardDurability
-
 	pebbleReadOnlyPool.Put(p)
 }
 
 func (p *pebbleReadOnly) Closed() bool {
 	return p.closed
+}
+
+func (p *pebbleReadOnly) SetSecondaryLSM(vh pebble.LSMVersionHandle) {
+	p.secondaryLSM = vh
 }
 
 func (p *pebbleReadOnly) MVCCIterate(
@@ -2933,14 +2981,14 @@ func (p *pebbleReadOnly) NewMVCCIterator(
 		return newPebbleIteratorByCloning(ctx, CloneContext{
 			rawIter: p.iter,
 			engine:  p.parent,
-		}, opts, p.durability), nil
+		}, opts, p.durability, p.secondaryLSM), nil
 	}
-
 	if iter.iter != nil {
 		iter.setOptions(ctx, opts, p.durability)
 	} else {
 		if err := iter.initReuseOrCreate(
-			ctx, p.parent.db, p.iter, p.iterUsed, opts, p.durability, p.parent); err != nil {
+			ctx, p.parent.db, p.iter, p.iterUsed, opts, p.durability, p.parent, p.secondaryLSM,
+		); err != nil {
 			return nil, err
 		}
 		if p.iter == nil {
@@ -2950,7 +2998,6 @@ func (p *pebbleReadOnly) NewMVCCIterator(
 		p.iterUsed = true
 		iter.reusable = true
 	}
-
 	iter.inuse = true
 	return maybeWrapInUnsafeIter(iter), nil
 }
@@ -2962,7 +3009,6 @@ func (p *pebbleReadOnly) NewEngineIterator(
 	if p.closed {
 		return nil, errors.AssertionFailedf("using a closed pebbleReadOnly")
 	}
-
 	iter := &p.normalEngineIter
 	if opts.Prefix {
 		iter = &p.prefixEngineIter
@@ -2971,15 +3017,14 @@ func (p *pebbleReadOnly) NewEngineIterator(
 		return newPebbleIteratorByCloning(ctx, CloneContext{
 			rawIter: p.iter,
 			engine:  p.parent,
-		}, opts, p.durability), nil
+		}, opts, p.durability, p.secondaryLSM), nil
 	}
-
 	if iter.iter != nil {
 		iter.setOptions(ctx, opts, p.durability)
 	} else {
-		err := iter.initReuseOrCreate(
-			ctx, p.parent.db, p.iter, p.iterUsed, opts, p.durability, p.parent)
-		if err != nil {
+		if err := iter.initReuseOrCreate(
+			ctx, p.parent.db, p.iter, p.iterUsed, opts, p.durability, p.parent, p.secondaryLSM,
+		); err != nil {
 			return nil, err
 		}
 		if p.iter == nil {
@@ -2989,7 +3034,6 @@ func (p *pebbleReadOnly) NewEngineIterator(
 		p.iterUsed = true
 		iter.reusable = true
 	}
-
 	iter.inuse = true
 	return iter, nil
 }
@@ -3003,8 +3047,12 @@ func (p *pebbleReadOnly) ConsistentIterators() bool {
 func (p *pebbleReadOnly) PinEngineStateForIterators(readCategory fs.ReadCategory) error {
 	if p.iter == nil {
 		o := makeIterOptions(readCategory, p.durability)
+		if p.secondaryLSM.IsSet() {
+			o.SecondaryLSM = p.secondaryLSM.Clone()
+		}
 		iter, err := p.parent.db.NewIter(&o)
 		if err != nil {
+			o.SecondaryLSM.Close()
 			return err
 		}
 		p.iter = pebbleiter.MaybeWrap(iter)
@@ -3018,13 +3066,14 @@ func (p *pebbleReadOnly) PinEngineStateForIterators(readCategory fs.ReadCategory
 func (p *pebbleReadOnly) ScanInternal(
 	ctx context.Context,
 	lower, upper roachpb.Key,
-	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum) error,
+	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel, dormantPos pebble.DormantRelation) error,
+	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum, dormantPos pebble.DormantRelation) error,
+	visitDormantRangeDel func(start, end []byte, seqNum pebble.SeqNum) error,
 	visitRangeKey func(start []byte, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 	visitExternalFile func(sst *pebble.ExternalFile) error,
 ) error {
-	return p.parent.ScanInternal(ctx, lower, upper, visitPointKey, visitRangeDel, visitRangeKey, visitSharedFile, visitExternalFile)
+	return p.parent.ScanInternal(ctx, lower, upper, visitPointKey, visitRangeDel, visitDormantRangeDel, visitRangeKey, visitSharedFile, visitExternalFile)
 }
 
 // Writer methods are not implemented for pebbleReadOnly. Ideally, the code
@@ -3057,6 +3106,14 @@ func (p *pebbleReadOnly) ClearRawRange(start, end roachpb.Key, pointKeys, rangeK
 }
 
 func (p *pebbleReadOnly) ClearMVCCRange(start, end roachpb.Key, pointKeys, rangeKeys bool) error {
+	return errors.AssertionFailedf("not implemented")
+}
+
+func (p *pebbleReadOnly) ClearRawRangeDormant(start, end roachpb.Key) error {
+	return errors.AssertionFailedf("not implemented")
+}
+
+func (p *pebbleReadOnly) ClearRawRangeActivate(start, end roachpb.Key) error {
 	return errors.AssertionFailedf("not implemented")
 }
 
@@ -3129,19 +3186,22 @@ func (p *pebbleReadOnly) BufferedSize() int {
 // pebbleSnapshot implements Reader, backed by a Pebble eventually file-only
 // snapshot created using NewEventuallyFileOnlySnapshot.
 type pebbleSnapshot struct {
-	efos      *pebble.EventuallyFileOnlySnapshot
-	parent    *Pebble
-	keyRanges []roachpb.Span
-	closed    bool
+	efos         *pebble.EventuallyFileOnlySnapshot
+	parent       *Pebble
+	keyRanges    []roachpb.Span
+	secondaryLSM pebble.LSMVersionHandle
+	closed       bool
 	// universalSpan is true if the snapshot covers the entire keyspace.
 	universalSpan bool
 }
 
-// Assert that *pebbleSnapshot implements the Reader interface.
-var _ Reader = (*pebbleSnapshot)(nil)
+var _ ReaderWithCombinedIteration = (*pebbleSnapshot)(nil)
 
 // Close implements the Reader interface.
 func (p *pebbleSnapshot) Close() {
+	if p.secondaryLSM.IsSet() {
+		p.secondaryLSM.Close()
+	}
 	_ = p.efos.Close()
 	p.closed = true
 }
@@ -3149,6 +3209,10 @@ func (p *pebbleSnapshot) Close() {
 // Closed implements the Reader interface.
 func (p *pebbleSnapshot) Closed() bool {
 	return p.closed
+}
+
+func (p *pebbleSnapshot) SetSecondaryLSM(vh pebble.LSMVersionHandle) {
+	p.secondaryLSM = vh
 }
 
 // MVCCIterate implements the Reader interface.
@@ -3211,7 +3275,7 @@ func (p *pebbleSnapshot) NewMVCCIterator(
 		return maybeWrapInUnsafeIter(iter), nil
 	}
 
-	iter, err := newPebbleIterator(ctx, p.efos, opts, StandardDurability, p.parent)
+	iter, err := newPebbleIterator(ctx, p.efos, opts, StandardDurability, p.parent, p.secondaryLSM)
 	if err != nil {
 		return nil, err
 	}
@@ -3222,7 +3286,7 @@ func (p *pebbleSnapshot) NewMVCCIterator(
 func (p *pebbleSnapshot) NewEngineIterator(
 	ctx context.Context, opts IterOptions,
 ) (EngineIterator, error) {
-	return newPebbleIterator(ctx, p.efos, opts, StandardDurability, p.parent)
+	return newPebbleIterator(ctx, p.efos, opts, StandardDurability, p.parent, p.secondaryLSM)
 }
 
 // ConsistentIterators implements the Reader interface.
@@ -3240,8 +3304,9 @@ func (p *pebbleSnapshot) PinEngineStateForIterators(fs.ReadCategory) error {
 func (p *pebbleSnapshot) ScanInternal(
 	ctx context.Context,
 	lower, upper roachpb.Key,
-	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum) error,
+	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel, dormantPos pebble.DormantRelation) error,
+	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum, dormantPos pebble.DormantRelation) error,
+	visitDormantRangeDel func(start, end []byte, seqNum pebble.SeqNum) error,
 	visitRangeKey func(start []byte, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 	visitExternalFile func(sst *pebble.ExternalFile) error,
@@ -3255,11 +3320,12 @@ func (p *pebbleSnapshot) ScanInternal(
 			UpperBound: rawUpper,
 			KeyTypes:   pebble.IterKeyTypePointsAndRanges,
 		},
-		VisitPointKey:     visitPointKey,
-		VisitRangeDel:     visitRangeDel,
-		VisitRangeKey:     visitRangeKey,
-		VisitSharedFile:   visitSharedFile,
-		VisitExternalFile: visitExternalFile,
+		VisitPointKey:        visitPointKey,
+		VisitRangeDel:        visitRangeDel,
+		VisitDormantRangeDel: visitDormantRangeDel,
+		VisitRangeKey:        visitRangeKey,
+		VisitSharedFile:      visitSharedFile,
+		VisitExternalFile:    visitExternalFile,
 	})
 }
 

@@ -403,6 +403,17 @@ func TestStorePropertiesSafeFormat(t *testing.T) {
 			},
 			formatted: "/mnt/data3/cockroach: ro encrypted=false fs:{bdev=nvme1n1 fstype=zfs mountpoint=/mnt/data3 mountopts=ro,relatime}",
 		},
+		{
+			props: &StoreProperties{
+				Dir:       "basalt://my-bucket/my-store",
+				Encrypted: false,
+				FileStoreProperties: &FileStoreProperties{
+					Path:   "basalt://my-bucket/my-store",
+					FsType: "basalt",
+				},
+			},
+			formatted: "basalt://my-bucket/my-store: rw encrypted=false fs:{fstype=basalt}",
+		},
 	}
 	for _, tc := range testCases {
 		got := redact.Sprintf("%s", tc.props)

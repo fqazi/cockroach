@@ -1,0 +1,125 @@
+# Persistence: n1 starts with a store key (which generates a data
+# key), closes, and reopens. The same data key is retrievable after
+# reopen, proving the registry is written and reloaded correctly.
+
+open node=1 store-key=storekey1
+----
+ok
+
+close
+----
+ok
+
+open node=1 store-key=storekey1
+----
+ok
+
+get-key from=1 use=n1-active
+----
+data-key=k1 store-key=storekey1 type=AES128_CTR created=0
+
+close
+----
+ok
+
+# Multi-node discovery: n1 and n2 each start with their own store
+# keys (generating their own data keys). n3 opens afterward and
+# discovers both data keys during its initial scan of remote node
+# directories.
+
+open node=1 store-key=storekey1b
+----
+ok
+
+open node=2 store-key=storekey2
+----
+ok
+
+open node=3 store-key=storekey3
+----
+ok
+
+get-key from=3 use=n1-active
+----
+data-key=k2 store-key=storekey1b type=AES128_CTR created=0
+
+get-key from=3 use=n2-active
+----
+data-key=k3 store-key=storekey2 type=AES128_CTR created=0
+
+# Cache-miss refresh: n1 rotates its data key while n3 is already
+# open. n3's GetKey for the new key ID triggers a cache-miss refresh
+# that re-scans remote registries and discovers the rotated key.
+# The data key changes from k2 to k4 (created at time 20001 instead
+# of 0), proving n3 retrieved the newly rotated key.
+
+advance-time secs=20001
+----
+ok
+
+rotate node=1
+----
+ok
+
+get-key from=3 use=n1-active
+----
+data-key=k4 store-key=storekey1b type=AES128_CTR created=20001
+
+close
+----
+ok
+
+close-node node=1
+----
+ok
+
+close-node node=2
+----
+ok
+
+# Corrupt remote registry: a remote node's registry is unreadable
+# (simulating a file that hasn't been fully written to shared storage).
+# The opening node should skip the corrupt registry gracefully and
+# still start up. Once the corrupt registry is replaced with valid
+# data, a cache-miss refresh discovers the key.
+
+corrupt-remote-registry node=10
+----
+ok
+
+open node=9 store-key=storekey9
+----
+ok
+
+remote-set-key node=10 key-id=key10 key-data=keydata10
+----
+ok
+
+get-key from=9 id=key10
+----
+data-key=k5 store-key= type=AES128_CTR created=20001
+
+close
+----
+ok
+
+# Remote write after open: a new node (n6) writes a data key
+# directly to disk after n5 is already open. n5 discovers it via
+# cache-miss refresh, proving that data keys from nodes that appear
+# after startup are still discoverable.
+
+open node=5 store-key=storekey5
+----
+ok
+
+remote-set-key node=6 key-id=remotekey6 key-data=remotekeydata6
+----
+ok
+
+get-key from=5 id=remotekey6
+----
+data-key=k6 store-key= type=AES128_CTR created=20001
+
+close
+----
+ok

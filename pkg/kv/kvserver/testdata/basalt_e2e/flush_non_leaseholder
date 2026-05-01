@@ -1,0 +1,108 @@
+# Test Case: Flush error handling on non-leaseholder
+#
+# This tests that flush fails on a non-leaseholder replica:
+# 1. Initialize 2-store cluster
+# 2. Flush on leaseholder (store 1) succeeds
+# 3. Add replica to store 2
+# 4. Transfer lease to store 2
+# 5. Flush on store 1 (now non-leaseholder) should fail
+# 6. Flush on store 2 (new leaseholder) should succeed
+
+init stores=2
+----
+cluster started with 2 store(s)
+
+scratch-range
+----
+ok
+
+# Initial flush on leaseholder (store 1).
+flush rangeID=1 store=1
+----
+flushed
+
+# Add replica to store 2.
+add-replica rangeID=1 store=2
+----
+added replica to store 2, replicas: 2
+
+# Transfer lease to store 2.
+transfer-lease rangeID=1 store=2
+----
+lease transferred to store 2
+
+# Flush on store 1 (non-leaseholder) should fail.
+flush rangeID=1 store=1
+----
+error: not the leaseholder
+
+# Flush on store 2 (new leaseholder) should succeed.
+flush rangeID=1 store=2
+----
+flushed
+
+# Verify state on both stores.
+range-shared-meta-keys rangeID=1 store=1
+----
+RSManifestState:
+  disk_file_num: 386, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 487
+
+range-shared-meta-keys rangeID=1 store=2
+----
+RSManifestState:
+  disk_file_num: 386, replica_id: 2
+RangeFileNumAllocState:
+  next_file_num: 487
+
+rs-engine-state rangeID=1 store=1
+----
+current-manifest: 386
+manifest 386: refcount=1 sstables=[000225.sst 000385.sst]
+
+rs-engine-state rangeID=1 store=2
+----
+current-manifest: 386
+manifest 386: refcount=1 sstables=[000225.sst 000385.sst]
+
+basalt-files
+----
+s1/
+s1/ranges/
+s1/ranges/r1:1/
+s1/ranges/r1:1/000225.sst:
+s1/ranges/r1:1/  previous-manifest:66
+s1/ranges/r1:1/000385.sst:
+s1/ranges/r1:1/  previous-manifest:226
+s1/ranges/r1:1/MANIFEST-000066:
+s1/ranges/r1:1/  manifest:66
+s1/ranges/r1:1/MANIFEST-000226:
+s1/ranges/r1:1/  manifest:226
+s1/ranges/r1:1/  000225.sst
+s1/ranges/r1:1/MANIFEST-000386:
+s1/ranges/r1:1/  manifest:386
+s1/ranges/r1:1/  000225.sst
+s1/ranges/r1:1/  000385.sst
+s1/scratch/
+s1/scratch/r1:1/
+s2/
+s2/ranges/
+s2/ranges/r1:2/
+s2/ranges/r1:2/000225.sst:
+s2/ranges/r1:2/  previous-manifest:66
+s2/ranges/r1:2/000385.sst:
+s2/ranges/r1:2/  previous-manifest:226
+s2/ranges/r1:2/MANIFEST-000226:
+s2/ranges/r1:2/  manifest:226
+s2/ranges/r1:2/  000225.sst
+s2/ranges/r1:2/MANIFEST-000386:
+s2/ranges/r1:2/  manifest:386
+s2/ranges/r1:2/  000225.sst
+s2/ranges/r1:2/  000385.sst
+s2/scratch/
+s2/scratch/r1:2/
+
+stop
+----
+stopped

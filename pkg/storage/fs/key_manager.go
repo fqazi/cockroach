@@ -13,6 +13,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -24,6 +25,7 @@ import (
 	"github.com/gogo/protobuf/proto"
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -250,6 +252,25 @@ type DataKeyManager struct {
 		// filename is the filename of the currently active registry.
 		filename string
 	}
+}
+
+// NewDataKeyManager creates a DataKeyManager that stores its data keys
+// registry on the provided filesystem at the given directory. This allows
+// callers to use any vfs.FS implementation (e.g., basaltfs for shared
+// storage) independently of the store's local filesystem.
+func NewDataKeyManager(
+	ctx context.Context, fs vfs.FS, dir string, rotationPeriod time.Duration, readOnly bool,
+) (*DataKeyManager, error) {
+	m := &DataKeyManager{
+		fs:             fs,
+		dbDir:          dir,
+		rotationPeriod: int64((rotationPeriod + time.Second - 1) / time.Second),
+		readOnly:       readOnly,
+	}
+	if err := m.Load(ctx); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 func makeRegistryProto() *enginepb.DataKeysRegistry {
@@ -585,4 +606,242 @@ func (m *DataKeyManager) rotateDataKeyAndWrite(
 		}
 	}
 	return err
+}
+
+// NodeDataKeyManager wraps per-node DataKeyManager instances for
+// multi-node encryption-at-rest on shared storage. Each node writes its data
+// keys to its own directory (e.g. "<dataKeysDir>/n<nodeID>/"), while
+// reads merge keys from all per-node directories. This mirrors the
+// NodeFileRegistry pattern: each node independently manages its own
+// key rotation, and cross-node key discovery happens on demand via
+// cache-miss reads.
+//
+// The local node's DataKeyManager is opened read-write and handles key
+// rotation. Remote nodes' data keys are discovered by reading their
+// registry files on cache miss.
+type NodeDataKeyManager struct {
+	fs          vfs.FS
+	dataKeysDir string
+	nodeID      roachpb.NodeID
+	localKM     *DataKeyManager
+	sfGroup     singleflight.Group
+	mu          struct {
+		syncutil.RWMutex
+		// keys is the merged key map across all per-node directories.
+		// All values are non-nil.
+		keys map[string]*enginepb.SecretKey
+	}
+}
+
+// NewNodeDataKeyManager creates a NodeDataKeyManager. It creates the
+// local node's directory under dataKeysDir, initializes a
+// DataKeyManager for the local node, seeds the merged key map from
+// the local registry, and scans for keys from other nodes.
+//
+// dataKeysDir is the parent directory containing all per-node data
+// key directories (e.g. "<cluster-id>/encryption/datakeys/"). Each
+// node directory is a subdirectory named "n<nodeID>".
+func NewNodeDataKeyManager(
+	ctx context.Context,
+	fs vfs.FS,
+	dataKeysDir string,
+	nodeID roachpb.NodeID,
+	rotationPeriod time.Duration,
+	readOnly bool,
+) (*NodeDataKeyManager, error) {
+	localDir := fs.PathJoin(dataKeysDir, fmt.Sprintf("n%d", nodeID))
+
+	if !readOnly {
+		if err := fs.MkdirAll(dataKeysDir, 0755); err != nil {
+			return nil, errors.Wrap(err, "creating data keys dir")
+		}
+		if err := fs.MkdirAll(localDir, 0755); err != nil {
+			return nil, errors.Wrap(err, "creating local node data keys dir")
+		}
+	}
+
+	localKM, err := NewDataKeyManager(ctx, fs, localDir, rotationPeriod, readOnly)
+	if err != nil {
+		return nil, errors.Wrap(err, "creating local data key manager")
+	}
+
+	n := &NodeDataKeyManager{
+		fs:          fs,
+		dataKeysDir: dataKeysDir,
+		nodeID:      nodeID,
+		localKM:     localKM,
+	}
+	n.mu.keys = make(map[string]*enginepb.SecretKey)
+
+	// Seed the merged map from the local DataKeyManager's registry.
+	func() {
+		localKM.writeMu.mu.RLock()
+		defer localKM.writeMu.mu.RUnlock()
+		for id, key := range localKM.writeMu.mu.keyRegistry.DataKeys {
+			n.mu.keys[id] = key
+		}
+	}()
+
+	// Scan dataKeysDir for other n<id>/ node directories and merge
+	// their keys.
+	if err := n.refreshRemoteKeys(ctx); err != nil {
+		_ = localKM.Close()
+		return nil, errors.Wrap(err, "initial remote data key scan")
+	}
+
+	return n, nil
+}
+
+// refreshRemoteKeys re-reads all remote node directories (skipping
+// our own nodeID), locates each node's current data keys registry via
+// its atomic marker, and merges data keys into the in-memory map.
+// Overwrites are safe because data key entries are immutable: a key's
+// ID, encryption settings, and material are fixed at generation time
+// and never change.
+//
+// This is a merge-only operation — it does not delete keys that were
+// previously in the map but are now absent from a remote node's
+// registry. This is acceptable because key entries are never deleted
+// from a DataKeyManager's registry; they only accumulate.
+// TODO(basalt): Consider tombstone tracking if key deletion becomes
+// necessary for production use.
+func (n *NodeDataKeyManager) refreshRemoteKeys(ctx context.Context) error {
+	dirEntries, err := n.fs.List(n.dataKeysDir)
+	if err != nil {
+		return errors.Wrap(err, "listing data keys dir")
+	}
+	for _, name := range dirEntries {
+		name = n.fs.PathBase(name)
+		remoteID, ok := parseNodeID(name)
+		if !ok || remoteID == n.nodeID {
+			continue
+		}
+		if err := n.loadRemoteNodeKeys(name); err != nil {
+			// Skip remote nodes whose registries can't be loaded.
+			// This commonly happens during multi-node startup on
+			// shared storage when a remote node's registry file is
+			// not yet fully readable. The keys will be discovered
+			// later via the GetKey cache-miss path.
+			log.Dev.Warningf(ctx, "loading remote data keys %s, skipping: %v", name, err)
+			continue
+		}
+	}
+	return nil
+}
+
+// loadRemoteNodeKeys reads a single remote node's data keys registry
+// and merges its keys into the in-memory map.
+func (n *NodeDataKeyManager) loadRemoteNodeKeys(name string) error {
+	remoteDir := n.fs.PathJoin(n.dataKeysDir, name)
+	tempMarker, filename, err := atomicfs.LocateMarker(
+		n.fs, remoteDir, keysRegistryMarkerName,
+	)
+	if err != nil {
+		return errors.Wrapf(err, "locating marker for %s", name)
+	}
+	if err := tempMarker.Close(); err != nil {
+		return errors.Wrapf(err, "closing marker for %s", name)
+	}
+	if filename == "" {
+		// No registry file yet for this node.
+		return nil
+	}
+
+	f, err := n.fs.Open(n.fs.PathJoin(remoteDir, filename))
+	if err != nil {
+		return errors.Wrapf(err, "opening remote registry %s", name)
+	}
+	b, readErr := io.ReadAll(f)
+	closeErr := f.Close()
+	if err := errors.CombineErrors(readErr, closeErr); err != nil {
+		return errors.Wrapf(err, "reading remote registry %s", name)
+	}
+	keyRegistry := makeRegistryProto()
+	if err := protoutil.Unmarshal(b, keyRegistry); err != nil {
+		return errors.Wrapf(err, "unmarshaling remote registry %s", name)
+	}
+	if err := validateRegistry(keyRegistry); err != nil {
+		return errors.Wrapf(err, "validating remote registry %s", name)
+	}
+
+	func() {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		for id, key := range keyRegistry.DataKeys {
+			n.mu.keys[id] = key
+		}
+	}()
+	return nil
+}
+
+// GetKey returns the key for the given ID. It first checks the merged
+// in-memory map; on cache miss, it re-scans all remote node
+// registries (coalesced via singleflight) and re-checks the map.
+func (n *NodeDataKeyManager) GetKey(id string) (*enginepb.SecretKey, error) {
+	n.mu.RLock()
+	key := n.mu.keys[id]
+	n.mu.RUnlock()
+	if key != nil {
+		return key, nil
+	}
+
+	// Cache miss: refresh remote keys and re-check.
+	_, refreshErr, _ := n.sfGroup.Do("refresh", func() (interface{}, error) {
+		ctx := context.Background()
+		if err := n.refreshRemoteKeys(ctx); err != nil {
+			log.Dev.Warningf(ctx, "refreshing remote data keys: %v", err)
+			return nil, err
+		}
+		return nil, nil
+	})
+
+	n.mu.RLock()
+	key = n.mu.keys[id]
+	n.mu.RUnlock()
+	if key != nil {
+		return key, nil
+	}
+	if refreshErr != nil {
+		return nil, errors.Wrapf(refreshErr, "key %s not found after failed refresh", id)
+	}
+	return nil, fmt.Errorf("key %s is not found", id)
+}
+
+// ActiveKeyForWriter delegates to the local node's DataKeyManager for
+// the active key. If key rotation just occurred, the new key is added
+// to the merged map.
+func (n *NodeDataKeyManager) ActiveKeyForWriter(ctx context.Context) (*enginepb.SecretKey, error) {
+	key, err := n.localKM.ActiveKeyForWriter(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if key != nil {
+		n.mu.Lock()
+		n.mu.keys[key.Info.KeyId] = key
+		n.mu.Unlock()
+	}
+	return key, nil
+}
+
+// SetActiveStoreKeyInfo delegates to the local node's DataKeyManager.
+func (n *NodeDataKeyManager) SetActiveStoreKeyInfo(
+	ctx context.Context, info *enginepb.KeyInfo,
+) error {
+	return n.localKM.SetActiveStoreKeyInfo(ctx, info)
+}
+
+// ActiveKeyInfoForStats delegates to the local node's DataKeyManager.
+func (n *NodeDataKeyManager) ActiveKeyInfoForStats() *enginepb.KeyInfo {
+	return n.localKM.ActiveKeyInfoForStats()
+}
+
+// getScrubbedRegistry delegates to the local node's DataKeyManager.
+// This is used by the stats handler.
+func (n *NodeDataKeyManager) getScrubbedRegistry() *enginepb.DataKeysRegistry {
+	return n.localKM.getScrubbedRegistry()
+}
+
+// Close closes the local node's DataKeyManager.
+func (n *NodeDataKeyManager) Close() error {
+	return n.localKM.Close()
 }

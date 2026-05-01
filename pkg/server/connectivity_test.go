@@ -120,7 +120,7 @@ func TestClusterConnectivity(t *testing.T) {
 	baseServerArgs := base.TestServerArgs{
 		// We're going to manually control initialization in this test.
 		NoAutoInitializeCluster: true,
-		StoreSpecs:              []base.StoreSpec{{InMemory: true}},
+		StoreSpecs:              []base.StoreSpec{{Type: base.StoreTypeInMemory}},
 		Knobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
 				ContextTestingKnobs: rpc.ContextTestingKnobs{
@@ -296,7 +296,7 @@ func TestJoinVersionGate(t *testing.T) {
 
 	commonArg := base.TestServerArgs{
 		StoreSpecs: []base.StoreSpec{
-			{InMemory: true},
+			{Type: base.StoreTypeInMemory},
 		},
 	}
 

@@ -291,7 +291,48 @@ message ReplicatedEvalResult {
   // replicated range-id local key.
   bool do_timely_application_to_all_replicas = 29;
 
+  // RSManifestInstall contains the new manifest number to install for the
+  // range-shared engine. When set, the RSManifestState must be written during
+  // application with the replicaID retrieved from the applying Replica.
+  // The message is defined at top level so it can be embedded in SplitTrigger
+  // and MergeTrigger in future PRs.
+  RSManifestInstall rs_manifest_install = 31 [(gogoproto.customname) = "RSManifestInstall"];
+
+  // IncrementFlushStartedCount, when true, causes FlushStartedCount in
+  // RangeAppliedState to be incremented during application. Set by flush
+  // prepare.
+  bool increment_flush_started_count = 32;
+
   reserved 1, 5, 7, 9, 10, 14, 15, 16, 19, 10001 to 10013;
+}
+
+// RSManifestInstall contains the new manifest number to install for the
+// range-shared engine. Defined at top level for embedding in
+// ReplicatedEvalResult, SplitTrigger, and MergeTrigger.
+message RSManifestInstall {
+  uint64 next_manifest_num = 1;
+
+  reserved 2;
+
+  // FlushedApproxStoreLocalBytes is the ApproxStoreLocalBytes value captured
+  // at flush prepare time. On flush commit, this value is subtracted from
+  // the range's ApproxStoreLocalBytes during application, reflecting that
+  // those bytes have been moved to the range-shared engine.
+  int64 flushed_approx_store_local_bytes = 3;
+
+  // ManifestFileEntry is the serialized enginepb.FileEntry for the new
+  // MANIFEST file. This carries the encryption metadata (EnvType +
+  // EncryptionSettings) through Raft so followers can install it into
+  // their local file registry before opening the RSEngine. Without
+  // this, the follower may read the MANIFEST without decryption
+  // (registry entry not yet visible on shared storage) and get
+  // "malformed manifest".
+  bytes manifest_file_entry = 4;
+
+  // ManifestName is the MANIFEST filename (e.g. "MANIFEST-000217").
+  // Used by followers to construct the full path for installing the
+  // file registry entry.
+  string manifest_name = 5;
 }
 
 // WriteBatch is the serialized representation of a RocksDB write

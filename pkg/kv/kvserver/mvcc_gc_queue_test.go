@@ -863,10 +863,10 @@ func testMVCCGCQueueProcessImpl(t *testing.T, snapshotBounds bool) {
 		var snap storage.Reader
 		desc := tc.repl.Desc()
 		if snapshotBounds {
-			snap = tc.repl.store.StateEngine().NewSnapshot(rditer.MakeReplicatedKeySpans(desc)...)
+			snap = tc.repl.NewCombinedSnapshot(rditer.MakeReplicatedKeySpans(desc)...)
 		} else {
 			// Use implicit engine-wide bounds.
-			snap = tc.repl.store.StateEngine().NewSnapshot()
+			snap = tc.repl.NewCombinedSnapshot()
 		}
 		defer snap.Close()
 
@@ -1143,6 +1143,7 @@ func TestMVCCGCQueueTransactionTable(t *testing.T) {
 			txn.LastHeartbeat = hlc.Timestamp{WallTime: test.hb.UnixNano()}
 		}
 		txns[strKey] = *txn
+		// TODO(basalt): these out-of-band writes bypass raft.
 		for _, addrKey := range []roachpb.Key{baseKey, outsideKey} {
 			key := keys.TransactionKey(addrKey, txn.ID)
 			require.NoError(t, storage.MVCCPutProto(
@@ -1167,12 +1168,14 @@ func TestMVCCGCQueueTransactionTable(t *testing.T) {
 	assert.True(t, processed, "queue not processed")
 
 	testutils.SucceedsSoon(t, func() error {
+		snap := tc.repl.NewCombinedSnapshot()
+		defer snap.Close()
 		for strKey, sp := range testCases {
 			txn := &roachpb.Transaction{}
 			txnKey := keys.TransactionKey(roachpb.Key(strKey), txns[strKey].ID)
 			txnTombstoneTSCacheKey := transactionTombstoneMarker(
 				roachpb.Key(strKey), txns[strKey].ID)
-			ok, err := storage.MVCCGetProto(ctx, tc.stateEng, txnKey, hlc.Timestamp{}, txn,
+			ok, err := storage.MVCCGetProto(ctx, snap, txnKey, hlc.Timestamp{}, txn,
 				storage.MVCCGetOptions{})
 			if err != nil {
 				return err
@@ -1210,7 +1213,7 @@ func TestMVCCGCQueueTransactionTable(t *testing.T) {
 				return fmt.Errorf("%s: unexpected intent resolutions:\nexpected: %s\nobserved: %s", strKey, expIntents, spans)
 			}
 			entry := &roachpb.AbortSpanEntry{}
-			abortExists, err := tc.repl.abortSpan.Get(ctx, tc.store.StateEngine(), txns[strKey].ID, entry)
+			abortExists, err := tc.repl.abortSpan.Get(ctx, snap, txns[strKey].ID, entry)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1224,7 +1227,9 @@ func TestMVCCGCQueueTransactionTable(t *testing.T) {
 	outsideTxnPrefix := keys.TransactionKey(outsideKey, uuid.UUID{})
 	outsideTxnPrefixEnd := keys.TransactionKey(outsideKey.Next(), uuid.UUID{})
 	var count int
-	if _, err := storage.MVCCIterate(ctx, tc.store.StateEngine(), outsideTxnPrefix, outsideTxnPrefixEnd, hlc.Timestamp{},
+	iterSnap := tc.repl.NewCombinedSnapshot()
+	defer iterSnap.Close()
+	if _, err := storage.MVCCIterate(ctx, iterSnap, outsideTxnPrefix, outsideTxnPrefixEnd, hlc.Timestamp{},
 		storage.MVCCScanOptions{}, func(roachpb.KeyValue) error {
 			count++
 			return nil
@@ -1237,9 +1242,11 @@ func TestMVCCGCQueueTransactionTable(t *testing.T) {
 	}
 
 	tc.repl.raftMu.Lock()
+	assertSnap := tc.repl.NewCombinedSnapshot()
 	tc.repl.mu.RLock()
-	tc.repl.assertStateRaftMuLockedReplicaMuRLocked(ctx, tc.stateEng, tc.raftEng) // check that in-mem and on-disk state were updated
+	tc.repl.assertStateRaftMuLockedReplicaMuRLocked(ctx, assertSnap, tc.raftEng) // check that in-mem and on-disk state were updated
 	tc.repl.mu.RUnlock()
+	assertSnap.Close()
 	tc.repl.raftMu.Unlock()
 }
 
@@ -1365,8 +1372,10 @@ func TestMVCCGCQueueLastProcessedTimestamps(t *testing.T) {
 
 	// Verify GC.
 	testutils.SucceedsSoon(t, func() error {
+		snap := tc.repl.NewCombinedSnapshot()
+		defer snap.Close()
 		for _, lpv := range lastProcessedVals {
-			ok, err := storage.MVCCGetProto(ctx, tc.stateEng, lpv.key, hlc.Timestamp{}, &ts,
+			ok, err := storage.MVCCGetProto(ctx, snap, lpv.key, hlc.Timestamp{}, &ts,
 				storage.MVCCGetOptions{})
 			if err != nil {
 				return err

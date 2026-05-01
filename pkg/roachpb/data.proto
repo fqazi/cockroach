@@ -136,6 +136,20 @@ message SplitTrigger {
 
   // ManualSplit indicates that this split is manually triggered via an AdminSplitRequest by a sql client.
   bool manualSplit = 8;
+
+  // LHSRSManifestNum is the range-shared manifest number to install for the
+  // LHS range during split application. If zero, no manifest installation
+  // occurs (the range doesn't have a range-shared LSM). Used by Basalt.
+  uint64 lhs_rs_manifest_num = 9 [(gogoproto.customname) = "LHSRSManifestNum"];
+  // RHSRSManifestNum is the range-shared manifest number to install for the
+  // RHS range during split application. If zero, no manifest installation
+  // occurs. Used by Basalt.
+  uint64 rhs_rs_manifest_num = 10 [(gogoproto.customname) = "RHSRSManifestNum"];
+  // RsNextFileNum is the file number high-water mark from pebble's SplitLSM.
+  // Both LHS and RHS RangeFileNumAllocState.NextFileNum must be advanced past
+  // this value to avoid collisions with file numbers allocated internally by
+  // SplitLSM. Zero when no range-shared LSM is present.
+  uint64 rs_next_file_num = 11 [(gogoproto.customname) = "RsNextFileNum"];
 }
 
 // A MergeTrigger is run after a successful commit of an AdminMerge
@@ -222,6 +236,17 @@ message MergeTrigger {
   // TODO(replication): remove this field in the 23.2 cycle (i.e. on master after
   // 23.1 has been cut).
   bool write_gc_hint = 8 [(gogoproto.customname) = "WriteGCHint"];
+
+  // MergedRSManifestNum is the range-shared manifest number to install for the
+  // merged range during merge application. If zero, no manifest installation
+  // occurs (the range doesn't have a range-shared LSM). Used by Basalt.
+  uint64 merged_rs_manifest_num = 10 [(gogoproto.customname) = "MergedRSManifestNum"];
+  // MergedRsNextFileNum is the file number high-water mark from pebble's
+  // MergeLSM. The LHS RangeFileNumAllocState.NextFileNum must be advanced past
+  // this value to avoid collisions with file numbers allocated internally by
+  // MergeLSM (renumbered tables, virtual table nums, manifest). Zero when no
+  // range-shared LSM is present.
+  uint64 merged_rs_next_file_num = 11 [(gogoproto.customname) = "MergedRsNextFileNum"];
 }
 
 // ReplicaChangeType is a parameter of ChangeReplicasTrigger.

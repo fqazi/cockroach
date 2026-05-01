@@ -42,7 +42,7 @@ func TestAdminAPIEvents(t *testing.T) {
 			// Below parameters are required to make tc.Restart work
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: "1",
 				},
 			},

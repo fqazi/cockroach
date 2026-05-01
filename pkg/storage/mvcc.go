@@ -156,6 +156,16 @@ func determineMaxConcurrentCompactions(defaultValue int, envValue int, clusterSe
 	return defaultValue
 }
 
+// GetMaxConcurrentCompactions returns the maximum number of concurrent
+// compactions based on the default, environment variable, and cluster setting.
+func GetMaxConcurrentCompactions(sv *settings.Values) int {
+	return determineMaxConcurrentCompactions(
+		defaultMaxConcurrentCompactions,
+		envMaxConcurrentCompactions,
+		int(compactionConcurrencyUpper.Get(sv)),
+	)
+}
+
 // l0SubLevelCompactionConcurrency is the sub-level threshold at which to
 // allow an increase in compaction concurrency. The maximum is still
 // controlled by pebble.Options.CompactionConcurrencyRange. The default of 2
@@ -6023,6 +6033,22 @@ func MVCCResolveWriteIntentRange(
 		return 0, 0, &resumeSpan, resumeReason, false, nil
 	}
 
+	if !rw.ConsistentIterators() {
+		// This path only exists for tests, that pass an Engine.
+		eng, ok := rw.(Engine)
+		if !ok {
+			panic(errors.AssertionFailedf("need ReadWriter.ConsistentIterators or Engine"))
+		}
+		batch := eng.NewBatch()
+		rw = batch
+		defer func() {
+			if err == nil {
+				err = batch.Commit(true)
+			}
+			batch.Close()
+		}()
+	}
+	// INVARIANT: rw.ConsistentIterators.
 	ltStart, _ := keys.LockTableSingleKey(update.Key, nil)
 	ltEnd, _ := keys.LockTableSingleKey(update.EndKey, nil)
 	ltIter, err := NewLockTableIterator(ctx, rw, LockTableIteratorOptions{
@@ -6042,15 +6068,9 @@ func MVCCResolveWriteIntentRange(
 		UpperBound:   update.EndKey,
 		ReadCategory: fs.IntentResolutionReadCategory,
 	}
-	if rw.ConsistentIterators() {
-		// Production code should always have consistent iterators.
-		mvccIter, err = rw.NewMVCCIterator(ctx, MVCCKeyIterKind, iterOpts)
-		if err != nil {
-			return 0, 0, nil, 0, false, err
-		}
-	} else {
-		// For correctness, we need mvccIter to be consistent with engineIter.
-		mvccIter = newPebbleIteratorByCloning(ctx, ltIter.CloneContext(), iterOpts, StandardDurability)
+	mvccIter, err = rw.NewMVCCIterator(ctx, MVCCKeyIterKind, iterOpts)
+	if err != nil {
+		return 0, 0, nil, 0, false, err
 	}
 	defer mvccIter.Close()
 	buf := newPutBuffer()

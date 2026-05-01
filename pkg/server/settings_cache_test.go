@@ -68,7 +68,7 @@ func TestCachedSettingsServerRestart(t *testing.T) {
 	serverArgs := base.TestServerArgs{
 		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
 		StoreSpecs: []base.StoreSpec{
-			{InMemory: true, StickyVFSID: "1"},
+			{Type: base.StoreTypeInMemory, StickyVFSID: "1"},
 		},
 		Knobs: base.TestingKnobs{
 			Server: &TestingKnobs{

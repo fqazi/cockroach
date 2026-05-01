@@ -1,0 +1,73 @@
+init engine=pebble
+----
+cluster started with 1 store(s)
+
+scratch-range
+----
+ok
+
+put key=a value=val-a
+----
+ok
+
+approx-store-local-bytes rangeID=1
+----
+positive
+
+range-flush rangeID=1
+----
+flushed
+
+rs-engine-state rangeID=1
+----
+current-manifest: 8
+files: 1
+
+range-shared-meta-keys rangeID=1
+----
+RSManifestState:
+  disk_file_num: 8, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 109
+
+scan-rs-engine rangeID=1
+----
+000007.sst:
+  a => val-a
+
+approx-store-local-bytes rangeID=1
+----
+positive(decreased)
+
+put key=b value=val-b
+----
+ok
+
+range-flush rangeID=1
+----
+flushed
+
+rs-engine-state rangeID=1
+----
+current-manifest: 10
+files: 2
+
+range-shared-meta-keys rangeID=1
+----
+RSManifestState:
+  disk_file_num: 10, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 109
+
+scan-rs-engine rangeID=1
+----
+000007.sst:
+  a => val-a
+000009.sst:
+  b => val-b
+
+engine-lifecycle rangeID=1
+----
+open(manifest=0)
+open(manifest=8)
+open(manifest=10)

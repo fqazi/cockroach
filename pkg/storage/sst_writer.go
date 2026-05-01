@@ -17,6 +17,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/objstorage"
+	"github.com/cockroachdb/pebble/rangedel"
 	"github.com/cockroachdb/pebble/rangekey"
 	"github.com/cockroachdb/pebble/sstable"
 )
@@ -78,6 +79,11 @@ func makeSSTRewriteOptions(
 ) (opts sstable.WriterOptions, minTableFormat sstable.TableFormat) {
 	// v22.2 clusters use sstable.TableFormatPebblev2.
 	return MakeIngestionWriterOptions(ctx, cs), sstable.TableFormatPebblev2
+}
+
+// MakeSSTWriter constructs an SSTWriter using the given writable and options.
+func MakeSSTWriter(w objstorage.Writable, opts sstable.WriterOptions) SSTWriter {
+	return SSTWriter{fw: sstable.NewWriter(w, opts)}
 }
 
 // MakeTransportSSTWriter creates a new SSTWriter tailored for sstables
@@ -210,6 +216,16 @@ func (fw *SSTWriter) ClearMVCCRange(start, end roachpb.Key, pointKeys, rangeKeys
 	return errors.AssertionFailedf("not implemented")
 }
 
+// ClearRawRangeDormant implements the Writer interface.
+func (fw *SSTWriter) ClearRawRangeDormant(start, end roachpb.Key) error {
+	return errors.AssertionFailedf("not implemented")
+}
+
+// ClearRawRangeActivate implements the Writer interface.
+func (fw *SSTWriter) ClearRawRangeActivate(start, end roachpb.Key) error {
+	return errors.AssertionFailedf("not implemented")
+}
+
 // ClearMVCCVersions implements the Writer interface.
 func (fw *SSTWriter) ClearMVCCVersions(start, end MVCCKey) error {
 	return fw.clearRange(start, end)
@@ -279,6 +295,32 @@ func (fw *SSTWriter) ClearEngineRange(start, end EngineKey) error {
 		return err
 	}
 	return nil
+}
+
+// AddRangeDeleteSpan writes a pre-fragmented range deletion span that may
+// contain a mix of normal and dormant RANGEDEL keys. The span's Start/End are
+// encoded engine keys.
+func (fw *SSTWriter) AddRangeDeleteSpan(span rangedel.Span) error {
+	startEngine, ok := DecodeEngineKey(span.Start)
+	if !ok {
+		return errors.New("cannot decode start engine key")
+	}
+	endEngine, ok := DecodeEngineKey(span.End)
+	if !ok {
+		return errors.New("cannot decode end engine key")
+	}
+	fw.DataSize += int64(len(startEngine.Key)) + int64(len(endEngine.Key))
+	return fw.fw.AddRangeDeleteSpan(span)
+}
+
+// ClearRawEncodedRangeDormant implements the InternalWriter interface.
+func (fw *SSTWriter) ClearRawEncodedRangeDormant(start, end []byte) error {
+	return errors.AssertionFailedf("not implemented")
+}
+
+// ClearRawEncodedRangeActivate implements the InternalWriter interface.
+func (fw *SSTWriter) ClearRawEncodedRangeActivate(start, end []byte) error {
+	return errors.AssertionFailedf("not implemented")
 }
 
 // ClearRawEncodedRange implements the InternalWriter interface.

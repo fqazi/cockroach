@@ -2227,6 +2227,11 @@ func TestSplitTriggerWritesInitialReplicaState(t *testing.T) {
 	require.NoError(t, err)
 	err = sl.SetVersion(ctx, batch, nil, &version)
 	require.NoError(t, err)
+	// Write an initial RangeAppliedState with a non-zero FlushStartedCount
+	// to verify the split copies it to the RHS (checked via expAppliedState below).
+	const lhsFlushStartedCount = uint64(5)
+	lhsAS := kvserverpb.RangeAppliedState{FlushStartedCount: lhsFlushStartedCount}
+	require.NoError(t, sl.SetRangeAppliedState(ctx, batch, &lhsAS))
 
 	in := SplitTriggerHelperInput{
 		LeftLease:      lease,
@@ -2279,6 +2284,7 @@ func TestSplitTriggerWritesInitialReplicaState(t *testing.T) {
 		RaftAppliedIndexTerm: kvstorage.RaftInitialLogTerm,
 		RaftAppliedIndex:     kvstorage.RaftInitialLogIndex,
 		LeaseAppliedIndex:    kvstorage.InitialLeaseAppliedIndex,
+		FlushStartedCount:    lhsFlushStartedCount,
 	}
 	loadedAppliedState, err := slRight.LoadRangeAppliedState(ctx, batch)
 	require.NoError(t, err)

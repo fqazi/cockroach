@@ -318,7 +318,7 @@ func TestRestart(t *testing.T) {
 		stickyServerArgs[i] = base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: "TestRestart" + strconv.FormatInt(int64(i), 10),
 				},
 			},

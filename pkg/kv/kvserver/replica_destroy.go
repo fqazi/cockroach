@@ -101,6 +101,18 @@ func (r *Replica) postDestroyRaftMuLocked(ctx context.Context) {
 		}
 	}
 
+	// Close the range-shared engine container if present. Swap the pointer
+	// to nil first to prevent any new readers from being created.
+	r.rsStateMu.Lock()
+	rsEngine := r.rsStateMu.rsEngine
+	r.rsStateMu.rsEngine = nil
+	r.rsStateMu.Unlock()
+	if rsEngine != nil {
+		r.store.stopper.RunAsyncTask(ctx, "destroying range-shared engine", func(ctx context.Context) {
+			rsEngine.Close()
+		})
+	}
+
 	// Release the reference to this tenant in metrics, we know the tenant ID is
 	// valid if the replica is initialized.
 	if r.tenantMetricsRef != nil {

@@ -48,6 +48,11 @@ type splitPreApplyInput struct {
 	// lhsLastReplicaGC is the LastReplicaGCTimestamp from the LHS replica, which
 	// will be copied to the RHS. Set iff rhsDestroyed is false.
 	lhsLastReplicaGC hlc.Timestamp
+	// rhsRSManifestNum is the range-shared manifest number for the RHS, if this
+	// split involves a range-shared LSM. Set to 0 if no manifest installation.
+	rhsRSManifestNum uint64
+	// rhsReplicaID is the replica ID for the RHS, needed to write RSManifestState.
+	rhsReplicaID roachpb.ReplicaID
 }
 
 // validateAndPrepareSplit performs invariant checks on the supplied
@@ -114,6 +119,8 @@ func validateAndPrepareSplit(
 			raftIndex:    raftIndex,
 			rhsDestroyed: true,
 			rhsDesc:      split.RightDesc,
+			rhsRSManifestNum: split.RHSRSManifestNum,
+			rhsReplicaID:     splitRightReplDesc.ReplicaID,
 		}, nil
 	}
 	// Sanity check the common case -- the RHS replica that exists should match
@@ -152,6 +159,8 @@ func validateAndPrepareSplit(
 		rhsDesc:             split.RightDesc,
 		initClosedTimestamp: *initClosedTS,
 		lhsLastReplicaGC:    lhsLastReplicaGC,
+		rhsRSManifestNum:    split.RHSRSManifestNum,
+		rhsReplicaID:        splitRightReplDesc.ReplicaID,
 	}, nil
 }
 
@@ -278,6 +287,16 @@ func splitPreApply(
 	); err != nil {
 		log.KvExec.Fatalf(ctx, "cannot set LastReplicaGCTimestamp: %v", err)
 	}
+	// Write RHS RSManifestState if this split includes range-shared manifest.
+	if in.rhsRSManifestNum > 0 {
+		rsState := kvserverpb.RSManifestState{
+			DiskFileNum: in.rhsRSManifestNum,
+			ReplicaId:   in.rhsReplicaID,
+		}
+		if err := rsl.SetRSManifestState(ctx, stateRW, rsState); err != nil {
+			log.KvExec.Fatalf(ctx, "failed to write RHS RSManifestState: %v", err)
+		}
+	}
 }
 
 // splitPostApply is the part of the split trigger which coordinates the actual
@@ -383,6 +402,10 @@ func prepareRightReplicaForSplit(
 	// Already holding raftMu, see above.
 	rightRepl.mu.Lock()
 	defer rightRepl.mu.Unlock()
+	// NB: this is where the RSEngine for the RHS is being initialized. This
+	// is safe because until we are done with the uninitialized =>
+	// initialized transition, the RHS replica state is not visible to any
+	// other goroutine.
 	if err := rightRepl.initRaftMuLockedReplicaMuLocked(
 		state, false, /* waitForPrevLeaseToExpire */
 	); err != nil {

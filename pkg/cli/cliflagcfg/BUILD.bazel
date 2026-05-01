@@ -1,4 +1,4 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "cliflagcfg",
@@ -15,5 +15,16 @@ go_library(
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_spf13_cobra//:cobra",
         "@com_github_spf13_pflag//:pflag",
+    ],
+)
+
+go_test(
+    name = "cliflagcfg_test",
+    srcs = ["flags_test.go"],
+    embed = [":cliflagcfg"],
+    deps = [
+        "//pkg/cli/cliflags",
+        "@com_github_spf13_pflag//:pflag",
+        "@com_github_stretchr_testify//require",
     ],
 )

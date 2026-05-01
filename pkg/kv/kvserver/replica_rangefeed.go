@@ -314,7 +314,7 @@ func (r *Replica) RangeFeed(
 	var catchUpSnap *rangefeed.CatchUpSnapshot
 	if usingCatchUpSnap {
 		catchUpSnap = rangefeed.NewCatchUpSnapshot(
-			r.store.StateEngine(), rSpan.AsRawSpanWithNoLocals(),
+			r.NewCombinedSnapshot(), rSpan.AsRawSpanWithNoLocals(),
 			args.Timestamp, iterSemRelease, pacer,
 			storage.SnapshotRecreateIterDuration.Get(&r.store.ClusterSettings().SV))
 		if f := r.store.TestingKnobs().RangefeedValueHeaderFilter; f != nil {

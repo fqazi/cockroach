@@ -90,6 +90,9 @@ type TestCluster struct {
 
 	defaultTestTenantOptions base.DefaultTestTenantOptions
 	defaultDRPCOption        base.DefaultTestDRPCOption
+	// basaltFS is a shared MemFS for Basalt testing. All nodes in the cluster
+	// share this FS so that snapshot hardlinks work across nodes.
+	basaltFS vfs.FS
 
 	t serverutils.TestFataler
 }
@@ -179,6 +182,7 @@ func (tc *TestCluster) DefaultTenantDeploymentMode() serverutils.DeploymentMode 
 // This method ensures that servers that were previously stopped explicitly are
 // not double-stopped.
 func (tc *TestCluster) stopServers(ctx context.Context) {
+	logMemStats(tc.t, "TestCluster.stopServers")
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
@@ -329,11 +333,21 @@ func (tc *TestCluster) validateDefaultDRPCOption(
 // StartTestCluster creates and starts up a TestCluster made up of `nodes`
 // in-memory testing servers.
 // The cluster should be stopped using TestCluster.Stopper().Stop().
+func logMemStats(t serverutils.TestFataler, label string) {
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	t.Logf("%s: HeapAlloc=%dMB HeapInuse=%dMB Sys=%dMB",
+		label, m.HeapAlloc>>20, m.HeapInuse>>20, m.Sys>>20)
+}
+
 func StartTestCluster(
 	t serverutils.TestFataler, nodes int, args base.TestClusterArgs,
 ) *TestCluster {
+	// logMemStats(t, fmt.Sprintf("before StartTestCluster(%d nodes)", nodes))
 	cluster := NewTestCluster(t, nodes, args)
 	cluster.Start(t)
+	logMemStats(t, fmt.Sprintf("after StartTestCluster(%d nodes)", nodes))
 	return cluster
 }
 
@@ -378,6 +392,7 @@ func NewTestCluster(
 	tc := &TestCluster{
 		stopper:     stop.NewStopper(),
 		clusterArgs: clusterArgs,
+		basaltFS:    vfs.NewMem(),
 		t:           t,
 	}
 
@@ -723,6 +738,23 @@ func (tc *TestCluster) AddServer(
 		stkCopy.DisableMergeQueue = true
 		stkCopy.DisableReplicateQueue = true
 		stkCopy.DisableStoreRebalancer = true
+		serverArgs.Knobs.Store = &stkCopy
+	}
+	// Inject shared BasaltFS so that snapshot hardlinks work across nodes.
+	// Tests that explicitly set BasaltFS are not affected.
+	{
+		var stkCopy kvserver.StoreTestingKnobs
+		if stk := serverArgs.Knobs.Store; stk != nil {
+			stkCopy = *stk.(*kvserver.StoreTestingKnobs)
+		}
+		if !stkCopy.DisableBasalt {
+			if stkCopy.BasaltFS == nil {
+				stkCopy.BasaltFS = tc.basaltFS
+			}
+			if stkCopy.OpenRSEngine == nil {
+				stkCopy.OpenRSEngine = storage.OpenTestingRSEngine
+			}
+		}
 		serverArgs.Knobs.Store = &stkCopy
 	}
 
@@ -2096,7 +2128,7 @@ func (tc *TestCluster) RestartServerWithInspect(
 	}
 
 	for i, specs := range serverArgs.StoreSpecs {
-		if specs.InMemory && specs.StickyVFSID == "" {
+		if specs.IsInMemory() && specs.StickyVFSID == "" {
 			return errors.Errorf("failed to restart Server %d, because a restart can only be used on a server with a sticky VFS", i)
 		}
 	}
@@ -2219,7 +2251,7 @@ func (tc *TestCluster) CrashNode(idx int) {
 
 	crashedVFSesMap := make(map[string]*vfs.MemFS)
 	for i, spec := range serverArgs.StoreSpecs {
-		if !spec.InMemory || spec.StickyVFSID == "" {
+		if !spec.IsInMemory() || spec.StickyVFSID == "" {
 			tc.t.Fatalf(
 				"crash emulation requires all stores to be in-memory with sticky VFS IDs; "+
 					"store %d on server %d does not meet requirements", i, idx)

@@ -11,8 +11,8 @@
 # branch name (e.g. crl-release-23.2, etc.). Also update pebble nightly scripts
 # in build/teamcity/cockroach/nightlies to use `@crl-release-xy.z` instead of
 # `@master`.
-BRANCH=master
-PEBBLE_BRANCH=master
+BRANCH=basalt-prototype
+PEBBLE_BRANCH=basalt-prototype
 
 # This script may be used to produce a branch bumping the Pebble version. The
 # storage team bumps CockroachDB's Pebble dependency frequently, and this script
@@ -33,13 +33,11 @@ set -euo pipefail
 pushd() { builtin pushd "$@" > /dev/null; }
 popd() { builtin popd "$@" > /dev/null; }
 
-# Grab the current Pebble SHA.
-OLD_SHA=$(grep 'github.com/cockroachdb/pebble' go.mod | grep -o -E '[a-f0-9]{12}$')
+# Grab the current Pebble SHA from the replace directive.
+OLD_SHA=$(grep 'cockroachlabs/pebble-private' go.mod | grep -o -E '[a-f0-9]{12}$')
 echo "Current pebble SHA: $OLD_SHA"
 
-git submodule update --init --recursive
-
-PEBBLE_UPSTREAM_URL="https://github.com/cockroachdb/pebble.git"
+PEBBLE_UPSTREAM_URL="https://github.com/cockroachlabs/pebble-private.git"
 
 # Check out the pebble repo in a temporary directory.
 PEBBLE_DIR=$(mktemp -d)
@@ -64,33 +62,34 @@ else
   echo "Using provided SHA $NEW_SHA."
 fi
 
+# Exit early if already at the desired SHA.
+if [ "$OLD_SHA" = "${NEW_SHA:0:12}" ] || [ "$OLD_SHA" = "$NEW_SHA" ]; then
+  echo "Pebble is already at $NEW_SHA; nothing to do."
+  exit 0
+fi
+
 # Sanity check: the old SHA should be an ancestor of the new SHA.
 if ! git merge-base --is-ancestor $OLD_SHA $NEW_SHA; then
   echo "Error: current pebble SHA $OLD_SHA is not an ancestor of $NEW_SHA (?!)" >&2
   exit 1
 fi
 
-COMMITS=$(git log --no-merges --pretty='format: * [`%h`](https://github.com/cockroachdb/pebble/commit/%h) %s' "$OLD_SHA..$NEW_SHA")
+COMMITS=$(git log --no-merges --pretty='format: * [`%h`](https://github.com/cockroachlabs/pebble-private/commit/%h) %s' "$OLD_SHA..$NEW_SHA")
 popd
 
 echo
 echo "$COMMITS"
 echo
 
-# If the script is run from $BRANCH, create a new local branch.
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-if [ "$CURRENT_BRANCH" == "$BRANCH" ]; then
-  COCKROACH_BRANCH="$USER/pebble-${BRANCH}-${NEW_SHA:0:12}"
-  echo "Creating and switching to new branch $COCKROACH_BRANCH"
-  git branch -D "$COCKROACH_BRANCH" || true
-  git checkout -b $COCKROACH_BRANCH
-else
-  echo "Using current branch $CURRENT_BRANCH."
-fi
+echo "Using current branch $CURRENT_BRANCH."
 
-# Pull in the Pebble module at the desired SHA.
+# Ensure submodules are up to date before modifying go.mod.
+git submodule update --init --recursive
+
+# Pull in the Pebble module at the desired SHA via the replace directive.
 ./dev generate go
-go get "github.com/cockroachdb/pebble@${NEW_SHA}"
+go mod edit -replace "github.com/cockroachdb/pebble=github.com/cockroachlabs/pebble-private@${NEW_SHA}"
 go mod tidy
 
 # Create the branch and commit on the CockroachDB repository.

@@ -16,10 +16,9 @@ import (
 
 // Ensure that we always update the batch reader to consider any necessary
 // updates when a new key kind is introduced. To do this, we assert that the
-// latest key we considered equals InternalKeyKindMax, ensuring that compilation
-// will fail if it's not. Unfortunately, this doesn't protect against reusing a
-// currently unused RocksDB key kind.
-const _ = uint(pebble.InternalKeyKindSpanBoundary - pebble.InternalKeyKindMax)
+// latest key we considered equals InternalKeyKindMaxForSSTable, ensuring that
+// compilation will fail if it's not.
+const _ = uint(pebble.InternalKeyKindRangeDeleteActivate - pebble.InternalKeyKindMaxForSSTable)
 
 // decodeBatchHeader decodes the header of Pebble batch representation,
 // returning the parsed header and a batchrepr.Reader into the contents of the
@@ -144,7 +143,7 @@ func (r *BatchReader) Value() []byte {
 func (r *BatchReader) EndKey() ([]byte, error) {
 	var rawKey []byte
 	switch r.kind {
-	case pebble.InternalKeyKindRangeDelete:
+	case pebble.InternalKeyKindRangeDelete, pebble.InternalKeyKindRangeDeleteDormant, pebble.InternalKeyKindRangeDeleteActivate:
 		rawKey = r.Value()
 
 	case pebble.InternalKeyKindRangeKeySet, pebble.InternalKeyKindRangeKeyUnset, pebble.InternalKeyKindRangeKeyDelete:
@@ -178,7 +177,7 @@ func (r *BatchReader) EngineEndKey() (EngineKey, error) {
 // RawRangeKeys returns the raw range key values at the current entry.
 func (r *BatchReader) RawRangeKeys() ([]rangekey.Key, error) {
 	switch r.kind {
-	case pebble.InternalKeyKindRangeKeySet, pebble.InternalKeyKindRangeKeyUnset:
+	case pebble.InternalKeyKindRangeKeySet, pebble.InternalKeyKindRangeKeyUnset, pebble.InternalKeyKindRangeKeyDelete:
 	default:
 		return nil, errors.AssertionFailedf(
 			"can only ask for range keys on a range key entry, got %v", r.kind)

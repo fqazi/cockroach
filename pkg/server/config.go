@@ -17,6 +17,9 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/cockroachdb/basaltclient"
+	"github.com/cockroachdb/basaltclient/basaltpb"
+	"github.com/cockroachdb/basaltfs"
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/base/serverident"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
@@ -472,6 +475,21 @@ type KVConfig struct {
 	DelayedBootstrapFn func()
 
 	enginesCreated bool
+
+	// DisableRSEngine, when true, disables the production RSEngine so
+	// that basalt clusters run without per-range Pebble instances.
+	DisableRSEngine bool
+
+	// basaltFS is the cluster-scoped VFS for basalt. If encryption is
+	// configured, this is the encrypted FS; otherwise it is the plain
+	// cluster-level basaltfs.FS. Populated by CreateEngines for use by
+	// makeServerNode when setting StoreConfig.BasaltFS.
+	basaltFS vfs.FS
+
+	// compactionScheduler, if non-nil, coordinates compaction concurrency
+	// across the store-local engine, range flusher, and RS engines. Created
+	// in startKVServer before CreateEngines. Populated into StoreConfig.
+	compactionScheduler *storage.MultiEngineCompactionScheduler
 }
 
 // MakeKVConfig returns a KVConfig with default values.
@@ -745,7 +763,7 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 
 	var physicalStores int
 	for _, spec := range cfg.Stores.Specs {
-		if !spec.InMemory {
+		if spec.IsLocal() {
 			physicalStores++
 		}
 	}
@@ -791,14 +809,185 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 		stickyRegistry = serverKnobs.StickyVFSRegistry
 	}
 
-	storeEnvs, err := fs.InitEnvsFromStoreSpecs(ctx, cfg.Stores.Specs, fs.EnvConfig{
+	envCfg := fs.EnvConfig{
 		RW:      fs.ReadWrite,
 		Version: cfg.Settings.Version,
-	}, stickyRegistry, cfg.DiskWriteStats)
+	}
+
+	// If any stores use basalt, create shared basalt resources. A single
+	// ControllerClient and BlobDataClientPool are shared across all basalt
+	// stores on this node for efficiency.
+	var hasBasalt bool
+	for _, spec := range cfg.Stores.Specs {
+		if spec.IsBasalt() {
+			hasBasalt = true
+			break
+		}
+	}
+	if hasBasalt {
+		basaltCfg := cfg.StorageConfig.BasaltConfig
+		aliases, err := fs.ParseBasaltAliases(basaltCfg.AliasSpecs)
+		if err != nil {
+			return Engines{}, err
+		}
+		if basaltCfg.ClusterID == "" {
+			return Engines{}, errors.New("--cluster-id is required when using basalt stores")
+		}
+
+		// Use the first basalt store's path to determine the controller
+		// address for the shared client. All basalt stores on a node
+		// share one controller connection.
+		var ctrlAddr string
+		var tenant string
+		for _, spec := range cfg.Stores.Specs {
+			if spec.IsBasalt() {
+				resolver := &fs.AliasResolver{Aliases: aliases}
+				parsed, err := basaltclient.ParsePath(spec.Path, "" /* localZone */, resolver)
+				if err != nil {
+					return Engines{}, errors.Wrapf(err, "parsing basalt path %q", spec.Path)
+				}
+				if len(parsed.Controllers) > 0 {
+					ctrlAddr = parsed.Controllers[0]
+				}
+				tenant = parsed.DefaultTenant()
+				break
+			}
+		}
+		if ctrlAddr == "" {
+			return Engines{}, errors.New("no controller address found for basalt stores")
+		}
+
+		ctrl, err := basaltclient.NewControllerClient(
+			[]string{ctrlAddr}, basaltclient.ControllerClientConfig{
+				TenantID: tenant,
+			},
+		)
+		if err != nil {
+			return Engines{}, errors.Wrapf(err, "creating basalt controller client for %s", ctrlAddr)
+		}
+		dataPool := basaltclient.NewBlobDataClientPool()
+
+		localZone := localZoneFromLocality(cfg.Locality)
+		envCfg.Basalt = &fs.BasaltEnvConfig{
+			ControllerClient: ctrl,
+			DataPool:         dataPool,
+			Aliases:          aliases,
+			ClusterID:        basaltCfg.ClusterID,
+			LocalZone:        localZone,
+			StoreKeyOptions:  buildBasaltEncryptionOptions(basaltCfg),
+			NodeID:           roachpb.NodeID(basaltCfg.NodeID),
+		}
+
+		// Create a single cluster-level basaltfs.FS rooted at the cluster
+		// directory. All stores share this FS; store paths become
+		// subdirectories within it (e.g. "store-1/").
+		var rootID basaltpb.UUID
+		clusterDirID, err := ctrl.Mkdir(ctx, rootID, basaltCfg.ClusterID, nil)
+		if err != nil {
+			resp, lookupErr := ctrl.StatByPath(ctx, rootID, basaltCfg.ClusterID)
+			if lookupErr != nil {
+				_ = dataPool.Close()
+				_ = ctrl.Close()
+				return Engines{}, errors.Wrapf(err, "creating cluster directory %q", basaltCfg.ClusterID)
+			}
+			clusterDirID = resp.Meta.Id
+		}
+		clusterFS, err := basaltfs.NewFS(basaltfs.Options{
+			ControllerClient: ctrl,
+			DataPool:         dataPool,
+			DirectoryID:      clusterDirID,
+			LocalZone:        localZone,
+			VirtualDirs:      []string{"ranges", "scratch"},
+			NegativeDirCache: true,
+		})
+		if err != nil {
+			_ = dataPool.Close()
+			_ = ctrl.Close()
+			return Engines{}, errors.Wrap(err, "creating cluster-level basaltfs")
+		}
+		envCfg.Basalt.ClusterFS = clusterFS
+
+		// Set LocalFS for per-store encryption to read store key files
+		// from local disk.
+		envCfg.Basalt.LocalFS = vfs.Default
+
+		// If encryption is configured, create a cluster-scoped encryption
+		// env for RSEngine only (cross-node key discovery for hardlinked
+		// files). Per-store encryption is handled independently by
+		// initBasaltEnv via NewBasaltStoreEncryptedEnv.
+		if envCfg.Basalt.StoreKeyOptions != nil {
+			encEnv, _, encErr := fs.NewClusterEncryptedEnv(
+				ctx, clusterFS, vfs.Default,
+				"encryption/registry", "encryption/datakeys",
+				envCfg.Basalt.NodeID, false, envCfg.Basalt.StoreKeyOptions,
+			)
+			if encErr != nil {
+				_ = clusterFS.Close()
+				_ = dataPool.Close()
+				_ = ctrl.Close()
+				return Engines{}, errors.Wrap(encErr, "initializing RSEngine cluster-scoped encryption")
+			}
+			envCfg.Basalt.RSEngineEncryptionEnv = encEnv
+			envCfg.Basalt.ClusterEncryptedFS = encEnv.FS
+		}
+
+		// Expose the cluster-scoped FS for StoreConfig.BasaltFS. If encryption
+		// is configured, use the encrypted FS; otherwise use the plain cluster
+		// FS. RSEngine and kvserver code will use this FS for range-shared
+		// SSTable operations.
+		if envCfg.Basalt.ClusterEncryptedFS != nil {
+			cfg.basaltFS = envCfg.Basalt.ClusterEncryptedFS
+		} else {
+			cfg.basaltFS = envCfg.Basalt.ClusterFS
+		}
+
+		detail(redact.Sprintf("basalt controller: %s, cluster-id: %s",
+			redact.Safe(ctrlAddr), redact.Safe(basaltCfg.ClusterID)))
+	}
+
+	storeEnvs, err := fs.InitEnvsFromStoreSpecs(
+		ctx, cfg.Stores.Specs, envCfg, stickyRegistry, cfg.DiskWriteStats,
+	)
 	if err != nil {
+		// If env init fails and we created shared basalt resources, clean
+		// them up.
+		if envCfg.Basalt != nil {
+			envCfg.Basalt.Close()
+		}
 		return Engines{}, err
 	}
 	defer storeEnvs.CloseAll()
+
+	// Register cleanup of shared basalt resources on the last basalt env.
+	// When the engine closes its env, the OnClose callback fires and cleans
+	// up the shared controller client and data pool.
+	if envCfg.Basalt != nil {
+		var lastBasaltEnv *fs.Env
+		for i := len(cfg.Stores.Specs) - 1; i >= 0; i-- {
+			if cfg.Stores.Specs[i].IsBasalt() {
+				lastBasaltEnv = storeEnvs[i]
+				break
+			}
+		}
+		if lastBasaltEnv != nil {
+			lastBasaltEnv.OnClose(envCfg.Basalt.Close)
+		}
+	}
+
+	// TODO(basalt): the scheduler must be created before the store-local
+	// engine because pebble.Options.CompactionScheduler is read during Open,
+	// and the engine is opened before kvserver.Store is created. This is
+	// acceptable for now since Basalt runs with single-store nodes.
+	if hasBasalt {
+		sv := &cfg.Settings.SV
+		cfg.compactionScheduler = storage.NewMultiEngineCompactionScheduler(
+			storage.SchedulerOptions{
+				LogCtx:                        ctx,
+				GetMaxConcurrency:             func() int { return storage.GetMaxConcurrentCompactions(sv) },
+				RSEngineDeprioritizationRatio: func() float64 { return 1.0 },
+			},
+		)
+	}
 
 	walFailoverConfig := storage.WALFailover(cfg.StorageConfig.WALFailover, storeEnvs, vfs.Default, cfg.DiskWriteStats)
 
@@ -821,7 +1010,15 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 			storageConfigOpts = append(storageConfigOpts, opt)
 		}
 
-		if spec.InMemory {
+		if spec.IsBasalt() {
+			// Basalt stores are backed by disaggregated blob storage. No disk
+			// monitoring, ballast, or open file limits are needed. The Env was
+			// already initialized with a basaltfs.FS by InitEnvFromStoreSpec.
+			addCfgOpt(storage.BasaltPath(spec.Path))
+			addCfgOpt(storage.CacheSize(cfg.CacheSize))
+			addCfgOpt(storage.Caches(pebbleCache, fileCache))
+			detail(redact.Sprintf("store %d: basalt %s", i, redact.Safe(spec.Path)))
+		} else if spec.IsInMemory() {
 			var sizeInBytes int64
 			if spec.Size.IsSet() {
 				if spec.Size.IsBytes() {
@@ -902,6 +1099,12 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 				}))
 			}
 		}
+		if cfg.compactionScheduler != nil {
+			cs := cfg.compactionScheduler.OpeningEngine(storage.EngineTypeStoreLocal)
+			addCfgOpt(storage.ExternalCompactionScheduler(func() pebble.CompactionScheduler {
+				return cs
+			}))
+		}
 		eng, err := storage.Open(ctx, storeEnvs[i], cfg.Settings, storageConfigOpts...)
 		if err != nil {
 			return Engines{}, err
@@ -931,6 +1134,38 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 	enginesCopy := engines
 	engines = nil
 	return enginesCopy, nil
+}
+
+// localZoneFromLocality returns the zone value from the locality tiers,
+// checking "zone", "availability-zone", and "az" keys in order.
+func localZoneFromLocality(l roachpb.Locality) string {
+	for _, key := range []string{"zone", "availability-zone", "az"} {
+		if val, ok := l.Find(key); ok && val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
+// buildBasaltEncryptionOptions converts basalt store key paths from
+// BasaltConfig into an *EncryptionOptions. Returns nil if no store
+// key is configured.
+func buildBasaltEncryptionOptions(cfg storageconfig.BasaltConfig) *storageconfig.EncryptionOptions {
+	if cfg.StoreKey == "" {
+		return nil
+	}
+	oldKey := cfg.StoreKeyOld
+	if oldKey == "" {
+		oldKey = storageconfig.PlaintextKeyValue
+	}
+	return &storageconfig.EncryptionOptions{
+		KeySource: storageconfig.EncryptionKeyFromFiles,
+		KeyFiles: &storageconfig.EncryptionKeyFiles{
+			CurrentKey: cfg.StoreKey,
+			OldKey:     oldKey,
+		},
+		RotationPeriod: storageconfig.DefaultRotationPeriod,
+	}
 }
 
 // InitSQLServer finalizes the configuration of a SQL-only node.

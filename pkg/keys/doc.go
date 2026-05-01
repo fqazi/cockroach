@@ -183,6 +183,7 @@ var schema = [...]interface{}{
 	RangeGCThresholdKey,                         // "lgc-"
 	RangeAppliedStateKey,                        // "rask"
 	RangeForceFlushKey,                          // "rffk"
+	RangeFileNumAllocKey,                        // "rfna"
 	RangeLeaseKey,                               // "rll-"
 	RangePriorReadSummaryKey,                    // "rprs"
 	ReplicatedSharedLocksTransactionLatchingKey, // "rsl-"
@@ -209,6 +210,7 @@ var schema = [...]interface{}{
 	RaftReplicaIDKey,               // "rftr"
 	RaftTruncatedStateKey,          // "rftt"
 	RangeLastReplicaGCTimestampKey, // "rlrt"
+	RangeSharedManifestNumKey,      // "rsmn" - state machine key (historical exception)
 
 	//   3. Range local keys: These also store metadata that pertains to a range
 	//   as a whole. They are replicated and addressable. Typical examples are

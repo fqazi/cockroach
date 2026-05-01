@@ -164,8 +164,11 @@ func TestUpdateRangeAddressing(t *testing.T) {
 		//   to RocksDB will be asynchronous.
 		var kvs []roachpb.KeyValue
 		testutils.SucceedsSoon(t, func() error {
-			res, err := storage.MVCCScan(ctx, store.StateEngine(), keys.MetaMin, keys.MetaMax,
+			metaRepl := store.LookupReplica(roachpb.RKey(keys.MetaMin))
+			snap := metaRepl.NewCombinedSnapshot()
+			res, err := storage.MVCCScan(ctx, snap, keys.MetaMin, keys.MetaMax,
 				hlc.MaxTimestamp, storage.MVCCScanOptions{})
+			snap.Close()
 			if err != nil {
 				// Wait for the intent to be resolved.
 				if errors.HasType(err, (*kvpb.LockConflictError)(nil)) {

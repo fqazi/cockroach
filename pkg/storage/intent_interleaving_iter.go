@@ -333,7 +333,10 @@ func newIntentInterleavingIterator(
 		}
 		iter = maybeUnwrapUnsafeIter(mvccIter).(*pebbleIterator)
 	} else {
-		iter = newPebbleIteratorByCloning(ctx, intentIter.CloneContext(), opts, StandardDurability)
+		// The lock table iterator doesn't need SecondaryLSM since range-shared data
+		// has no lock table entries.
+		iter = newPebbleIteratorByCloning(
+			ctx, intentIter.CloneContext(), opts, StandardDurability, pebble.LSMVersionHandle{})
 	}
 
 	*iiIter = intentInterleavingIter{

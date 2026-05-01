@@ -2523,6 +2523,131 @@ message FlushLockTableResponse {
   uint64 locks_written = 2;
 }
 
+// AllocateFileNumsForRangeRequest allocates file numbers for the range-shared
+// LSM. Only the leaseholder should send this request. The allocated file
+// numbers can be used for MANIFESTs and SSTables in the RSEngine.
+message AllocateFileNumsForRangeRequest {
+  RequestHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+
+  // Count is the number of file numbers to allocate.
+  uint32 count = 2;
+}
+
+// AllocateFileNumsForRangeResponse is the response for an
+// AllocateFileNumsForRange operation.
+message AllocateFileNumsForRangeResponse {
+  ResponseHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+
+  // FirstFileNum is the first allocated file number (inclusive).
+  uint64 first_file_num = 2;
+
+  // EndFileNum is the end of the allocated range (exclusive).
+  // The allocated file numbers are [FirstFileNum, EndFileNum).
+  uint64 end_file_num = 3;
+}
+
+// SetRangeSharedManifestNumRequest updates the range-shared manifest number.
+// Used by InstallNewManifest to atomically switch to a new manifest after
+// hardlinking files. The request compares expected values before updating.
+message SetRangeSharedManifestNumRequest {
+  RequestHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+
+  // ExpectedManifestNum is the current manifest number that must match.
+  uint64 expected_manifest_num = 2;
+
+  // ExpectedDescGeneration is the current RangeDescriptor.Generation that must
+  // match. This ensures the range hasn't split/merged and replicas haven't
+  // changed since hardlinks were created for all replica directories.
+  int64 expected_desc_generation = 3 [(gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.RangeGeneration"];
+
+  // NextManifestNum is the new manifest number to install.
+  uint64 next_manifest_num = 4;
+
+  // IsFlushCommit indicates this is a range flush commit (not a compaction
+  // install). When true, ExpectedFlushStartedCount is verified against the
+  // current FlushStartedCount in RangeAppliedState.
+  bool is_flush_commit = 5;
+
+  // ExpectedFlushStartedCount is the FlushStartedCount returned by the
+  // corresponding flush prepare. Only checked when IsFlushCommit is true.
+  uint64 expected_flush_started_count = 6;
+
+  // ActivateSpans are the key spans over which ClearRawRangeActivate
+  // is written during evaluation, activating any dormant deletions
+  // written by the corresponding flush prepare. Only set when
+  // IsFlushCommit is true and the caller requested dormant/activate
+  // clears. Currently contains just the user key span; will expand
+  // to cover other replicated key spans in the future.
+  repeated roachpb.Span activate_spans = 7 [(gogoproto.nullable) = false];
+
+  // FlushedApproxStoreLocalBytes is the ApproxStoreLocalBytes value captured
+  // at flush prepare time. On flush commit, this value is subtracted from
+  // the range's ApproxStoreLocalBytes, reflecting that those bytes have been
+  // moved to the range-shared engine. Only set when IsFlushCommit is true.
+  int64 flushed_approx_store_local_bytes = 8;
+
+  // ManifestFileEntry is the serialized enginepb.FileEntry for the new
+  // MANIFEST file. Carries encryption metadata through Raft so followers
+  // can install it before opening the RSEngine.
+  bytes manifest_file_entry = 9;
+
+  // ManifestName is the MANIFEST filename (e.g. "MANIFEST-000217").
+  string manifest_name = 10;
+}
+
+// SetRangeSharedManifestNumResponse is the response for a
+// SetRangeSharedManifestNum operation.
+message SetRangeSharedManifestNumResponse {
+  ResponseHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+}
+
+// CheckRangeSharedManifestNumRequest verifies that the range-shared manifest
+// number and descriptor generation haven't changed. Used by split/merge
+// transactions after locking the RangeDescriptor to confirm assumptions made
+// during manifest preparation.
+message CheckRangeSharedManifestNumRequest {
+  RequestHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+
+  // ExpectedManifestNum is the current manifest number that must match.
+  uint64 expected_manifest_num = 2;
+
+  // ExpectedDescGeneration is the committed RangeDescriptor.Generation that
+  // must match. Note: this checks the committed descriptor, not any provisional
+  // value written by the calling transaction. A value of -1 skips this check.
+  int64 expected_desc_generation = 3 [(gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.RangeGeneration"];
+}
+
+// CheckRangeSharedManifestNumResponse is the response for a
+// CheckRangeSharedManifestNum operation.
+message CheckRangeSharedManifestNumResponse {
+  ResponseHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+}
+
+// RangeFlushPrepareRequest is the first phase of a range flush, which moves
+// data from the store-local engine to the range-shared engine. The request
+// increments FlushStartedCount in RangeAppliedState and triggers a
+// store-local snapshot via prepareLocalResult. When DormantSpans is non-empty,
+// it also writes ClearRawRangeDormant over those spans.
+message RangeFlushPrepareRequest {
+  RequestHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+
+  // DormantSpans are the key spans over which ClearRawRangeDormant is
+  // written during evaluation, marking the data for deletion. A
+  // subsequent flush commit with matching ActivateSpans activates the
+  // deletion. Only populated when the caller requests dormant/activate
+  // clears (currently gated by a testing knob).
+  repeated roachpb.Span dormant_spans = 2 [(gogoproto.nullable) = false];
+}
+
+// RangeFlushPrepareResponse is the response for a RangeFlushPrepare operation.
+message RangeFlushPrepareResponse {
+  ResponseHeader header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
+
+  // FlushStartedCount is the new FlushStartedCount after incrementing. Flush
+  // commit uses this to verify no other prepare has intervened.
+  uint64 flush_started_count = 2;
+}
+
 // A RequestUnion contains exactly one of the requests.
 // The values added here must match those in ResponseUnion.
 //
@@ -2579,6 +2704,10 @@ message RequestUnion {
     LinkExternalSSTableRequest link_external_sstable = 57;
     ExciseRequest excise = 58;
     FlushLockTableRequest flush_lock_table = 59;
+    AllocateFileNumsForRangeRequest allocate_file_nums_for_range = 60;
+    SetRangeSharedManifestNumRequest set_range_shared_manifest_num = 61;
+    CheckRangeSharedManifestNumRequest check_range_shared_manifest_num = 62;
+    RangeFlushPrepareRequest range_flush_prepare = 63;
   }
   reserved 8, 15, 23, 25, 26, 27, 31, 34, 49, 52;
 }
@@ -2635,6 +2764,10 @@ message ResponseUnion {
     LinkExternalSSTableResponse link_external_sstable = 57;
     ExciseResponse excise = 58;
     FlushLockTableResponse flush_lock_table = 59;
+    AllocateFileNumsForRangeResponse allocate_file_nums_for_range = 60;
+    SetRangeSharedManifestNumResponse set_range_shared_manifest_num = 61;
+    CheckRangeSharedManifestNumResponse check_range_shared_manifest_num = 62;
+    RangeFlushPrepareResponse range_flush_prepare = 63;
   }
   reserved 8, 15, 23, 25, 26, 27, 28, 31, 34, 49, 52;
 }

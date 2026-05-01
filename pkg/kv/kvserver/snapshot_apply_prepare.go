@@ -169,33 +169,51 @@ func (s *snapWriter) applyAsBatch() kvstorage.StateWO {
 	return s.batch
 }
 
-// commit commits the snapshot application to storage. If engines are separated,
-// it first commits/syncs the raft engine batch, and then commits the state
-// machine mutation (as ingestion or batch). Otherwise, it commits the entire
-// mutation to a single engine (as ingestion or batch).
-func (s *snapWriter) commit(
-	ctx context.Context, ing snapIngestion,
-) (pebble.IngestOperationStats, error) {
+// commitRaft commits the raft engine batch (synced). Only applicable for
+// separated engines; no-op otherwise.
+func (s *snapWriter) commitRaft() error {
 	if s.eng.Separated() {
 		// TODO(sep-raft-log): populate the WAG node.
 		if err := s.raftWO.Commit(true /* sync */); err != nil {
-			return pebble.IngestOperationStats{}, err
+			return err
 		}
 	}
+	return nil
+}
+
+// commitState commits the state engine mutation (batch or ingestion).
+func (s *snapWriter) commitState(
+	ctx context.Context, ing snapIngestion,
+) (pebble.IngestOperationStats, error) {
 	if s.batch != nil {
 		// If engines are separated then the raft engine batch will contain a WAG
 		// node that guarantees durability of the state machine write, so we don't
-		// need so sync the state machine batch.
+		// need to sync the state machine batch.
 		if err := s.batch.Commit(!s.eng.Separated()); err != nil {
 			return pebble.IngestOperationStats{}, err
 		}
 		// TODO(pav-kv): return stats instead of managing them in the caller.
 		return pebble.IngestOperationStats{}, nil
 	}
-
 	ingestTo := s.eng.StateEngine()
 	if !s.eng.Separated() {
 		ingestTo = s.eng.Engine()
+	}
+	// Use IngestAndExciseStacked when any stacked SST has a lower SST.
+	hasLower := false
+	for _, sst := range ing.stacked {
+		if sst.LowerSST.Path != "" {
+			hasLower = true
+			break
+		}
+	}
+	if hasLower {
+		stats, err := ingestTo.IngestAndExciseStacked(ctx, ing.stacked, ing.exciseSpan)
+		if err != nil {
+			return pebble.IngestOperationStats{}, errors.Wrapf(err,
+				"while ingesting stacked SSTs and excising %v", ing.exciseSpan)
+		}
+		return stats, nil
 	}
 	stats, err := ingestTo.IngestAndExciseFiles(
 		ctx, ing.paths,
@@ -230,6 +248,12 @@ type snapWrite struct {
 	origDesc   *roachpb.RangeDescriptor // pre-snapshot range descriptor
 	// NB: subsume must be in sorted order by DestroyReplicaInfo start key.
 	subsume []kvstorage.DestroyReplicaInfo
+	// rsManifestDiskFileNum is the DiskFileNum of the MANIFEST for the
+	// range-shared engine. 0 if no range-shared engine is configured.
+	rsManifestDiskFileNum uint64
+	// replicaID is the ReplicaID of this replica. Used when writing
+	// RSManifestState.
+	replicaID roachpb.ReplicaID
 }
 
 // prepareSnapApply prepares the storage write that represents applying a
@@ -283,6 +307,21 @@ func (s *snapWriter) prepareSnapApply(ctx context.Context, sw snapWrite) error {
 	if err := s.rewriteRaftState(ctx, &sw); err != nil {
 		return err
 	}
+
+	// Write RSManifestState if the snapshot includes a range-shared engine.
+	if sw.rsManifestDiskFileNum != 0 {
+		if err := s.writeSST(ctx, func(ctx context.Context, w storage.Writer) error {
+			sl := kvstorage.MakeStateLoader(sw.desc.RangeID)
+			rsState := kvserverpb.RSManifestState{
+				DiskFileNum: sw.rsManifestDiskFileNum,
+				ReplicaId:   sw.replicaID,
+			}
+			return sl.SetRSManifestState(ctx, w, rsState)
+		}); err != nil {
+			return err
+		}
+	}
+
 	for _, sub := range sw.subsume {
 		if err := s.subsumeReplica(ctx, sub); err != nil {
 			return err
@@ -367,4 +406,8 @@ type snapIngestion struct {
 	shared     []kvserverpb.SnapshotRequest_SharedTable
 	external   []kvserverpb.SnapshotRequest_ExternalTable
 	exciseSpan roachpb.Span
+	// stacked pairs upper and lower SSTs for IngestAndExciseStacked. When
+	// non-empty and any entry has a non-empty LowerSST.Path,
+	// IngestAndExciseStacked is used instead of IngestAndExciseFiles.
+	stacked []pebble.StackedLocalSST
 }

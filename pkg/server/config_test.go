@@ -46,8 +46,8 @@ func TestParseInitNodeAttributes(t *testing.T) {
 	cfg := MakeConfig(context.Background(), cluster.MakeTestingClusterSettings())
 	cfg.Attrs = "attr1=val1::attr2=val2"
 	cfg.Stores = base.StoreSpecList{Specs: []base.StoreSpec{{
-		InMemory: true,
-		Size:     storageconfig.BytesSize(storageconfig.MinimumStoreSize * 100),
+		Type: storageconfig.StoreTypeInMemory,
+		Size: storageconfig.BytesSize(storageconfig.MinimumStoreSize * 100),
 	}}}
 	engines, err := cfg.CreateEngines(context.Background())
 	if err != nil {
@@ -78,7 +78,7 @@ func TestCreateEnginesWithMultipleStores(t *testing.T) {
 	cfg.Stores = base.StoreSpecList{Specs: []base.StoreSpec{
 		{Size: storageconfig.BytesSize(storageconfig.MinimumStoreSize), Path: tmpDir1},
 		{Size: storageconfig.BytesSize(storageconfig.MinimumStoreSize), Path: tmpDir2},
-		{InMemory: true, Size: storageconfig.BytesSize(storageconfig.MinimumStoreSize * 100)},
+		{Type: storageconfig.StoreTypeInMemory, Size: storageconfig.BytesSize(storageconfig.MinimumStoreSize * 100)},
 	}}
 	engines, err := cfg.CreateEngines(context.Background())
 	if err != nil {
@@ -105,8 +105,8 @@ func TestParseJoinUsingAddrs(t *testing.T) {
 	cfg := MakeConfig(context.Background(), cluster.MakeTestingClusterSettings())
 	cfg.JoinList = []string{"localhost:12345", "[::1]:23456", "f00f::1234", ":34567", ":0", ":", "", "localhost"}
 	cfg.Stores = base.StoreSpecList{Specs: []base.StoreSpec{{
-		InMemory: true,
-		Size:     storageconfig.BytesSize(storageconfig.MinimumStoreSize * 100),
+		Type: storageconfig.StoreTypeInMemory,
+		Size: storageconfig.BytesSize(storageconfig.MinimumStoreSize * 100),
 	}}}
 	engines, err := cfg.CreateEngines(context.Background())
 	if err != nil {
@@ -399,7 +399,7 @@ func TestCreateEngines(t *testing.T) {
 				parts := strings.SplitN(line, "=", 2)
 				switch parts[0] {
 				case "in-memory":
-					spec.InMemory = true
+					spec.Type = storageconfig.StoreTypeInMemory
 				case "attrs":
 					spec.Attributes = strings.Split(parts[1], ":")
 				default:
@@ -452,4 +452,57 @@ func grepStr(r io.Reader, pattern string) string {
 		return err.Error()
 	}
 	return buf.String()
+}
+
+func TestLocalZoneFromLocality(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	for _, tc := range []struct {
+		name     string
+		locality roachpb.Locality
+		want     string
+	}{{
+		name: "zone tier",
+		locality: roachpb.Locality{Tiers: []roachpb.Tier{
+			{Key: "region", Value: "us-east1"},
+			{Key: "zone", Value: "us-east1-b"},
+		}},
+		want: "us-east1-b",
+	}, {
+		name: "availability-zone tier",
+		locality: roachpb.Locality{Tiers: []roachpb.Tier{
+			{Key: "region", Value: "us-east1"},
+			{Key: "availability-zone", Value: "us-east1-c"},
+		}},
+		want: "us-east1-c",
+	}, {
+		name: "az tier",
+		locality: roachpb.Locality{Tiers: []roachpb.Tier{
+			{Key: "region", Value: "us-east1"},
+			{Key: "az", Value: "us-east1-a"},
+		}},
+		want: "us-east1-a",
+	}, {
+		name: "zone preferred over availability-zone",
+		locality: roachpb.Locality{Tiers: []roachpb.Tier{
+			{Key: "zone", Value: "z1"},
+			{Key: "availability-zone", Value: "az1"},
+		}},
+		want: "z1",
+	}, {
+		name: "no zone tier",
+		locality: roachpb.Locality{Tiers: []roachpb.Tier{
+			{Key: "region", Value: "us-east1"},
+		}},
+		want: "",
+	}, {
+		name:     "empty locality",
+		locality: roachpb.Locality{},
+		want:     "",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, localZoneFromLocality(tc.locality))
+		})
+	}
 }

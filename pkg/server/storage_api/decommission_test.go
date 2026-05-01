@@ -290,7 +290,7 @@ func decommissionTsArgs(region string, attrs ...string) base.TestServerArgs {
 			},
 		},
 		StoreSpecs: []base.StoreSpec{
-			{InMemory: true, Attributes: attrs},
+			{Type: base.StoreTypeInMemory, Attributes: attrs},
 		},
 	}
 }

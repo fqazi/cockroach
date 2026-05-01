@@ -389,32 +389,10 @@ func (etc *externalSSTTestCluster) requireNotFoundError(t *testing.T, err error)
 // TODO(ibrahim): condense the test into fewer subtests.
 //
 // Test setup can be visualized in the following diagram:
-/*
-             a                d                g                z
-             |                |                |                |
-             v                v                v                v
-Keyspace:    |----------------|----------------|----------------|
-             Range 1          Range 2          Range 3
-
-      txn2:  | a-txn2         |                | g-txn2         |
-             |                |                |                |
-             |                |                |                |
-      txn1:  | a-txn1         | d-txn1         | g-txn1         |
-             | b-txn1         | e-txn1         | h-txn1         |
-             | c-txn1         | f-txn1         | ...            |
-             |                |                |                |
-             |                |                |                |
-      Writes:| a-intent       | d-intent       | g-intent       |
-             | b-intent       | e-intent       | h-intent       |
-             | c-intent       | f-intent       | ...            |
-             |                |                |                |
-             |                |                |                |
- ^    SST:   |================|================|================|
- |           |  Many KVs:     |  Many KVs:     |  Many KVs:     |
- |           |  a-00000...    |  d-00000...    |  g-00000...    |
- |           |  b-00000...    |  e-00000...    |  h-00000...    |
-Time         |  c-00000...    |  f-00000...    |  ...           |
-*/
+// a d g z | | | | v v v v Keyspace: |----------------|----------------|----------------| Range 1 Range 2 Range 3 txn2: | a-txn2 | | g-txn2 | | | | | | | | |
+// txn1: | a-txn1 | d-txn1 | g-txn1 | | b-txn1 | e-txn1 | h-txn1 | | c-txn1 | f-txn1 | ... | | | | | | | | | Writes:| a-intent | d-intent | g-intent | |
+// b-intent | e-intent | h-intent | | c-intent | f-intent | ... | | | | | | | | | ^ SST: |================|================|================| | | Many KVs: |
+// Many KVs: | Many KVs: | | | a-00000... | d-00000... | g-00000... | | | b-00000... | e-00000... | h-00000... | Time | c-00000... | f-00000... | ... | */
 func TestGeneralOperationsWorkAsExpectedOnDeletedExternalSST(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -830,13 +808,17 @@ func TestGeneralOperationsWorkAsExpectedOnDeletedExternalSST(t *testing.T) {
 				ctx context.Context,
 				etc *externalSSTTestCluster,
 			) {
-				// Splits that operate on the deleted SSTable should fail.
-				etc.requireNotFoundError(t, etc.splitHelper(ctx, roachpb.Key("d-15000")))
+				// Splits at keys within the deleted external SST's range
+				// should fail because Pebble must open the deleted file to
+				// seek within it.
 				etc.requireNotFoundError(t, etc.splitHelper(ctx, roachpb.Key("e-15000")))
-				etc.requireNotFoundError(t, etc.splitHelper(ctx, roachpb.Key("f-15000")))
 
-				// Splits that don't operate on the deleted SSTable should
-				// succeed.
+				// Splits at keys outside the deleted external SST's range
+				// succeed because Pebble's iterv2 can determine from file
+				// metadata that the SST's smallest key is beyond the seek
+				// position, avoiding the need to open the deleted file.
+				require.NoError(t, etc.splitHelper(ctx, roachpb.Key("d-15000")))
+				require.NoError(t, etc.splitHelper(ctx, roachpb.Key("f-15000")))
 				require.NoError(t, etc.splitHelper(ctx, roachpb.Key("b")))
 				require.NoError(t, etc.splitHelper(ctx, roachpb.Key("h")))
 
@@ -897,21 +879,8 @@ func TestGeneralOperationsWorkAsExpectedOnDeletedExternalSST(t *testing.T) {
 // an excise command is issued.
 //
 // Test setup can be visualized in the following diagram:
-/*
-             a                d                g                z
-             |                |                |                |
-             v                v                v                v
-Keyspace:    |----------------|----------------|----------------|
-             Range 1          Range 2          Range 3
-             |                |                |                |
-RangeFeeds:  |---- RF1 -------|---- RF2 -------|---- RF3 -------|
-             |                |                |                |
-                              |<-- External SSTable -->|
-                              |                        |
-                              |<--- Excised Range ---->|
-                              |                        |
-                              d                        k
-*/
+// a d g z | | | | v v v v Keyspace: |----------------|----------------|----------------| Range 1 Range 2 Range 3 | | | | RangeFeeds: |---- RF1 -------|---- RF2
+// -------|---- RF3 -------| | | | | |<-- External SSTable -->| | | |<--- Excised Range ---->| | | d k */
 func TestRangeFeedWithExcise(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)

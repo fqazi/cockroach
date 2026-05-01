@@ -948,7 +948,7 @@ func TestLeaseholderRelocate(t *testing.T) {
 			},
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -1152,7 +1152,7 @@ func TestLeasePreferencesDuringOutage(t *testing.T) {
 			},
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -1327,7 +1327,7 @@ func TestLeasesDontThrashWhenNodeBecomesSuspect(t *testing.T) {
 			},
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -1978,7 +1978,7 @@ func TestLeaseStartTimeIsLargerThanPrevLeaseEndTimeAfterRestart(t *testing.T) {
 					},
 					StoreSpecs: []base.StoreSpec{
 						{
-							InMemory:    true,
+							Type:        base.StoreTypeInMemory,
 							StickyVFSID: "test",
 						},
 					},

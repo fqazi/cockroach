@@ -155,6 +155,22 @@ func (wb *writeBatch) ClearRawRange(start, end roachpb.Key, pointKeys, rangeKeys
 	return nil
 }
 
+// ClearRawRangeDormant implements the Writer interface.
+func (wb *writeBatch) ClearRawRangeDormant(start, end roachpb.Key) error {
+	wb.buf = EngineKey{Key: start}.EncodeToBuf(wb.buf[:0])
+	endRaw := EngineKey{Key: end}.Encode()
+
+	return wb.batch.DeleteRangeDormant(wb.buf, endRaw, pebble.Sync)
+}
+
+// ClearRawRangeActivate implements the Writer interface.
+func (wb *writeBatch) ClearRawRangeActivate(start, end roachpb.Key) error {
+	wb.buf = EngineKey{Key: start}.EncodeToBuf(wb.buf[:0])
+	endRaw := EngineKey{Key: end}.Encode()
+
+	return wb.batch.DeleteRangeActivate(wb.buf, endRaw, pebble.Sync)
+}
+
 // ClearMVCCRange implements the Writer interface.
 func (wb *writeBatch) ClearMVCCRange(start, end roachpb.Key, pointKeys, rangeKeys bool) error {
 	if err := wb.ClearRawRange(start, end, pointKeys, rangeKeys); err != nil {
@@ -231,6 +247,16 @@ func (wb *writeBatch) PutEngineRangeKey(start, end roachpb.Key, suffix, value []
 // ClearRawEncodedRange implements the InternalWriter interface.
 func (wb *writeBatch) ClearRawEncodedRange(start, end []byte) error {
 	return wb.batch.DeleteRange(start, end, pebble.Sync)
+}
+
+// ClearRawEncodedRangeDormant implements the InternalWriter interface.
+func (wb *writeBatch) ClearRawEncodedRangeDormant(start, end []byte) error {
+	return wb.batch.DeleteRangeDormant(start, end, pebble.Sync)
+}
+
+// ClearRawEncodedRangeActivate implements the InternalWriter interface.
+func (wb *writeBatch) ClearRawEncodedRangeActivate(start, end []byte) error {
+	return wb.batch.DeleteRangeActivate(start, end, pebble.Sync)
 }
 
 // PutInternalRangeKey implements the InternalWriter interface.
@@ -467,9 +493,10 @@ func (wb *writeBatch) close() {
 	wb.batch = nil
 }
 
-// Wrapper struct around a pebble.Batch.
+// pebbleBatch wraps a pebble.Batch.
 type pebbleBatch struct {
 	writeBatch
+	secondaryLSM pebble.LSMVersionHandle
 	// The iterator reuse optimization in pebbleBatch is for servicing a
 	// BatchRequest, such that the iterators get reused across different
 	// requests in the batch.
@@ -539,12 +566,14 @@ func newPebbleBatch(
 
 // Close implements the Batch interface.
 func (p *pebbleBatch) Close() {
+	if p.secondaryLSM.IsSet() {
+		p.secondaryLSM.Close()
+	}
 	if p.iter != nil && !p.iterUsed {
 		if err := p.iter.Close(); err != nil {
 			panic(err)
 		}
 	}
-
 	// Setting iter to nil is sufficient since it will be closed by one of the
 	// subsequent destroy calls.
 	p.iter = nil
@@ -560,6 +589,10 @@ func (p *pebbleBatch) Close() {
 // Closed implements the Batch interface.
 func (p *pebbleBatch) Closed() bool {
 	return p.closed
+}
+
+func (p *pebbleBatch) SetSecondaryLSM(vh pebble.LSMVersionHandle) {
+	p.secondaryLSM = vh
 }
 
 // MVCCIterate implements the Batch interface.
@@ -608,14 +641,14 @@ func (p *pebbleBatch) NewMVCCIterator(
 		return newPebbleIteratorByCloning(ctx, CloneContext{
 			rawIter: p.iter,
 			engine:  p.parent,
-		}, opts, StandardDurability), nil
+		}, opts, StandardDurability, p.secondaryLSM), nil
 	}
-
 	if iter.iter != nil {
 		iter.setOptions(ctx, opts, StandardDurability)
 	} else {
 		if err := iter.initReuseOrCreate(
-			ctx, handle, p.iter, p.iterUsed, opts, StandardDurability, p.parent); err != nil {
+			ctx, handle, p.iter, p.iterUsed, opts, StandardDurability, p.parent, p.secondaryLSM,
+		); err != nil {
 			return nil, err
 		}
 		if p.iter == nil {
@@ -624,7 +657,6 @@ func (p *pebbleBatch) NewMVCCIterator(
 		}
 		p.iterUsed = true
 	}
-
 	iter.inuse = true
 	return maybeWrapInUnsafeIter(iter), nil
 }
@@ -639,7 +671,7 @@ func (p *pebbleBatch) NewBatchOnlyMVCCIterator(
 	var err error
 	iter := pebbleIterPool.Get().(*pebbleIterator)
 	iter.reusable = false // defensive
-	iter.init(ctx, nil, opts, StandardDurability, p.parent)
+	iter.init(ctx, nil, opts, StandardDurability, p.parent, pebble.LSMVersionHandle{})
 	boIter, err := p.batch.NewBatchOnlyIter(ctx, &iter.options)
 	if err != nil {
 		iter.Close()
@@ -665,14 +697,14 @@ func (p *pebbleBatch) NewEngineIterator(
 		return newPebbleIteratorByCloning(ctx, CloneContext{
 			rawIter: p.iter,
 			engine:  p.parent,
-		}, opts, StandardDurability), nil
+		}, opts, StandardDurability, p.secondaryLSM), nil
 	}
-
 	if iter.iter != nil {
 		iter.setOptions(ctx, opts, StandardDurability)
 	} else {
 		if err := iter.initReuseOrCreate(
-			ctx, handle, p.iter, p.iterUsed, opts, StandardDurability, p.parent); err != nil {
+			ctx, handle, p.iter, p.iterUsed, opts, StandardDurability, p.parent, p.secondaryLSM,
+		); err != nil {
 			return nil, err
 		}
 		if p.iter == nil {
@@ -690,8 +722,9 @@ func (p *pebbleBatch) NewEngineIterator(
 func (p *pebbleBatch) ScanInternal(
 	ctx context.Context,
 	lower, upper roachpb.Key,
-	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum) error,
+	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel, dormantPos pebble.DormantRelation) error,
+	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum, dormantPos pebble.DormantRelation) error,
+	visitDormantRangeDel func(start, end []byte, seqNum pebble.SeqNum) error,
 	visitRangeKey func(start []byte, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 	visitExternalFile func(sst *pebble.ExternalFile) error,
@@ -710,12 +743,16 @@ func (p *pebbleBatch) PinEngineStateForIterators(readCategory fs.ReadCategory) e
 	if p.iter == nil {
 		var iter *pebble.Iterator
 		o := makeIterOptions(readCategory, StandardDurability)
+		if p.secondaryLSM.IsSet() {
+			o.SecondaryLSM = p.secondaryLSM.Clone()
+		}
 		if p.batch.Indexed() {
 			iter, err = p.batch.NewIter(&o)
 		} else {
 			iter, err = p.db.NewIter(&o)
 		}
 		if err != nil {
+			o.SecondaryLSM.Close()
 			return err
 		}
 		p.iter = pebbleiter.MaybeWrap(iter)

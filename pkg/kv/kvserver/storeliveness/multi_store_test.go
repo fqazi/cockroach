@@ -152,7 +152,7 @@ func makeMultiStoreArgs(storeKnobs *kvserver.StoreTestingKnobs) base.TestCluster
 			id := strconv.Itoa(srvIdx*numStoresPerNode + storeIdx + 1)
 			serverArgs.StoreSpecs = append(
 				serverArgs.StoreSpecs,
-				base.StoreSpec{InMemory: true, StickyVFSID: id},
+				base.StoreSpec{Type: base.StoreTypeInMemory, StickyVFSID: id},
 			)
 		}
 		clusterArgs.ServerArgsPerNode[srvIdx] = serverArgs

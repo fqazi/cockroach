@@ -114,7 +114,7 @@ func TestCollectInfoFromOnlineCluster(t *testing.T) {
 
 	tc := testcluster.NewTestCluster(t, 3, base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
-			StoreSpecs: []base.StoreSpec{{InMemory: true}},
+			StoreSpecs: []base.StoreSpec{{Type: base.StoreTypeInMemory}},
 			Insecure:   true,
 			// This logic is specific to the storage layer.
 			DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
@@ -376,7 +376,7 @@ func TestStageVersionCheck(t *testing.T) {
 					},
 				},
 				StoreSpecs: []base.StoreSpec{
-					{InMemory: true, StickyVFSID: "1"},
+					{Type: base.StoreTypeInMemory, StickyVFSID: "1"},
 				},
 			},
 		},
@@ -512,7 +512,7 @@ func TestHalfOnlineLossOfQuorumRecovery(t *testing.T) {
 			},
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory: true,
+					Type: base.StoreTypeInMemory,
 				},
 			},
 		}

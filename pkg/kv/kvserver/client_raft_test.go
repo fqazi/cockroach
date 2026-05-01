@@ -107,7 +107,7 @@ func TestStoreRecoverFromEngine(t *testing.T) {
 			ServerArgs: base.TestServerArgs{
 				StoreSpecs: []base.StoreSpec{
 					{
-						InMemory:    true,
+						Type:        base.StoreTypeInMemory,
 						StickyVFSID: "1",
 					},
 				},
@@ -234,7 +234,7 @@ func TestStoreRecoverWithErrors(t *testing.T) {
 				},
 				StoreSpecs: []base.StoreSpec{
 					{
-						InMemory:    true,
+						Type:        base.StoreTypeInMemory,
 						StickyVFSID: "1",
 					},
 				},
@@ -303,23 +303,30 @@ func TestReplicateRange(t *testing.T) {
 
 	tc.AddVotersOrFatal(t, keyA, tc.Target(1))
 	// Verify no intent remains on range descriptor key.
+	repl := store.LookupReplica(rhsDesc.StartKey)
+	snap := repl.NewCombinedSnapshot()
 	key := keys.RangeDescriptorKey(rhsDesc.StartKey)
 	desc := roachpb.RangeDescriptor{}
-	if ok, err := storage.MVCCGetProto(ctx, store.StateEngine(), key,
+	if ok, err := storage.MVCCGetProto(ctx, snap, key,
 		store.Clock().Now(), &desc, storage.MVCCGetOptions{}); err != nil {
 		t.Fatal(err)
 	} else if !ok {
 		t.Fatalf("range descriptor key %s was not found", key)
 	}
+	snap.Close()
 	// Verify that in time, no intents remain on meta addressing
 	// keys, and that range descriptor on the meta records is correct.
 	testutils.SucceedsSoon(t, func() error {
 		meta2 := keys.RangeMetaKey(roachpb.RKeyMax)
 		meta1 := keys.RangeMetaKey(meta2)
 		for _, key := range []roachpb.RKey{meta2, meta1} {
+			metaRepl := store.LookupReplica(key)
+			snap := metaRepl.NewCombinedSnapshot()
 			metaDesc := roachpb.RangeDescriptor{}
-			if ok, err := storage.MVCCGetProto(ctx, store.StateEngine(), key.AsRawKey(),
-				store.Clock().Now(), &metaDesc, storage.MVCCGetOptions{}); err != nil {
+			ok, err := storage.MVCCGetProto(ctx, snap, key.AsRawKey(),
+				store.Clock().Now(), &metaDesc, storage.MVCCGetOptions{})
+			snap.Close()
+			if err != nil {
 				return err
 			} else if !ok {
 				return errors.Errorf("failed to resolve %s", key.AsRawKey())
@@ -358,7 +365,7 @@ func TestRestoreReplicas(t *testing.T) {
 		stickyServerArgs[i] = base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -663,7 +670,7 @@ func TestSnapshotAfterTruncation(t *testing.T) {
 				stickyServerArgs[i] = base.TestServerArgs{
 					StoreSpecs: []base.StoreSpec{
 						{
-							InMemory:    true,
+							Type:        base.StoreTypeInMemory,
 							StickyVFSID: strconv.FormatInt(int64(i), 10),
 						},
 					},
@@ -1727,7 +1734,7 @@ func TestConcurrentRaftSnapshots(t *testing.T) {
 		stickyServerArgs[i] = base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -1810,7 +1817,7 @@ func TestReplicateAfterRemoveAndSplit(t *testing.T) {
 		stickyServerArgs[i] = base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -1914,7 +1921,7 @@ func TestLogGrowthWhenRefreshingPendingCommands(t *testing.T) {
 					Settings: settings,
 					StoreSpecs: []base.StoreSpec{
 						{
-							InMemory:    true,
+							Type:        base.StoreTypeInMemory,
 							StickyVFSID: strconv.FormatInt(int64(i), 10),
 						},
 					},
@@ -2222,7 +2229,7 @@ func TestProgressWithDownNode(t *testing.T) {
 		stickyServerArgs[i] = base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -2304,7 +2311,7 @@ func runReplicateRestartAfterTruncation(t *testing.T, removeBeforeTruncateAndReA
 		stickyServerArgs[i] = base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -2407,7 +2414,7 @@ func testReplicaAddRemove(t *testing.T, addFirst bool) {
 		stickyServerArgs[i] = base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -3570,7 +3577,7 @@ func TestReplicateRogueRemovedNode(t *testing.T) {
 		stickyServerArgs[i] = base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -3914,7 +3921,7 @@ func TestReplicaTooOldGC(t *testing.T) {
 		stickyServerArgs[i] = base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -4011,7 +4018,7 @@ func TestReplicateReAddAfterDown(t *testing.T) {
 		stickyServerArgs[i] = base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -5102,7 +5109,7 @@ func TestDefaultConnectionDisruptionDoesNotInterfereWithSystemTraffic(t *testing
 			Settings: st,
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},
@@ -5446,16 +5453,22 @@ func TestRaftSnapshotsWithMVCCRangeKeys(t *testing.T) {
 	for _, srv := range tc.Servers {
 		store, err := srv.GetStores().(*kvserver.Stores).GetStore(srv.GetFirstStoreID())
 		require.NoError(t, err)
+		replA := store.LookupReplica(descA.StartKey)
+		snapA := replA.NewCombinedSnapshot()
 		require.Equal(t, kvs{
 			rangeKVWithTS("a", "b", ts1, storage.MVCCValue{}),
 			rangeKVWithTS("b", "c", ts2, storage.MVCCValue{}),
 			rangeKVWithTS("b", "c", ts1, storage.MVCCValue{}),
-		}, storageutils.ScanRange(t, store.StateEngine(), descA))
+		}, storageutils.ScanRange(t, snapA, descA))
+		snapA.Close()
+		replC := store.LookupReplica(descC.StartKey)
+		snapC := replC.NewCombinedSnapshot()
 		require.Equal(t, kvs{
 			rangeKVWithTS("c", "d", ts2, storage.MVCCValue{}),
 			rangeKVWithTS("c", "d", ts1, storage.MVCCValue{}),
 			rangeKVWithTS("d", "e", ts2, storage.MVCCValue{}),
-		}, storageutils.ScanRange(t, store.StateEngine(), descC))
+		}, storageutils.ScanRange(t, snapC, descC))
+		snapC.Close()
 	}
 
 	// Quick check of MVCC stats.
@@ -5509,6 +5522,8 @@ func TestRaftSnapshotsWithMVCCRangeKeysEverywhere(t *testing.T) {
 
 	// Write MVCC range keys [a-z) in each replicated key range of each range.
 	// Throw in a local timestamp, to make sure the value is replicated too.
+	// TODO(basalt): these out-of-band writes to the store-local engine bypass
+	// raft. When RSEngine is active, they will need rethinking.
 	now := srv.Clock().Now()
 	valueLocalTS := storage.MVCCValue{
 		MVCCValueHeader: enginepb.MVCCValueHeader{
@@ -5549,12 +5564,15 @@ func TestRaftSnapshotsWithMVCCRangeKeysEverywhere(t *testing.T) {
 
 	// Look for the range keys on the other servers.
 	for _, srvIdx := range []int{1, 2} {
-		e := tc.GetFirstStoreFromServer(t, srvIdx).StateEngine()
+		srvStore := tc.GetFirstStoreFromServer(t, srvIdx)
 		for _, desc := range descs {
+			repl, err := srvStore.GetReplica(desc.RangeID)
+			require.NoError(t, err)
+			snap := repl.NewCombinedSnapshot()
 			for _, span := range rditer.MakeReplicatedKeySpans(&desc) {
 				prefix := append(span.Key.Clone(), ':')
 
-				iter, err := e.NewEngineIterator(context.Background(), storage.IterOptions{
+				iter, err := snap.NewEngineIterator(context.Background(), storage.IterOptions{
 					KeyTypes:   storage.IterKeyTypeRangesOnly,
 					LowerBound: span.Key,
 					UpperBound: span.EndKey,
@@ -5582,6 +5600,7 @@ func TestRaftSnapshotsWithMVCCRangeKeysEverywhere(t *testing.T) {
 				require.NoError(t, err)
 				require.False(t, ok)
 			}
+			snap.Close()
 		}
 	}
 

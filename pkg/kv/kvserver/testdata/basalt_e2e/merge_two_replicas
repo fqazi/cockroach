@@ -1,0 +1,214 @@
+# Test Case: Merge after split (two replicas)
+#
+# This tests merging ranges after a split, with two replicas:
+# 1. Initialize 2-store cluster
+# 2. Flush and add replica
+# 3. Split (lhs=1, rhs=2)
+# 4. Flush both ranges
+# 5. Verify state on both stores
+# 6. Merge ranges back
+# 7. Verify state on both stores after merge
+
+init stores=2
+----
+cluster started with 2 store(s)
+
+scratch-range
+----
+ok
+
+# Flush before adding replica.
+flush rangeID=1 store=1
+----
+flushed
+
+# Add replica to store 2.
+add-replica rangeID=1 store=2
+----
+added replica to store 2, replicas: 2
+
+# Split with 2 replicas.
+split rangeID=1 store=1
+----
+split ok, lhs=1 rhs=2
+
+# Flush both ranges after split.
+flush rangeID=1 store=1
+----
+flushed
+
+flush rangeID=2 store=1
+----
+flushed
+
+# Verify state on store 1 before merge.
+range-shared-meta-keys rangeID=1 store=1
+----
+RSManifestState:
+  disk_file_num: 346, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 487
+
+range-shared-meta-keys rangeID=2 store=1
+----
+RSManifestState:
+  disk_file_num: 386, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 487
+
+# Basalt filesystem state before merge.
+basalt-files
+----
+s1/
+s1/ranges/
+s1/ranges/r1:1/
+s1/ranges/r1:1/000225.sst:
+s1/ranges/r1:1/  previous-manifest:66
+s1/ranges/r1:1/000345.sst:
+s1/ranges/r1:1/  previous-manifest:286
+s1/ranges/r1:1/MANIFEST-000066:
+s1/ranges/r1:1/  manifest:66
+s1/ranges/r1:1/MANIFEST-000226:
+s1/ranges/r1:1/  manifest:226
+s1/ranges/r1:1/  000225.sst
+s1/ranges/r1:1/MANIFEST-000286:
+s1/ranges/r1:1/  manifest:286
+s1/ranges/r1:1/  000225.sst
+s1/ranges/r1:1/MANIFEST-000346:
+s1/ranges/r1:1/  manifest:346
+s1/ranges/r1:1/  000225.sst
+s1/ranges/r1:1/  000345.sst
+s1/ranges/r2:1/
+s1/ranges/r2:1/000225.sst:
+s1/ranges/r2:1/  previous-manifest:66
+s1/ranges/r2:1/000385.sst:
+s1/ranges/r2:1/  previous-manifest:286
+s1/ranges/r2:1/MANIFEST-000286:
+s1/ranges/r2:1/  manifest:286
+s1/ranges/r2:1/  000225.sst
+s1/ranges/r2:1/MANIFEST-000386:
+s1/ranges/r2:1/  manifest:386
+s1/ranges/r2:1/  000225.sst
+s1/ranges/r2:1/  000385.sst
+s1/scratch/
+s1/scratch/r1:1/
+s1/scratch/r2:1/
+s2/
+s2/ranges/
+s2/ranges/r1:2/
+s2/ranges/r1:2/000225.sst:
+s2/ranges/r1:2/  previous-manifest:66
+s2/ranges/r1:2/000345.sst:
+s2/ranges/r1:2/  previous-manifest:286
+s2/ranges/r1:2/MANIFEST-000226:
+s2/ranges/r1:2/  manifest:226
+s2/ranges/r1:2/  000225.sst
+s2/ranges/r1:2/MANIFEST-000286:
+s2/ranges/r1:2/  manifest:286
+s2/ranges/r1:2/  000225.sst
+s2/ranges/r1:2/MANIFEST-000346:
+s2/ranges/r1:2/  manifest:346
+s2/ranges/r1:2/  000225.sst
+s2/ranges/r1:2/  000345.sst
+s2/ranges/r2:2/
+s2/ranges/r2:2/000225.sst:
+s2/ranges/r2:2/  previous-manifest:66
+s2/ranges/r2:2/000385.sst:
+s2/ranges/r2:2/  previous-manifest:286
+s2/ranges/r2:2/MANIFEST-000286:
+s2/ranges/r2:2/  manifest:286
+s2/ranges/r2:2/  000225.sst
+s2/ranges/r2:2/MANIFEST-000386:
+s2/ranges/r2:2/  manifest:386
+s2/ranges/r2:2/  000225.sst
+s2/ranges/r2:2/  000385.sst
+s2/scratch/
+s2/scratch/r1:2/
+s2/scratch/r2:2/
+
+# Merge range 1 (LHS) with range 2 (RHS).
+merge rangeID=1 store=1
+----
+merge ok, removed rhs=2
+
+# Verify state on both stores after merge.
+range-shared-meta-keys rangeID=1 store=1
+----
+RSManifestState:
+  disk_file_num: 406, replica_id: 1
+RangeFileNumAllocState:
+  next_file_num: 487
+
+range-shared-meta-keys rangeID=1 store=2
+----
+RSManifestState:
+  disk_file_num: 406, replica_id: 2
+RangeFileNumAllocState:
+  next_file_num: 487
+
+basalt-files
+----
+s1/
+s1/ranges/
+s1/ranges/r1:1/
+s1/ranges/r1:1/000225.sst:
+s1/ranges/r1:1/  previous-manifest:66
+s1/ranges/r1:1/000345.sst:
+s1/ranges/r1:1/  previous-manifest:286
+s1/ranges/r1:1/000347.sst:
+s1/ranges/r1:1/  previous-manifest:66
+s1/ranges/r1:1/000348.sst:
+s1/ranges/r1:1/  previous-manifest:286
+s1/ranges/r1:1/MANIFEST-000066:
+s1/ranges/r1:1/  manifest:66
+s1/ranges/r1:1/MANIFEST-000226:
+s1/ranges/r1:1/  manifest:226
+s1/ranges/r1:1/  000225.sst
+s1/ranges/r1:1/MANIFEST-000286:
+s1/ranges/r1:1/  manifest:286
+s1/ranges/r1:1/  000225.sst
+s1/ranges/r1:1/MANIFEST-000346:
+s1/ranges/r1:1/  manifest:346
+s1/ranges/r1:1/  000225.sst
+s1/ranges/r1:1/  000345.sst
+s1/ranges/r1:1/MANIFEST-000406:
+s1/ranges/r1:1/  manifest:406
+s1/ranges/r1:1/  000225.sst
+s1/ranges/r1:1/  000345.sst
+s1/ranges/r1:1/  000347.sst
+s1/ranges/r1:1/  000348.sst
+s1/scratch/
+s1/scratch/r1:1/
+s2/
+s2/ranges/
+s2/ranges/r1:2/
+s2/ranges/r1:2/000225.sst:
+s2/ranges/r1:2/  previous-manifest:66
+s2/ranges/r1:2/000345.sst:
+s2/ranges/r1:2/  previous-manifest:286
+s2/ranges/r1:2/000347.sst:
+s2/ranges/r1:2/  previous-manifest:66
+s2/ranges/r1:2/000348.sst:
+s2/ranges/r1:2/  previous-manifest:286
+s2/ranges/r1:2/MANIFEST-000226:
+s2/ranges/r1:2/  manifest:226
+s2/ranges/r1:2/  000225.sst
+s2/ranges/r1:2/MANIFEST-000286:
+s2/ranges/r1:2/  manifest:286
+s2/ranges/r1:2/  000225.sst
+s2/ranges/r1:2/MANIFEST-000346:
+s2/ranges/r1:2/  manifest:346
+s2/ranges/r1:2/  000225.sst
+s2/ranges/r1:2/  000345.sst
+s2/ranges/r1:2/MANIFEST-000406:
+s2/ranges/r1:2/  manifest:406
+s2/ranges/r1:2/  000225.sst
+s2/ranges/r1:2/  000345.sst
+s2/ranges/r1:2/  000347.sst
+s2/ranges/r1:2/  000348.sst
+s2/scratch/
+s2/scratch/r1:2/
+
+stop
+----
+stopped

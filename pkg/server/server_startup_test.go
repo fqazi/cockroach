@@ -46,7 +46,7 @@ func TestStartupInjectedFailureSingleNode(t *testing.T) {
 		ServerArgs: base.TestServerArgs{
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: "1",
 				},
 			},

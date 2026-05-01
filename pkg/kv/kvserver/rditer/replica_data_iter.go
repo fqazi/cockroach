@@ -477,8 +477,9 @@ func IterateReplicaKeySpansShared(
 	st *cluster.Settings,
 	_ uuid.UUID,
 	reader storage.Reader,
-	visitPoint func(key *pebble.InternalKey, val pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start, end []byte, seqNum pebble.SeqNum) error,
+	visitPoint func(key *pebble.InternalKey, val pebble.LazyValue, info pebble.IteratorLevel, dormantPos pebble.DormantRelation) error,
+	visitRangeDel func(start, end []byte, seqNum pebble.SeqNum, dormantPos pebble.DormantRelation) error,
+	visitDormantRangeDel func(start, end []byte, seqNum pebble.SeqNum) error,
 	visitRangeKey func(start, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 	visitExternalFile func(sst *pebble.ExternalFile) error,
@@ -494,7 +495,7 @@ func IterateReplicaKeySpansShared(
 	})
 	span := spans[0]
 	return reader.ScanInternal(ctx, span.Key, span.EndKey, visitPoint, visitRangeDel,
-		visitRangeKey, visitSharedFile, visitExternalFile)
+		visitDormantRangeDel, visitRangeKey, visitSharedFile, visitExternalFile)
 }
 
 // IterateOptions instructs how points and ranges should be presented to visitor

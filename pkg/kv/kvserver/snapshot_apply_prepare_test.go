@@ -112,9 +112,11 @@ func TestVerifySnap(t *testing.T) {
 // replicas is wider than the snapshot's.
 //
 // If separateEngines is true, the raft engine write is separated from the rest.
+// If rsManifest is true, the snapshot includes a range-shared engine manifest.
 // TODO(sep-raft-log): test the "apply as batch" variation as well.
-func testPrepareSnapApply(t *testing.T, separateEngines bool) {
-	const replicaID = 4
+func testPrepareSnapApply(t *testing.T, separateEngines, rsManifest bool) {
+	const replicaID roachpb.ReplicaID = 4
+	const storeID roachpb.StoreID = 1
 	id := roachpb.FullReplicaID{RangeID: 123, ReplicaID: replicaID}
 
 	desc := func(id roachpb.RangeID, start, end string) *roachpb.RangeDescriptor {
@@ -122,6 +124,9 @@ func testPrepareSnapApply(t *testing.T, separateEngines bool) {
 			RangeID:  id,
 			StartKey: roachpb.RKey(start),
 			EndKey:   roachpb.RKey(end),
+			InternalReplicas: []roachpb.ReplicaDescriptor{
+				{NodeID: 1, StoreID: storeID, ReplicaID: replicaID},
+			},
 		}
 	}
 	// snapshot: [a---------------)k
@@ -186,6 +191,10 @@ func testPrepareSnapApply(t *testing.T, separateEngines bool) {
 		eng:      eng,
 		writeSST: writeSST,
 	}
+	var rsManifestDiskFileNum uint64
+	if rsManifest {
+		rsManifestDiskFileNum = 12345
+	}
 	require.NoError(t, sw.prepareSnapApply(ctx, snapWrite{
 		sl:         sl.StateLoader,
 		truncState: kvserverpb.RaftTruncatedState{Index: 100, Term: 20},
@@ -196,6 +205,8 @@ func testPrepareSnapApply(t *testing.T, separateEngines bool) {
 			{FullReplicaID: roachpb.FullReplicaID{RangeID: descA.RangeID, ReplicaID: replicaID}, Keys: descA.RSpan()},
 			{FullReplicaID: roachpb.FullReplicaID{RangeID: descB.RangeID, ReplicaID: replicaID}, Keys: descB.RSpan()},
 		},
+		rsManifestDiskFileNum: rsManifestDiskFileNum,
+		replicaID:             replicaID,
 	}))
 	if eng.Separated() {
 		sb.Printf(">> raft:\n%s", printBatch(sw.raftWO))
@@ -262,5 +273,9 @@ func TestPrepareSnapApply(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	storage.DisableMetamorphicSimpleValueEncoding(t) // for deterministic output
-	testutils.RunTrueAndFalse(t, "sep-eng", testPrepareSnapApply)
+	testutils.RunTrueAndFalse(t, "sep-eng", func(t *testing.T, sepEng bool) {
+		testutils.RunTrueAndFalse(t, "rs-manifest", func(t *testing.T, rsManifest bool) {
+			testPrepareSnapApply(t, sepEng, rsManifest)
+		})
+	})
 }

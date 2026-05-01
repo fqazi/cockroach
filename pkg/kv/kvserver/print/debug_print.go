@@ -235,11 +235,10 @@ func tryIntent(kv storage.MVCCKeyValue) (string, error) {
 
 func DecodeWriteBatch(writeBatch []byte) (string, error) {
 	// Ensure that we always update this function to consider any necessary
-	// updates when a new key kind is introduced. To do this, we assert
-	// pebble.KeyKindDeleteSized is the most recent key kind, ensuring that
-	// compilation will fail if it's not. Unfortunately, this doesn't protect
-	// against reusing a currently unused RocksDB key kind.
-	const _ = uint(pebble.InternalKeyKindSpanBoundary - pebble.InternalKeyKindMax)
+	// updates when a new key kind is introduced. To do this, we assert that
+	// the latest key we considered equals InternalKeyKindMaxForSSTable,
+	// ensuring that compilation will fail if it's not.
+	const _ = uint(pebble.InternalKeyKindRangeDeleteActivate - pebble.InternalKeyKindMaxForSSTable)
 
 	if writeBatch == nil {
 		return "<nil>\n", nil
@@ -279,7 +278,9 @@ func DecodeWriteBatch(writeBatch []byte) (string, error) {
 				return sb.String(), err
 			}
 			sb.WriteString(fmt.Sprintf("Single Delete: %s\n", SprintEngineKey(engineKey)))
-		case pebble.InternalKeyKindRangeDelete:
+		case pebble.InternalKeyKindRangeDelete,
+			pebble.InternalKeyKindRangeDeleteDormant,
+			pebble.InternalKeyKindRangeDeleteActivate:
 			engineStartKey, err := r.EngineKey()
 			if err != nil {
 				return sb.String(), err
@@ -456,6 +457,12 @@ func tryRangeIDKey(kv storage.MVCCKeyValue) (string, error) {
 
 	case bytes.Equal(suffix, keys.LocalRaftReplicaIDSuffix):
 		msg = &kvserverpb.RaftReplicaID{}
+
+	case bytes.Equal(suffix, keys.LocalRangeFileNumAllocSuffix):
+		msg = &kvserverpb.RangeFileNumAllocState{}
+
+	case bytes.Equal(suffix, keys.LocalRangeSharedManifestNumSuffix):
+		msg = &kvserverpb.RSManifestState{}
 
 	case bytes.Equal(suffix, keys.LocalRangeLastReplicaGCTimestampSuffix):
 		msg = &hlc.Timestamp{}

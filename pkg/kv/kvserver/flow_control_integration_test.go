@@ -687,7 +687,7 @@ func TestFlowControlRaftSnapshotV2(t *testing.T) {
 				Settings: settings,
 				StoreSpecs: []base.StoreSpec{
 					{
-						InMemory:    true,
+						Type:        base.StoreTypeInMemory,
 						StickyVFSID: strconv.FormatInt(int64(i), 10),
 					},
 				},
@@ -1799,7 +1799,7 @@ func TestFlowControlSendQueue(t *testing.T) {
 			Settings: settings,
 			StoreSpecs: []base.StoreSpec{
 				{
-					InMemory:    true,
+					Type:        base.StoreTypeInMemory,
 					StickyVFSID: strconv.FormatInt(int64(i), 10),
 				},
 			},

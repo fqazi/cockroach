@@ -1,0 +1,614 @@
+# Basic test: store-local engine TrySchedule and Done.
+
+init max-concurrency=4 depri-ratio=1.0
+----
+ok
+
+open-engine name=sl type=store-local allowed=4
+----
+ok
+
+# TrySchedule succeeds immediately (running=0, global=0).
+try-schedule name=sl
+----
+granted handle=sl
+
+status
+----
+global-running: 1
+rs-heap-size: 0
+unprobed-size: 0
+  sl: running=1 waiting=false
+scheduled-counts: sl=0
+
+# Done decrements counters.
+done handle=sl
+----
+ok
+
+status
+----
+global-running: 0
+rs-heap-size: 0
+unprobed-size: 0
+  sl: running=0 waiting=false
+scheduled-counts: sl=0
+
+# TrySchedule respects per-engine limit.
+set-allowed name=sl allowed=1
+----
+ok
+
+try-schedule name=sl
+----
+granted handle=sl
+
+# Second TrySchedule denied (per-engine limit=1, running=1).
+try-schedule name=sl
+----
+denied
+
+status
+----
+global-running: 1
+rs-heap-size: 0
+unprobed-size: 0
+  sl: running=1 waiting=true
+scheduled-counts: sl=0
+
+done handle=sl
+----
+ok
+
+# Test global limit with multiple engines.
+
+set-max-concurrency max=2
+----
+ok
+
+set-allowed name=sl allowed=4
+----
+ok
+
+open-engine name=rf type=range-flusher allowed=4
+----
+ok
+
+try-schedule name=sl
+----
+granted handle=sl
+
+try-schedule name=rf
+----
+granted handle=rf
+
+# Third TrySchedule denied (global limit=2).
+try-schedule name=sl
+----
+denied
+
+status
+----
+global-running: 2
+rs-heap-size: 0
+unprobed-size: 0
+  rf: running=1 waiting=false
+  sl: running=1 waiting=true
+scheduled-counts: rf=0 sl=0
+
+done handle=sl
+----
+ok
+
+done handle=rf
+----
+ok
+
+# Test poke-driven granting with store-local and range-flusher.
+
+set-max-concurrency max=4
+----
+ok
+
+# Set waiting compaction data for both engines.
+set-waiting name=sl optional=false priority=80 score=2.0
+----
+ok
+
+set-waiting name=rf optional=false priority=60 score=1.0
+----
+ok
+
+# Mark both as waiting via TrySchedule that gets denied (per-engine limit=0).
+set-allowed name=sl allowed=0
+----
+ok
+
+set-allowed name=rf allowed=0
+----
+ok
+
+try-schedule name=sl
+----
+denied
+
+try-schedule name=rf
+----
+denied
+
+status
+----
+global-running: 0
+rs-heap-size: 0
+unprobed-size: 0
+  rf: running=0 waiting=true
+  sl: running=0 waiting=true
+scheduled-counts: rf=0 sl=0
+
+# Now raise limits and poke. Both should get scheduled. The WC is consumed
+# by Schedule, so the poke also clears waiting via GetWaitingCompaction
+# returning false.
+set-allowed name=sl allowed=4
+----
+ok
+
+set-allowed name=rf allowed=4
+----
+ok
+
+poke
+----
+ok
+
+status
+----
+global-running: 2
+rs-heap-size: 0
+unprobed-size: 0
+  rf: running=1 waiting=false
+  sl: running=1 waiting=false
+scheduled-counts: rf=1 sl=1
+
+done handle=sl
+----
+ok
+
+done handle=rf
+----
+ok
+
+# Close both engines.
+close-engine name=rf
+----
+ok
+
+close-engine name=sl
+----
+ok
+
+# Test RS engines: unprobed -> heap flow.
+
+init max-concurrency=4 depri-ratio=1.0
+----
+ok
+
+open-engine name=rs1 type=range-shared allowed=1
+----
+ok
+
+open-engine name=rs2 type=range-shared allowed=1
+----
+ok
+
+# Set waiting compaction data.
+set-waiting name=rs1 optional=false priority=80 score=3.0
+----
+ok
+
+set-waiting name=rs2 optional=false priority=80 score=5.0
+----
+ok
+
+# TrySchedule denied puts RS engine in unprobed list.
+set-max-concurrency max=0
+----
+ok
+
+try-schedule name=rs1
+----
+denied
+
+try-schedule name=rs2
+----
+denied
+
+status
+----
+global-running: 0
+rs-heap-size: 0
+unprobed-size: 2
+  rs1: running=0 waiting=true in-unprobed
+  rs2: running=0 waiting=true in-unprobed
+scheduled-counts: rs1=0 rs2=0
+
+# Raise limit to 1 and poke. Unprobed drains into heap, best RS wins.
+# rs2 has higher score (5.0 > 3.0) so it gets scheduled first.
+# rs1 stays in the heap with its cached WC.
+set-max-concurrency max=1
+----
+ok
+
+poke
+----
+ok
+
+status
+----
+global-running: 1
+rs-heap-size: 1
+unprobed-size: 1
+  rs1: running=0 waiting=true remembered={optional=false,priority=80,score=3.0}
+  rs2: running=1 waiting=true in-unprobed
+scheduled-counts: rs1=0 rs2=1
+
+# Complete rs2, poke again to schedule rs1 from heap.
+done handle=rs2
+----
+ok
+
+poke
+----
+ok
+
+status
+----
+global-running: 1
+rs-heap-size: 0
+unprobed-size: 1
+  rs1: running=1 waiting=true in-unprobed
+  rs2: running=0 waiting=false
+scheduled-counts: rs1=1 rs2=1
+
+done handle=rs1
+----
+ok
+
+# Test InvalidateRememberedWaitingState.
+
+# Deny TrySchedule by setting global limit to 0.
+set-max-concurrency max=0
+----
+ok
+
+set-waiting name=rs1 optional=false priority=80 score=3.0
+----
+ok
+
+try-schedule name=rs1
+----
+denied
+
+status
+----
+global-running: 0
+rs-heap-size: 0
+unprobed-size: 1
+  rs1: running=0 waiting=true in-unprobed
+  rs2: running=0 waiting=false
+scheduled-counts: rs1=1 rs2=1
+
+# Set per-engine limit to 0 and raise global limit to 1 so poke drains
+# unprobed into heap but per-engine limit prevents granting.
+set-allowed name=rs1 allowed=0
+----
+ok
+
+set-allowed name=rs2 allowed=0
+----
+ok
+
+set-max-concurrency max=1
+----
+ok
+
+poke
+----
+ok
+
+status
+----
+global-running: 0
+rs-heap-size: 1
+unprobed-size: 0
+  rs1: running=0 waiting=true remembered={optional=false,priority=80,score=3.0}
+  rs2: running=0 waiting=false
+scheduled-counts: rs1=1 rs2=1
+
+# Invalidate: removes from heap, adds back to unprobed since waiting=true.
+invalidate name=rs1
+----
+ok
+
+status
+----
+global-running: 0
+rs-heap-size: 0
+unprobed-size: 1
+  rs1: running=0 waiting=true in-unprobed
+  rs2: running=0 waiting=false
+scheduled-counts: rs1=1 rs2=1
+
+# Now give it a different WC, restore limits, and poke.
+set-waiting name=rs1 optional=false priority=80 score=10.0
+----
+ok
+
+set-allowed name=rs1 allowed=1
+----
+ok
+
+set-allowed name=rs2 allowed=1
+----
+ok
+
+poke
+----
+ok
+
+# rs1 should be scheduled (score 10.0 from fresh probe).
+status
+----
+global-running: 1
+rs-heap-size: 0
+unprobed-size: 1
+  rs1: running=1 waiting=true in-unprobed
+  rs2: running=0 waiting=false
+scheduled-counts: rs1=2 rs2=1
+
+done handle=rs1
+----
+ok
+
+# Test deprioritization ratio.
+
+# Open a store-local engine.
+open-engine name=sl type=store-local allowed=4
+----
+ok
+
+set-waiting name=sl optional=false priority=60 score=3.0
+----
+ok
+
+set-waiting name=rs2 optional=false priority=60 score=4.0
+----
+ok
+
+# Without depri, RS engine has higher score and would win.
+# With depri-ratio=2.0, RS score becomes 4.0/2.0=2.0, so store-local wins.
+set-depri-ratio ratio=2.0
+----
+ok
+
+# Mark both as waiting by setting global limit to 0.
+set-max-concurrency max=0
+----
+ok
+
+try-schedule name=sl
+----
+denied
+
+try-schedule name=rs2
+----
+denied
+
+# Restore limits so poke can grant.
+set-max-concurrency max=1
+----
+ok
+
+set-allowed name=sl allowed=4
+----
+ok
+
+set-allowed name=rs2 allowed=1
+----
+ok
+
+poke
+----
+ok
+
+# Store-local should win because its effective score 3.0 > RS's effective 2.0.
+# rs2's unprobed was drained into heap. sl.waiting stays true because the
+# tryGrant loop can't do another iteration (globalRunning=globalLimit).
+status
+----
+global-running: 1
+rs-heap-size: 1
+unprobed-size: 0
+  rs1: running=0 waiting=false
+  rs2: running=0 waiting=true remembered={optional=false,priority=60,score=4.0}
+  sl: running=1 waiting=true
+scheduled-counts: rs1=2 rs2=1 sl=1
+
+done handle=sl
+----
+ok
+
+# Test Schedule rejection.
+
+set-depri-ratio ratio=1.0
+----
+ok
+
+set-waiting name=sl optional=false priority=80 score=5.0
+----
+ok
+
+set-waiting name=rs2 optional=false priority=60 score=2.0
+----
+ok
+
+# Reject store-local.
+set-schedule-accept name=sl accept=false
+----
+ok
+
+# Mark both as waiting by setting global limit to 0.
+set-max-concurrency max=0
+----
+ok
+
+try-schedule name=sl
+----
+denied
+
+try-schedule name=rs2
+----
+denied
+
+# Restore limits so poke can grant.
+set-max-concurrency max=1
+----
+ok
+
+set-allowed name=sl allowed=4
+----
+ok
+
+set-allowed name=rs2 allowed=1
+----
+ok
+
+poke
+----
+ok
+
+# Store-local rejected, rs2 should be scheduled instead.
+status
+----
+global-running: 1
+rs-heap-size: 0
+unprobed-size: 1
+  rs1: running=0 waiting=false
+  rs2: running=1 waiting=true in-unprobed
+  sl: running=0 waiting=false
+scheduled-counts: rs1=2 rs2=2 sl=1
+
+# Reset.
+set-schedule-accept name=sl accept=true
+----
+ok
+
+done handle=rs2
+----
+ok
+
+close-engine name=rs1
+----
+ok
+
+close-engine name=rs2
+----
+ok
+
+close-engine name=sl
+----
+ok
+
+# Test RS engine not lost after grant+done cycle.
+#
+# Previously, when an RS engine was granted from the heap via poke, the
+# scheduler removed it from the heap but left waiting=true without adding
+# it to the unprobed list. After Done, the engine was invisible to future
+# pokes — it had waiting=true but was in neither the heap nor the unprobed
+# list.
+
+init max-concurrency=4 depri-ratio=1.0
+----
+ok
+
+open-engine name=rs1 type=range-shared allowed=1
+----
+ok
+
+set-waiting name=rs1 optional=false priority=80 score=3.0
+----
+ok
+
+# Deny TrySchedule to put rs1 in unprobed.
+set-max-concurrency max=0
+----
+ok
+
+try-schedule name=rs1
+----
+denied
+
+status
+----
+global-running: 0
+rs-heap-size: 0
+unprobed-size: 1
+  rs1: running=0 waiting=true in-unprobed
+scheduled-counts: rs1=0
+
+# Raise limit and poke. rs1 drains from unprobed into heap, gets scheduled.
+set-max-concurrency max=1
+----
+ok
+
+poke
+----
+ok
+
+# rs1 is running. With the fix, it's also in the unprobed list (moved there
+# by tryInvalidateRememberedStateLocked before Schedule was called).
+status
+----
+global-running: 1
+rs-heap-size: 0
+unprobed-size: 1
+  rs1: running=1 waiting=true in-unprobed
+scheduled-counts: rs1=1
+
+# Complete the compaction.
+done handle=rs1
+----
+ok
+
+status
+----
+global-running: 0
+rs-heap-size: 0
+unprobed-size: 1
+  rs1: running=0 waiting=true in-unprobed
+scheduled-counts: rs1=1
+
+# Set new work and poke. The engine should be discoverable and scheduled.
+set-waiting name=rs1 optional=false priority=80 score=5.0
+----
+ok
+
+poke
+----
+ok
+
+# rs1 is scheduled again — it was not lost.
+status
+----
+global-running: 1
+rs-heap-size: 0
+unprobed-size: 1
+  rs1: running=1 waiting=true in-unprobed
+scheduled-counts: rs1=2
+
+done handle=rs1
+----
+ok
+
+close-engine name=rs1
+----
+ok

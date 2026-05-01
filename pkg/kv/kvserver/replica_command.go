@@ -205,6 +205,7 @@ func splitTxnAttempt(
 	preSplitLeftUserStats enginepb.MVCCStats,
 	preSplitStats enginepb.MVCCStats,
 	useEstimatedStatsForExternalBytes bool,
+	manifestInfo *splitManifestInfo,
 ) error {
 	txn.SetDebugName(splitTxnName)
 
@@ -235,6 +236,22 @@ func splitTxnAttempt(
 		}
 	}
 
+	// If we have manifest info, verify that the manifest number and descriptor
+	// generation haven't changed since we prepared the manifests.
+	if manifestInfo != nil {
+		b := txn.NewBatch()
+		b.AddRawRequest(&kvpb.CheckRangeSharedManifestNumRequest{
+			RequestHeader: kvpb.RequestHeader{
+				Key: oldDesc.StartKey.AsRawKey(),
+			},
+			ExpectedManifestNum:    manifestInfo.currentManifestNum,
+			ExpectedDescGeneration: manifestInfo.descGeneration,
+		})
+		if err := txn.Run(ctx, b); err != nil {
+			return errors.Wrap(err, "checking manifest state before split")
+		}
+	}
+
 	// Log the split into the range event log.
 	if err := store.logSplit(ctx, txn, *leftDesc, *rightDesc, reason.StripMarkers(), true /* logAsync */); err != nil {
 		return err
@@ -255,17 +272,23 @@ func splitTxnAttempt(
 
 	// End the transaction manually, instead of letting RunTransaction
 	// loop do it, in order to provide a split trigger.
+	splitTrigger := &roachpb.SplitTrigger{
+		LeftDesc:              *leftDesc,
+		RightDesc:             *rightDesc,
+		PreSplitLeftUserStats: preSplitLeftUserStats,
+		PreSplitStats:         preSplitStats,
+		UseEstimatesBecauseExternalBytesArePresent: useEstimatedStatsForExternalBytes,
+		ManualSplit: string(reason) == manualAdminReason,
+	}
+	if manifestInfo != nil {
+		splitTrigger.LHSRSManifestNum = uint64(manifestInfo.lhsManifest.Num)
+		splitTrigger.RHSRSManifestNum = uint64(manifestInfo.rhsManifest.Manifest.Num)
+		splitTrigger.RsNextFileNum = manifestInfo.nextFileNum
+	}
 	b.AddRawRequest(&kvpb.EndTxnRequest{
 		Commit: true,
 		InternalCommitTrigger: &roachpb.InternalCommitTrigger{
-			SplitTrigger: &roachpb.SplitTrigger{
-				LeftDesc:              *leftDesc,
-				RightDesc:             *rightDesc,
-				PreSplitLeftUserStats: preSplitLeftUserStats,
-				PreSplitStats:         preSplitStats,
-				UseEstimatesBecauseExternalBytesArePresent: useEstimatedStatsForExternalBytes,
-				ManualSplit: string(reason) == manualAdminReason,
-			},
+			SplitTrigger: splitTrigger,
 		},
 	})
 
@@ -355,6 +378,13 @@ func (r *Replica) adminSplitWithDescriptor(
 	// allowed to be relatively slow because admin commands don't block
 	// other commands.
 	log.Event(ctx, "split begins")
+	// Combined snapshot for split key finding and stats computation.
+	splitSnap := r.NewCombinedSnapshot()
+	defer func() {
+		if splitSnap != nil {
+			splitSnap.Close()
+		}
+	}()
 	var splitKey roachpb.RKey
 	{
 		var foundSplitKey roachpb.Key
@@ -363,7 +393,7 @@ func (r *Replica) adminSplitWithDescriptor(
 			var err error
 			targetSize := r.GetMaxBytes(ctx) / 2
 			foundSplitKey, err = storage.MVCCFindSplitKey(
-				ctx, r.store.StateEngine(), desc.StartKey, desc.EndKey, targetSize)
+				ctx, splitSnap, desc.StartKey, desc.EndKey, targetSize)
 			if err != nil {
 				return reply, errors.Wrap(err, "unable to determine split key")
 			}
@@ -394,7 +424,7 @@ func (r *Replica) adminSplitWithDescriptor(
 					return reply, err
 				}
 				if foundSplitKey, err = storage.MVCCFirstSplitKey(
-					ctx, r.store.StateEngine(), desiredSplitKey,
+					ctx, splitSnap, desiredSplitKey,
 					desc.StartKey, desc.EndKey,
 				); err != nil {
 					return reply, errors.Wrap(err, "unable to determine split key")
@@ -542,7 +572,7 @@ func (r *Replica) adminSplitWithDescriptor(
 		// post-split LHS stats by combining these stats with the non-user stats
 		// computed in splitTrigger. More details in makeEstimatedSplitStatsHelper.
 		userOnlyLeftStats, err = rditer.ComputeStatsForRangeUserOnly(
-			ctx, leftDesc, r.store.StateEngine(), fs.BatchEvalReadCategory,
+			ctx, leftDesc, splitSnap, fs.BatchEvalReadCategory,
 			r.store.Clock().NowAsClockTimestamp().WallTime)
 		if err != nil {
 			return reply, errors.Wrapf(err, "unable to compute user-only pre-split stats for LHS range")
@@ -553,9 +583,21 @@ func (r *Replica) adminSplitWithDescriptor(
 		// much from the total stats at the time of the split (in splitTrigger).
 		totalStats = r.GetMVCCStats()
 	}
+	splitSnap.Close()
+	splitSnap = nil
+
+	// Prepare range-shared manifests for the split if this range has an RSEngine.
+	// This must be done before the 2PC transaction starts.
+	manifestInfo, err := r.prepareSplitManifests(ctx, splitKey.AsRawKey(), rightDesc)
+	if err != nil {
+		return reply, errors.Wrap(err, "preparing split manifests")
+	}
+	if manifestInfo != nil {
+		defer r.enableCompactionsAfterSplit()
+	}
 
 	if err := r.store.DB().Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-		return splitTxnAttempt(ctx, r.store, txn, leftDesc, rightDesc, desc, reason, userOnlyLeftStats, totalStats, useEstimatedStatsForExternalBytes)
+		return splitTxnAttempt(ctx, r.store, txn, leftDesc, rightDesc, desc, reason, userOnlyLeftStats, totalStats, useEstimatedStatsForExternalBytes, manifestInfo)
 	}); err != nil {
 		// The ConditionFailedError can occur because the descriptors acting
 		// as expected values in the CPuts used to update the left or right
@@ -723,6 +765,26 @@ func (r *Replica) AdminMerge(
 ) (kvpb.AdminMergeResponse, *kvpb.Error) {
 	var reply kvpb.AdminMergeResponse
 
+	// Prepare range-shared manifests for the merge if this range has an RSEngine.
+	// This must be done before the merge transaction starts. We use LookupReplica
+	// to find the RHS replica by key, which is needed to prepare the merged
+	// manifest.
+	origLeftDesc := r.Desc()
+	rhsRepl := r.store.LookupReplica(origLeftDesc.EndKey)
+	if rhsRepl == nil {
+		return reply, kvpb.NewError(errors.Errorf(
+			"RHS replica not found for merge at key %s", origLeftDesc.EndKey))
+	}
+	var manifestInfo *mergeManifestInfo
+	var err error
+	manifestInfo, err = r.prepareMergeManifests(ctx, rhsRepl.Desc())
+	if err != nil {
+		return reply, kvpb.NewError(errors.Wrap(err, "preparing merge manifests"))
+	}
+	if manifestInfo != nil {
+		defer r.enableCompactionsAfterMerge(manifestInfo.rhsRangeID)
+	}
+
 	runMergeTxn := func(txn *kv.Txn) error {
 		log.Event(ctx, "merge txn begins")
 		txn.SetDebugName(mergeTxnName)
@@ -879,6 +941,33 @@ func (r *Replica) AdminMerge(
 			return err
 		}
 
+		// If we have manifest info, verify that the manifest number and descriptor
+		// generation haven't changed since we prepared the manifests.
+		if manifestInfo != nil {
+			b = txn.NewBatch()
+			b.AddRawRequest(&kvpb.CheckRangeSharedManifestNumRequest{
+				RequestHeader: kvpb.RequestHeader{
+					Key: origLeftDesc.StartKey.AsRawKey(),
+				},
+				ExpectedManifestNum:    manifestInfo.lhsManifestNum,
+				ExpectedDescGeneration: manifestInfo.lhsDescGeneration,
+			})
+			// Also check the RHS manifest number. The RHS range is being
+			// removed, so we skip the descriptor generation check — only the
+			// LHS descriptor matters since it was used to create hardlinks at
+			// all replicas of the merged range.
+			b.AddRawRequest(&kvpb.CheckRangeSharedManifestNumRequest{
+				RequestHeader: kvpb.RequestHeader{
+					Key: rightDesc.StartKey.AsRawKey(),
+				},
+				ExpectedManifestNum:    manifestInfo.rhsManifestNum,
+				ExpectedDescGeneration: batcheval.SkipDescGenerationCheck,
+			})
+			if err := txn.Run(ctx, b); err != nil {
+				return errors.Wrap(err, "checking manifest state before merge")
+			}
+		}
+
 		// Intents have been placed, so the merge is now in its critical phase. Get
 		// a consistent view of the data from the right-hand range. If the merge
 		// commits, we'll write this data to the left-hand range in the merge
@@ -945,19 +1034,24 @@ func (r *Replica) AdminMerge(
 		// Successful subsume, so we're guaranteed that the right-hand range will
 		// not serve another request unless this transaction aborts. End the
 		// transaction manually in order to provide a merge trigger.
+		mergeTrigger := &roachpb.MergeTrigger{
+			LeftDesc:                   updatedLeftDesc,
+			RightDesc:                  rightDesc,
+			RightMVCCStats:             rhsSnapshotRes.MVCCStats,
+			RightRangeIDLocalMVCCStats: rhsSnapshotRes.RangeIDLocalMVCCStats,
+			FreezeStart:                rhsSnapshotRes.FreezeStart,
+			RightClosedTimestamp:       rhsSnapshotRes.ClosedTimestamp,
+			RightReadSummary:           rhsSnapshotRes.ReadSummary,
+		}
+		if manifestInfo != nil {
+			mergeTrigger.MergedRSManifestNum = uint64(manifestInfo.mergedManifest.Manifest.Num)
+			mergeTrigger.MergedRsNextFileNum = manifestInfo.nextFileNum
+		}
 		b = txn.NewBatch()
 		b.AddRawRequest(&kvpb.EndTxnRequest{
 			Commit: true,
 			InternalCommitTrigger: &roachpb.InternalCommitTrigger{
-				MergeTrigger: &roachpb.MergeTrigger{
-					LeftDesc:                   updatedLeftDesc,
-					RightDesc:                  rightDesc,
-					RightMVCCStats:             rhsSnapshotRes.MVCCStats,
-					RightRangeIDLocalMVCCStats: rhsSnapshotRes.RangeIDLocalMVCCStats,
-					FreezeStart:                rhsSnapshotRes.FreezeStart,
-					RightClosedTimestamp:       rhsSnapshotRes.ClosedTimestamp,
-					RightReadSummary:           rhsSnapshotRes.ReadSummary,
-				},
+				MergeTrigger: mergeTrigger,
 			},
 		})
 		log.Event(ctx, "attempting commit")
@@ -3297,7 +3391,35 @@ func (r *Replica) followerSendSnapshot(
 	}
 	defer snap.Close()
 	log.Event(ctx, "generated snapshot")
-
+	// Sanity check: recipient should match the request's RecipientReplica.
+	if recipient != req.RecipientReplica {
+		return nil, errors.AssertionFailedf(
+			"recipient %v does not match req.RecipientReplica %v", recipient, req.RecipientReplica)
+	}
+	// Create hardlinks for RS manifest and files if this range has RS data.
+	// Skip when RSManifestDiskFileNum == NoManifestNum: the RSEngine exists but
+	// has no data yet, so there are no manifest or SSTable files to hardlink.
+	if snap.rsEngineSnap != nil && snap.RSManifestDiskFileNum != uint64(storage.NoManifestNum) {
+		basaltFS := r.store.cfg.BasaltFS
+		if basaltFS == nil {
+			return nil, errors.New("rsEngineSnap non-nil but basaltFS is not configured")
+		}
+		manifestInfo := snap.rsEngineSnap.ManifestInfo()
+		err := createSnapshotHardlinks(
+			basaltFS,
+			r.store.StoreID(), req.RangeID, r.replicaID,
+			req.RecipientReplica.StoreID, req.RangeID, req.RecipientReplica.ReplicaID,
+			manifestInfo,
+		)
+		if err != nil {
+			return nil, errors.Wrap(err, "creating snapshot hardlinks")
+		}
+		// Seal pending registry entries so the recipient can read the
+		// encryption metadata for the hardlinked files.
+		if sealer, ok := basaltFS.(fs.RegistrySealer); ok {
+			sealer.SealPendingRegistryEntries()
+		}
+	}
 	// See comment on DeprecatedUsingAppliedStateKey for why we need to set this
 	// explicitly for snapshots going out to followers.
 	snap.State.DeprecatedUsingAppliedStateKey = true
@@ -3343,11 +3465,13 @@ func (r *Replica) followerSendSnapshot(
 				Snapshot: &snap.RaftSnap,
 			},
 		},
-		RangeSize:           rangeSize,
-		SenderQueueName:     req.SenderQueueName,
-		SenderQueuePriority: req.SenderQueuePriority,
-		SharedReplicate:     sharedReplicate,
-		ExternalReplicate:   externalReplicate,
+		RangeSize:             rangeSize,
+		SenderQueueName:       req.SenderQueueName,
+		SenderQueuePriority:   req.SenderQueuePriority,
+		SharedReplicate:       sharedReplicate,
+		ExternalReplicate:     externalReplicate,
+		RSManifestDiskFileNum: snap.RSManifestDiskFileNum,
+		ExpectInternalKeys:    sharedReplicate || externalReplicate || snap.CanHaveDormantRangeDel,
 	}
 	newBatchFn := func() storage.WriteBatch {
 		return r.store.StateEngine().NewWriteBatch()

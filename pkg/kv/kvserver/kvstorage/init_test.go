@@ -16,6 +16,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
+	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -161,4 +162,64 @@ func TestIterateRangeIDKeys(t *testing.T) {
 	}))
 
 	require.Equal(t, wanted, seen)
+}
+
+// TestLoadReplicaStateRSManifestNum verifies that LoadReplicaState correctly
+// loads the RSManifestNum from the RSManifestState key.
+func TestLoadReplicaStateRSManifestNum(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	eng := storage.NewDefaultInMemForTesting()
+	defer eng.Close()
+
+	const rangeID = roachpb.RangeID(1)
+	const storeID = roachpb.StoreID(1)
+	const replicaID = roachpb.ReplicaID(1)
+
+	// Create a minimal initialized replica state.
+	desc := roachpb.RangeDescriptor{
+		RangeID:  rangeID,
+		StartKey: roachpb.RKeyMin,
+		EndKey:   roachpb.RKeyMax,
+		InternalReplicas: []roachpb.ReplicaDescriptor{
+			{NodeID: 1, StoreID: storeID, ReplicaID: replicaID},
+		},
+		NextReplicaID: replicaID + 1,
+	}
+
+	sl := MakeStateLoader(rangeID)
+
+	// Write the minimal state needed for LoadReplicaState.
+	require.NoError(t, sl.SetRaftReplicaID(ctx, eng, replicaID))
+
+	// Initialize replica state.
+	initState := kvserverpb.ReplicaState{
+		Desc:  &desc,
+		Lease: &roachpb.Lease{},
+	}
+	initState.GCThreshold = &hlc.Timestamp{}
+	initState.GCHint = &roachpb.GCHint{}
+	initState.Stats = &enginepb.MVCCStats{}
+	as := initState.ToRangeAppliedState()
+	require.NoError(t, sl.SetRangeAppliedState(ctx, eng, &as))
+	require.NoError(t, sl.SetLease(ctx, eng, nil, roachpb.Lease{}))
+	require.NoError(t, sl.SetGCThreshold(ctx, eng, nil, &hlc.Timestamp{}))
+	require.NoError(t, sl.SetGCHint(ctx, eng, nil, &roachpb.GCHint{}))
+
+	// Load without RSManifestState - should have RSManifestNum == 0.
+	ls, err := LoadReplicaState(ctx, eng, eng, storeID, &desc, replicaID)
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), ls.RSManifestNum)
+
+	// Set RSManifestState and reload.
+	expectedNum := uint64(42)
+	require.NoError(t, sl.SetRSManifestState(ctx, eng, kvserverpb.RSManifestState{
+		DiskFileNum: expectedNum,
+	}))
+
+	ls, err = LoadReplicaState(ctx, eng, eng, storeID, &desc, replicaID)
+	require.NoError(t, err)
+	require.Equal(t, expectedNum, ls.RSManifestNum)
 }

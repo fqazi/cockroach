@@ -1,0 +1,256 @@
+# Test empty split (NoOp): fresh engine with no data.
+
+init
+----
+
+open range=r1 manifest=0
+----
+opened r1: manifest=0
+
+snapshot range=r1
+----
+snapshot r1-0
+
+split snapshot=r1-0 key=m rhs-range=r2
+----
+no-op
+
+close-snapshot name=r1-0
+----
+closed: r1-0
+
+close range=r1
+----
+closed: r1
+
+# Test all-left split (NoOp): all data below split key.
+
+init
+----
+
+open range=r1 manifest=0
+----
+opened r1: manifest=0
+
+ingest range=r1
+set a val-a
+set b val-b
+----
+GetFileNums(2) => [100, 102)
+InstallNewManifest(current=0, new=MANIFEST-000101/101, files=[{000100.sst 100}])
+ingested: manifest=101
+
+snapshot range=r1
+----
+snapshot r1-101
+
+split snapshot=r1-101 key=z rhs-range=r2
+----
+no-op
+
+close-snapshot name=r1-101
+----
+closed: r1-101
+
+close range=r1
+----
+closed: r1
+
+# Test all-right split: all data above split key. The entire table moves to
+# the RHS, producing LHS/RHS manifests.
+
+init
+----
+
+open range=r1 manifest=0
+----
+opened r1: manifest=0
+
+ingest range=r1
+set m val-m
+set z val-z
+----
+GetFileNums(2) => [100, 102)
+InstallNewManifest(current=0, new=MANIFEST-000101/101, files=[{000100.sst 100}])
+ingested: manifest=101
+
+snapshot range=r1
+----
+snapshot r1-101
+
+split snapshot=r1-101 key=a rhs-range=r2
+----
+lhs-manifest: MANIFEST-000103/103
+rhs-manifest: MANIFEST-000104/104
+rhs-files: [1 files]
+next-file-num: 105
+reopened r1: manifest=103
+opened r2: manifest=104
+
+file-names dir=/r1
+----
+000100.sst
+MANIFEST-000000
+MANIFEST-000101
+MANIFEST-000103
+OPTIONS-000001
+OPTIONS-000105
+scratch-1111-1/
+
+file-names dir=/r2
+----
+000102.sst
+MANIFEST-000104
+OPTIONS-000105
+scratch-1111-1/
+
+scan range=r1
+----
+<empty>
+
+scan range=r2
+----
+"m" = val-m
+"z" = val-z
+
+close range=r1
+----
+closed: r1
+
+close range=r2
+----
+closed: r2
+
+# Test straddling split: data spans split key, producing LHS/RHS manifests.
+# After split, both sides are reopenable.
+
+init
+----
+
+open range=r1 manifest=0
+----
+opened r1: manifest=0
+
+ingest range=r1
+set a val-a
+set z val-z
+----
+GetFileNums(2) => [100, 102)
+InstallNewManifest(current=0, new=MANIFEST-000101/101, files=[{000100.sst 100}])
+ingested: manifest=101
+
+snapshot range=r1
+----
+snapshot r1-101
+
+split snapshot=r1-101 key=m rhs-range=r2
+----
+lhs-manifest: MANIFEST-000103/103
+rhs-manifest: MANIFEST-000104/104
+rhs-files: [1 files]
+next-file-num: 105
+reopened r1: manifest=103
+opened r2: manifest=104
+
+file-names dir=/r1
+----
+000100.sst
+MANIFEST-000000
+MANIFEST-000101
+MANIFEST-000103
+OPTIONS-000001
+OPTIONS-000105
+scratch-1111-1/
+
+file-names dir=/r2
+----
+000102.sst
+MANIFEST-000104
+OPTIONS-000105
+scratch-1111-1/
+
+scan range=r1
+----
+"a" = val-a
+
+scan range=r2
+----
+"z" = val-z
+
+close range=r1
+----
+closed: r1
+
+close range=r2
+----
+closed: r2
+
+# Test multi-SST straddling split with a multi-level LSM. Three sequential
+# ingests with overlapping key ranges produce a multi-level LSM (the first
+# ingest sinks to L6; the next two overlap and stack into L0 sublevels). All
+# three SSTs straddle the split key, so each gets virtualized into LHS/RHS
+# halves on Split.
+
+init
+----
+
+open range=r1 manifest=0
+----
+opened r1: manifest=0
+
+ingest range=r1
+set a val-a
+set s val-s
+----
+GetFileNums(2) => [100, 102)
+InstallNewManifest(current=0, new=MANIFEST-000101/101, files=[{000100.sst 100}])
+ingested: manifest=101
+
+ingest range=r1
+set b val-b
+set t val-t
+----
+GetFileNums(2) => [102, 104)
+InstallNewManifest(current=101, new=MANIFEST-000103/103, files=[{000102.sst 102}])
+ingested: manifest=103
+
+ingest range=r1
+set c val-c
+set u val-u
+----
+GetFileNums(2) => [104, 106)
+InstallNewManifest(current=103, new=MANIFEST-000105/105, files=[{000104.sst 104}])
+ingested: manifest=105
+
+snapshot range=r1
+----
+snapshot r1-105
+
+split snapshot=r1-105 key=g rhs-range=r2
+----
+lhs-manifest: MANIFEST-000109/109
+rhs-manifest: MANIFEST-000110/110
+rhs-files: [3 files]
+next-file-num: 112
+reopened r1: manifest=109
+opened r2: manifest=110
+
+scan range=r1
+----
+"a" = val-a
+"b" = val-b
+"c" = val-c
+
+scan range=r2
+----
+"s" = val-s
+"t" = val-t
+"u" = val-u
+
+close range=r1
+----
+closed: r1
+
+close range=r2
+----
+closed: r2

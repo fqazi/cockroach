@@ -322,6 +322,7 @@ func (e *quorumRecoveryEnv) handleReplicationData(t *testing.T, d datadriven.Tes
 		replicaID, key, desc, replicaState, truncState, hardState, raftLog :=
 			buildReplicaDescriptorFromTestData(t, replica)
 
+		// TODO(basalt): these writes go directly to the store engine (no Replica).
 		eng := e.getOrCreateStore(ctx, t, replica.StoreID, replica.NodeID)
 		if err = storage.MVCCPutProto(
 			ctx, eng.StateEngine(), key, clock.Now(), &desc, storage.MVCCWriteOptions{},
@@ -676,6 +677,7 @@ func (e *quorumRecoveryEnv) groupStoresByNodeStore(
 				nodeStores = make(map[roachpb.StoreID]storage.Batch)
 				nodes[nodeID] = nodeStores
 			}
+			// TODO(basalt): this out-of-band write bypasses raft (no Replica).
 			nodeStores[storeID] = store.TODOBothEngines().NewBatch()
 		})
 	return nodes
@@ -726,6 +728,7 @@ func (e *quorumRecoveryEnv) handleDumpStore(t *testing.T, d datadriven.TestData)
 	for _, storeID := range stores {
 		var descriptorViews []storeDescriptorView
 		var localDataViews []localDataView
+		// TODO(basalt): use combined reader (no Replica available).
 		store := e.stores[storeID]
 		err := kvstorage.IterateRangeDescriptorsFromDisk(ctx, store.engines.StateEngine(),
 			func(desc roachpb.RangeDescriptor) error {

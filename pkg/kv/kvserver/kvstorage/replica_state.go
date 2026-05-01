@@ -25,6 +25,10 @@ type LoadedReplicaState struct {
 	ReplState   kvserverpb.ReplicaState
 	TruncState  kvserverpb.RaftTruncatedState
 
+	// RSManifestNum is the DiskFileNum of the MANIFEST for the range-shared
+	// engine. Zero if no range-shared engine is configured.
+	RSManifestNum uint64
+
 	hardState raftpb.HardState
 }
 
@@ -62,6 +66,13 @@ func LoadReplicaState(
 	if ls.ReplState, err = sl.Load(ctx, stateRO, desc); err != nil {
 		return LoadedReplicaState{}, err
 	}
+
+	// Load range-shared engine manifest state if present.
+	rsState, err := sl.LoadRSManifestState(ctx, stateRO)
+	if err != nil {
+		return LoadedReplicaState{}, err
+	}
+	ls.RSManifestNum = rsState.DiskFileNum
 
 	if err := ls.check(storeID); err != nil {
 		return LoadedReplicaState{}, err

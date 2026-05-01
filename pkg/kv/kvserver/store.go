@@ -109,6 +109,8 @@ import (
 	"github.com/cockroachdb/crlib/crtime"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
+	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/vfs"
 	"github.com/cockroachdb/redact"
 	"github.com/prometheus/client_golang/prometheus"
 	prometheusgo "github.com/prometheus/client_model/go"
@@ -396,6 +398,8 @@ func testStoreConfig(clock *hlc.Clock, version roachpb.Version) StoreConfig {
 	sc.RaftElectionTimeoutJitterTicks = 3
 	sc.RaftReproposalTimeoutTicks = 5
 	sc.RaftTickInterval = 100 * time.Millisecond
+	sc.BasaltFS = vfs.NewMem()
+	sc.OpenRSEngine = storage.OpenTestingRSEngine
 	sc.SetDefaults(1 /* numStores */)
 	return sc
 }
@@ -889,6 +893,7 @@ type Store struct {
 	replRankingsByTenant *ReplicaRankingMap
 	storeRebalancer      *StoreRebalancer
 	mmaStoreRebalancer   *mmaStoreRebalancer
+	rangeFlusher         *rangeFlusher
 	rangeIDAlloc         *idalloc.Allocator // Range ID allocator
 	leaseQueue           *leaseQueue        // Lease queue
 	mvccGCQueue          *mvccGCQueue       // MVCC GC queue
@@ -1356,6 +1361,20 @@ type StoreConfig struct {
 	// RangeCount is populated by the node and represents the total number of
 	// ranges this node has.
 	RangeCount *atomic.Int64
+
+	// BasaltFS is the cluster-scoped FS for basalt range-shared engines. When
+	// encryption is configured, this is an encrypted FS wrapping the shared
+	// basaltfs.FS; otherwise it is the plain basaltfs.FS. Populated by
+	// makeServerNode from the cluster-level FS created during CreateEngines.
+	BasaltFS vfs.FS
+
+	// OpenRSEngine is the function to open an RSEngine. If nil, storage.OpenRSEngine
+	// is used. This allows injection of TestingRSEngine for testing.
+	OpenRSEngine storage.OpenRSEngineFunc
+	// CompactionScheduler, if non-nil, coordinates compaction concurrency
+	// across the store-local engine, range flusher, and RS engines. Created
+	// at the server level before the store-local engine is opened.
+	CompactionScheduler *storage.MultiEngineCompactionScheduler
 }
 
 // logRangeAndNodeEventsEnabled is used to enable or disable logging range events
@@ -1455,6 +1474,9 @@ func (sc *StoreConfig) SetDefaults(numStores int) {
 	}
 	if sc.RangeFeedSchedulerConcurrencyPriority == 0 {
 		sc.RangeFeedSchedulerConcurrencyPriority = defaultRangefeedSchedulerPriorityShardSize
+	}
+	if sc.BasaltFS != nil && sc.OpenRSEngine == nil {
+		sc.OpenRSEngine = storage.OpenRSEngine
 	}
 }
 
@@ -2330,26 +2352,125 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 	if err != nil {
 		return err
 	}
-	logEvery := log.Every(10 * time.Second)
-	for i, repl := range repls {
-		// Log progress regularly, but not for the first replica (we only want to
-		// log when this is slow). The last replica is logged after iteration.
-		if logEvery.ShouldLog() && i > 0 {
-			log.KvExec.Infof(ctx, "initialized %d/%d replicas", i, len(repls))
-		}
 
+	// Pre-create shared Basalt directories (s<storeID>/ranges and
+	// s<storeID>/scratch) before the parallel replica init loop. This warms
+	// the basaltfs directory cache so the parallel goroutines don't all race
+	// to Mkdir and resolve the same parent directories.
+	if s.cfg.BasaltFS != nil {
+		rangesDir := BasaltStoreRangesDir(s.cfg.BasaltFS, s.StoreID())
+		if err := s.cfg.BasaltFS.MkdirAll(rangesDir, 0755); err != nil {
+			return errors.Wrap(err, "pre-creating basalt ranges directory")
+		}
+		scratchDir := BasaltStoreScratchDir(s.cfg.BasaltFS, s.StoreID())
+		if err := s.cfg.BasaltFS.MkdirAll(scratchDir, 0755); err != nil {
+			return errors.Wrap(err, "pre-creating basalt scratch directory")
+		}
+		// Clean up leftover scratch files from previous runs. With flat-dirs,
+		// all scratch files are directly in the scratch directory.
+		entries, err := s.cfg.BasaltFS.List(scratchDir)
+		if err != nil {
+			return errors.Wrap(err, "listing basalt scratch directory")
+		}
+		for _, entry := range entries {
+			path := s.cfg.BasaltFS.PathJoin(scratchDir, entry)
+			if err := s.cfg.BasaltFS.RemoveAll(path); err != nil {
+				log.Ops.Warningf(ctx, "removing scratch entry %s: %v", path, err)
+			}
+		}
+	}
+
+	// Pre-create sideloading and checkpoints directories under the state
+	// engine's auxiliary dir. These directories are checked by every replica
+	// during initialization; without pre-creation, each replica's Stat call
+	// becomes a StatByPath RPC to the basalt controller.
+	{
+		auxDir := s.StateEngine().GetAuxiliaryDir()
+		env := s.StateEngine().Env()
+		for _, sub := range []string{"sideloading", "checkpoints"} {
+			dir := env.PathJoin(auxDir, sub)
+			if err := env.MkdirAll(dir, 0755); err != nil {
+				return errors.Wrapf(err, "pre-creating %s directory", sub)
+			}
+		}
+	}
+
+	// Phase 1: Load replica state and initialize replicas concurrently. The
+	// expensive part of initialization is opening the RS (Range-Shared) engine
+	// via pebble.Open(), which involves multiple RPCs on Basalt clusters. Since
+	// each replica's RS engine is independent, we parallelize this work across a
+	// bounded goroutine pool.
+	results := make([]*Replica, len(repls))
+	const replicaInitConcurrency = 64
+	sem := quotapool.NewIntPool("replica-init", replicaInitConcurrency)
+	g := ctxgroup.WithContext(ctx)
+	logEvery := log.Every(10 * time.Second)
+	var initialized atomic.Int64
+	initCount := 0
+	var acquireErr error
+	for i, repl := range repls {
 		if repl.Desc == nil {
 			// Uninitialized Replicas are not currently instantiated at store start.
 			continue
 		}
-		// TODO(pavelkalinnikov): integrate into kvstorage.LoadAndReconcileReplicas.
-		state, err := repl.Load(ctx, s.StateEngine(), s.LogEngine(), s.StoreID())
+		initCount++
+		alloc, err := sem.Acquire(ctx, 1)
 		if err != nil {
-			return err
+			acquireErr = err
+			break
 		}
-		rep, err := newInitializedReplica(s, state, true /* waitForPrevLeaseToExpire */)
-		if err != nil {
-			return err
+		g.GoCtx(func(ctx context.Context) error {
+			defer alloc.Release()
+		  // TODO(pavelkalinnikov): integrate into kvstorage.LoadAndReconcileReplicas.
+		  state, err := repl.Load(ctx, s.StateEngine(), s.LogEngine(), s.StoreID())
+			if err != nil {
+				return err
+			}
+			rep, err := newInitializedReplica(s, state, true /* waitForPrevLeaseToExpire */)
+			if err != nil {
+				return err
+			}
+			results[i] = rep
+			// Log progress regularly, but not for the first replica (we only
+			// want to log when this is slow). The last replica is logged after
+			// the group completes.
+			if n := initialized.Add(1); logEvery.ShouldLog() && n > 1 {
+				log.KvExec.Infof(ctx, "initialized %d/%d replicas", n, len(repls))
+			}
+			return nil
+		})
+	}
+	// Always wait for in-flight goroutines to finish before inspecting results
+	// or returning, even if sem.Acquire failed above.
+	if waitErr := g.Wait(); waitErr != nil {
+		// Clean up RS engines on any replicas that were successfully initialized
+		// before the failure — they were never registered in the store so won't
+		// be cleaned up by store shutdown.
+		for _, rep := range results {
+			if rep == nil {
+				continue
+			}
+			rep.rsStateMu.Lock()
+			rsEngine := rep.rsStateMu.rsEngine
+			rep.rsStateMu.rsEngine = nil
+			rep.rsStateMu.Unlock()
+			if rsEngine != nil {
+				rsEngine.Close()
+			}
+		}
+		return waitErr
+	}
+	if acquireErr != nil {
+		return acquireErr
+	}
+	log.KvExec.Infof(ctx, "initialized %d/%d replicas", initCount, len(repls))
+
+	// Phase 2: Register replicas in store maps and update metrics. This must be
+	// sequential because the store's replica maps are not concurrent-safe, and
+	// the unquiesce logic expects replicas to be registered.
+	for _, rep := range results {
+		if rep == nil {
+			continue // uninitialized replica (Desc was nil)
 		}
 
 		// We can't lock s.mu across NewReplica due to the lock ordering
@@ -2375,11 +2496,12 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 			return errors.AssertionFailedf("no tenantID for initialized replica %s", rep)
 		}
 
-		// Eagerly unquiece replicas that are using a lease that doesn't support quiescnce.
-		// In practice, this means we'll unquiesce ranges that are using leader leases
-		// or expiration leases. We want to eagerly establish raft leaders for such
-		// ranges and acquire leases on top of this. This happens during Raft ticks.
-		// We rely on Raft pre-vote to avoid disturbance to Raft leaders.
+		// Eagerly unquiesce replicas that are using a lease that doesn't support
+		// quiescence. In practice, this means we'll unquiesce ranges that are using
+		// leader leases or expiration leases. We want to eagerly establish raft
+		// leaders for such ranges and acquire leases on top of this. This happens
+		// during Raft ticks. We rely on Raft pre-vote to avoid disturbance to Raft
+		// leaders.
 		//
 		// For followers that are asleep, the leader will send a message as part of
 		// acquiring the new lease, which will wake them up.
@@ -2391,7 +2513,6 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 			rep.maybeUnquiesce(ctx, true /* wakeLeader */, true /* mayCampaign */)
 		}
 	}
-	log.KvExec.Infof(ctx, "initialized %d/%d replicas", len(repls), len(repls))
 
 	// Register a callback to unquiesce any ranges with replicas on a
 	// node transitioning from non-live to live.
@@ -2472,8 +2593,42 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 		s.storeRebalancer.Start(ctx, s.stopper)
 	}
 
+	// The StoreRangeFlusher only flushes ranges into BasaltFS. When BasaltFS
+	// is not configured (e.g. --disable-rsengine), every flush attempt would
+	// fail with "basaltFS not configured" and re-enter the backoff loop, so
+	// skip the setup entirely. Callers that read s.rangeFlusher already
+	// nil-check it.
+	if s.cfg.BasaltFS != nil {
+		var rfScheduler pebble.CompactionScheduler
+		if s.cfg.CompactionScheduler != nil {
+			rfScheduler = s.cfg.CompactionScheduler.OpeningEngine(storage.EngineTypeRangeFlusher)
+		} else {
+			rfScheduler = newRangeFlushScheduler()
+		}
+		s.rangeFlusher = newRangeFlusher(rfScheduler)
+		srf := (*StoreRangeFlusher)(s)
+		rfScheduler.Register(1, srf)
+		srf.Start(ctx, s.stopper)
+	}
+
 	s.cfg.MMAllocator.InitMetricsForLocalStore(ctx, s.StoreID(), s.Registry())
 	s.mmaStoreRebalancer.start(ctx, s.stopper)
+
+	// Close all RSEngines when the stopper quiesces. Each replica's RSEngine
+	// is a separate pebble.DB with background goroutines; without explicit
+	// cleanup these goroutines leak past test teardown.
+	s.stopper.AddCloser(stop.CloserFn(func() {
+		s.VisitReplicas(func(r *Replica) bool {
+			r.rsStateMu.Lock()
+			engine := r.rsStateMu.rsEngine
+			r.rsStateMu.rsEngine = nil
+			r.rsStateMu.Unlock()
+			if engine != nil {
+				engine.Close()
+			}
+			return true
+		})
+	}))
 
 	// Set the started flag (for unittests).
 	atomic.StoreInt32(&s.started, 1)
@@ -3761,6 +3916,14 @@ func (s *Store) computeMetricsLocked(ctx context.Context) (m storage.Metrics, er
 			dirs = nil
 		}
 		s.metrics.RdbCheckpoints.Update(int64(len(dirs)))
+	}
+
+	if s.rangeFlusher != nil {
+		s.metrics.updateRangeFlusherMetrics(s.rangeFlusher.Metrics())
+	}
+
+	if s.cfg.CompactionScheduler != nil {
+		s.metrics.updateCompactionSchedulerMetrics(s.cfg.CompactionScheduler.Metrics())
 	}
 
 	return m, nil

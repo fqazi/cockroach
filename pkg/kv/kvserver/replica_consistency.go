@@ -711,6 +711,11 @@ func (r *Replica) computeChecksumPostApply(
 
 	// Caller is holding raftMu, so an engine snapshot is automatically
 	// Raft-consistent (i.e. not in the middle of an AddSSTable).
+	//
+	// Only snapshot the store-local engine: the Range-shared LSM is
+	// tautologically identical across replicas (it is coordinated through
+	// Raft), so including it would add overhead without detecting any
+	// additional inconsistencies.
 	snap := r.store.StateEngine().NewSnapshot(rditer.MakeReplicatedKeySpans(&desc)...)
 	if spanset.EnableAssertions {
 		ss := rditer.MakeReplicatedKeySpanSet(&desc)

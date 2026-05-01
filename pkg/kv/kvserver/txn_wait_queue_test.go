@@ -35,6 +35,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TODO(basalt): this out-of-band write to the store-local engine bypasses
+// raft. When RSEngine is active, it will need rethinking.
 func writeTxnRecord(ctx context.Context, tc *testContext, txnRecord *roachpb.Transaction) error {
 	key := keys.TransactionKey(txnRecord.Key, txnRecord.ID)
 	return storage.MVCCPutProto(ctx, tc.store.StateEngine(), key, hlc.Timestamp{}, txnRecord, storage.MVCCWriteOptions{})

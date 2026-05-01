@@ -436,8 +436,9 @@ var _ storage.Reader = spanSetReader{}
 func (s spanSetReader) ScanInternal(
 	ctx context.Context,
 	lower, upper roachpb.Key,
-	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel) error,
-	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum) error,
+	visitPointKey func(key *pebble.InternalKey, value pebble.LazyValue, info pebble.IteratorLevel, dormantPos pebble.DormantRelation) error,
+	visitRangeDel func(start []byte, end []byte, seqNum pebble.SeqNum, dormantPos pebble.DormantRelation) error,
+	visitDormantRangeDel func(start, end []byte, seqNum pebble.SeqNum) error,
 	visitRangeKey func(start []byte, end []byte, keys []rangekey.Key) error,
 	visitSharedFile func(sst *pebble.SharedSSTMeta) error,
 	visitExternalFile func(sst *pebble.ExternalFile) error,
@@ -451,7 +452,7 @@ func (s spanSetReader) ScanInternal(
 			return err
 		}
 	}
-	return s.r.ScanInternal(ctx, lower, upper, visitPointKey, visitRangeDel, visitRangeKey, visitSharedFile, visitExternalFile)
+	return s.r.ScanInternal(ctx, lower, upper, visitPointKey, visitRangeDel, visitDormantRangeDel, visitRangeKey, visitSharedFile, visitExternalFile)
 }
 
 func (s spanSetReader) Close() {
@@ -460,6 +461,16 @@ func (s spanSetReader) Close() {
 
 func (s spanSetReader) Closed() bool {
 	return s.r.Closed()
+}
+
+func (s spanSetReader) SetSecondaryLSM(vh pebble.LSMVersionHandle) {
+	// TODO(basalt): improve this dynamic dispatch.
+	rwci, ok := s.r.(storage.ReaderWithCombinedIteration)
+	if !ok {
+		panic(errors.AssertionFailedf(
+			"wrapped reader %T does not support combined iteration", s.r))
+	}
+	rwci.SetSecondaryLSM(vh)
 }
 
 func (s spanSetReader) MVCCIterate(
@@ -600,6 +611,20 @@ func (s spanSetWriter) ClearMVCCRange(start, end roachpb.Key, pointKeys, rangeKe
 		return err
 	}
 	return s.w.ClearMVCCRange(start, end, pointKeys, rangeKeys)
+}
+
+func (s spanSetWriter) ClearRawRangeDormant(start, end roachpb.Key) error {
+	if err := s.checkAllowedRange(start, end); err != nil {
+		return err
+	}
+	return s.w.ClearRawRangeDormant(start, end)
+}
+
+func (s spanSetWriter) ClearRawRangeActivate(start, end roachpb.Key) error {
+	if err := s.checkAllowedRange(start, end); err != nil {
+		return err
+	}
+	return s.w.ClearRawRangeActivate(start, end)
 }
 
 func (s spanSetWriter) ClearMVCCVersions(start, end storage.MVCCKey) error {
@@ -752,7 +777,9 @@ func makeSpanSetReadWriterAt(rw storage.ReadWriter, spans *SpanSet, ts hlc.Times
 // provided, accesses are considered non-MVCC.
 //
 // NewReader clones and does not retain the provided span set.
-func NewReader(r storage.Reader, spans *SpanSet, ts hlc.Timestamp) storage.Reader {
+func NewReader(
+	r storage.Reader, spans *SpanSet, ts hlc.Timestamp,
+) storage.ReaderWithCombinedIteration {
 	spans = addLockTableSpans(spans)
 	return spanSetReader{r: r, spans: spans, ts: ts}
 }
@@ -761,15 +788,17 @@ func NewReader(r storage.Reader, spans *SpanSet, ts hlc.Timestamp) storage.Reade
 // underlying ReadWriter against the given SpanSet.
 //
 // NewReadWriter clones and does not retain the provided span set.
-func NewReadWriter(rw storage.ReadWriter, spans *SpanSet) storage.ReadWriter {
+func NewReadWriter(rw storage.ReadWriter, spans *SpanSet) storage.ReadWriterWithCombinedIteration {
 	return makeSpanSetReadWriter(rw, spans)
 }
 
-// NewReadWriterAt returns a storage.ReadWriter that asserts access of the
-// underlying ReadWriter against the given SpanSet at a given timestamp.
+// NewReadWriterAt returns a ReadWriter that asserts access of the underlying
+// ReadWriter against the given SpanSet at a given timestamp.
 //
 // NewReadWriterAt clones and does not retain the provided span set.
-func NewReadWriterAt(rw storage.ReadWriter, spans *SpanSet, ts hlc.Timestamp) storage.ReadWriter {
+func NewReadWriterAt(
+	rw storage.ReadWriter, spans *SpanSet, ts hlc.Timestamp,
+) storage.ReadWriterWithCombinedIteration {
 	return makeSpanSetReadWriterAt(rw, spans, ts)
 }
 
@@ -796,6 +825,38 @@ func (s spanSetWriteBatch) ClearRawEncodedRange(start, end []byte) error {
 		return err
 	}
 	return s.wb.ClearRawEncodedRange(start, end)
+}
+
+// ClearRawEncodedRangeDormant implements storage.InternalWriter.
+func (s spanSetWriteBatch) ClearRawEncodedRangeDormant(start, end []byte) error {
+	startKey, ok := storage.DecodeEngineKey(start)
+	if !ok {
+		return errors.Errorf("cannot decode start engine key")
+	}
+	endKey, ok := storage.DecodeEngineKey(end)
+	if !ok {
+		return errors.Errorf("cannot decode end engine key")
+	}
+	if err := s.spanSetWriter.checkAllowedRange(startKey.Key, endKey.Key); err != nil {
+		return err
+	}
+	return s.wb.ClearRawEncodedRangeDormant(start, end)
+}
+
+// ClearRawEncodedRangeActivate implements storage.InternalWriter.
+func (s spanSetWriteBatch) ClearRawEncodedRangeActivate(start, end []byte) error {
+	startKey, ok := storage.DecodeEngineKey(start)
+	if !ok {
+		return errors.Errorf("cannot decode start engine key")
+	}
+	endKey, ok := storage.DecodeEngineKey(end)
+	if !ok {
+		return errors.Errorf("cannot decode end engine key")
+	}
+	if err := s.spanSetWriter.checkAllowedRange(startKey.Key, endKey.Key); err != nil {
+		return err
+	}
+	return s.wb.ClearRawEncodedRangeActivate(start, end)
 }
 
 // PutInternalRangeKey implements storage.InternalWriter.

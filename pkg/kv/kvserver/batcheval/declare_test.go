@@ -38,6 +38,11 @@ func TestRequestsSerializeWithAllKeys(t *testing.T) {
 			// Probe is special since it's a no-op round-trip through the replication
 			// layer. It does not declare any keys.
 			continue
+		case kvpb.RangeFlushPrepare:
+			// RangeFlushPrepare latches on RangeDescriptorKey (like
+			// SetRangeSharedManifestNum) but doesn't require any additional
+			// test setup. Let it fall through to the general assertion.
+			break
 		case kvpb.RequestLease:
 			// Lease requests ignore latches, since they can be evaluated on
 			// any replica.

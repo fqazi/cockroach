@@ -208,6 +208,7 @@ type testBatch struct {
 	raftBatch storage.Batch
 }
 
+// TODO(basalt): these out-of-band writes bypass raft (no Replica).
 func makeTestBatch(eng Engines) testBatch {
 	if !eng.Separated() {
 		return testBatch{batch: eng.Engine().NewBatch()}

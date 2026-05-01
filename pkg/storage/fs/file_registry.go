@@ -54,6 +54,22 @@ func elidePlaintext(entry *enginepb.FileEntry) bool {
 
 const defaultSoftMaxRegistrySize = 128 << 20 // 128 MB
 
+// FileRegistrar abstracts file registry operations so that consumers
+// (e.g. encryptedFS) can work with either a single-store FileRegistry
+// or a multi-node NodeFileRegistry on shared storage.
+type FileRegistrar interface {
+	GetFileEntry(filename string) *enginepb.FileEntry
+	SetFileEntry(filename string, entry *enginepb.FileEntry) error
+	MaybeDeleteEntry(filename string) error
+	MaybeCopyEntry(src, dst string) error
+	MaybeLinkEntry(src, dst string) error
+	GetRegistrySnapshot() *enginepb.FileRegistry
+	List() map[string]*enginepb.FileEntry
+	Close() error
+}
+
+var _ FileRegistrar = (*FileRegistry)(nil)
+
 // FileRegistry keeps track of files for the data-FS and store-FS for
 // encryption-at-rest (see encrypted_fs.go for high-level comment).
 //
@@ -88,6 +104,37 @@ type FileRegistry struct {
 	// elided (e.g., they're plaintext and don't need to be stored in the
 	// registry). It's configurable for ease of testing.
 	CanElideEntry func(entry *enginepb.FileEntry) bool
+	// TODO(basalt): remove SkipFileDeletionElision once we have
+	// end-to-end prototype validation and can implement proper
+	// cross-directory file existence checks.
+	//
+	// SkipFileDeletionElision, when true, skips the Stat-based existence
+	// check in maybeElideEntries that normally removes entries for files
+	// that no longer exist on disk. This is needed by NodeFileRegistry
+	// where the per-node registry's DBDir is not the directory containing
+	// the data files, so Stat would incorrectly fail for every entry.
+	SkipFileDeletionElision bool
+	// SyncDir, when true, causes writeToRegistryFileLocked to sync the
+	// parent directory (DBDir) after syncing the registry file. This
+	// ensures that on shared filesystems (e.g. basaltfs), file metadata
+	// updates from appends are visible to other nodes.
+	SyncDir bool
+	// SealAfterWrite, when true, causes the registry file to be closed
+	// (sealed) after each write. This is required on shared filesystems
+	// (e.g. basaltfs) where an open file's data is not visible to other
+	// nodes until the file is sealed. On the next write, a new registry
+	// file is created with a fresh snapshot of all entries.
+	//
+	// When BatchSealWrites is also true, writes are batched in memory
+	// and only sealed on explicit SealPending() calls. When false
+	// (the default), each write creates a sealed snapshot immediately.
+	SealAfterWrite bool
+	// BatchSealWrites, when true, defers sealing to explicit
+	// SealPending() calls instead of sealing on every write. This is
+	// used by NodeFileRegistry to batch multiple writes (e.g. during
+	// InstallNewManifest) before sealing once. Only meaningful when
+	// SealAfterWrite is true.
+	BatchSealWrites bool
 
 	// Implementation.
 
@@ -127,7 +174,30 @@ type FileRegistry struct {
 
 		// Obsolete files, ordered from oldest to newest.
 		obsoleteRegistryFiles []string
+
+		// sealPending is true when in-memory entries have been updated
+		// but not yet written to a sealed snapshot file. Only used when
+		// SealAfterWrite is true.
+		sealPending bool
 	}
+}
+
+// NewFileRegistry creates a new FileRegistry with production defaults and loads
+// its contents from the registry file in dbDir, if one exists.
+func NewFileRegistry(
+	ctx context.Context, fs vfs.FS, dbDir string, readOnly bool,
+) (*FileRegistry, error) {
+	r := &FileRegistry{
+		FS:                  fs,
+		DBDir:               dbDir,
+		ReadOnly:            readOnly,
+		NumOldRegistryFiles: defaultNumOldFileRegistryFiles,
+		CanElideEntry:       elidePlaintext,
+	}
+	if err := r.Load(ctx); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 const (
@@ -340,13 +410,19 @@ func (r *FileRegistry) maybeElideEntries(ctx context.Context) error {
 		// exist. This elision happens during store initialization, ensuring no
 		// concurrent work should be ongoing which might have added an entry to
 		// the file registry but not yet created the referenced file.
-		path := filename
-		if !filepath.IsAbs(path) {
-			path = r.FS.PathJoin(r.DBDir, filename)
-		}
-		if _, err := r.FS.Stat(path); oserror.IsNotExist(err) {
-			log.Dev.Infof(ctx, "eliding file registry entry %s", redact.SafeString(filename))
-			batch.DeleteEntry(filename)
+		//
+		// SkipFileDeletionElision disables this check for cases where the
+		// registry's DBDir is not the directory containing the data files
+		// (e.g. NodeFileRegistry per-node directories).
+		if !r.SkipFileDeletionElision {
+			path := filename
+			if !filepath.IsAbs(path) {
+				path = r.FS.PathJoin(r.DBDir, filename)
+			}
+			if _, err := r.FS.Stat(path); oserror.IsNotExist(err) {
+				log.Dev.Infof(ctx, "eliding file registry entry %s", redact.SafeString(filename))
+				batch.DeleteEntry(filename)
+			}
 		}
 	}
 	return r.processBatchLocked(batch)
@@ -422,6 +498,13 @@ func (r *FileRegistry) MaybeLinkEntry(src, dst string) error {
 	return r.MaybeCopyEntry(src, dst)
 }
 
+// NormalizeFilename returns the canonical form of filename as it would
+// be stored in the registry. Absolute paths under DBDir are converted
+// to relative paths.
+func (r *FileRegistry) NormalizeFilename(filename string) string {
+	return r.tryMakeRelativePath(filename)
+}
+
 func (r *FileRegistry) tryMakeRelativePath(filename string) string {
 	// Logic copied from file_registry.cc.
 	//
@@ -457,6 +540,23 @@ func (r *FileRegistry) processBatchLocked(batch *enginepb.RegistryUpdateBatch) e
 		return errors.New("cannot write file registry since db is read-only")
 	}
 	if batch.Empty() {
+		return nil
+	}
+	if r.SealAfterWrite {
+		// In SealAfterWrite mode (used on shared filesystems like
+		// basaltfs), update the in-memory state and create a sealed
+		// snapshot. basaltfs files are immutable after close, so we
+		// cannot append to the existing registry file.
+		r.applyBatch(batch)
+		if r.BatchSealWrites {
+			// Defer sealing to an explicit SealPending() call. This
+			// batches rapid writes (e.g. InstallNewManifest, RangeFlush)
+			// into a single sealed snapshot.
+			r.writeMu.sealPending = true
+		} else {
+			// Seal immediately — each write creates a new snapshot.
+			r.sealRegistryLocked()
+		}
 		return nil
 	}
 	if err := r.writeToRegistryFileLocked(batch); err != nil {
@@ -533,7 +633,20 @@ func (r *FileRegistry) writeToRegistryFileLocked(batch *enginepb.RegistryUpdateB
 	if err := r.writeMu.registryWriter.Flush(); err != nil {
 		return err
 	}
-	return r.writeMu.registryFile.Sync()
+	if err := r.writeMu.registryFile.Sync(); err != nil {
+		return err
+	}
+	if r.SyncDir {
+		dir, err := r.FS.OpenDir(r.DBDir)
+		if err != nil {
+			return errors.Wrap(err, "opening dir for sync")
+		}
+		err = errors.CombineErrors(dir.Sync(), dir.Close())
+		if err != nil {
+			return errors.Wrap(err, "syncing dir")
+		}
+	}
+	return nil
 }
 
 func makeRegistryFilename(iter uint64) string {
@@ -596,12 +709,31 @@ func (r *FileRegistry) createNewRegistryFileLocked() error {
 		return errFunc(err)
 	}
 
+	if r.SealAfterWrite {
+		// In SealAfterWrite mode, close (seal) the file before moving
+		// the marker or cleaning up old files. On basaltfs, Close()
+		// automatically seals regular files, making them immutable and
+		// visible to other nodes. We do not call vfs.Sealer.Seal()
+		// here because that interface is intended for file types where
+		// Close() does NOT auto-seal (e.g. WAL files).
+		if err := records.Close(); err != nil {
+			_ = f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+	}
+
 	// Moving the marker to the new filename atomically switches to the
 	// new file. Move handles syncing the data directory as well.
 	if err := r.writeMu.marker.Move(filename); err != nil {
+		if r.SealAfterWrite {
+			// File already sealed; nothing to clean up.
+			return errors.Wrap(err, "moving marker")
+		}
 		return errors.Wrap(errFunc(err), "moving marker")
 	}
-
 	// Close and remove the previous registry file.
 	{
 		// Any errors in this block will be returned at the end of the
@@ -617,6 +749,11 @@ func (r *FileRegistry) createNewRegistryFileLocked() error {
 		}
 	}
 
+	if r.SealAfterWrite {
+		// File already sealed; don't store a writer/file handle.
+		r.writeMu.registryFilename = filename
+		return err
+	}
 	r.writeMu.registryFile = f
 	r.writeMu.registryWriter = records
 	r.writeMu.registryFilename = filename
@@ -679,13 +816,52 @@ func (r *FileRegistry) tryRemoveOldRegistryFilesLocked() error {
 	return err
 }
 
+// sealRegistryLocked creates a sealed snapshot of the current in-memory
+// entries. It must be called with r.writeMu held. Errors are logged but
+// not propagated — the in-memory state is always authoritative.
+func (r *FileRegistry) sealRegistryLocked() {
+	if err := r.createNewRegistryFileLocked(); err != nil {
+		log.Dev.Warningf(context.Background(),
+			"file registry %s: failed to seal snapshot: %v", r.DBDir, err)
+		return
+	}
+	r.writeMu.sealPending = false
+}
+
+// SealPending writes a sealed snapshot of the registry if any entries
+// have been modified since the last seal. This is a no-op if
+// SealAfterWrite is false or no entries are pending.
+//
+// On shared filesystems (basaltfs), sealed files are the only files
+// visible to other nodes. Callers must invoke SealPending after
+// writing entries that other nodes need to read — for example, after
+// creating hardlinks in InstallNewManifest but before proposing the
+// Raft command that tells followers to open those files.
+func (r *FileRegistry) SealPending() {
+	if !r.SealAfterWrite {
+		return
+	}
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+	if !r.writeMu.sealPending {
+		return
+	}
+	r.sealRegistryLocked()
+}
+
 // Close closes the record writer and record file used for the registry.
 // It should be called when a Pebble instance is closed.
 func (r *FileRegistry) Close() error {
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
+	// Flush any pending sealed snapshot before closing.
+	if r.SealAfterWrite && r.writeMu.sealPending {
+		r.sealRegistryLocked()
+	}
 	err := r.closeRegistry()
-	err = errors.CombineErrors(err, r.writeMu.marker.Close())
+	if r.writeMu.marker != nil {
+		err = errors.CombineErrors(err, r.writeMu.marker.Close())
+	}
 	return err
 }
 

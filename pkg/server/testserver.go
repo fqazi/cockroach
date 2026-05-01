@@ -75,6 +75,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
+	"github.com/cockroachdb/pebble/vfs"
 	"github.com/cockroachdb/redact"
 	"github.com/gogo/protobuf/proto"
 )
@@ -285,7 +286,7 @@ func makeTestConfigFromParams(params base.TestServerArgs) Config {
 	}
 	// Validate the store specs.
 	for _, storeSpec := range params.StoreSpecs {
-		if storeSpec.InMemory {
+		if storeSpec.IsInMemory() {
 			if storeSpec.Size.IsPercent() {
 				panic(fmt.Sprintf("test server does not yet support in memory stores based on percentage of total memory: %s", base.StoreSpecCmdLineString(storeSpec)))
 			}
@@ -324,7 +325,16 @@ func makeTestConfigFromParams(params base.TestServerArgs) Config {
 	if cfg.TestingKnobs.Store == nil {
 		cfg.TestingKnobs.Store = &kvserver.StoreTestingKnobs{}
 	}
-	cfg.TestingKnobs.Store.(*kvserver.StoreTestingKnobs).SkipMinSizeCheck = true
+	storeKnobs := cfg.TestingKnobs.Store.(*kvserver.StoreTestingKnobs)
+	storeKnobs.SkipMinSizeCheck = true
+	if !storeKnobs.DisableBasalt {
+		if storeKnobs.BasaltFS == nil {
+			storeKnobs.BasaltFS = vfs.NewMem()
+		}
+		if storeKnobs.OpenRSEngine == nil {
+			storeKnobs.OpenRSEngine = storage.OpenTestingRSEngine
+		}
+	}
 
 	if params.Knobs.SQLExecutor == nil {
 		cfg.TestingKnobs.SQLExecutor = &sql.ExecutorTestingKnobs{}

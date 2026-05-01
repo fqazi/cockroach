@@ -446,6 +446,7 @@ func TestReplicaStateMachineEphemeralAppBatchRejection(t *testing.T) {
 	r.mu.RUnlock()
 
 	descWriteRepr := func(v string) (kvpb.Request, []byte) {
+		// TODO(basalt): this out-of-band write bypasses raft.
 		b := tc.store.StateEngine().NewBatch()
 		defer b.Close()
 		key := keys.LocalMax

@@ -46,6 +46,17 @@ var MustExist ConfigOption = func(cfg *engineConfig) error {
 	return nil
 }
 
+// BasaltPath marks the engine as backed by basalt disaggregated storage with
+// the given basalt:// URI. This replaces local filesystem property reporting
+// with the basalt path, since the store's data lives in basalt rather than on
+// a local block device.
+func BasaltPath(path string) ConfigOption {
+	return func(cfg *engineConfig) error {
+		cfg.basaltPath = path
+		return nil
+	}
+}
+
 // DisableAutomaticCompactions configures an engine to be opened with disabled
 // automatic compactions. Used primarily for debugCompactCmd.
 var DisableAutomaticCompactions ConfigOption = func(cfg *engineConfig) error {
@@ -264,6 +275,16 @@ func WALBytesPerSync(bytes int) ConfigOption {
 func MaxConcurrentDownloads(n int) ConfigOption {
 	return func(cfg *engineConfig) error {
 		cfg.opts.MaxConcurrentDownloads = func() int { return n }
+		return nil
+	}
+}
+
+// ExternalCompactionScheduler configures the pebble engine to use the given
+// compaction scheduler factory. Used by the MultiEngineCompactionScheduler to
+// coordinate compaction concurrency across all engines on a node.
+func ExternalCompactionScheduler(cs func() pebble.CompactionScheduler) ConfigOption {
+	return func(cfg *engineConfig) error {
+		cfg.opts.Experimental.CompactionScheduler = cs
 		return nil
 	}
 }

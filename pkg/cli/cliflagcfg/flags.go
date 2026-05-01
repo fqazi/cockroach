@@ -108,3 +108,20 @@ func StringSliceFlagDepth(
 	f.StringSliceVar(valPtr, flagInfo.Name, *valPtr, flagInfo.Usage())
 	registerEnvVarDefault(f, flagInfo, depth+1)
 }
+
+// StringArrayFlag creates a string array flag and registers it with the
+// FlagSet. Unlike StringSliceFlag, StringArrayFlag does not split values on
+// commas — multiple values must be specified via repeated flags.
+// See cli/context.go to initialize defaults.
+func StringArrayFlag(f *pflag.FlagSet, valPtr *[]string, flagInfo cliflags.FlagInfo) {
+	StringArrayFlagDepth(1, f, valPtr, flagInfo)
+}
+
+// StringArrayFlagDepth is like StringArrayFlag but the caller can control the
+// call level at which the env var usage assertion is done.
+func StringArrayFlagDepth(
+	depth int, f *pflag.FlagSet, valPtr *[]string, flagInfo cliflags.FlagInfo,
+) {
+	f.StringArrayVar(valPtr, flagInfo.Name, *valPtr, flagInfo.Usage())
+	registerEnvVarDefault(f, flagInfo, depth+1)
+}

@@ -219,32 +219,51 @@ func (r *Replica) raftSnapshotLocked() (raftpb.Snapshot, error) {
 func (r *Replica) GetSnapshot(
 	ctx context.Context, snapUUID uuid.UUID,
 ) (_ *OutgoingSnapshot, err error) {
+	cannotHaveRangeSharedState := rangeContainsTimeseriesData(r.Desc().StartKey)
 	// Get a snapshot while holding raftMu to make sure we're not seeing "half
 	// an AddSSTable" (i.e. a state in which an SSTable has been linked in, but
 	// the corresponding Raft command not applied yet).
 	r.raftMu.Lock()
 	startKey := r.shMu.state.Desc.StartKey
 	spans := rditer.MakeReplicatedKeySpans(r.shMu.state.Desc)
-	snap := r.store.StateEngine().NewSnapshot(spans...)
+	var ss *spanset.SpanSet
 	if spanset.EnableAssertions {
-		ss := rditer.MakeReplicatedKeySpanSet(r.shMu.state.Desc)
+		ss = rditer.MakeReplicatedKeySpanSet(r.shMu.state.Desc)
+	}
+	// Take both state engine and RS engine snapshots under rsStateMu to ensure
+	// consistency between them.
+	r.rsStateMu.RLock()
+	snap := r.store.StateEngine().NewSnapshot(spans...)
+	var rsSnap storage.RSEngineSnapshot
+	var rsManifestNum uint64
+	canHaveDormantRangeDel := r.rsStateMu.rsEngine != nil && !cannotHaveRangeSharedState
+	if canHaveDormantRangeDel {
+		rsSnap = r.rsStateMu.rsEngine.NewSnapshot()
+		rsManifestNum = uint64(rsSnap.ManifestNum())
+		// NoManifestNum means no RS data exists yet; skip sending RS snapshot.
+		if rsManifestNum == uint64(storage.NoManifestNum) {
+			rsSnap.Close()
+			rsSnap = nil
+		}
+	}
+	r.rsStateMu.RUnlock()
+	r.raftMu.Unlock()
+	if ss != nil {
 		defer ss.Release()
 		snap = spanset.NewReader(snap, ss, hlc.Timestamp{})
 	}
-	r.raftMu.Unlock()
-
 	defer func() {
 		if err != nil {
 			snap.Close()
+			if rsSnap != nil {
+				rsSnap.Close()
+			}
 		}
 	}()
 	rangeID := r.RangeID
-
 	ctx, sp := r.AnnotateCtxWithSpan(ctx, "snapshot")
 	defer sp.Finish()
-
 	log.Eventf(ctx, "new engine snapshot for replica %s", r)
-
 	// Delegate to a static function to make sure that we do not depend
 	// on any indirect calls to r.store.Engine() (or other in-memory
 	// state of the Replica). Everything must come from the snapshot.
@@ -252,11 +271,13 @@ func (r *Replica) GetSnapshot(
 	// NB: we don't hold either of locks, so can't use Replica.mu.stateLoader or
 	// Replica.raftMu.stateLoader. This call is not performance sensitive, so
 	// create a new state loader.
-	snapData, err := snapshot(ctx, snapUUID, kvstorage.MakeStateLoader(rangeID), snap, startKey)
+	snapData, err := snapshot(ctx, snapUUID, kvstorage.MakeStateLoader(rangeID), snap, startKey, rsManifestNum)
 	if err != nil {
 		log.KvExec.Errorf(ctx, "error generating snapshot: %+v", err)
 		return nil, err
 	}
+	snapData.CanHaveDormantRangeDel = canHaveDormantRangeDel
+	snapData.rsEngineSnap = rsSnap
 	return &snapData, nil
 }
 
@@ -273,6 +294,20 @@ type OutgoingSnapshot struct {
 	State          kvserverpb.ReplicaState
 	sharedBackings []objstorage.RemoteObjectBackingHandle
 	onClose        func()
+	// RSManifestDiskFileNum is the DiskFileNum of the MANIFEST for the
+	// range-shared engine. NoManifestNum if no range-shared engine is configured.
+	RSManifestDiskFileNum uint64
+	// CanHaveDormantRangeDel is true when the range has a range-shared
+	// engine (rsEngine != nil). Dormant range deletions can exist in the
+	// store-local LSM even when RSManifestDiskFileNum is NoManifestNum, because a
+	// range flush may have started but not yet completed. The Send path
+	// uses this to decide whether to look for dormant keys via
+	// ScanInternal.
+	CanHaveDormantRangeDel bool
+	// rsEngineSnap is the RSEngine snapshot captured at the same time as
+	// StateSnap. Used for hardlinking files when sending the snapshot. Nil if
+	// no range-shared engine is configured.
+	rsEngineSnap storage.RSEngineSnapshot
 }
 
 func (s OutgoingSnapshot) String() string {
@@ -290,6 +325,9 @@ func (s *OutgoingSnapshot) Close() {
 	s.StateSnap.Close()
 	for i := range s.sharedBackings {
 		s.sharedBackings[i].Close()
+	}
+	if s.rsEngineSnap != nil {
+		s.rsEngineSnap.Close()
 	}
 	if s.onClose != nil {
 		s.onClose()
@@ -321,6 +359,13 @@ type IncomingSnapshot struct {
 	// This contains both the spans that have explicit rangedels, and the
 	// MVCC span (which would be cleared by Excise on Ingest).
 	clearedSpans []roachpb.Span
+	// RSManifestDiskFileNum is the DiskFileNum of the MANIFEST for the
+	// range-shared engine. NoManifestNum if no range-shared engine is configured.
+	RSManifestDiskFileNum uint64
+	// stackedSSTs pairs upper (normal) and lower (BelowDormant) SSTs for
+	// ingestion via IngestAndExciseStacked. When no dormant keys exist, all
+	// entries have empty LowerSST.Path.
+	stackedSSTs []pebble.StackedLocalSST
 }
 
 func (s IncomingSnapshot) String() string {
@@ -335,12 +380,15 @@ func (s IncomingSnapshot) SafeFormat(w redact.SafePrinter, _ rune) {
 
 // snapshot creates an OutgoingSnapshot containing a pebble snapshot for the
 // given range. Note that snapshot() is called without Replica.raftMu held.
+// rsManifestNum is the RS engine manifest number captured at snapshot time
+// (0 if no RS engine).
 func snapshot(
 	ctx context.Context,
 	snapUUID uuid.UUID,
 	rsl kvstorage.StateLoader,
 	snap kvstorage.StateRO,
 	startKey roachpb.RKey,
+	rsManifestNum uint64,
 ) (OutgoingSnapshot, error) {
 	var desc roachpb.RangeDescriptor
 	// We ignore intents on the range descriptor (consistent=false) because we
@@ -355,7 +403,6 @@ func snapshot(
 	if !ok {
 		return OutgoingSnapshot{}, errors.Mark(errors.Errorf("couldn't find range descriptor"), errMarkSnapshotError)
 	}
-
 	// TODO(sep-raft-log): do not load the state that is not useful for sending
 	// snapshots, e.g. Lease, GCThreshold, etc. Only applied indices and the
 	// descriptor are used, everything else is included in the snapshot data.
@@ -366,7 +413,6 @@ func snapshot(
 	// There is no need in sending TruncatedState because the receiver assigns it
 	// to match snap.RaftSnap.Metadata.{Index,Term}. See (*Replica).applySnapshotRaftMuLocked.
 	state.TruncatedState = nil
-
 	return OutgoingSnapshot{
 		StateSnap: snap,
 		State:     state,
@@ -380,6 +426,7 @@ func snapshot(
 				ConfState: desc.Replicas().ConfState(),
 			},
 		},
+		RSManifestDiskFileNum: rsManifestNum,
 	}, nil
 }
 
@@ -602,25 +649,56 @@ func (r *Replica) applySnapshotRaftMuLocked(
 	// Prepare the snapshot application storage write.
 	_ = applySnapshotTODO
 	sw := snapWriter{
-		eng:      r.store.internalEngines,
-		writeSST: inSnap.SSTStorageScratch.WriteSST,
+		eng: r.store.internalEngines,
+		writeSST: func(ctx context.Context, write func(context.Context, storage.Writer) error) error {
+			filename, err := inSnap.SSTStorageScratch.WriteSST(ctx, write)
+			if err != nil {
+				return err
+			}
+			inSnap.stackedSSTs = append(inSnap.stackedSSTs, pebble.StackedLocalSST{
+				UpperSST: pebble.LocalSST{Path: filename},
+			})
+			return nil
+		},
 	}
 	defer sw.close()
 	if applyAsBatch {
-		// Convert the snapshot SSTs into an equivalent write batch.
+		wo := sw.applyAsBatch()
+		// When stacked SSTs exist, apply lower SSTs FIRST so they get lower
+		// seqnums than upper SSTs. This ensures the dormant range deletion
+		// sits above the BelowDormant keys in the LSM.
+		var lowerPaths []string
+		var upperPaths []string
+		for _, sst := range inSnap.stackedSSTs {
+			upperPaths = append(upperPaths, sst.UpperSST.Path)
+			if sst.LowerSST.Path != "" {
+				lowerPaths = append(lowerPaths, sst.LowerSST.Path)
+			}
+		}
+		clearedSpans := inSnap.clearedSpans
+		if len(lowerPaths) > 0 {
+			if err := sw.eng.StateEngine().IngestLocalFilesToWriter(
+				ctx, lowerPaths, clearedSpans, wo,
+			); err != nil {
+				return errors.Wrapf(err, "while converting lower SSTs to batch %s", lowerPaths)
+			}
+			clearedSpans = nil
+		}
 		if err := sw.eng.StateEngine().IngestLocalFilesToWriter(
-			ctx, inSnap.SSTStorageScratch.SSTs(), inSnap.clearedSpans, sw.applyAsBatch(),
+			ctx, upperPaths, clearedSpans, wo,
 		); err != nil {
-			return errors.Wrapf(err, "while converting to batch %s", inSnap.SSTStorageScratch.SSTs())
+			return errors.Wrapf(err, "while converting to batch %s", upperPaths)
 		}
 	}
 	if err := sw.prepareSnapApply(ctx, snapWrite{
-		sl:         r.raftMu.stateLoader.StateLoader,
-		truncState: truncState,
-		hardState:  hs,
-		desc:       desc,
-		origDesc:   r.shMu.state.Desc,
-		subsume:    subsume, // NB: ordered by StartKey
+		sl:                    r.raftMu.stateLoader.StateLoader,
+		truncState:            truncState,
+		hardState:             hs,
+		desc:                  desc,
+		origDesc:              r.shMu.state.Desc,
+		subsume:               subsume, // NB: ordered by StartKey
+		rsManifestDiskFileNum: inSnap.RSManifestDiskFileNum,
+		replicaID:             r.replicaID,
 	}); err != nil {
 		return err
 	}
@@ -637,18 +715,79 @@ func (r *Replica) applySnapshotRaftMuLocked(
 		}
 	}
 
-	// Commit the raft engine batch, if engines are separated, and the state
-	// machine / combined batch if the snapshot is being written as a batch.
-	// Ingest the SSTs if the snapshot is applied using a Pebble ingestion.
-	ingestStats, err := sw.commit(ctx, snapIngestion{
+	// Create or update the RSEngine container for the snapshot's manifest.
+	// For initial snapshots (replica receiving its first data via Raft
+	// replication), create the container directly at the snapshot's manifest
+	// number — no prepare/install needed. For subsequent snapshots, use the
+	// container's prepare/install path to swap the active engine.
+	r.rsStateMu.RLock()
+	rsEngine := r.rsStateMu.rsEngine
+	r.rsStateMu.RUnlock()
+	// NB: no one else can be replacing rsEngine concurrently with this code.
+
+	needsManifestSwap := false
+	createdRSEngine := false
+	if rsEngine == nil && r.store.cfg.BasaltFS != nil {
+		// Initial snapshot: create the container at the snapshot's manifest.
+		manifestNum := storage.DiskFileNum(inSnap.RSManifestDiskFileNum)
+		containerOpts := storage.RSEngineContainerOptions{
+			ManifestChangeCommitter: r.ManifestCommitter(),
+			BasaltFS:                r.store.cfg.BasaltFS,
+			BasaltDir:               BasaltDir(r.store.cfg.BasaltFS, r.store.StoreID(), r.RangeID, r.replicaID),
+			BasaltScratchPathDir:    BasaltScratchDir(r.store.cfg.BasaltFS, r.store.StoreID(), r.RangeID, r.replicaID),
+			LogCtx:                  r.AnnotateCtx(context.Background()),
+			OpenRSEngineFunc:        r.store.cfg.OpenRSEngine,
+			CompactionScheduler:     r.store.cfg.CompactionScheduler,
+			Stopper:                 r.store.Stopper(),
+		}
+		var err error
+		rsEngine, err = storage.NewRSEngineContainer(manifestNum, containerOpts)
+		if err != nil {
+			return errors.Wrapf(err, "creating RSEngine container at manifest %d", manifestNum)
+		}
+		createdRSEngine = true
+	} else if rsEngine != nil &&
+		inSnap.RSManifestDiskFileNum != uint64(storage.NoManifestNum) &&
+		inSnap.RSManifestDiskFileNum != uint64(rsEngine.CurrentManifestNum()) {
+		needsManifestSwap = true
+		manifestNum := storage.DiskFileNum(inSnap.RSManifestDiskFileNum)
+		if err := rsEngine.PrepareExternalManifest(manifestNum); err != nil {
+			return errors.Wrapf(err, "PrepareExternalManifest(%d)", manifestNum)
+		}
+	}
+	// Commit the raft engine batch (synced), if engines are separated.
+	if err := sw.commitRaft(); err != nil {
+		return errors.Wrapf(err, "while committing raft batch for snapshot %s",
+			inSnap.SSTStorageScratch.SSTs())
+	}
+	// Hold rsStateMu.Lock() across state commit + manifest install so
+	// readers never see RANGEDEL-TURN-ON without the replacement RSEngine
+	// data.
+	ing := snapIngestion{
 		paths:      inSnap.SSTStorageScratch.SSTs(),
 		shared:     inSnap.sharedSSTs,
 		external:   inSnap.externalSSTs,
 		exciseSpan: desc.KeySpan().AsRawSpanWithNoLocals(),
-	})
+		stacked:    inSnap.stackedSSTs,
+	}
+	if createdRSEngine || needsManifestSwap {
+		r.rsStateMu.Lock()
+	}
+	ingestStats, err := sw.commitState(ctx, ing)
 	if err != nil {
+		if createdRSEngine || needsManifestSwap {
+			r.rsStateMu.Unlock()
+		}
 		return errors.Wrapf(err, "while committing snapshot for %s",
 			inSnap.SSTStorageScratch.SSTs())
+	}
+	if createdRSEngine || needsManifestSwap {
+		if needsManifestSwap {
+			rsEngine.InstallPreparedManifest(storage.DiskFileNum(inSnap.RSManifestDiskFileNum))
+		} else {
+			r.rsStateMu.rsEngine = rsEngine
+		}
+		r.rsStateMu.Unlock()
 	}
 	var writeBytes uint64
 	if applyAsBatch {

@@ -145,7 +145,7 @@ func TestMinVersion_IsNotEncrypted(t *testing.T) {
 
 func fauxNewEncryptedEnvFunc(
 	unencryptedFS vfs.FS,
-	fr *fs.FileRegistry,
+	fr fs.FileRegistrar,
 	dbDir string,
 	readOnly bool,
 	_ *storageconfig.EncryptionOptions,

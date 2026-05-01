@@ -17,8 +17,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/raft/raftpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
+	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/errors"
 )
@@ -283,6 +285,34 @@ func (r *Replica) prepareLocalResult(ctx context.Context, cmd *replicatedCmd) {
 		}
 	}
 
+	// Take store-local snapshot for range flush if requested.
+	if pErr == nil && cmd.proposal.Local.DetachTakeStoreLocalSnapshot() {
+		func() {
+			r.rangeFlushMu.Lock()
+			defer r.rangeFlushMu.Unlock()
+			if !r.rangeFlushMu.ongoingFlush {
+				// Caller gave up (Replica removal); skip snapshot.
+				return
+			}
+			if r.rangeFlushMu.snapshot != nil {
+				// A foreign FlushPrepare (rerouted after lease transfer)
+				// already stored a snapshot. Don't overwrite — that would
+				// leak it. RangeFlush will detect the flushStartedCount
+				// mismatch and return an error.
+				return
+			}
+			r.rangeFlushMu.snapshot = r.store.StateEngine().NewSnapshot()
+			// Record flushStartedCount so RangeFlush can verify this
+			// snapshot belongs to the correct FlushPrepare. Safe to read
+			// shMu.state here: ApplyToStateMachine already updated it.
+			r.rangeFlushMu.flushStartedCount = r.shMu.state.FlushStartedCount
+			// Capture ApproxStoreLocalBytes at the same point as the
+			// snapshot so the value is consistent with the data being
+			// flushed.
+			r.rangeFlushMu.approxStoreLocalBytes = r.shMu.state.ApproxStoreLocalBytes
+		}()
+	}
+
 	if pErr == nil {
 		cmd.localResult = cmd.proposal.Local
 	} else if cmd.localResult != nil {
@@ -466,6 +496,8 @@ func (r *Replica) tryReproposeWithNewLeaseIndexRaftMuLocked(
 
 func (r *Replica) handleSplitResult(ctx context.Context, split *kvserverpb.Split) {
 	splitPostApply(ctx, split.RHSDelta, &split.SplitTrigger, r)
+	// The LHS RSEngine swap (if needed) was done atomically with the state
+	// batch commit in ApplyToStateMachine.
 }
 
 func (r *Replica) handleMergeResult(ctx context.Context, merge *kvserverpb.Merge) {
@@ -481,6 +513,8 @@ func (r *Replica) handleMergeResult(ctx context.Context, merge *kvserverpb.Merge
 		// Our in-memory state has diverged from the on-disk state.
 		log.KvExec.Fatalf(ctx, "failed to update store after merging range: %s", err)
 	}
+	// The LHS RSEngine swap (if needed) was done atomically with the state
+	// batch commit in ApplyToStateMachine.
 }
 
 func (r *Replica) handleDescResult(ctx context.Context, desc *roachpb.RangeDescriptor) {
@@ -701,4 +735,52 @@ func (r *Replica) handleChangeReplicasResult(
 	r.postDestroyRaftMuLocked(ctx)
 
 	return true
+}
+
+// installManifestFileEntry installs the MANIFEST's encryption file
+// entry (received via the Raft proposal) into the local file registry.
+// This must be called before PrepareExternalManifest so the encrypted FS can
+// decrypt the MANIFEST file. On the leaseholder this is a no-op
+// (entry already exists); on followers it bridges the gap between the
+// Raft proposal arriving instantly and the sealed registry file being
+// visible on shared storage.
+func (r *Replica) installManifestFileEntry(
+	ctx context.Context, manifestName string, entryBytes []byte,
+) {
+	if len(entryBytes) == 0 || manifestName == "" {
+		return
+	}
+	basaltFS := r.store.cfg.BasaltFS
+	if basaltFS == nil {
+		return
+	}
+	fep, ok := basaltFS.(fs.FileEntryProvider)
+	if !ok {
+		return // not an encrypted FS
+	}
+	entry := &enginepb.FileEntry{}
+	if err := protoutil.Unmarshal(entryBytes, entry); err != nil {
+		log.KvExec.Warningf(ctx,
+			"failed to unmarshal manifest file entry from Raft: %v", err)
+		return
+	}
+	manifestPath := basaltFS.PathJoin(
+		BasaltDir(basaltFS, r.store.StoreID(), r.RangeID, r.replicaID),
+		manifestName,
+	)
+	if err := fep.SetFileEntry(manifestPath, entry); err != nil {
+		log.KvExec.Warningf(ctx,
+			"failed to install manifest file entry for %s: %v", manifestPath, err)
+	}
+}
+
+// handleRSManifestInstallResult handles the installation of a new range-shared
+// manifest. The RSManifestState has already been written to disk in
+// runPostAddTriggersReplicaOnly. The RSEngine swap was done atomically with the
+// state batch commit in ApplyToStateMachine. This handler is now a no-op
+// retained for the non-trivial result dispatch in
+// handleNonTrivialReplicatedEvalResult.
+func (r *Replica) handleRSManifestInstallResult(
+	ctx context.Context, rsInstall *kvserverpb.RSManifestInstall,
+) {
 }

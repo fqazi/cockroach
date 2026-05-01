@@ -590,6 +590,18 @@ func (r *Replica) leasePostApplyLocked(
 	if r.leaseHistory != nil {
 		r.leaseHistory.add(*newLease)
 	}
+
+	// Toggle RSEngine compaction based on leaseholder status. Compactions should
+	// only run on the leaseholder to avoid redundant work across replicas.
+	// This is idempotent - calling with the same value multiple times is safe.
+	// We hold rsStateMu during the call to prevent racing with RSEngine.Close().
+	func() {
+		r.rsStateMu.RLock()
+		defer r.rsStateMu.RUnlock()
+		if r.rsStateMu.rsEngine != nil {
+			r.rsStateMu.rsEngine.CompactionToggle(iAmTheLeaseHolder)
+		}
+	}()
 }
 
 // maybeLogLease is called on the new leaseholder to log the lease

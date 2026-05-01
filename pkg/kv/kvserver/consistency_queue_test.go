@@ -273,7 +273,7 @@ func TestCheckConsistencyInconsistent(t *testing.T) {
 				Server: &server.TestingKnobs{StickyVFSRegistry: stickyVFSRegistry},
 			},
 			StoreSpecs: []base.StoreSpec{{
-				InMemory:    true,
+				Type:        base.StoreTypeInMemory,
 				StickyVFSID: id,
 			}},
 		}
@@ -358,6 +358,8 @@ func TestCheckConsistencyInconsistent(t *testing.T) {
 	var val roachpb.Value
 	val.SetInt(42)
 	// Put an inconsistent key "e" to s2, and have s1 and s3 still agree.
+	// TODO(basalt): this out-of-band write to the store-local engine bypasses
+	// raft. When RSEngine is active, it will need rethinking.
 	_, err := storage.MVCCPut(context.Background(), s2.StateEngine(),
 		roachpb.Key("e"), tc.Server(0).Clock().Now(), val, storage.MVCCWriteOptions{})
 	require.NoError(t, err)

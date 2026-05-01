@@ -46,6 +46,15 @@ func GetAbsoluteFSPath(fieldName string, p string) (string, error) {
 // to the --store flag.
 type StoreSpec = storageconfig.Store
 
+// StoreType re-exports for convenience.
+type StoreType = storageconfig.StoreType
+
+const (
+	StoreTypeLocal    = storageconfig.StoreTypeLocal
+	StoreTypeInMemory = storageconfig.StoreTypeInMemory
+	StoreTypeBasalt   = storageconfig.StoreTypeBasalt
+)
+
 // StoreSpecCmdLineString returns a fully parsable version of the store spec.
 func StoreSpecCmdLineString(ss storageconfig.Store) string {
 	// TODO(jackson): Implement redact.SafeFormatter
@@ -53,8 +62,13 @@ func StoreSpecCmdLineString(ss storageconfig.Store) string {
 	if len(ss.Path) != 0 {
 		fmt.Fprintf(&buffer, "path=%s,", ss.Path)
 	}
-	if ss.InMemory {
+	switch ss.Type {
+	case storageconfig.StoreTypeInMemory:
 		fmt.Fprint(&buffer, "type=mem,")
+	case storageconfig.StoreTypeBasalt:
+		fmt.Fprint(&buffer, "type=basalt,")
+	case storageconfig.StoreTypeLocal:
+		// default; no type field emitted
 	}
 	if ss.Size.IsBytes() {
 		fmt.Fprintf(&buffer, "size=%s,", humanizeutil.IBytes(ss.Size.Bytes()))
@@ -93,6 +107,68 @@ func StoreSpecCmdLineString(ss storageconfig.Store) string {
 	return buffer.String()
 }
 
+// storeSpecFields is the set of recognized field names in a --store flag value.
+// Used by splitStoreSpecFields to distinguish field separators from commas
+// embedded in values (e.g., basalt URLs with multiple controller addresses).
+var storeSpecFields = map[string]struct{}{
+	"path":             {},
+	"size":             {},
+	"ballast-size":     {},
+	"attrs":            {},
+	"type":             {},
+	"pebble":           {},
+	"provisioned-rate": {},
+}
+
+// splitStoreSpecFields splits a --store flag value into individual field
+// segments. It is similar to strings.Split(value, ",") but avoids splitting
+// commas that are embedded within basalt URLs containing multiple controller
+// addresses (e.g., "basalt://ctrl1:1234,ctrl2:5678/s1,size=20GiB" splits into
+// ["basalt://ctrl1:1234,ctrl2:5678/s1", "size=20GiB"]).
+//
+// The function first performs a plain comma split. It then merges back any
+// segments that were incorrectly split from a basalt URL by checking whether
+// subsequent segments look like recognized field assignments (field=value).
+func splitStoreSpecFields(value string) []string {
+	parts := strings.Split(value, ",")
+	// Fast path: if no basalt URL is present, return the plain split.
+	if !strings.Contains(value, "basalt://") {
+		return parts
+	}
+
+	// Merge segments that were incorrectly split from a basalt URL value.
+	var result []string
+	for i := 0; i < len(parts); i++ {
+		seg := parts[i]
+		// Determine if this segment starts a basalt URL value. A basalt URL
+		// can appear as either a bare value ("basalt://...") or with an
+		// explicit field prefix ("path=basalt://...").
+		isBasalt := strings.HasPrefix(seg, "basalt://") ||
+			strings.HasPrefix(seg, "path=basalt://")
+		if !isBasalt {
+			result = append(result, seg)
+			continue
+		}
+		// Merge subsequent segments that are not recognized field assignments
+		// back into this basalt URL value.
+		for i+1 < len(parts) {
+			next := parts[i+1]
+			eqIdx := strings.IndexByte(next, '=')
+			if eqIdx > 0 {
+				fieldName := strings.ToLower(next[:eqIdx])
+				if _, ok := storeSpecFields[fieldName]; ok {
+					break // next segment is a new field
+				}
+			}
+			// Not a recognized field — this comma was part of the basalt URL.
+			seg += "," + next
+			i++
+		}
+		result = append(result, seg)
+	}
+	return result
+}
+
 // NewStoreSpec parses the string passed into a --store flag and returns a
 // StoreSpec if it is correctly parsed.
 // There are five possible fields that can be passed in, comma separated:
@@ -113,7 +189,11 @@ func StoreSpecCmdLineString(ss storageconfig.Store) string {
 //     used for admission control for operations on the store and if unspecified,
 //     a cluster setting (kvadmission.store.provisioned_bandwidth) will be used.
 //
-// Note that commas are forbidden within any field name or value.
+// Note that commas are forbidden within field names and most field values,
+// since they are used to separate fields. However, basalt store paths
+// (basalt://addr1,addr2/store) may contain commas as part of the controller
+// address list. The parser handles this by only splitting on commas that are
+// followed by a recognized field name and '='.
 func NewStoreSpec(value string) (StoreSpec, error) {
 	const pathField = "path"
 	if len(value) == 0 {
@@ -121,7 +201,7 @@ func NewStoreSpec(value string) (StoreSpec, error) {
 	}
 	var ss StoreSpec
 	used := make(map[string]struct{})
-	for _, split := range strings.Split(value, ",") {
+	for _, split := range splitStoreSpecFields(value) {
 		if len(split) == 0 {
 			continue
 		}
@@ -149,6 +229,9 @@ func NewStoreSpec(value string) (StoreSpec, error) {
 
 		switch field {
 		case pathField:
+			if strings.HasPrefix(value, "basalt://") {
+				ss.Type = storageconfig.StoreTypeBasalt
+			}
 			ss.Path = value
 		case "size":
 			var err error
@@ -176,9 +259,14 @@ func NewStoreSpec(value string) (StoreSpec, error) {
 			}
 			sort.Strings(ss.Attributes)
 		case "type":
-			if value == "mem" {
-				ss.InMemory = true
-			} else {
+			switch value {
+			case "mem":
+				ss.Type = storageconfig.StoreTypeInMemory
+			case "basalt":
+				ss.Type = storageconfig.StoreTypeBasalt
+			case "local":
+				ss.Type = storageconfig.StoreTypeLocal
+			default:
 				return StoreSpec{}, fmt.Errorf("%s is not a valid store type", value)
 			}
 		case "pebble":
@@ -301,7 +389,7 @@ func (ssl StoreSpecList) PriorCriticalAlertError() (err error) {
 		err = errors.WithDetailf(err, "%v", newErr)
 	}
 	for _, ss := range ssl.Specs {
-		if ss.InMemory {
+		if !ss.IsLocal() {
 			continue
 		}
 		path := PreventedStartupFile(filepath.Join(ss.Path, AuxiliaryDir))

@@ -1875,6 +1875,216 @@ func TestEngineClearRange(t *testing.T) {
 	})
 }
 
+// TestClearRawRangeDormantActivate verifies that ClearRawRangeDormant has no
+// immediate effect, and that a subsequent ClearRawRangeActivate deletes keys
+// that existed before the dormant but preserves keys written after it.
+func TestClearRawRangeDormantActivate(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+
+	// scanInternalPointKeys uses ScanInternal to collect all MVCC point keys in
+	// [lower, upper).
+	scanInternalPointKeys := func(t *testing.T, r Reader, lower, upper roachpb.Key) []MVCCKey {
+		t.Helper()
+		var pointKeys []MVCCKey
+		err := r.ScanInternal(ctx, lower, upper,
+			func(key *pebble.InternalKey, _ pebble.LazyValue, _ pebble.IteratorLevel, _ pebble.DormantRelation) error {
+				ek, ok := DecodeEngineKey(key.UserKey)
+				if !ok {
+					return errors.New("failed to decode engine key")
+				}
+				mk, err := ek.ToMVCCKey()
+				if err != nil {
+					return err
+				}
+				pointKeys = append(pointKeys, mk)
+				return nil
+			},
+			nil, /* visitRangeDel */
+			nil, /* visitDormantRangeDel */
+			nil, /* visitRangeKey */
+			nil, /* visitSharedFile */
+			nil, /* visitExternalFile */
+		)
+		require.NoError(t, err)
+		return pointKeys
+	}
+
+	eng := NewDefaultInMemForTesting()
+	defer eng.Close()
+
+	// Write initial MVCC point keys.
+	for _, k := range []string{"a", "b", "c", "d"} {
+		_, err := MVCCPut(ctx, eng, roachpb.Key(k), wallTS(1), stringValue(k+"1").Value, MVCCWriteOptions{})
+		require.NoError(t, err)
+	}
+
+	// Issue a dormant clear over the entire range.
+	require.NoError(t, eng.ClearRawRangeDormant(roachpb.Key("a"), roachpb.Key("e")))
+
+	// All original keys should still be visible — dormant has no effect yet.
+	require.Equal(t, []MVCCKey{
+		pointKey("a", 1), pointKey("b", 1), pointKey("c", 1), pointKey("d", 1),
+	}, scanInternalPointKeys(t, eng, keys.LocalMax, keys.MaxKey))
+
+	// Write new keys after the dormant.
+	_, err := MVCCPut(ctx, eng, roachpb.Key("b"), wallTS(5), stringValue("b5").Value, MVCCWriteOptions{})
+	require.NoError(t, err)
+	_, err = MVCCPut(ctx, eng, roachpb.Key("c"), wallTS(5), stringValue("c5").Value, MVCCWriteOptions{})
+	require.NoError(t, err)
+
+	// Activate the dormant clear.
+	require.NoError(t, eng.ClearRawRangeActivate(roachpb.Key("a"), roachpb.Key("e")))
+
+	// Only the keys written after the dormant should remain.
+	require.Equal(t, []MVCCKey{
+		pointKey("b", 5), pointKey("c", 5),
+	}, scanInternalPointKeys(t, eng, keys.LocalMax, keys.MaxKey))
+}
+
+// TestClearRawEncodedRangeDormantActivate is like TestClearRawRangeDormantActivate
+// but operates via InternalWriter with pre-encoded keys.
+func TestClearRawEncodedRangeDormantActivate(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+
+	// scanInternalPointKeys uses ScanInternal to collect all MVCC point keys in
+	// [lower, upper).
+	scanInternalPointKeys := func(t *testing.T, r Reader, lower, upper roachpb.Key) []MVCCKey {
+		t.Helper()
+		var pointKeys []MVCCKey
+		err := r.ScanInternal(ctx, lower, upper,
+			func(key *pebble.InternalKey, _ pebble.LazyValue, _ pebble.IteratorLevel, _ pebble.DormantRelation) error {
+				ek, ok := DecodeEngineKey(key.UserKey)
+				if !ok {
+					return errors.New("failed to decode engine key")
+				}
+				mk, err := ek.ToMVCCKey()
+				if err != nil {
+					return err
+				}
+				pointKeys = append(pointKeys, mk)
+				return nil
+			},
+			nil, /* visitRangeDel */
+			nil, /* visitDormantRangeDel */
+			nil, /* visitRangeKey */
+			nil, /* visitSharedFile */
+			nil, /* visitExternalFile */
+		)
+		require.NoError(t, err)
+		return pointKeys
+	}
+
+	encKey := func(k string) []byte {
+		return EngineKey{Key: roachpb.Key(k)}.Encode()
+	}
+
+	t.Run("basic", func(t *testing.T) {
+		eng := NewDefaultInMemForTesting()
+		defer eng.Close()
+
+		// Write initial MVCC point keys.
+		for _, k := range []string{"a", "b", "c", "d"} {
+			_, err := MVCCPut(ctx, eng, roachpb.Key(k), wallTS(1), stringValue(k+"1").Value, MVCCWriteOptions{})
+			require.NoError(t, err)
+		}
+
+		// Issue a dormant clear via InternalWriter.
+		batch := eng.NewUnindexedBatch()
+		require.NoError(t, batch.ClearRawEncodedRangeDormant(encKey("a"), encKey("e")))
+		require.NoError(t, batch.Commit(true))
+		batch.Close()
+
+		// All original keys should still be visible.
+		require.Equal(t, []MVCCKey{
+			pointKey("a", 1), pointKey("b", 1), pointKey("c", 1), pointKey("d", 1),
+		}, scanInternalPointKeys(t, eng, keys.LocalMax, keys.MaxKey))
+
+		// Write new keys after the dormant.
+		_, err := MVCCPut(ctx, eng, roachpb.Key("b"), wallTS(5), stringValue("b5").Value, MVCCWriteOptions{})
+		require.NoError(t, err)
+		_, err = MVCCPut(ctx, eng, roachpb.Key("c"), wallTS(5), stringValue("c5").Value, MVCCWriteOptions{})
+		require.NoError(t, err)
+
+		// Activate via InternalWriter.
+		batch = eng.NewUnindexedBatch()
+		require.NoError(t, batch.ClearRawEncodedRangeActivate(encKey("a"), encKey("e")))
+		require.NoError(t, batch.Commit(true))
+		batch.Close()
+
+		// Only the keys written after the dormant should remain.
+		require.Equal(t, []MVCCKey{
+			pointKey("b", 5), pointKey("c", 5),
+		}, scanInternalPointKeys(t, eng, keys.LocalMax, keys.MaxKey))
+	})
+
+	t.Run("partial-activate", func(t *testing.T) {
+		eng := NewDefaultInMemForTesting()
+		defer eng.Close()
+
+		// Write initial MVCC point keys.
+		for _, k := range []string{"a", "b", "c", "d"} {
+			_, err := MVCCPut(ctx, eng, roachpb.Key(k), wallTS(1), stringValue(k+"1").Value, MVCCWriteOptions{})
+			require.NoError(t, err)
+		}
+
+		// Dormant over [a, e).
+		batch := eng.NewUnindexedBatch()
+		require.NoError(t, batch.ClearRawEncodedRangeDormant(encKey("a"), encKey("e")))
+		require.NoError(t, batch.Commit(true))
+		batch.Close()
+
+		// Activate only [b, d) — keys "a"@1 and "d"@1 should survive, "b"@1
+		// and "c"@1 should be deleted.
+		batch = eng.NewUnindexedBatch()
+		require.NoError(t, batch.ClearRawEncodedRangeActivate(encKey("b"), encKey("d")))
+		require.NoError(t, batch.Commit(true))
+		batch.Close()
+
+		require.Equal(t, []MVCCKey{
+			pointKey("a", 1), pointKey("d", 1),
+		}, scanInternalPointKeys(t, eng, keys.LocalMax, keys.MaxKey))
+	})
+
+	t.Run("overlapping-dormants", func(t *testing.T) {
+		eng := NewDefaultInMemForTesting()
+		defer eng.Close()
+
+		// Write initial MVCC point keys.
+		for _, k := range []string{"a", "b", "c", "d", "e"} {
+			_, err := MVCCPut(ctx, eng, roachpb.Key(k), wallTS(1), stringValue(k+"1").Value, MVCCWriteOptions{})
+			require.NoError(t, err)
+		}
+
+		// Two overlapping dormant calls: [a, d) and [b, f).
+		batch := eng.NewUnindexedBatch()
+		require.NoError(t, batch.ClearRawEncodedRangeDormant(encKey("a"), encKey("d")))
+		require.NoError(t, batch.ClearRawEncodedRangeDormant(encKey("b"), encKey("f")))
+		require.NoError(t, batch.Commit(true))
+		batch.Close()
+
+		// All keys should still be visible.
+		require.Equal(t, []MVCCKey{
+			pointKey("a", 1), pointKey("b", 1), pointKey("c", 1),
+			pointKey("d", 1), pointKey("e", 1),
+		}, scanInternalPointKeys(t, eng, keys.LocalMax, keys.MaxKey))
+
+		// Single activate covering [a, f) — all pre-dormant keys deleted.
+		batch = eng.NewUnindexedBatch()
+		require.NoError(t, batch.ClearRawEncodedRangeActivate(encKey("a"), encKey("f")))
+		require.NoError(t, batch.Commit(true))
+		batch.Close()
+
+		require.Equal(t, []MVCCKey(nil),
+			scanInternalPointKeys(t, eng, keys.LocalMax, keys.MaxKey))
+	})
+}
+
 // TestEngineIteratorVisibility checks iterator visibility for various readers.
 // See comment on Engine.NewMVCCIterator for detailed visibility semantics.
 func TestEngineIteratorVisibility(t *testing.T) {

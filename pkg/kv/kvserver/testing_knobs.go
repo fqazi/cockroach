@@ -29,6 +29,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
+	"github.com/cockroachdb/pebble/vfs"
 )
 
 // StoreTestingKnobs is a part of the context used to control parts of
@@ -189,6 +190,9 @@ type StoreTestingKnobs struct {
 	// DisableStoreRebalancer turns off the store rebalancer which moves replicas
 	// and leases.
 	DisableStoreRebalancer bool
+	// RangeFlushExecutor, if set, overrides the production range flush executor
+	// for testing.
+	RangeFlushExecutor rangeFlushExecutor
 	// DisableLoadBasedSplitting turns off LBS so no splits happen because of load.
 	DisableLoadBasedSplitting bool
 	// LoadBasedSplittingOverrideKey returns a key which should be used for load
@@ -602,6 +606,25 @@ type StoreTestingKnobs struct {
 	// BeforeSplitAcquiresLocksOnRHS is invoked during a split application before
 	// we start acquiring locks on the right hand side.
 	BeforeSplitAcquiresLocksOnRHS func(context.Context, *Replica)
+
+	// DisableBasalt, when true, prevents the test server from injecting a
+	// BasaltFS. Used by tests that are not testing basalt behavior and would
+	// break if basalt manifests are active (e.g. merge/split race tests).
+	DisableBasalt bool
+
+	// BasaltFS is an optional VFS for testing Basalt range-shared engines.
+	// When non-nil, used instead of real filesystem for Basalt data.
+	BasaltFS vfs.FS
+
+	// OpenRSEngine is an optional function to open RSEngines for testing.
+	// Typically set to storage.OpenTestingRSEngine.
+	OpenRSEngine storage.OpenRSEngineFunc
+
+	// WriteClearRangeOnFlush, when true, causes range flush prepare and
+	// commit to write ClearRawRangeDormant / ClearRawRangeActivate. Set
+	// only in tests that verify RS engine contents and can tolerate data
+	// disappearing from store-local.
+	WriteClearRangeOnFlush bool
 }
 
 // ModuleTestingKnobs is part of the base.ModuleTestingKnobs interface.

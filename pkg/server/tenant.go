@@ -689,8 +689,9 @@ func (s *SQLServerWrapper) PreStart(ctx context.Context) error {
 	}.Iter()
 
 	encryptedStore := false
+	listenerFilesWritten := false
 	for _, storeSpec := range s.sqlServer.cfg.Stores.Specs {
-		if storeSpec.InMemory {
+		if !storeSpec.IsLocal() {
 			continue
 		}
 		if storeSpec.IsEncrypted() {
@@ -703,8 +704,25 @@ func (s *SQLServerWrapper) PreStart(ctx context.Context) error {
 				return errors.Wrapf(err, "failed to write %s", file)
 			}
 		}
+		listenerFilesWritten = true
 		// TODO(knz): Do we really want to write the listener files
 		// in _every_ store directory? Not just the first one?
+	}
+	// If no local stores are configured (e.g. all in-memory, basalt, or
+	// remote), fall back to writing listener files to the log directory
+	// (parent of the heap profile directory), or the heap profile
+	// directory itself as a last resort.
+	if !listenerFilesWritten && s.sqlServer.cfg.HeapProfileDirName != "" {
+		fallbackDir := filepath.Dir(s.sqlServer.cfg.HeapProfileDirName)
+		if err := os.MkdirAll(fallbackDir, 0755); err != nil {
+			return errors.Wrapf(err, "creating listener file directory %s", fallbackDir)
+		}
+		for name, val := range listenerFiles {
+			file := filepath.Join(fallbackDir, name)
+			if err := os.WriteFile(file, []byte(val), 0644); err != nil {
+				return errors.Wrapf(err, "failed to write %s", file)
+			}
+		}
 	}
 
 	// Set up calling s.cfg.ReadyFn at the right time. Essentially, this call

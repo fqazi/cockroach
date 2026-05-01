@@ -336,11 +336,11 @@ func TestSettingsPersistenceEndToEnd(t *testing.T) {
 		},
 		ServerArgsPerNode: map[int]base.TestServerArgs{
 			0: {
-				StoreSpecs: []base.StoreSpec{{InMemory: true, StickyVFSID: "1"}},
+				StoreSpecs: []base.StoreSpec{{Type: base.StoreTypeInMemory, StickyVFSID: "1"}},
 				Knobs:      base.TestingKnobs{Server: serverKnobs},
 			},
 			1: {
-				StoreSpecs: []base.StoreSpec{{InMemory: true, StickyVFSID: "2"}},
+				StoreSpecs: []base.StoreSpec{{Type: base.StoreTypeInMemory, StickyVFSID: "2"}},
 				Knobs:      base.TestingKnobs{Server: serverKnobs},
 			},
 		},

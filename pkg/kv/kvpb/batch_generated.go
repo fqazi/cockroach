@@ -110,6 +110,14 @@ func (ru RequestUnion) GetInner() Request {
 		return t.Excise
 	case *RequestUnion_FlushLockTable:
 		return t.FlushLockTable
+	case *RequestUnion_AllocateFileNumsForRange:
+		return t.AllocateFileNumsForRange
+	case *RequestUnion_SetRangeSharedManifestNum:
+		return t.SetRangeSharedManifestNum
+	case *RequestUnion_CheckRangeSharedManifestNum:
+		return t.CheckRangeSharedManifestNum
+	case *RequestUnion_RangeFlushPrepare:
+		return t.RangeFlushPrepare
 	default:
 		return nil
 	}
@@ -214,6 +222,14 @@ func (ru ResponseUnion) GetInner() Response {
 		return t.Excise
 	case *ResponseUnion_FlushLockTable:
 		return t.FlushLockTable
+	case *ResponseUnion_AllocateFileNumsForRange:
+		return t.AllocateFileNumsForRange
+	case *ResponseUnion_SetRangeSharedManifestNum:
+		return t.SetRangeSharedManifestNum
+	case *ResponseUnion_CheckRangeSharedManifestNum:
+		return t.CheckRangeSharedManifestNum
+	case *ResponseUnion_RangeFlushPrepare:
+		return t.RangeFlushPrepare
 	default:
 		return nil
 	}
@@ -322,6 +338,14 @@ func (ru *RequestUnion) MustSetInner(r Request) {
 		union = &RequestUnion_Excise{t}
 	case *FlushLockTableRequest:
 		union = &RequestUnion_FlushLockTable{t}
+	case *AllocateFileNumsForRangeRequest:
+		union = &RequestUnion_AllocateFileNumsForRange{t}
+	case *SetRangeSharedManifestNumRequest:
+		union = &RequestUnion_SetRangeSharedManifestNum{t}
+	case *CheckRangeSharedManifestNumRequest:
+		union = &RequestUnion_CheckRangeSharedManifestNum{t}
+	case *RangeFlushPrepareRequest:
+		union = &RequestUnion_RangeFlushPrepare{t}
 	default:
 		panic(fmt.Sprintf("unsupported type %T for %T", r, ru))
 	}
@@ -429,13 +453,21 @@ func (ru *ResponseUnion) MustSetInner(r Response) {
 		union = &ResponseUnion_Excise{t}
 	case *FlushLockTableResponse:
 		union = &ResponseUnion_FlushLockTable{t}
+	case *AllocateFileNumsForRangeResponse:
+		union = &ResponseUnion_AllocateFileNumsForRange{t}
+	case *SetRangeSharedManifestNumResponse:
+		union = &ResponseUnion_SetRangeSharedManifestNum{t}
+	case *CheckRangeSharedManifestNumResponse:
+		union = &ResponseUnion_CheckRangeSharedManifestNum{t}
+	case *RangeFlushPrepareResponse:
+		union = &ResponseUnion_RangeFlushPrepare{t}
 	default:
 		panic(fmt.Sprintf("unsupported type %T for %T", r, ru))
 	}
 	ru.Value = union
 }
 
-type reqCounts [49]int32
+type reqCounts [53]int32
 
 // getReqCounts returns the number of times each
 // request type appears in the batch.
@@ -541,6 +573,14 @@ func (ba *BatchRequest) getReqCounts() reqCounts {
 			counts[47]++
 		case *RequestUnion_FlushLockTable:
 			counts[48]++
+		case *RequestUnion_AllocateFileNumsForRange:
+			counts[49]++
+		case *RequestUnion_SetRangeSharedManifestNum:
+			counts[50]++
+		case *RequestUnion_CheckRangeSharedManifestNum:
+			counts[51]++
+		case *RequestUnion_RangeFlushPrepare:
+			counts[52]++
 		default:
 			panic(fmt.Sprintf("unsupported request: %+v", ru))
 		}
@@ -598,6 +638,10 @@ var requestNames = []string{
 	"LinkExternalSstable",
 	"Excise",
 	"FlushLockTable",
+	"AllocateFileNumsForRng",
+	"SetRngSharedManifestNum",
+	"ChkRngSharedManifestNum",
+	"RngFlushPrepare",
 }
 
 // Summary prints a short summary of the requests in a batch.
@@ -829,6 +873,22 @@ type flushLockTableResponseAlloc struct {
 	union ResponseUnion_FlushLockTable
 	resp  FlushLockTableResponse
 }
+type allocateFileNumsForRangeResponseAlloc struct {
+	union ResponseUnion_AllocateFileNumsForRange
+	resp  AllocateFileNumsForRangeResponse
+}
+type setRangeSharedManifestNumResponseAlloc struct {
+	union ResponseUnion_SetRangeSharedManifestNum
+	resp  SetRangeSharedManifestNumResponse
+}
+type checkRangeSharedManifestNumResponseAlloc struct {
+	union ResponseUnion_CheckRangeSharedManifestNum
+	resp  CheckRangeSharedManifestNumResponse
+}
+type rangeFlushPrepareResponseAlloc struct {
+	union ResponseUnion_RangeFlushPrepare
+	resp  RangeFlushPrepareResponse
+}
 
 func allocBatchResponse(nResps int) *BatchResponse {
 	if nResps <= 1 {
@@ -922,6 +982,10 @@ func (ba *BatchRequest) CreateReply() *BatchResponse {
 	var buf46 []linkExternalSSTableResponseAlloc
 	var buf47 []exciseResponseAlloc
 	var buf48 []flushLockTableResponseAlloc
+	var buf49 []allocateFileNumsForRangeResponseAlloc
+	var buf50 []setRangeSharedManifestNumResponseAlloc
+	var buf51 []checkRangeSharedManifestNumResponseAlloc
+	var buf52 []rangeFlushPrepareResponseAlloc
 
 	for i, r := range ba.Requests {
 		switch r.GetValue().(type) {
@@ -1268,6 +1332,34 @@ func (ba *BatchRequest) CreateReply() *BatchResponse {
 			buf48[0].union.FlushLockTable = &buf48[0].resp
 			br.Responses[i].Value = &buf48[0].union
 			buf48 = buf48[1:]
+		case *RequestUnion_AllocateFileNumsForRange:
+			if buf49 == nil {
+				buf49 = make([]allocateFileNumsForRangeResponseAlloc, counts[49])
+			}
+			buf49[0].union.AllocateFileNumsForRange = &buf49[0].resp
+			br.Responses[i].Value = &buf49[0].union
+			buf49 = buf49[1:]
+		case *RequestUnion_SetRangeSharedManifestNum:
+			if buf50 == nil {
+				buf50 = make([]setRangeSharedManifestNumResponseAlloc, counts[50])
+			}
+			buf50[0].union.SetRangeSharedManifestNum = &buf50[0].resp
+			br.Responses[i].Value = &buf50[0].union
+			buf50 = buf50[1:]
+		case *RequestUnion_CheckRangeSharedManifestNum:
+			if buf51 == nil {
+				buf51 = make([]checkRangeSharedManifestNumResponseAlloc, counts[51])
+			}
+			buf51[0].union.CheckRangeSharedManifestNum = &buf51[0].resp
+			br.Responses[i].Value = &buf51[0].union
+			buf51 = buf51[1:]
+		case *RequestUnion_RangeFlushPrepare:
+			if buf52 == nil {
+				buf52 = make([]rangeFlushPrepareResponseAlloc, counts[52])
+			}
+			buf52[0].union.RangeFlushPrepare = &buf52[0].resp
+			br.Responses[i].Value = &buf52[0].union
+			buf52 = buf52[1:]
 		default:
 			panic(fmt.Sprintf("unsupported request: %+v", r))
 		}
@@ -1376,6 +1468,14 @@ func CreateRequest(method Method) Request {
 		return &ExciseRequest{}
 	case FlushLockTable:
 		return &FlushLockTableRequest{}
+	case AllocateFileNumsForRange:
+		return &AllocateFileNumsForRangeRequest{}
+	case SetRangeSharedManifestNum:
+		return &SetRangeSharedManifestNumRequest{}
+	case CheckRangeSharedManifestNum:
+		return &CheckRangeSharedManifestNumRequest{}
+	case RangeFlushPrepare:
+		return &RangeFlushPrepareRequest{}
 	default:
 		panic(fmt.Sprintf("unsupported method: %+v", method))
 	}

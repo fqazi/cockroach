@@ -1,5 +1,5 @@
-load("//build:STRINGER.bzl", "stringer")
 load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+load("//build:STRINGER.bzl", "stringer")
 
 go_library(
     name = "sidetransport",

@@ -300,7 +300,7 @@ func TestMigrationPurgeOutdatedReplicas(t *testing.T) {
 	const numStores = 3
 	var storeSpecs []base.StoreSpec
 	for i := 0; i < numStores; i++ {
-		storeSpecs = append(storeSpecs, base.StoreSpec{InMemory: true})
+		storeSpecs = append(storeSpecs, base.StoreSpec{Type: base.StoreTypeInMemory})
 	}
 
 	intercepted := 0
