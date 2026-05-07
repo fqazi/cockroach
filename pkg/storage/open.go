@@ -595,6 +595,8 @@ func Open(
 			return nil, err
 		}
 	}
+	// Update any options that are required for running Basalt.
+	initPebbleOptionsForBasalt(ctx, &cfg)
 	p, err := newPebble(ctx, cfg)
 	if err != nil {
 		// Run after-close hooks if there are any. This ensures we

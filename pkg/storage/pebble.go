@@ -731,6 +731,15 @@ func DefaultPebbleOptions() *pebble.Options {
 	return opts
 }
 
+// initPebbleOptionsForBasalt modifies the passed in Pebble option if we are running
+// on Basalt for storage.
+func initPebbleOptionsForBasalt(ctx context.Context, engineCfg *engineConfig) {
+	if engineCfg.basaltPath == "" {
+		return
+	}
+	engineCfg.opts.EnableWALPreOpen = true
+}
+
 type localKeyPolicyKind uint8
 
 const (

@@ -555,6 +555,17 @@ func (e *Env) GetDiskUsage(path string) (vfs.DiskUsage, error) {
 	return e.defaultFS.GetDiskUsage(path)
 }
 
+// Seal implements vfs.Sealer
+func (e *Env) Seal(path string) error {
+	// TODO(fqazi): This can be be a simple invocation once VFS Capability support
+	// is merged.
+	sealer := vfs.FindSealer(e.defaultFS)
+	if sealer == nil {
+		return vfs.ErrUnsupported
+	}
+	return sealer.Seal(path)
+}
+
 // CreateWithSync creates a file wrapped with logic to periodically sync
 // whenever more than bytesPerSync bytes accumulate. This syncing does not
 // provide any persistency guarantees, but can prevent latency spikes.
