@@ -163,9 +163,11 @@ def go_deps():
         name = "com_github_alecthomas_kingpin_v2",
         build_file_proto_mode = "disable_global",
         importpath = "github.com/alecthomas/kingpin/v2",
-        # TODO: mirror this repo (to fix, run `./dev generate bazel --mirror`)
-        sum = "h1:ANLJcKmQm4nIaog7xdr/id6FM6zm5hHnfZrvtKPxqGg=",
-        version = "v2.3.1",
+        sha256 = "2a322681d79461dd793c1e8a98adf062f6ef554abcd3ab06981eef94d79c136b",
+        strip_prefix = "github.com/alecthomas/kingpin/v2@v2.3.1",
+        urls = [
+            "https://storage.googleapis.com/cockroach-godeps-private/gomod/github.com/alecthomas/kingpin/v2/com_github_alecthomas_kingpin_v2-v2.3.1.zip",
+        ],
     )
     go_repository(
         name = "com_github_alecthomas_units",
@@ -1902,10 +1904,10 @@ def go_deps():
         patches = [
             "@com_github_cockroachdb_cockroach//build/patches:com_github_cockroachdb_pebble.patch",
         ],
-        sha256 = "ff4c8abf0b5889a90e985265f1f4fc07b0c5da504f04e8248b3cedae0030860c",
-        strip_prefix = "github.com/cockroachdb/pebble-private@v0.0.0-20260429183326-0f12733a8186",
+        sha256 = "dbc0f53c1c09125a87fe166262f1eba5968bf5863de6632f9f56684a50eaa494",
+        strip_prefix = "github.com/cockroachdb/pebble-private@v0.0.0-20260506191102-03a718e11aaa",
         urls = [
-            "https://storage.googleapis.com/cockroach-godeps-private/gomod/github.com/cockroachdb/pebble-private/com_github_cockroachdb_pebble_private-v0.0.0-20260429183326-0f12733a8186.zip",
+            "https://storage.googleapis.com/cockroach-godeps-private/gomod/github.com/cockroachdb/pebble-private/com_github_cockroachdb_pebble_private-v0.0.0-20260506191102-03a718e11aaa.zip",
         ],
     )
     go_repository(
@@ -7571,19 +7573,21 @@ def go_deps():
         ],
         build_file_proto_mode = "default",
         importpath = "github.com/prometheus/client_model",
-        replace = "github.com/prometheus/client_model",
-        # TODO: mirror this repo (to fix, run `./dev generate bazel --mirror`)
-        sum = "h1:UBgGFHqYdG/TPFD1B1ogZywDqEkwp3fBMvqdiQ7Xew4=",
-        version = "v0.3.0",
+        sha256 = "2a1d147754959287fc34a7bb7c333b3d6fe0ca0d7db1606c49e8f48fd0311547",
+        strip_prefix = "github.com/prometheus/client_model@v0.3.0",
+        urls = [
+            "https://storage.googleapis.com/cockroach-godeps-private/gomod/github.com/prometheus/client_model/com_github_prometheus_client_model-v0.3.0.zip",
+        ],
     )
     go_repository(
         name = "com_github_prometheus_common",
         build_file_proto_mode = "disable_global",
         importpath = "github.com/prometheus/common",
-        replace = "github.com/prometheus/common",
-        # TODO: mirror this repo (to fix, run `./dev generate bazel --mirror`)
-        sum = "h1:EKsfXEYo4JpWMHH5cg+KOUWeuJSov1Id8zGR8eeI1YM=",
-        version = "v0.42.0",
+        sha256 = "7a4ef12402a8a153c47c085cadf362bdc2ffe4761e50d6ab2c49e4d64044bc85",
+        strip_prefix = "github.com/prometheus/common@v0.42.0",
+        urls = [
+            "https://storage.googleapis.com/cockroach-godeps-private/gomod/github.com/prometheus/common/com_github_prometheus_common-v0.42.0.zip",
+        ],
     )
     go_repository(
         name = "com_github_prometheus_common_sigv4",

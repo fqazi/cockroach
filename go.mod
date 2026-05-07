@@ -578,7 +578,7 @@ replace github.com/snowflakedb/gosnowflake => github.com/cockroachdb/gosnowflake
 
 replace github.com/knz/strtime => github.com/cockroachdb/strtime v0.0.0-20260422145425-b760b890ce68
 
-replace github.com/cockroachdb/pebble => github.com/cockroachdb/pebble-private v0.0.0-20260429183326-0f12733a8186
+replace github.com/cockroachdb/pebble => github.com/cockroachdb/pebble-private v0.0.0-20260506191102-03a718e11aaa
 
 // basaltclient pulls in client_model v0.6.2 which dropped XXX_unrecognized.
 // pkg/util/metric/metric.go still uses that field, so pin to v0.3.0.
