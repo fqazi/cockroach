@@ -733,6 +733,8 @@ owners:
   raftlog_size_total: cockroachdb/kv
   raftlog_truncated: cockroachdb/kv
   range_adds: cockroachdb/kv
+  range_flush_bytes_flushed: cockroachdb/kv
+  range_flush_bytes_queued: cockroachdb/kv
   range_merges: cockroachdb/kv
   range_raftleaderremovals: cockroachdb/kv
   range_raftleadertransfers: cockroachdb/kv
@@ -1129,6 +1131,12 @@ owners:
   storage_bytes_decompressed_l6_data: cockroachdb/kv
   storage_bytes_decompressed_l6_values: cockroachdb/kv
   storage_checkpoints: cockroachdb/kv
+  storage_compaction_scheduler_duration_range_flusher: cockroachdb/kv
+  storage_compaction_scheduler_duration_range_shared: cockroachdb/kv
+  storage_compaction_scheduler_duration_store_local: cockroachdb/kv
+  storage_compaction_scheduler_running_range_flusher: cockroachdb/kv
+  storage_compaction_scheduler_running_range_shared: cockroachdb/kv
+  storage_compaction_scheduler_running_store_local: cockroachdb/kv
   storage_compactions_cancelled_bytes: cockroachdb/kv
   storage_compactions_cancelled_count: cockroachdb/kv
   storage_compactions_duration: cockroachdb/kv
