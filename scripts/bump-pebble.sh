@@ -34,10 +34,10 @@ pushd() { builtin pushd "$@" > /dev/null; }
 popd() { builtin popd "$@" > /dev/null; }
 
 # Grab the current Pebble SHA from the replace directive.
-OLD_SHA=$(grep 'cockroachlabs/pebble-private' go.mod | grep -o -E '[a-f0-9]{12}$')
+OLD_SHA=$(grep 'cockroachdb/pebble-private' go.mod | grep -o -E '[a-f0-9]{12}$')
 echo "Current pebble SHA: $OLD_SHA"
 
-PEBBLE_UPSTREAM_URL="https://github.com/cockroachlabs/pebble-private.git"
+PEBBLE_UPSTREAM_URL="https://github.com/cockroachdb/pebble-private.git"
 
 # Check out the pebble repo in a temporary directory.
 PEBBLE_DIR=$(mktemp -d)
@@ -74,7 +74,7 @@ if ! git merge-base --is-ancestor $OLD_SHA $NEW_SHA; then
   exit 1
 fi
 
-COMMITS=$(git log --no-merges --pretty='format: * [`%h`](https://github.com/cockroachlabs/pebble-private/commit/%h) %s' "$OLD_SHA..$NEW_SHA")
+COMMITS=$(git log --no-merges --pretty='format: * [`%h`](https://github.com/cockroachdb/pebble-private/commit/%h) %s' "$OLD_SHA..$NEW_SHA")
 popd
 
 echo
@@ -89,7 +89,7 @@ git submodule update --init --recursive
 
 # Pull in the Pebble module at the desired SHA via the replace directive.
 ./dev generate go
-go mod edit -replace "github.com/cockroachdb/pebble=github.com/cockroachlabs/pebble-private@${NEW_SHA}"
+go mod edit -replace "github.com/cockroachdb/pebble=github.com/cockroachdb/pebble-private@${NEW_SHA}"
 go mod tidy
 
 # Create the branch and commit on the CockroachDB repository.
